@@ -1487,6 +1487,7 @@ pub fn bf16_matmul_bench(
     match mode {
         "f64simd" => batched_matmul_row_block_bf16_in_f64acc(a, b, m, k, n, 0, &mut out),
         "f64scalar" => batched_matmul_row_block_bf16_in_scalar(a, b, m, k, n, 0, &mut out),
+        "f32rowref" => batched_matmul_row_block_bf16_in_rowref(a, b, m, k, n, 0, &mut out),
         _ => batched_matmul_row_block_bf16_in(a, b, m, k, n, 0, &mut out),
     }
     out
@@ -1628,7 +1629,108 @@ pub fn batched_matmul_2d_f16_in(
 /// `round_f32_to_bf16`). `F32_NR == 16` lanes (2x the f64-accum kernel) and the
 /// bf16->f32 widen is a bare shift (no f32->f64 cast), so this is the analog of the
 /// approved cz0g0 native-f32 dot_general lever. See `bf16_in_matches_f32_accum`.
+/// Register-blocked native-f32-accum BF16 GEMM row-block — the BF16 sibling of
+/// [`batched_matmul_row_block_f32_in`]. An `F32_MR × F32_NR` output tile is held in
+/// `F32_MR` local `F32xN` accumulators (register-resident); each `B[l]` panel is widened
+/// bf16->f32 ONCE and fanned across the MR tile rows, streamed over `k`, then each output
+/// is rounded f32->bf16. BIT-IDENTICAL to the per-row kernel
+/// [`batched_matmul_row_block_bf16_in_rowref`] (same per-output ascending-`l` f32 fold,
+/// same round). Tiles never cross a batch boundary.
 fn batched_matmul_row_block_bf16_in(
+    a: &[u16],
+    b: &[u16],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [u16],
+) {
+    let total_rows = block.len() / n;
+    let full_cols = n / F32_NR * F32_NR;
+    let mut ri = 0;
+    while ri < total_rows {
+        let g0 = g_start + ri;
+        let bt = g0 / m;
+        let b_off = bt * k * n;
+        let tile_rows = (total_rows - ri).min((bt + 1) * m - g0);
+        let full_rows = tile_rows / F32_MR * F32_MR;
+
+        let mut j = 0;
+        while j < full_cols {
+            let mut i = 0;
+            while i < full_rows {
+                let ar0 = (g0 + i) * k;
+                let (ar1, ar2, ar3) = (ar0 + k, ar0 + 2 * k, ar0 + 3 * k);
+                let mut c0 = F32xN::splat(0.0);
+                let mut c1 = F32xN::splat(0.0);
+                let mut c2 = F32xN::splat(0.0);
+                let mut c3 = F32xN::splat(0.0);
+                for l in 0..k {
+                    let bbase = b_off + l * n + j;
+                    let bv = bf16_chunk_to_f32xn(&b[bbase..bbase + F32_NR]);
+                    c0 += F32xN::splat(bf16_bits_to_f32(a[ar0 + l])) * bv;
+                    c1 += F32xN::splat(bf16_bits_to_f32(a[ar1 + l])) * bv;
+                    c2 += F32xN::splat(bf16_bits_to_f32(a[ar2 + l])) * bv;
+                    c3 += F32xN::splat(bf16_bits_to_f32(a[ar3 + l])) * bv;
+                }
+                for (r, c) in [c0, c1, c2, c3].iter().enumerate() {
+                    let ob = (ri + i + r) * n + j;
+                    for (lane, &av) in c.as_array().iter().enumerate() {
+                        block[ob + lane] = round_f32_to_bf16(av);
+                    }
+                }
+                i += F32_MR;
+            }
+            j += F32_NR;
+        }
+
+        // Column remainder (n not a multiple of F32_NR): F32_MR scalar f32 accumulators.
+        let mut i = 0;
+        while i < full_rows {
+            let ar0 = (g0 + i) * k;
+            let mut jj = full_cols;
+            while jj < n {
+                let mut s = [0.0f32; F32_MR];
+                for l in 0..k {
+                    let bv = bf16_bits_to_f32(b[b_off + l * n + jj]);
+                    for (r, sr) in s.iter_mut().enumerate() {
+                        *sr += bf16_bits_to_f32(a[ar0 + r * k + l]) * bv;
+                    }
+                }
+                for (r, sr) in s.iter().enumerate() {
+                    block[(ri + i + r) * n + jj] = round_f32_to_bf16(*sr);
+                }
+                jj += 1;
+            }
+            i += F32_MR;
+        }
+
+        // Row remainder (tile_rows not a multiple of MR): per-row ascending-`l` sweep.
+        while i < tile_rows {
+            let a_row = (g0 + i) * k;
+            let mut acc = vec![0.0f32; n];
+            for l in 0..k {
+                let a_il = bf16_bits_to_f32(a[a_row + l]);
+                let src = &b[b_off + l * n..b_off + l * n + n];
+                for (ax, bx) in acc.iter_mut().zip(src) {
+                    *ax += a_il * bf16_bits_to_f32(*bx);
+                }
+            }
+            let c_row = &mut block[(ri + i) * n..(ri + i) * n + n];
+            for (cx, &av) in c_row.iter_mut().zip(acc.iter()) {
+                *cx = round_f32_to_bf16(av);
+            }
+            i += 1;
+        }
+
+        ri += tile_rows;
+    }
+}
+
+/// Pre-register-blocking per-row BF16 reference kernel, kept only so a same-binary A/B
+/// can isolate the register-blocking win.
+#[doc(hidden)]
+fn batched_matmul_row_block_bf16_in_rowref(
     a: &[u16],
     b: &[u16],
     m: usize,
@@ -2123,6 +2225,48 @@ mod tests {
         assert_eq!(got.len(), want.len());
         for idx in 0..got.len() {
             assert_eq!(got[idx], want[idx], "mismatch at {idx}");
+        }
+    }
+
+    /// The register-blocked BF16 kernel must equal the ascending-`l` f32-accum reference
+    /// for shapes that trigger every MR/NR remainder path: rows not a multiple of F32_MR,
+    /// columns not a multiple of F32_NR, and a batch boundary off an MR tile edge.
+    #[test]
+    fn bf16_register_blocked_remainders_match_reference() {
+        let to_bf16 = |v: f64| -> u16 {
+            match fj_core::Literal::from_bf16_f64(v) {
+                fj_core::Literal::BF16Bits(b) => b,
+                _ => 0,
+            }
+        };
+        for &(bt, m, k, n) in &[
+            (2usize, 11usize, 7usize, 19usize), // m%4=3, n%16=3, batch edge off MR
+            (3, 13, 5, 33),                     // m%4=1, n%16=1
+            (1, 7, 9, 16),                      // m%4=3, n%16=0
+            (1, 8, 4, 5),                        // m%4=0, n<16
+        ] {
+            let a16: Vec<u16> = (0..bt * m * k)
+                .map(|i| to_bf16((i as f64 * 0.011).sin() * 1.7 - 0.4))
+                .collect();
+            let b16: Vec<u16> = (0..bt * k * n)
+                .map(|i| to_bf16((i as f64 * 0.017).cos() * 1.3 + 0.2))
+                .collect();
+            let got = batched_matmul_2d_bf16_in(&a16, bt, m, k, &b16, n);
+            let mut want = vec![0u16; bt * m * n];
+            for batch in 0..bt {
+                for i in 0..m {
+                    for j in 0..n {
+                        let mut acc = 0.0f32;
+                        for l in 0..k {
+                            let av = bf16_bits_to_f32(a16[batch * m * k + i * k + l]);
+                            let bv = bf16_bits_to_f32(b16[batch * k * n + l * n + j]);
+                            acc += av * bv;
+                        }
+                        want[batch * m * n + i * n + j] = round_f32_to_bf16(acc);
+                    }
+                }
+            }
+            assert_eq!(got, want, "bf16 mismatch bt={bt} m={m} k={k} n={n}");
         }
     }
 

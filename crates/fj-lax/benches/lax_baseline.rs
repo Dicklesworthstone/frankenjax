@@ -1654,6 +1654,33 @@ fn bench_bf16_matmul_512_f64accum_reference(c: &mut Criterion) {
     });
 }
 
+// bf16 GEMM register-blocking A/B at 1024³ (B=2MB, re-streamed per output row by the
+// per-row kernel): F32_MR register-blocked (production "f32simd") vs the per-row
+// reference ("f32rowref"). Same f32-accum, bit-identical; isolates the register win.
+fn bf16_1024_inputs() -> (Vec<u16>, Vec<u16>) {
+    let to_bf16 = |i: usize, s: f64| -> u16 {
+        match Literal::from_bf16_f64((i as f64) * s) {
+            Literal::BF16Bits(b) => b,
+            _ => 0,
+        }
+    };
+    let a: Vec<u16> = (0..1024 * 1024).map(|i| to_bf16(i, 1e-4)).collect();
+    let b: Vec<u16> = (0..1024 * 1024).map(|i| to_bf16(i, 2e-4)).collect();
+    (a, b)
+}
+fn bench_bf16_matmul_1024_blocked(c: &mut Criterion) {
+    let (a, b) = bf16_1024_inputs();
+    c.bench_function("linalg/bf16_matmul_1024_blocked", |bencher| {
+        bencher.iter(|| fj_lax::tensor_contraction::bf16_matmul_bench(&a, 1024, 1024, &b, 1024, "f32simd"))
+    });
+}
+fn bench_bf16_matmul_1024_rowref(c: &mut Criterion) {
+    let (a, b) = bf16_1024_inputs();
+    c.bench_function("linalg/bf16_matmul_1024_rowref", |bencher| {
+        bencher.iter(|| fj_lax::tensor_contraction::bf16_matmul_bench(&a, 1024, 1024, &b, 1024, "f32rowref"))
+    });
+}
+
 // F16 GEMM. Same-invocation A/B isolating the native-f32 lever: native (decode
 // F16->f32 once + 16-lane f32-accum GEMM, XLA parity) vs the prior promote path
 // (F16->f64 + 8-lane f64 GEMM + round). Compute-bound O(mkn) kernel.
@@ -5168,6 +5195,8 @@ criterion_group!(
     bench_matmul_2d_256,
     bench_bf16_matmul_512_f32accum,
     bench_bf16_matmul_512_f64accum_reference,
+    bench_bf16_matmul_1024_blocked,
+    bench_bf16_matmul_1024_rowref,
     bench_f16_matmul_512_f32accum,
     bench_f16_matmul_512_promote_reference,
     bench_matmul_2d_512,
