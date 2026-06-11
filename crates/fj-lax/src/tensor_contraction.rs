@@ -1314,10 +1314,10 @@ fn bf16_bits_to_f64(bits: u16) -> f64 {
     f64::from(f32::from_bits((bits as u32) << 16))
 }
 
-/// BF16-input row-block kernel: accumulates each output row in an `f64` scratch
-/// (ascending-`l`, widening BF16->f64 per element) then rounds to BF16. See
-/// [`batched_matmul_2d_bf16_in`] for the bit-identity argument.
-fn batched_matmul_row_block_bf16_in(
+/// Scalar reference row-block (pre-SIMD): the exact loop the SIMD kernel replaces,
+/// kept only so a same-binary A/B bench can isolate the SIMD speedup.
+#[doc(hidden)]
+fn batched_matmul_row_block_bf16_in_scalar(
     a: &[u16],
     b: &[u16],
     m: usize,
@@ -1345,6 +1345,96 @@ fn batched_matmul_row_block_bf16_in(
                 fj_core::Literal::BF16Bits(bits) => bits,
                 _ => 0,
             };
+        }
+    }
+}
+
+/// Bench-only single-thread BF16 matmul over one batch (`batch == 1`), running
+/// either the SIMD row-block or the scalar reference so a same-invocation A/B can
+/// isolate the SIMD accumulation win.
+#[doc(hidden)]
+pub fn bf16_matmul_bench(a: &[u16], m: usize, k: usize, b: &[u16], n: usize, simd: bool) -> Vec<u16> {
+    let mut out = vec![0u16; m * n];
+    if simd {
+        batched_matmul_row_block_bf16_in(a, b, m, k, n, 0, &mut out);
+    } else {
+        batched_matmul_row_block_bf16_in_scalar(a, b, m, k, n, 0, &mut out);
+    }
+    out
+}
+
+/// BF16-input row-block kernel: accumulates each output row in an `f64` scratch
+/// (ascending-`l`, widening BF16->f64 per element) then rounds to BF16. See
+/// [`batched_matmul_2d_bf16_in`] for the bit-identity argument.
+/// Widen `NR` contiguous BF16 bit patterns to an `F64xN` lane vector, identically
+/// to `bf16_bits_to_f64` per lane (u16 -> high-16-bits-of-f32 via `<< 16` -> f64).
+/// Pure integer/float SIMD casts — no comparison/mask traits (whose import paths
+/// drift across nightlies; see the RNG/SIMD note).
+#[inline]
+fn bf16_chunk_to_f64xn(src: &[u16]) -> F64xN {
+    use std::simd::{
+        Simd,
+        num::{SimdFloat, SimdUint},
+    };
+    let u = Simd::<u16, NR>::from_slice(src);
+    let f32v = Simd::<f32, NR>::from_bits(u.cast::<u32>() << Simd::splat(16u32));
+    f32v.cast::<f64>()
+}
+
+fn batched_matmul_row_block_bf16_in(
+    a: &[u16],
+    b: &[u16],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [u16],
+) {
+    // SIMD across OUTPUT COLUMNS (lanes = independent outputs), each lane folding
+    // its own ascending-`l` f64 accumulation — bit-identical to the scalar
+    // `acc[j] += a_il * widen(b[l][j])` row-block (same per-output order, same f64
+    // mul/add, same `from_bf16_f64` rounding), just NR columns at a time. Mirrors
+    // the f32 native-SIMD kernel; keeps f64 accumulation so the committed
+    // `batched_matmul_2d_bf16_in_matches_promote_bits` golden is unchanged.
+    let full_cols = n / NR;
+    let tail_cols = n - full_cols * NR;
+    let mut acc_chunks = vec![F64xN::splat(0.0); full_cols];
+    let mut acc_tail = vec![0.0f64; tail_cols];
+    for (ri, c_row) in block.chunks_mut(n).enumerate() {
+        let g = g_start + ri;
+        let bt = g / m;
+        let a_off = g * k;
+        let b_off = bt * k * n;
+        acc_chunks.iter_mut().for_each(|acc| *acc = F64xN::splat(0.0));
+        acc_tail.iter_mut().for_each(|x| *x = 0.0);
+        for l in 0..k {
+            let a_scalar = bf16_bits_to_f64(a[a_off + l]);
+            let a_il = F64xN::splat(a_scalar);
+            let src = &b[b_off + l * n..b_off + l * n + n];
+            for (chunk_idx, acc) in acc_chunks.iter_mut().enumerate() {
+                let j = chunk_idx * NR;
+                *acc += a_il * bf16_chunk_to_f64xn(&src[j..j + NR]);
+            }
+            let tail_start = full_cols * NR;
+            for j in 0..tail_cols {
+                acc_tail[j] += a_scalar * bf16_bits_to_f64(src[tail_start + j]);
+            }
+        }
+        let round = |av: f64| -> u16 {
+            match fj_core::Literal::from_bf16_f64(av) {
+                fj_core::Literal::BF16Bits(bits) => bits,
+                _ => 0,
+            }
+        };
+        for (chunk_idx, acc) in acc_chunks.iter().enumerate() {
+            let j = chunk_idx * NR;
+            for (lane, &av) in acc.as_array().iter().enumerate() {
+                c_row[j + lane] = round(av);
+            }
+        }
+        let tail_start = full_cols * NR;
+        for (j, &av) in acc_tail.iter().enumerate() {
+            c_row[tail_start + j] = round(av);
         }
     }
 }
