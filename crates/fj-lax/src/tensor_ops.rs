@@ -6360,6 +6360,121 @@ fn eval_conv_1d_grouped(
         )?));
     }
 
+    // Native f32 accumulation for grouped/depthwise f32/bf16/f16 conv1d. This is
+    // the grouped sibling of the ungrouped native path: XLA accumulates these
+    // dtypes in f32, while the generic real path below widens to f64 and rounds
+    // back, making the result too precise. The loop nests mirror the f64 fast
+    // paths exactly, preserving output order and per-output ascending (k, ci)
+    // accumulation. OOB taps still add 0.0*rhs in f32, preserving zero-padding
+    // behavior for infinities and signed zeros.
+    if matches!(out_dtype, DType::F32 | DType::BF16 | DType::F16)
+        && lhs.dtype == out_dtype
+        && rhs.dtype == out_dtype
+        && let (Some(lhs_cow), Some(rhs_cow)) = (conv_decode_to_f32(lhs), conv_decode_to_f32(rhs))
+    {
+        let lhs_src: &[f32] = &lhs_cow;
+        let rhs_src: &[f32] = &rhs_cow;
+
+        if rhs_c_in == 1 && cout_per_group == 1 {
+            let mut out = vec![0.0_f32; total];
+            let mut oi = 0usize;
+            for n in 0..batch {
+                let n_off = n * width_c_in;
+                for w in 0..out_w {
+                    let acc = &mut out[oi..oi + c_out];
+                    for k in 0..kernel_w {
+                        let in_pos = (w * stride + k * dil) as isize - pad_left as isize;
+                        let rbase = k * rhs_c_in_c_out;
+                        let rhs_row = &rhs_src[rbase..rbase + c_out];
+                        if in_pos < 0 || (in_pos as usize) >= width {
+                            #[allow(
+                                clippy::erasing_op,
+                                reason = "preserve scalar f32 conv OOB 0.0*rhs behavior"
+                            )]
+                            for (a, &r) in acc.iter_mut().zip(rhs_row) {
+                                *a += 0.0_f32 * r;
+                            }
+                        } else {
+                            let base = n_off + (in_pos as usize) * c_in;
+                            let lhs_row = &lhs_src[base..base + c_out];
+                            for ((a, &l), &r) in acc.iter_mut().zip(lhs_row).zip(rhs_row) {
+                                *a += l * r;
+                            }
+                        }
+                    }
+                    oi += c_out;
+                }
+            }
+            return conv_f32_output_to_value(out_dtype, out_dims, out);
+        }
+
+        if cout_per_group > 1 {
+            let mut out = vec![0.0_f32; total];
+            let mut spatial_base = 0usize;
+            for n in 0..batch {
+                let n_off = n * width_c_in;
+                for w in 0..out_w {
+                    let acc = &mut out[spatial_base..spatial_base + c_out];
+                    for k in 0..kernel_w {
+                        let in_pos = (w * stride + k * dil) as isize - pad_left as isize;
+                        let oob = in_pos < 0 || (in_pos as usize) >= width;
+                        let lhs_base = if oob {
+                            0
+                        } else {
+                            n_off + (in_pos as usize) * c_in
+                        };
+                        let rhs_k = k * rhs_c_in_c_out;
+                        for ci in 0..rhs_c_in {
+                            let rhs_ci = rhs_k + ci * c_out;
+                            for g in 0..group_count {
+                                let lhs_val = if oob {
+                                    0.0
+                                } else {
+                                    lhs_src[lhs_base + g * rhs_c_in + ci]
+                                };
+                                let co_base = g * cout_per_group;
+                                let rhs_row =
+                                    &rhs_src[rhs_ci + co_base..rhs_ci + co_base + cout_per_group];
+                                let acc_g = &mut acc[co_base..co_base + cout_per_group];
+                                for (a, &r) in acc_g.iter_mut().zip(rhs_row) {
+                                    *a += lhs_val * r;
+                                }
+                            }
+                        }
+                    }
+                    spatial_base += c_out;
+                }
+            }
+            return conv_f32_output_to_value(out_dtype, out_dims, out);
+        }
+
+        let mut out = Vec::with_capacity(total);
+        for n in 0..batch {
+            let n_off = n * width_c_in;
+            for w in 0..out_w {
+                for co in 0..c_out {
+                    let in_ch_base = (co / cout_per_group) * rhs_c_in;
+                    let mut acc = 0.0_f32;
+                    for k in 0..kernel_w {
+                        let in_pos = (w * stride + k * dil) as isize - pad_left as isize;
+                        let oob = in_pos < 0 || (in_pos as usize) >= width;
+                        for ci in 0..rhs_c_in {
+                            let rhs_idx = k * rhs_c_in_c_out + ci * c_out + co;
+                            let lhs_val = if oob {
+                                0.0
+                            } else {
+                                lhs_src[n_off + (in_pos as usize) * c_in + in_ch_base + ci]
+                            };
+                            acc += lhs_val * rhs_src[rhs_idx];
+                        }
+                    }
+                    out.push(acc);
+                }
+            }
+        }
+        return conv_f32_output_to_value(out_dtype, out_dims, out);
+    }
+
     let (Some(lhs_cow), Some(rhs_cow)) = (
         conv_real_elements_as_f64(lhs),
         conv_real_elements_as_f64(rhs),
@@ -6628,15 +6743,19 @@ fn eval_conv_1d(
         && rhs.dtype == out_dtype
         && let (Some(lhs_f32), Some(rhs_f32)) = (conv_decode_to_f32(lhs), conv_decode_to_f32(rhs))
     {
-        let kdim = kernel_w.checked_mul(c_in).ok_or_else(|| EvalError::Unsupported {
-            primitive,
-            detail: "conv1d im2col kdim overflow".into(),
-        })?;
-        let num_rows = if c_out == 0 { 0 } else { total / c_out };
-        let col_len = num_rows.checked_mul(kdim).ok_or_else(|| EvalError::Unsupported {
-            primitive,
-            detail: "conv1d im2col size overflow".into(),
-        })?;
+        let kdim = kernel_w
+            .checked_mul(c_in)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "conv1d im2col kdim overflow".into(),
+            })?;
+        let num_rows = total.checked_div(c_out).unwrap_or(0);
+        let col_len = num_rows
+            .checked_mul(kdim)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "conv1d im2col size overflow".into(),
+            })?;
         let mut col = vec![0.0_f32; col_len];
         for n in 0..batch {
             let n_offset = n * width_c_in;
@@ -6936,6 +7055,162 @@ fn eval_conv_2d_grouped(
     let rhs_c_in_c_out = rhs_c_in * c_out;
     let kw_rhs_c_in_c_out = kernel_w * rhs_c_in_c_out;
     let out_dims = vec![batch as u32, out_h as u32, out_w as u32, c_out as u32];
+
+    // Native f32 accumulation for grouped/depthwise f32/bf16/f16 conv2d. XLA
+    // accumulates these dtypes in f32; the generic real path below widens to f64
+    // and then rounds back, making grouped/depthwise conv more precise than the reference.
+    // The loop nests mirror the f64 fast paths exactly, preserving output order and
+    // per-output ascending (kh, kw, ci) accumulation. OOB taps still add 0.0*rhs in
+    // f32, preserving the scalar f32 reference behavior for infinities.
+    if matches!(out_dtype, DType::F32 | DType::BF16 | DType::F16)
+        && lhs.dtype == out_dtype
+        && rhs.dtype == out_dtype
+        && let (Some(lhs_cow), Some(rhs_cow)) = (conv_decode_to_f32(lhs), conv_decode_to_f32(rhs))
+    {
+        let lhs_src: &[f32] = &lhs_cow;
+        let rhs_src: &[f32] = &rhs_cow;
+
+        if rhs_c_in == 1 && cout_per_group == 1 {
+            let mut out = vec![0.0_f32; total];
+            let mut oi = 0usize;
+            for n in 0..batch {
+                let n_off = n * height_width_c_in;
+                for oh in 0..out_h {
+                    for ow in 0..out_w {
+                        let acc = &mut out[oi..oi + c_out];
+                        for kh in 0..kernel_h {
+                            let in_h = (oh * stride_h + kh * dil_h) as isize - pad_top as isize;
+                            let h_oob = in_h < 0 || (in_h as usize) >= height;
+                            let h_off = if h_oob {
+                                0
+                            } else {
+                                (in_h as usize) * width_c_in
+                            };
+                            let rhs_kh = kh * kw_rhs_c_in_c_out;
+                            for kw in 0..kernel_w {
+                                let in_w =
+                                    (ow * stride_w + kw * dil_w) as isize - pad_left as isize;
+                                let w_oob = in_w < 0 || (in_w as usize) >= width;
+                                let rbase = rhs_kh + kw * rhs_c_in_c_out;
+                                let rhs_row = &rhs_src[rbase..rbase + c_out];
+                                if h_oob || w_oob {
+                                    #[allow(
+                                        clippy::erasing_op,
+                                        reason = "preserve scalar f32 conv OOB 0.0*rhs behavior"
+                                    )]
+                                    for (a, &r) in acc.iter_mut().zip(rhs_row) {
+                                        *a += 0.0_f32 * r;
+                                    }
+                                } else {
+                                    let base = n_off + h_off + (in_w as usize) * c_in;
+                                    let lhs_row = &lhs_src[base..base + c_out];
+                                    for ((a, &l), &r) in acc.iter_mut().zip(lhs_row).zip(rhs_row) {
+                                        *a += l * r;
+                                    }
+                                }
+                            }
+                        }
+                        oi += c_out;
+                    }
+                }
+            }
+            return conv_f32_output_to_value(out_dtype, out_dims, out);
+        }
+
+        if cout_per_group > 1 {
+            let mut out = vec![0.0_f32; total];
+            let mut spatial_base = 0usize;
+            for n in 0..batch {
+                let n_off = n * height_width_c_in;
+                for oh in 0..out_h {
+                    for ow in 0..out_w {
+                        let acc = &mut out[spatial_base..spatial_base + c_out];
+                        for kh in 0..kernel_h {
+                            let in_h = (oh * stride_h + kh * dil_h) as isize - pad_top as isize;
+                            let h_oob = in_h < 0 || (in_h as usize) >= height;
+                            let h_off = if h_oob {
+                                0
+                            } else {
+                                (in_h as usize) * width_c_in
+                            };
+                            let rhs_kh = kh * kw_rhs_c_in_c_out;
+                            for kw in 0..kernel_w {
+                                let in_w =
+                                    (ow * stride_w + kw * dil_w) as isize - pad_left as isize;
+                                let w_oob = in_w < 0 || (in_w as usize) >= width;
+                                let oob = h_oob || w_oob;
+                                let in_w_off = if w_oob { 0 } else { (in_w as usize) * c_in };
+                                let lhs_base = n_off + h_off + in_w_off;
+                                let rhs_kw = rhs_kh + kw * rhs_c_in_c_out;
+                                for ci in 0..rhs_c_in {
+                                    let rhs_ci = rhs_kw + ci * c_out;
+                                    for g in 0..group_count {
+                                        let lhs_val = if oob {
+                                            0.0
+                                        } else {
+                                            lhs_src[lhs_base + g * rhs_c_in + ci]
+                                        };
+                                        let co_base = g * cout_per_group;
+                                        let rhs_row = &rhs_src
+                                            [rhs_ci + co_base..rhs_ci + co_base + cout_per_group];
+                                        let acc_g = &mut acc[co_base..co_base + cout_per_group];
+                                        for (a, &r) in acc_g.iter_mut().zip(rhs_row) {
+                                            *a += lhs_val * r;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        spatial_base += c_out;
+                    }
+                }
+            }
+            return conv_f32_output_to_value(out_dtype, out_dims, out);
+        }
+
+        let mut out = Vec::with_capacity(total);
+        for n in 0..batch {
+            let n_off = n * height_width_c_in;
+            for oh in 0..out_h {
+                for ow in 0..out_w {
+                    for co in 0..c_out {
+                        let in_ch_base = (co / cout_per_group) * rhs_c_in;
+                        let mut acc = 0.0_f32;
+                        for kh in 0..kernel_h {
+                            let in_h = (oh * stride_h + kh * dil_h) as isize - pad_top as isize;
+                            let h_oob = in_h < 0 || (in_h as usize) >= height;
+                            let h_off = if h_oob {
+                                0
+                            } else {
+                                (in_h as usize) * width_c_in
+                            };
+                            for kw in 0..kernel_w {
+                                let in_w =
+                                    (ow * stride_w + kw * dil_w) as isize - pad_left as isize;
+                                let w_oob = in_w < 0 || (in_w as usize) >= width;
+                                let oob = h_oob || w_oob;
+                                let in_w_off = if w_oob { 0 } else { (in_w as usize) * c_in };
+                                for ci in 0..rhs_c_in {
+                                    let rhs_idx = kh * kw_rhs_c_in_c_out
+                                        + kw * rhs_c_in_c_out
+                                        + ci * c_out
+                                        + co;
+                                    let lhs_val = if oob {
+                                        0.0
+                                    } else {
+                                        lhs_src[n_off + h_off + in_w_off + in_ch_base + ci]
+                                    };
+                                    acc += lhs_val * rhs_src[rhs_idx];
+                                }
+                            }
+                        }
+                        out.push(acc);
+                    }
+                }
+            }
+        }
+        return conv_f32_output_to_value(out_dtype, out_dims, out);
+    }
 
     if matches!(out_dtype, DType::Complex64 | DType::Complex128) {
         let mut elements = Vec::with_capacity(total);
@@ -8767,7 +9042,11 @@ mod tests {
                 panic!("expected tensor")
             };
             assert_eq!(t.dtype, half_dt);
-            let got = t.elements.as_half_float_slice().expect("dense half output").to_vec();
+            let got = t
+                .elements
+                .as_half_float_slice()
+                .expect("dense half output")
+                .to_vec();
             let mut want = Vec::new();
             for oh in 0..out_h {
                 for ow in 0..out_w {
@@ -8786,7 +9065,10 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(got, want, "{half_dt:?} conv2d must match the f32-accum reference");
+            assert_eq!(
+                got, want,
+                "{half_dt:?} conv2d must match the f32-accum reference"
+            );
         }
     }
 
@@ -8877,6 +9159,217 @@ mod tests {
                 assert_eq!(gb, wb, "{dt:?} conv1d must match the f32-accum reference");
             }
         }
+    }
+
+    #[test]
+    fn grouped_conv_native_f32_accum_matches_reference_and_golden_sha256()
+    -> Result<(), Box<dyn std::error::Error>> {
+        fn decode(dtype: DType, literal: Literal) -> f32 {
+            match dtype {
+                DType::F32 => match literal {
+                    Literal::F32Bits(bits) => f32::from_bits(bits),
+                    other => panic!("expected f32 literal, got {other:?}"),
+                },
+                DType::BF16 => literal.as_bf16_f32().expect("bf16 literal"),
+                DType::F16 => literal.as_f16_f32().expect("f16 literal"),
+                other => panic!("unexpected dtype {other:?}"),
+            }
+        }
+
+        fn rounded_bits(dtype: DType, value: f32) -> u64 {
+            match conv_float_literal_from_f64(dtype, f64::from(value)) {
+                Literal::F32Bits(bits) => u64::from(bits),
+                Literal::BF16Bits(bits) | Literal::F16Bits(bits) => u64::from(bits),
+                other => panic!("unexpected rounded literal {other:?}"),
+            }
+        }
+
+        fn tensor_bits(dtype: DType, value: &Value) -> Vec<u64> {
+            let tensor = value.as_tensor().expect("tensor output");
+            assert_eq!(tensor.dtype, dtype);
+            match dtype {
+                DType::F32 => tensor
+                    .elements
+                    .as_f32_slice()
+                    .map(|values| values.iter().map(|v| u64::from(v.to_bits())).collect())
+                    .unwrap_or_else(|| {
+                        tensor
+                            .elements
+                            .iter()
+                            .map(|literal| match literal {
+                                Literal::F32Bits(bits) => u64::from(*bits),
+                                other => panic!("expected f32 literal, got {other:?}"),
+                            })
+                            .collect()
+                    }),
+                DType::BF16 | DType::F16 => tensor
+                    .elements
+                    .as_half_float_slice()
+                    .map(|values| values.iter().map(|&bits| u64::from(bits)).collect())
+                    .unwrap_or_else(|| {
+                        tensor
+                            .elements
+                            .iter()
+                            .map(|literal| match literal {
+                                Literal::BF16Bits(bits) | Literal::F16Bits(bits) => {
+                                    u64::from(*bits)
+                                }
+                                other => panic!("expected half literal, got {other:?}"),
+                            })
+                            .collect()
+                    }),
+                other => panic!("unexpected dtype {other:?}"),
+            }
+        }
+
+        fn values(dtype: DType, len: usize, scale: f64, bias: f64) -> Vec<Literal> {
+            (0..len)
+                .map(|i| conv_float_literal_from_f64(dtype, (i as f64 * scale).sin() + bias))
+                .collect()
+        }
+
+        let mut fixtures: Vec<(String, Vec<u32>, Vec<u64>)> = Vec::new();
+
+        for dtype in [DType::F32, DType::BF16, DType::F16] {
+            for &(label, width, c_in, c_out, kw, groups) in &[
+                ("depthwise1d", 9usize, 4usize, 4usize, 3usize, 4usize),
+                ("grouped1d", 10, 6, 9, 3, 3),
+            ] {
+                let rhs_c_in = c_in / groups;
+                let cpg = c_out / groups;
+                let lhs = values(dtype, width * c_in, 0.017, -0.25);
+                let rhs = values(dtype, kw * rhs_c_in * c_out, 0.023, 0.125);
+                let mk = |dims: Vec<u32>, data: &[Literal]| {
+                    Value::Tensor(TensorValue::new(dtype, Shape { dims }, data.to_vec()).unwrap())
+                };
+                let group_count = groups.to_string();
+                let output = eval_conv(
+                    Primitive::Conv,
+                    &[
+                        mk(vec![1, width as u32, c_in as u32], &lhs),
+                        mk(vec![kw as u32, rhs_c_in as u32, c_out as u32], &rhs),
+                    ],
+                    &params(&[
+                        ("padding", "same"),
+                        ("strides", "1"),
+                        ("feature_group_count", &group_count),
+                    ]),
+                )
+                .unwrap();
+                let shape = output.as_tensor().unwrap().shape.dims.clone();
+                let got = tensor_bits(dtype, &output);
+                let out_w = width;
+                let pad_left = (kw - 1) / 2;
+                let mut want = Vec::new();
+                for ow in 0..out_w {
+                    for co in 0..c_out {
+                        let in_ch_base = (co / cpg) * rhs_c_in;
+                        let mut acc = 0.0f32;
+                        for k in 0..kw {
+                            let in_pos = ow as isize + k as isize - pad_left as isize;
+                            let oob = in_pos < 0 || (in_pos as usize) >= width;
+                            for ci in 0..rhs_c_in {
+                                let lhs_val = if oob {
+                                    0.0
+                                } else {
+                                    decode(dtype, lhs[(in_pos as usize) * c_in + in_ch_base + ci])
+                                };
+                                let rhs_val = decode(dtype, rhs[(k * rhs_c_in + ci) * c_out + co]);
+                                acc += lhs_val * rhs_val;
+                            }
+                        }
+                        want.push(rounded_bits(dtype, acc));
+                    }
+                }
+                assert_eq!(got, want, "{dtype:?} {label} native grouped conv1d");
+                fixtures.push((format!("{dtype:?}_{label}"), shape, got));
+            }
+
+            for &(label, h, w, c_in, c_out, kh, kw, groups) in &[
+                (
+                    "depthwise2d",
+                    6usize,
+                    5usize,
+                    4usize,
+                    4usize,
+                    3usize,
+                    3usize,
+                    4usize,
+                ),
+                ("grouped2d", 6, 5, 6, 9, 2, 3, 3),
+            ] {
+                let rhs_c_in = c_in / groups;
+                let cpg = c_out / groups;
+                let lhs = values(dtype, h * w * c_in, 0.011, -0.375);
+                let rhs = values(dtype, kh * kw * rhs_c_in * c_out, 0.019, 0.25);
+                let mk = |dims: Vec<u32>, data: &[Literal]| {
+                    Value::Tensor(TensorValue::new(dtype, Shape { dims }, data.to_vec()).unwrap())
+                };
+                let group_count = groups.to_string();
+                let output = eval_conv(
+                    Primitive::Conv,
+                    &[
+                        mk(vec![1, h as u32, w as u32, c_in as u32], &lhs),
+                        mk(
+                            vec![kh as u32, kw as u32, rhs_c_in as u32, c_out as u32],
+                            &rhs,
+                        ),
+                    ],
+                    &params(&[
+                        ("padding", "same"),
+                        ("strides", "1"),
+                        ("feature_group_count", &group_count),
+                    ]),
+                )
+                .unwrap();
+                let shape = output.as_tensor().unwrap().shape.dims.clone();
+                let got = tensor_bits(dtype, &output);
+                let pad_top = (kh - 1) / 2;
+                let pad_left = (kw - 1) / 2;
+                let mut want = Vec::new();
+                for oh in 0..h {
+                    for ow in 0..w {
+                        for co in 0..c_out {
+                            let in_ch_base = (co / cpg) * rhs_c_in;
+                            let mut acc = 0.0f32;
+                            for a in 0..kh {
+                                let ih = oh as isize + a as isize - pad_top as isize;
+                                let h_oob = ih < 0 || (ih as usize) >= h;
+                                for b in 0..kw {
+                                    let iw = ow as isize + b as isize - pad_left as isize;
+                                    let w_oob = iw < 0 || (iw as usize) >= w;
+                                    let oob = h_oob || w_oob;
+                                    for ci in 0..rhs_c_in {
+                                        let lhs_val = if oob {
+                                            0.0
+                                        } else {
+                                            decode(
+                                                dtype,
+                                                lhs[((ih as usize * w + iw as usize) * c_in)
+                                                    + in_ch_base
+                                                    + ci],
+                                            )
+                                        };
+                                        let rhs_idx = ((a * kw + b) * rhs_c_in + ci) * c_out + co;
+                                        acc += lhs_val * decode(dtype, rhs[rhs_idx]);
+                                    }
+                                }
+                            }
+                            want.push(rounded_bits(dtype, acc));
+                        }
+                    }
+                }
+                assert_eq!(got, want, "{dtype:?} {label} native grouped conv2d");
+                fixtures.push((format!("{dtype:?}_{label}"), shape, got));
+            }
+        }
+
+        let digest = fj_test_utils::fixture_id_from_json(&fixtures)?;
+        assert_eq!(
+            digest, "dfe98ccb7192d4ce86072dccafae4f8717d7c5abec0ccd16367070c05811f8b3",
+            "native grouped f32 conv digest changed"
+        );
+        Ok(())
     }
 
     #[test]
@@ -9388,6 +9881,94 @@ mod tests {
     }
 
     #[test]
+    fn conv2d_grouped_native_f32_accum_matches_reference() {
+        // The grouped/depthwise F32 path must accumulate in native f32 (XLA parity),
+        // not via the older f64-promote path. Compare dense-F32 outputs bit-for-bit
+        // against an independent scalar f32 reference in the same output/channel order.
+        let mk32 = |dims: Vec<u32>, data: &[f32]| {
+            Value::Tensor(TensorValue::new_f32_values(Shape { dims }, data.to_vec()).unwrap())
+        };
+        let got_bits = |v: &Value| -> Vec<u32> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .as_f32_slice()
+                .expect("grouped f32 conv should return dense f32")
+                .iter()
+                .map(|v| v.to_bits())
+                .collect()
+        };
+
+        // (h, w, c_in, c_out, kh, kw, G)
+        for &(h, w, cin, cout, kh, kw, g) in &[
+            (6usize, 5usize, 4usize, 4usize, 3usize, 3usize, 4usize), // depthwise
+            (7, 7, 6, 9, 3, 3, 3),                                    // grouped AXPY
+            (7, 5, 6, 3, 3, 3, 3),                                    // grouped direct
+        ] {
+            let rhs_cin = cin / g;
+            let cpg = cout / g;
+            let xf: Vec<f32> = (0..h * w * cin)
+                .map(|i| (i as f32 * 0.031).sin() * 1.25 - 0.4)
+                .collect();
+            let mut kf: Vec<f32> = (0..kh * kw * rhs_cin * cout)
+                .map(|i| (i as f32 * 0.019).cos() * 0.75 + 0.2)
+                .collect();
+            kf[0] = f32::INFINITY;
+            let got = eval_conv(
+                Primitive::Conv,
+                &[
+                    mk32(vec![1, h as u32, w as u32, cin as u32], &xf),
+                    mk32(vec![kh as u32, kw as u32, rhs_cin as u32, cout as u32], &kf),
+                ],
+                &params(&[
+                    ("padding", "same"),
+                    ("strides", "1"),
+                    ("feature_group_count", &g.to_string()),
+                ]),
+            )
+            .unwrap();
+            let gt = got.as_tensor().unwrap();
+            let (out_h, out_w) = (gt.shape.dims[1] as usize, gt.shape.dims[2] as usize);
+            let (pad_top, pad_left) = (kh / 2, kw / 2);
+            let mut want = Vec::with_capacity(out_h * out_w * cout);
+            for oh in 0..out_h {
+                for ow in 0..out_w {
+                    for co in 0..cout {
+                        let in_ch_base = (co / cpg) * rhs_cin;
+                        let mut acc = 0.0_f32;
+                        for a in 0..kh {
+                            let in_h = (oh + a) as isize - pad_top as isize;
+                            let h_oob = in_h < 0 || (in_h as usize) >= h;
+                            for b in 0..kw {
+                                let in_w = (ow + b) as isize - pad_left as isize;
+                                let w_oob = in_w < 0 || (in_w as usize) >= w;
+                                let oob = h_oob || w_oob;
+                                for ci in 0..rhs_cin {
+                                    let lhs_val = if oob {
+                                        0.0
+                                    } else {
+                                        xf[((in_h as usize * w + in_w as usize) * cin)
+                                            + in_ch_base
+                                            + ci]
+                                    };
+                                    let rhs_val = kf[((a * kw + b) * rhs_cin + ci) * cout + co];
+                                    acc += lhs_val * rhs_val;
+                                }
+                            }
+                        }
+                        want.push(acc.to_bits());
+                    }
+                }
+            }
+            assert_eq!(
+                got_bits(&got),
+                want,
+                "grouped/depthwise F32 conv2d must match scalar f32 accumulation (G={g})"
+            );
+        }
+    }
+
+    #[test]
     fn conv1d_grouped_axpy_matches_general() {
         // General grouped conv1d (cout_per_group > 1) AXPY fast path vs an independent
         // per-group non-grouped 1D conv oracle. Covers SAME padding (border OOB) + stride 2.
@@ -9765,6 +10346,112 @@ mod tests {
         };
         run(8, 32, 16, 32, 3);
         run(4, 28, 32, 64, 3);
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_f32_grouped_conv_accum() {
+        use std::time::Instant;
+
+        fn best_ms(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..9 {
+                let start = Instant::now();
+                f();
+                best = best.min(start.elapsed().as_secs_f64());
+            }
+            best * 1e3
+        }
+
+        let run_1d = |label: &str, width: usize, c_in: usize, c_out: usize, kw: usize, g: usize| {
+            let rhs_c_in = c_in / g;
+            let x: Vec<f32> = (0..width * c_in)
+                .map(|i| (i as f32 * 0.0011).sin())
+                .collect();
+            let ker: Vec<f32> = (0..kw * rhs_c_in * c_out)
+                .map(|i| (i as f32 * 0.0023).cos())
+                .collect();
+            let lhs = Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: vec![1, width as u32, c_in as u32],
+                    },
+                    x,
+                )
+                .unwrap(),
+            );
+            let rhs = Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: vec![kw as u32, rhs_c_in as u32, c_out as u32],
+                    },
+                    ker,
+                )
+                .unwrap(),
+            );
+            let p = params(&[
+                ("padding", "valid"),
+                ("strides", "1"),
+                ("feature_group_count", &g.to_string()),
+            ]);
+            let ms = best_ms(|| {
+                let _ = eval_conv(Primitive::Conv, &[lhs.clone(), rhs.clone()], &p).unwrap();
+            });
+            println!(
+                "BENCH f32 {label} conv1d [1,{width},{c_in}]*[{kw},{rhs_c_in},{c_out}] g={g}: {ms:.4}ms"
+            );
+        };
+
+        let run_2d = |label: &str,
+                      h: usize,
+                      w: usize,
+                      c_in: usize,
+                      c_out: usize,
+                      k: usize,
+                      g: usize| {
+            let rhs_c_in = c_in / g;
+            let x: Vec<f32> = (0..h * w * c_in)
+                .map(|i| (i as f32 * 0.0011).sin())
+                .collect();
+            let ker: Vec<f32> = (0..k * k * rhs_c_in * c_out)
+                .map(|i| (i as f32 * 0.0023).cos())
+                .collect();
+            let lhs = Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: vec![1, h as u32, w as u32, c_in as u32],
+                    },
+                    x,
+                )
+                .unwrap(),
+            );
+            let rhs = Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: vec![k as u32, k as u32, rhs_c_in as u32, c_out as u32],
+                    },
+                    ker,
+                )
+                .unwrap(),
+            );
+            let p = params(&[
+                ("padding", "valid"),
+                ("strides", "1"),
+                ("feature_group_count", &g.to_string()),
+            ]);
+            let ms = best_ms(|| {
+                let _ = eval_conv(Primitive::Conv, &[lhs.clone(), rhs.clone()], &p).unwrap();
+            });
+            println!(
+                "BENCH f32 {label} conv2d [1,{h},{w},{c_in}]*[{k},{k},{rhs_c_in},{c_out}] g={g}: {ms:.4}ms"
+            );
+        };
+
+        run_1d("depthwise", 1024, 256, 256, 5, 256);
+        run_1d("grouped", 512, 256, 256, 3, 32);
+        run_2d("depthwise", 56, 56, 128, 128, 3, 128);
+        run_2d("grouped", 28, 28, 256, 256, 3, 32);
     }
 
     #[test]
@@ -11076,8 +11763,14 @@ mod tests {
                 })
                 .collect();
             let x = Value::Tensor(
-                TensorValue::new(dtype, Shape { dims: vec![m as u32, n as u32] }, lits.clone())
-                    .unwrap(),
+                TensorValue::new(
+                    dtype,
+                    Shape {
+                        dims: vec![m as u32, n as u32],
+                    },
+                    lits.clone(),
+                )
+                .unwrap(),
             );
             let p = params(&[("permutation", "1,0")]);
             let Value::Tensor(out) = eval_transpose(std::slice::from_ref(&x), &p).unwrap() else {
