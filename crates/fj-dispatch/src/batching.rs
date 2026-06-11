@@ -3150,6 +3150,47 @@ fn batch_nullary(
 
 // ── Linear Algebra Batching ────────────────────────────────────────
 
+/// Work-scaled thread count for a batched-linalg fan-out. `total_work` is a
+/// flop-ish estimate such as `batch*n^3` for a factorization. Each spawned OS
+/// thread costs tens of microseconds, so every thread gets enough work to keep
+/// the payload much larger than spawn overhead. This returns 1 when the batch is
+/// tiny or the work is too small to amortize even one extra thread.
+const BATCH_PARALLEL_WORK_PER_THREAD: usize = 1 << 21;
+
+fn batch_parallel_threads(total_work: usize, batch_size: usize) -> usize {
+    if batch_size < 2 {
+        return 1;
+    }
+    let by_work = total_work / BATCH_PARALLEL_WORK_PER_THREAD;
+    if by_work <= 1 {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism()
+        .map(|t| t.get())
+        .unwrap_or(1);
+    by_work.min(cores).min(batch_size)
+}
+
+/// In-place lower Cholesky factor of the row-major `n x n` matrix `a` into `l`.
+/// This is identical to the inline serial loop: `jnp.linalg.cholesky` returns
+/// NaN, not an error, for non-PD input. The `sqrt` of a non-positive diagonal
+/// yields NaN/0 that propagates, matching the per-element fj-lax Cholesky.
+fn cholesky_decompose_into(a: &[f64], l: &mut [f64], n: usize) {
+    for i in 0..n {
+        for j in 0..=i {
+            let mut sum = 0.0_f64;
+            for k in 0..j {
+                sum += l[i * n + k] * l[j * n + k];
+            }
+            if i == j {
+                l[i * n + j] = (a[i * n + i] - sum).sqrt();
+            } else {
+                l[i * n + j] = (a[i * n + j] - sum) / l[j * n + j];
+            }
+        }
+    }
+}
+
 fn batch_cholesky(
     inputs: &[BatchTracer],
     params: &BTreeMap<String, String>,
@@ -3188,48 +3229,65 @@ fn batch_cholesky(
     }
 
     let matrix_len = rows * cols;
-    let mut elements = Vec::with_capacity(tensor.elements.len());
-    for batch in 0..batch_size {
-        let base = batch * matrix_len;
-        let mut l = vec![0.0_f64; matrix_len];
+    let n = rows;
 
-        for i in 0..rows {
-            for j in 0..=i {
-                let mut sum = 0.0_f64;
-                for k in 0..j {
-                    sum += l[i * cols + k] * l[j * cols + k];
-                }
-
-                if i == j {
-                    let diag = tensor.elements[base + i * cols + i]
-                        .as_f64()
-                        .ok_or_else(|| {
-                            BatchError::EvalError(
-                                "type mismatch for cholesky: expected numeric elements".to_owned(),
-                            )
-                        })?
-                        - sum;
-                    // jnp.linalg.cholesky returns NaN (not an error) for non-PD
-                    // input; sqrt of a non-positive diagonal yields NaN/0 that
-                    // propagates, matching the per-element fj-lax cholesky and
-                    // JAX (NumPy raises LinAlgError, JAX does not).
-                    l[i * cols + j] = diag.sqrt();
-                } else {
-                    let a_ij = tensor.elements[base + i * cols + j]
-                        .as_f64()
-                        .ok_or_else(|| {
-                            BatchError::EvalError(
-                                "type mismatch for cholesky: expected numeric elements".to_owned(),
-                            )
-                        })?;
-                    l[i * cols + j] = (a_ij - sum) / l[j * cols + j];
-                }
-            }
-        }
-
-        elements.extend(l.into_iter().map(Literal::from_f64));
+    // Extract every batch matrix to f64 once. This also surfaces non-numeric
+    // elements as an error before the parallel section).
+    let mut all = Vec::with_capacity(batch_size * matrix_len);
+    for lit in &tensor.elements[..batch_size * matrix_len] {
+        all.push(lit.as_f64().ok_or_else(|| {
+            BatchError::EvalError(
+                "type mismatch for cholesky: expected numeric elements".to_owned(),
+            )
+        })?);
     }
 
+    // Each batch matrix is an independent, compute-bound O(n^3) factorization.
+    // Fan the batch out across a work-scaled thread count so spawn overhead stays
+    // below the useful per-thread payload. Bit-identity is preserved because each
+    // matrix factorization is self-contained and writes to a disjoint output slice.
+    let mut l_all = vec![0.0_f64; batch_size * matrix_len];
+    let total_work = batch_size
+        .saturating_mul(n)
+        .saturating_mul(n)
+        .saturating_mul(n);
+    let threads = batch_parallel_threads(total_work, batch_size);
+
+    if threads <= 1 {
+        for b in 0..batch_size {
+            cholesky_decompose_into(
+                &all[b * matrix_len..(b + 1) * matrix_len],
+                &mut l_all[b * matrix_len..(b + 1) * matrix_len],
+                n,
+            );
+        }
+    } else {
+        let per = batch_size.div_ceil(threads);
+        let all_ref: &[f64] = &all;
+        std::thread::scope(|scope| {
+            let mut l_rest: &mut [f64] = l_all.as_mut_slice();
+            let mut start = 0usize;
+            while start < batch_size {
+                let cnt = per.min(batch_size - start);
+                let (l_chunk, l_tail) = l_rest.split_at_mut(cnt * matrix_len);
+                l_rest = l_tail;
+                let s0 = start;
+                scope.spawn(move || {
+                    for j in 0..cnt {
+                        let b = s0 + j;
+                        cholesky_decompose_into(
+                            &all_ref[b * matrix_len..(b + 1) * matrix_len],
+                            &mut l_chunk[j * matrix_len..(j + 1) * matrix_len],
+                            n,
+                        );
+                    }
+                });
+                start += cnt;
+            }
+        });
+    }
+
+    let elements: Vec<Literal> = l_all.into_iter().map(Literal::from_f64).collect();
     TensorValue::new(tensor.dtype, tensor.shape.clone(), elements)
         .map(Value::Tensor)
         .map(|result| BatchTracer::batched(result, 0))
@@ -12740,6 +12798,156 @@ mod tests {
 
         let err = apply_batch_rule(Primitive::Cholesky, &[input], &BTreeMap::new()).unwrap_err();
         assert!(err.to_string().contains("expected rank-2 tensor"));
+    }
+
+    /// Deterministic symmetric positive-definite `n x n` matrix keyed by `seed`.
+    /// It forms `M^T M + n*I`.
+    fn spd_batch_matrix(n: usize, seed: usize) -> Vec<f64> {
+        let mut mm = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                mm[i * n + j] = (((i * 23 + j * 31 + seed * 17 + 3) % 19) as f64 - 9.0) * 0.1;
+            }
+        }
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut s = 0.0;
+                for k in 0..n {
+                    s += mm[k * n + i] * mm[k * n + j];
+                }
+                a[i * n + j] = s + if i == j { n as f64 } else { 0.0 };
+            }
+        }
+        a
+    }
+
+    #[test]
+    fn batch_cholesky_parallel_path_is_bit_identical_to_serial() {
+        // A batch whose work-scaled thread count is > 1 must produce byte-for-byte
+        // the same L as the serial per-slice factorization. Each matrix is
+        // independent, so execution order cannot change one slice's result.
+        let (batch, n) = (256usize, 48usize);
+        assert!(super::batch_parallel_threads(batch * n * n * n, batch) > 1);
+        let matrix_len = n * n;
+        let mut data = Vec::with_capacity(batch * matrix_len);
+        for b in 0..batch {
+            data.extend_from_slice(&spd_batch_matrix(n, b));
+        }
+
+        let input = BatchTracer::batched(
+            make_f64_tensor(&[batch as u32, n as u32, n as u32], &data),
+            0,
+        );
+        let result = apply_batch_rule(Primitive::Cholesky, &[input], &BTreeMap::new()).unwrap();
+        let l_act = extract_f64_vec(&result.value);
+
+        let mut l_ref = vec![0.0f64; batch * matrix_len];
+        for b in 0..batch {
+            super::cholesky_decompose_into(
+                &data[b * matrix_len..(b + 1) * matrix_len],
+                &mut l_ref[b * matrix_len..(b + 1) * matrix_len],
+                n,
+            );
+        }
+        let l_bits = l_act.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let ref_bits = l_ref.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(l_bits, ref_bits, "L not bit-identical to serial");
+
+        let digest =
+            fj_test_utils::fixture_id_from_json(&(vec![batch as u32, n as u32, n as u32], &l_bits))
+                .expect("cholesky digest should build");
+        assert_eq!(
+            digest, "ac98b8f45349b186e327a13d55a61ca2a044321ff6ea15d5af8d1bcd02caf0d6",
+            "batched Cholesky golden output digest changed"
+        );
+
+        // Sanity: a few slices reconstruct L * L^T = A.
+        for b in [0usize, 1, batch / 2, batch - 1] {
+            let a = &data[b * matrix_len..(b + 1) * matrix_len];
+            for i in 0..n {
+                for j in 0..n {
+                    let mut val = 0.0;
+                    for k in 0..n {
+                        val +=
+                            l_act[b * matrix_len + i * n + k] * l_act[b * matrix_len + j * n + k];
+                    }
+                    assert!((val - a[i * n + j]).abs() < 1e-9, "recon b={b} [{i},{j}]");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_batch_cholesky_parallel_vs_serial() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..7 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        let run = |batch: usize, n: usize| {
+            let matrix_len = n * n;
+            let mut all = Vec::with_capacity(batch * matrix_len);
+            for b in 0..batch {
+                all.extend_from_slice(&spd_batch_matrix(n, b));
+            }
+            let all_ref: &[f64] = &all;
+            let serial = best_time(|| {
+                let mut l = vec![0.0f64; batch * matrix_len];
+                for b in 0..batch {
+                    super::cholesky_decompose_into(
+                        &all_ref[b * matrix_len..(b + 1) * matrix_len],
+                        &mut l[b * matrix_len..(b + 1) * matrix_len],
+                        n,
+                    );
+                }
+                std::hint::black_box(l);
+            });
+            let threads = super::batch_parallel_threads(batch * n * n * n, batch);
+            let parallel = best_time(|| {
+                let per = batch.div_ceil(threads.max(1));
+                let mut l = vec![0.0f64; batch * matrix_len];
+                std::thread::scope(|scope| {
+                    let mut lr: &mut [f64] = l.as_mut_slice();
+                    let mut start = 0usize;
+                    while start < batch {
+                        let cnt = per.min(batch - start);
+                        let (lc, lt) = lr.split_at_mut(cnt * matrix_len);
+                        lr = lt;
+                        let s0 = start;
+                        scope.spawn(move || {
+                            for j in 0..cnt {
+                                let b = s0 + j;
+                                super::cholesky_decompose_into(
+                                    &all_ref[b * matrix_len..(b + 1) * matrix_len],
+                                    &mut lc[j * matrix_len..(j + 1) * matrix_len],
+                                    n,
+                                );
+                            }
+                        });
+                        start += cnt;
+                    }
+                });
+                std::hint::black_box(l);
+            });
+            println!(
+                "BENCH batch cholesky batch={batch} n={n} (threads={threads}): serial {:.3}ms -> parallel {:.3}ms = {:.2}x",
+                serial * 1e3,
+                parallel * 1e3,
+                serial / parallel
+            );
+        };
+        run(64, 24);
+        run(128, 48);
+        run(256, 48);
+        run(512, 64);
     }
 
     #[test]
