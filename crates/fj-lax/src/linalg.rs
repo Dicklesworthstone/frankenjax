@@ -1940,6 +1940,112 @@ fn eval_svd_real(
     Ok(vec![u_val, s_val, vh_val])
 }
 
+/// Eigendecomposition of a real symmetric n×n matrix by tridiagonalization +
+/// implicit-shift symmetric tridiagonal QL (the LAPACK/EISPACK `tred2`+`tql2`
+/// approach). Returns `(eigenvalues, V)` with `A = V diag(eigenvalues) Vᵀ`,
+/// eigenvectors as columns (`V[row*n + col]`), unsorted (the caller sorts).
+///
+/// Reuses the tested [`hessenberg_reduction`]: for a SYMMETRIC matrix the
+/// upper-Hessenberg form is symmetric tridiagonal, and the accumulated `Q`
+/// satisfies `A = Q·T·Qᵀ`, so the eigenvectors of `T` map to those of `A` by
+/// left-multiplication by `Q`. The implicit-QL sweep is O(n²) per step and
+/// converges in O(n) steps total, versus cyclic Jacobi's ~8 sweeps of O(n³)
+/// rotations — `~5n³` vs `~32n³`. Accuracy is the LAPACK-grade `O(ε·‖A‖)`,
+/// matching JAX's `syevd`; eigh parity is reconstruction + sorted spectrum, both
+/// preserved (eigenvectors keep the decomposition's intrinsic sign freedom).
+fn tridiag_ql_eigendecomposition(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
+    if n == 0 {
+        return (vec![], vec![]);
+    }
+    // A = Q·T·Qᵀ with T symmetric tridiagonal (Householder reduction).
+    let (h, q) = hessenberg_reduction(a, n);
+    let mut d = vec![0.0_f64; n];
+    let mut e = vec![0.0_f64; n];
+    for i in 0..n {
+        d[i] = h[i * n + i];
+        e[i] = if i + 1 < n { h[(i + 1) * n + i] } else { 0.0 };
+    }
+    let mut z = q;
+    symmetric_tridiagonal_ql(&mut d, &mut e, &mut z, n);
+    (d, z)
+}
+
+/// Implicit-shift symmetric tridiagonal QL with eigenvector accumulation (EISPACK
+/// `tql2`). `d` = diagonal, `e[i]` = subdiagonal coupling `d[i]`/`d[i+1]`
+/// (`e[n-1]` unused), `z` = the accumulated transform (eigenvectors of `A` on
+/// output, columns). Each implicit-shift sweep deflates one eigenvalue with a
+/// Wilkinson shift; plane rotations chase the bulge up the tridiagonal. O(n²) per
+/// sweep, O(n) sweeps. Bit-equivalent in spirit to LAPACK `dsteqr`.
+fn symmetric_tridiagonal_ql(d: &mut [f64], e: &mut [f64], z: &mut [f64], n: usize) {
+    if n <= 1 {
+        return;
+    }
+    let eps = f64::EPSILON;
+    for l in 0..n {
+        let mut iter = 0usize;
+        loop {
+            // Find a negligible subdiagonal `e[m]` splitting off the leading block.
+            let mut m = l;
+            while m + 1 < n {
+                let dd = d[m].abs() + d[m + 1].abs();
+                if e[m].abs() <= eps * dd {
+                    break;
+                }
+                m += 1;
+            }
+            if m == l {
+                break; // d[l] has converged
+            }
+            iter += 1;
+            if iter > 50 {
+                break; // non-convergence safeguard (essentially never hit)
+            }
+            // Wilkinson shift from the trailing 2×2 of the active block.
+            let mut g = (d[l + 1] - d[l]) / (2.0 * e[l]);
+            let mut r = g.hypot(1.0);
+            let sgn = if g >= 0.0 { r.abs() } else { -r.abs() };
+            g = d[m] - d[l] + e[l] / (g + sgn);
+            let mut s = 1.0_f64;
+            let mut c = 1.0_f64;
+            let mut p = 0.0_f64;
+            let mut zeroed = false;
+            let mut i = m;
+            while i > l {
+                i -= 1;
+                let mut f = s * e[i];
+                let b = c * e[i];
+                r = f.hypot(g);
+                e[i + 1] = r;
+                if r == 0.0 {
+                    d[i + 1] -= p;
+                    e[m] = 0.0;
+                    zeroed = true;
+                    break;
+                }
+                s = f / r;
+                c = g / r;
+                g = d[i + 1] - p;
+                r = (d[i] - g) * s + 2.0 * c * b;
+                p = s * r;
+                d[i + 1] = g + p;
+                g = c * r - b;
+                // Accumulate the plane rotation into eigenvector columns i, i+1.
+                for k in 0..n {
+                    f = z[k * n + (i + 1)];
+                    z[k * n + (i + 1)] = s * z[k * n + i] + c * f;
+                    z[k * n + i] = c * z[k * n + i] - s * f;
+                }
+            }
+            if zeroed {
+                continue;
+            }
+            d[l] -= p;
+            e[l] = g;
+            e[m] = 0.0;
+        }
+    }
+}
+
 /// Row-cyclic Jacobi eigendecomposition of a real symmetric n×n matrix.
 ///
 /// Returns `(eigenvalues, V)` with `A = V diag(eigenvalues) Vᵀ`, eigenvectors as
@@ -2888,13 +2994,12 @@ pub(crate) fn eval_eigh(
     {
         (w3.to_vec(), v3.to_vec())
     } else {
-        let mut a_work = a;
-        // Row-cyclic Jacobi (O(n³·sweeps)) instead of the classic max-pivot
-        // sweep (O(n⁴): an O(n²) off-diagonal search before every rotation).
-        // Same spectrum to machine precision; eigenvectors differ only within
-        // the eigendecomposition's intrinsic sign/rotation freedom, and eigh
-        // conformance is reconstruction + spectrum based (V diag(w) Vᵀ = A).
-        let (eigenvalues, eigenvectors) = jacobi_eigendecomposition_cyclic(&mut a_work, m);
+        // Tridiagonalization + implicit-shift QL (LAPACK `tred2`+`tql2`), `~5n³`
+        // versus cyclic Jacobi's `~8·O(n³)` rotation sweeps. Same spectrum to
+        // machine precision; eigenvectors differ only within the eigendecomposition's
+        // intrinsic sign/rotation freedom, and eigh conformance is reconstruction +
+        // spectrum based (V diag(w) Vᵀ = A).
+        let (eigenvalues, eigenvectors) = tridiag_ql_eigendecomposition(&a, m);
 
         // Sort eigenvalues in ascending order (JAX convention for eigh)
         let mut indices: Vec<usize> = (0..m).collect();
@@ -8246,6 +8351,110 @@ mod tests {
                 jw[k]
             );
         }
+    }
+
+    /// Deterministic dense real SYMMETRIC n×n matrix with a spread spectrum
+    /// (A = QᵀDQ would be ideal but we just build a symmetric matrix directly).
+    fn symmetric_test_matrix(n: usize) -> Vec<f64> {
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in i..n {
+                let v = if i == j {
+                    (i as f64) * 1.7 + 3.0
+                } else {
+                    (((i * 31 + j * 17 + 5) % 19) as f64 - 9.0) * 0.05
+                };
+                a[i * n + j] = v;
+                a[j * n + i] = v;
+            }
+        }
+        a
+    }
+
+    #[test]
+    fn tridiag_ql_eigh_matches_jacobi_and_reconstructs() {
+        // The tridiagonalization + implicit-QL eigh must (a) reconstruct
+        // A = V diag(w) Vᵀ, (b) have orthonormal V, and (c) recover the same
+        // spectrum (sorted) as the cyclic-Jacobi reference — all to tolerance.
+        for &n in &[5usize, 8, 16, 24] {
+            let a = symmetric_test_matrix(n);
+            let (w, v) = tridiag_ql_eigendecomposition(&a, n);
+
+            // (a) reconstruction V diag(w) Vᵀ = A.
+            for i in 0..n {
+                for j in 0..n {
+                    let mut val = 0.0;
+                    for k in 0..n {
+                        val += v[i * n + k] * w[k] * v[j * n + k];
+                    }
+                    assert!(
+                        (val - a[i * n + j]).abs() < 1e-9,
+                        "n={n} recon[{i},{j}]={val} exp {}",
+                        a[i * n + j]
+                    );
+                }
+            }
+            // (b) orthonormality VᵀV = I.
+            for i in 0..n {
+                for j in 0..n {
+                    let mut d = 0.0;
+                    for r in 0..n {
+                        d += v[r * n + i] * v[r * n + j];
+                    }
+                    let target = if i == j { 1.0 } else { 0.0 };
+                    assert!((d - target).abs() < 1e-9, "n={n} VtV[{i},{j}]={d}");
+                }
+            }
+            // (c) spectrum matches the cyclic-Jacobi reference (sorted).
+            let mut jac = a.clone();
+            let (mut jw, _) = jacobi_eigendecomposition_cyclic(&mut jac, n);
+            jw.sort_by(f64::total_cmp);
+            let mut ql = w.clone();
+            ql.sort_by(f64::total_cmp);
+            for k in 0..n {
+                assert!(
+                    (ql[k] - jw[k]).abs() < 1e-9,
+                    "n={n} eig[{k}] QL {} vs Jacobi {}",
+                    ql[k],
+                    jw[k]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_eigh_tridiag_ql_vs_jacobi() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        let run = |n: usize| {
+            let a = symmetric_test_matrix(n);
+            let jac = best_time(|| {
+                let mut work = a.clone();
+                std::hint::black_box(jacobi_eigendecomposition_cyclic(&mut work, n));
+            });
+            let ql = best_time(|| {
+                std::hint::black_box(tridiag_ql_eigendecomposition(&a, n));
+            });
+            println!(
+                "BENCH eigh n={n}: cyclic-Jacobi {:.3}ms -> tridiag+QL {:.3}ms = {:.2}x",
+                jac * 1e3,
+                ql * 1e3,
+                jac / ql
+            );
+        };
+        run(48);
+        run(96);
+        run(160);
     }
 
     #[test]
