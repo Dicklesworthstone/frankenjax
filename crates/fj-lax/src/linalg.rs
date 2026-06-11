@@ -4002,6 +4002,164 @@ fn complex_hessenberg_solve(
     x
 }
 
+/// Householder reflector for a length-2 or length-3 real vector `a`: returns
+/// `(v, tau)` with `P = I − tau·v·vᵀ` mapping `a` to `(±‖a‖, 0[, 0])`. `v` has
+/// `a.len()` meaningful leading entries; `tau == 0` signals the identity (zero `a`).
+#[inline]
+fn make_house(a: &[f64]) -> ([f64; 3], f64) {
+    let len = a.len();
+    let norm = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let mut v = [0.0f64; 3];
+    if norm == 0.0 {
+        return (v, 0.0);
+    }
+    // Choose the reflection sign to avoid cancellation in `a[0] − r`.
+    let r = if a[0] >= 0.0 { -norm } else { norm };
+    v[0] = a[0] - r;
+    for i in 1..len {
+        v[i] = a[i];
+    }
+    let vnorm2: f64 = v[..len].iter().map(|x| x * x).sum();
+    let tau = if vnorm2 == 0.0 { 0.0 } else { 2.0 / vnorm2 };
+    (v, tau)
+}
+
+/// One Francis implicit double-shift QR sweep on the unreduced upper-Hessenberg
+/// active block `[lo, hi]` of the row-major `n×n` matrix `h` (block size ≥ 3).
+/// All Householder reflectors act only on indices within `[lo, hi]`, so the sweep
+/// is an orthogonal similarity of the block — its eigenvalues are preserved while
+/// the bulge is chased back to Hessenberg form. The double shift uses the trailing
+/// 2×2's (trace, det) so a complex-conjugate shift pair is applied entirely in real
+/// arithmetic (the whole point of the implicit double shift). Every 10 sweeps
+/// without deflation an exceptional shift (LAPACK `dlahqr`) breaks stagnation.
+fn francis_sweep(h: &mut [f64], n: usize, lo: usize, hi: usize, since_deflate: usize) {
+    let (s, t) = if since_deflate > 0 && since_deflate.is_multiple_of(10) {
+        // Exceptional shift keyed to the trailing subdiagonal magnitudes.
+        let sh = h[hi * n + (hi - 1)].abs() + h[(hi - 1) * n + (hi - 2)].abs();
+        let h11 = 0.75 * sh + h[hi * n + hi];
+        let h21 = sh;
+        let h12 = -0.4375 * sh;
+        (2.0 * h11, h11 * h11 - h12 * h21)
+    } else {
+        let aa = h[(hi - 1) * n + (hi - 1)];
+        let bb = h[(hi - 1) * n + hi];
+        let cc = h[hi * n + (hi - 1)];
+        let dd = h[hi * n + hi];
+        (aa + dd, aa * dd - bb * cc)
+    };
+
+    // First column of (H² − sH + tI) restricted to the bulge rows lo, lo+1, lo+2.
+    let h00 = h[lo * n + lo];
+    let h01 = h[lo * n + (lo + 1)];
+    let h10 = h[(lo + 1) * n + lo];
+    let h11d = h[(lo + 1) * n + (lo + 1)];
+    let h21d = h[(lo + 2) * n + (lo + 1)];
+    let mut bulge = [
+        h00 * h00 + h01 * h10 - s * h00 + t,
+        h10 * (h00 + h11d - s),
+        h10 * h21d,
+    ];
+
+    // Chase the 3-element bulge down the subdiagonal.
+    for k in lo..=(hi - 2) {
+        let (v, tau) = make_house(&bulge[..3]);
+        if tau != 0.0 {
+            let (r0, r1, r2) = (k, k + 1, k + 2);
+            let cstart = if k > lo { k - 1 } else { lo };
+            for col in cstart..=hi {
+                let d = tau
+                    * (v[0] * h[r0 * n + col] + v[1] * h[r1 * n + col] + v[2] * h[r2 * n + col]);
+                h[r0 * n + col] -= d * v[0];
+                h[r1 * n + col] -= d * v[1];
+                h[r2 * n + col] -= d * v[2];
+            }
+            let rend = (k + 3).min(hi);
+            for row in lo..=rend {
+                let d = tau
+                    * (v[0] * h[row * n + r0] + v[1] * h[row * n + r1] + v[2] * h[row * n + r2]);
+                h[row * n + r0] -= d * v[0];
+                h[row * n + r1] -= d * v[1];
+                h[row * n + r2] -= d * v[2];
+            }
+        }
+        if k < hi - 2 {
+            bulge = [h[(k + 1) * n + k], h[(k + 2) * n + k], h[(k + 3) * n + k]];
+        } else {
+            bulge[0] = h[(k + 1) * n + k];
+            bulge[1] = h[(k + 2) * n + k];
+        }
+    }
+
+    // Final 2-element reflector zeroing the last bulge entry (row hi, col hi-2).
+    let (v, tau) = make_house(&bulge[..2]);
+    if tau != 0.0 {
+        let (r0, r1) = (hi - 1, hi);
+        for col in (hi - 2)..=hi {
+            let d = tau * (v[0] * h[r0 * n + col] + v[1] * h[r1 * n + col]);
+            h[r0 * n + col] -= d * v[0];
+            h[r1 * n + col] -= d * v[1];
+        }
+        for row in lo..=hi {
+            let d = tau * (v[0] * h[row * n + r0] + v[1] * h[row * n + r1]);
+            h[row * n + r0] -= d * v[0];
+            h[row * n + r1] -= d * v[1];
+        }
+    }
+}
+
+/// Drive a real upper-Hessenberg `h` (row-major `n×n`) to real quasi-triangular
+/// (Schur) form via Francis implicit double-shift QR with deflation — LAPACK
+/// `dlahqr`'s algorithm. Cubic convergence (≈ O(n) total sweeps) replaces the
+/// unshifted iteration's linear convergence (which stalls — up to 200·n sweeps —
+/// for clustered / complex-conjugate spectra). Returns `true` on convergence; a
+/// `false` (cap exceeded) lets the caller keep its `complex_eig_qr` safety net.
+/// Reflectors stay inside the active block, so the bottom-right eigenvalues are
+/// unchanged by the (stale) coupling columns — eigenvalues are read off the
+/// resulting 1×1 / 2×2 diagonal blocks.
+fn francis_qr_schur(h: &mut [f64], n: usize) -> bool {
+    if n <= 2 {
+        return true;
+    }
+    let eps = f64::EPSILON;
+    let mut hi = n - 1;
+    let mut total = 0usize;
+    let max_total = 60 * n + 100;
+    let mut since_deflate = 0usize;
+
+    loop {
+        if hi < 2 {
+            return true; // remaining leading 1×1 / 2×2 read directly by the caller
+        }
+        // Smallest `lo` such that the block [lo, hi] is unreduced (scan up from hi
+        // to the first negligible subdiagonal, which splits the block and is zeroed).
+        let mut lo = hi;
+        while lo > 0 {
+            let scale = h[(lo - 1) * n + (lo - 1)].abs() + h[lo * n + lo].abs();
+            let thresh = eps * if scale > 0.0 { scale } else { 1.0 };
+            if h[lo * n + (lo - 1)].abs() <= thresh {
+                h[lo * n + (lo - 1)] = 0.0;
+                break;
+            }
+            lo -= 1;
+        }
+        let block = hi - lo;
+        if block == 0 {
+            hi -= 1; // 1×1 deflated
+            since_deflate = 0;
+        } else if block == 1 {
+            hi -= 2; // isolated 2×2 deflated (hi ≥ 2 in the body, so no underflow)
+            since_deflate = 0;
+        } else {
+            if total >= max_total {
+                return false;
+            }
+            total += 1;
+            since_deflate += 1;
+            francis_sweep(h, n, lo, hi, since_deflate);
+        }
+    }
+}
+
 /// QR iteration for general eigendecomposition.
 ///
 /// Simple implementation for V1 correctness. Uses basic QR iteration without
@@ -4092,46 +4250,20 @@ fn eig_qr_iteration(a: &[f64], n: usize) -> EigQrResult {
         let scale = t[(j - 1) * n + j - 1].abs() + t[j * n + j].abs();
         t[j * n + j - 1].abs() <= f64::EPSILON * scale.max(f64::MIN_POSITIVE)
     };
-    // Deflation window: the unshifted iteration converges BOTTOM-UP (the bottom
-    // subdiagonal shrinks at rate |λ_p/λ_{p-1}|), so peel converged 1×1 / isolated
-    // 2×2 blocks off the bottom of the active leading `p×p` block and only sweep
-    // `[0, p)`. The diagonal blocks (hence eigenvalues) are unchanged by skipping
-    // the decoupled trailing columns; this cuts the per-iteration cost from O(n²)
-    // toward O(p²) as eigenvalues deflate. Same total-iteration safety cap; the
-    // global quasi-triangular check below still gates the fallback.
-    let mut p = n;
-    let max_iters = 200 * n;
-    let mut iters = 0usize;
-    while p > 2 {
-        // Peel deflated bottom blocks: a 1×1 when its top subdiagonal is negligible,
-        // an isolated 2×2 (complex-conjugate pair) when the subdiagonal above it is.
-        let prev_p = p;
-        loop {
-            if p > 1 && subdiag_negligible(&t, p - 1) {
-                t[(p - 1) * n + (p - 2)] = 0.0;
-                p -= 1;
-            } else if p > 2 && subdiag_negligible(&t, p - 2) {
-                t[(p - 2) * n + (p - 3)] = 0.0;
-                p -= 2;
-            } else {
-                break;
-            }
-        }
-        if p <= 2 {
-            break;
-        }
-        if prev_p == p && iters >= max_iters {
-            break; // no progress within the cap → leave it to the fallback check
-        }
-        hessenberg_qr_step_leading(&mut t, n, p);
-        iters += 1;
-    }
+    // Drive `t` to real quasi-triangular Schur form with the Francis implicit
+    // double-shift QR (cubic convergence; stays in real arithmetic for complex-
+    // conjugate eigenvalue pairs). This replaces the unshifted deflation-window
+    // sweep, which converged only linearly and STALLED — hitting the 200·n cap and
+    // forcing the O(n⁴) complex_eig_qr fallback — for clustered / complex-pair
+    // spectra (frankenjax-omv7z). Eigenvectors still come from the separate `h_hess`
+    // copy, so the Schur vectors are not accumulated.
+    let converged = francis_qr_schur(&mut t, n);
     // Global gate (the definition of convergence): quasi-triangular iff no two
-    // *consecutive* non-negligible subdiagonals remain anywhere (which would be an
-    // unconverged ≥3×3 coupled block). A stalled run that hit the cap without
-    // deflating leaves such a pair → this is false → fall back to complex_eig_qr.
+    // *consecutive* non-negligible subdiagonals remain anywhere (an unconverged
+    // ≥3×3 coupled block). If Francis hit its cap without converging this is false →
+    // fall back to complex_eig_qr (e.g. exotic equal-modulus spectra).
     let reached_quasi_triangular =
-        (2..n).all(|j| subdiag_negligible(&t, j) || subdiag_negligible(&t, j - 1));
+        converged && (2..n).all(|j| subdiag_negligible(&t, j) || subdiag_negligible(&t, j - 1));
 
     // Unshifted real QR cannot reach quasi-triangular form when ≥3 eigenvalues share
     // a modulus (e.g. cube-roots-of-unity: {1, e^{±2πi/3}}, all |λ|=1) — it would
@@ -4282,6 +4414,10 @@ fn apply_householder_right(
     }
 }
 
+/// Unshifted Givens Hessenberg QR sweep (full `n×n`). Superseded in production by
+/// `francis_qr_schur`; retained as a `#[cfg(test)]` baseline for the convergence
+/// A/B bench.
+#[cfg(test)]
 fn hessenberg_qr_step(h: &mut [f64], mut q_total: Option<&mut [f64]>, n: usize) {
     let mut rotations = Vec::with_capacity(n.saturating_sub(1));
 
@@ -4325,6 +4461,7 @@ fn hessenberg_qr_step(h: &mut [f64], mut q_total: Option<&mut [f64]>, n: usize) 
 /// leaves every diagonal block's eigenvalues unchanged. The `eig_qr_iteration`
 /// caller reads eigenvalues off those diagonal blocks and takes eigenvectors from
 /// the separate `h_hess` copy, so the stale coupling region is never observed.
+#[cfg(test)]
 fn hessenberg_qr_step_leading(h: &mut [f64], n: usize, p: usize) {
     if p < 2 {
         return;
@@ -4365,6 +4502,7 @@ fn hessenberg_qr_step_leading(h: &mut [f64], n: usize, p: usize) {
     }
 }
 
+#[cfg(test)]
 fn apply_givens_right(matrix: &mut [f64], n: usize, col: usize, c: f64, s: f64) {
     for row in 0..n {
         let left_idx = row * n + col;
@@ -5729,6 +5867,50 @@ mod tests {
     }
 
     #[test]
+    fn francis_qr_converges_without_fallback_and_reconstructs() {
+        // The Francis implicit double-shift drives even complex-conjugate-pair
+        // spectra (which STALLED the old unshifted QR → O(n⁴) complex_eig_qr
+        // fallback) to quasi-triangular form in O(n) sweeps. Verify at larger n:
+        // (a) francis_qr_schur converges (returns true → no fallback) and leaves a
+        //     genuinely quasi-triangular matrix; (b) the production eig output
+        //     reconstructs A·v = λ·v to tolerance and recovers the known spectrum.
+        let neg = |t: &[f64], n: usize, j: usize| -> bool {
+            let scale = t[(j - 1) * n + j - 1].abs() + t[j * n + j].abs();
+            t[j * n + j - 1].abs() <= f64::EPSILON * scale.max(f64::MIN_POSITIVE)
+        };
+        for &n in &[16usize, 32, 48, 64] {
+            let a = eig_test_matrix(n);
+            // (a) Francis converges on the Hessenberg form, no fallback.
+            let (mut h, _q) = hessenberg_reduction(&a, n);
+            assert!(
+                francis_qr_schur(&mut h, n),
+                "n={n}: Francis QR did not converge (would force the O(n⁴) fallback)"
+            );
+            assert!(
+                (2..n).all(|j| neg(&h, n, j) || neg(&h, n, j - 1)),
+                "n={n}: Francis result is not quasi-triangular"
+            );
+            // (b) Full production path: reconstruction + spectrum.
+            let (w, v) = eig_qr_iteration(&a, n);
+            assert_eq!(w.len(), n, "n={n}: expected {n} eigenvalues");
+            assert_eig_residual_complex(&a, n, &w, &v, 1e-6);
+            // eig_test_matrix's spectrum: isolated reals `tag+0.7` and complex pairs
+            // `tag ± (tag/2)i`. Just check every eigenvalue is finite and the trace
+            // (Σλ) matches tr(A) — a similarity invariant independent of ordering.
+            let trace_a: f64 = (0..n).map(|i| a[i * n + i]).sum();
+            let trace_w: f64 = w.iter().map(|&(re, _)| re).sum();
+            assert!(
+                (trace_a - trace_w).abs() <= 1e-6 * trace_a.abs().max(1.0),
+                "n={n}: Σλ {trace_w} != tr(A) {trace_a}"
+            );
+            assert!(
+                w.iter().all(|&(re, im)| re.is_finite() && im.is_finite()),
+                "n={n}: non-finite eigenvalue"
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "benchmark: run with --ignored --nocapture"]
     fn bench_eig_eigenvectors_hessenberg_vs_full() {
         use std::time::Instant;
@@ -5839,11 +6021,19 @@ mod tests {
                 }
                 std::hint::black_box(&t);
             });
+            // (c) Francis implicit double-shift QR: production candidate.
+            let francis = best_time(|| {
+                let mut t = h0.clone();
+                std::hint::black_box(francis_qr_schur(&mut t, n));
+                std::hint::black_box(&t);
+            });
             println!(
-                "BENCH eig QR-iter n={n}: full-sweep O(n²)/it {:.3}ms -> deflation-window {:.3}ms = {:.2}x",
+                "BENCH eig QR-iter n={n}: full-sweep O(n²)/it {:.3}ms -> deflation-window {:.3}ms = {:.2}x -> Francis {:.3}ms = {:.2}x vs window",
                 full * 1e3,
                 window * 1e3,
-                full / window
+                full / window,
+                francis * 1e3,
+                window / francis
             );
         };
         // Sizes where unshifted QR converges within the cap (the regime the real
