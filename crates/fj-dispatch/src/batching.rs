@@ -4125,49 +4125,101 @@ fn batch_svd_multi(
         );
     }
 
-    let mut u_elements = Vec::with_capacity(batch_size * m * u_cols);
-    let mut s_elements = Vec::with_capacity(batch_size * k);
-    let mut vt_elements = Vec::with_capacity(batch_size * vt_rows * n);
+    // Non-F64 (F32/BF16/F16) SVD: the same expensive Jacobi decomposition as the
+    // F64 path, only the output literal type differs. Fan the batch out across
+    // threads (per-thread SvdScratch, disjoint U/S/Vᵀ offsets), then build the
+    // literals — bit-identical to the serial loop (deterministic per-matrix
+    // svd_decompose_matrix, fixed offsets, same `Literal::from_f64`).
+    let u_len = m * u_cols;
+    let s_len = k;
+    let vt_len = vt_rows * n;
+    let mut u_f = vec![0.0_f64; batch_size * u_len];
+    let mut s_f = vec![0.0_f64; batch_size * s_len];
+    let mut vt_f = vec![0.0_f64; batch_size * vt_len];
 
-    let mut matrix = Vec::with_capacity(matrix_len);
-    let mut svd_scratch = SvdScratch::default();
-    for batch in 0..batch_size {
-        let base = batch * matrix_len;
-        if m == 3 && n == 2 && !full_matrices {
-            let a00 = tensor.elements[base].as_f64().ok_or_else(|| {
-                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
-            })?;
-            let a01 = tensor.elements[base + 1].as_f64().ok_or_else(|| {
-                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
-            })?;
-            let a10 = tensor.elements[base + 2].as_f64().ok_or_else(|| {
-                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
-            })?;
-            let a11 = tensor.elements[base + 3].as_f64().ok_or_else(|| {
-                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
-            })?;
-            let a20 = tensor.elements[base + 4].as_f64().ok_or_else(|| {
-                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
-            })?;
-            let a21 = tensor.elements[base + 5].as_f64().ok_or_else(|| {
-                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
-            })?;
-            svd_decompose_matrix_3x2_thin([a00, a01, a10, a11, a20, a21], &mut svd_scratch);
-        } else {
-            matrix.clear();
-            for lit in &tensor.elements[base..base + matrix_len] {
-                matrix.push(lit.as_f64().ok_or_else(|| {
-                    BatchError::EvalError(
-                        "type mismatch for svd: expected numeric elements".to_owned(),
-                    )
-                })?);
-            }
-            svd_decompose_matrix(m, n, &matrix, full_matrices, &mut svd_scratch);
-        }
-        u_elements.extend(svd_scratch.u_out.iter().copied().map(Literal::from_f64));
-        s_elements.extend(svd_scratch.sigma.iter().copied().map(Literal::from_f64));
-        vt_elements.extend(svd_scratch.vt.iter().copied().map(Literal::from_f64));
+    let mut all = Vec::with_capacity(batch_size * matrix_len);
+    for lit in &tensor.elements[..batch_size * matrix_len] {
+        all.push(lit.as_f64().ok_or_else(|| {
+            BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+        })?);
     }
+
+    let thin_3x2 = m == 3 && n == 2 && !full_matrices;
+    let decompose =
+        |b: usize, scratch: &mut SvdScratch, u: &mut [f64], s: &mut [f64], vt: &mut [f64]| {
+            let base = b * matrix_len;
+            if thin_3x2 {
+                let a = &all[base..base + 6];
+                svd_decompose_matrix_3x2_thin([a[0], a[1], a[2], a[3], a[4], a[5]], scratch);
+            } else {
+                svd_decompose_matrix(m, n, &all[base..base + matrix_len], full_matrices, scratch);
+            }
+            u.copy_from_slice(&scratch.u_out);
+            s.copy_from_slice(&scratch.sigma);
+            vt.copy_from_slice(&scratch.vt);
+        };
+
+    let total_work = batch_size
+        .saturating_mul(m)
+        .saturating_mul(n)
+        .saturating_mul(k);
+    let threads = if batch_size >= 2 && total_work >= SVD_BATCH_PARALLEL_MIN_WORK {
+        std::thread::available_parallelism()
+            .map(|t| t.get())
+            .unwrap_or(1)
+            .min(batch_size)
+    } else {
+        1
+    };
+
+    if threads <= 1 {
+        let mut scratch = SvdScratch::default();
+        for b in 0..batch_size {
+            decompose(
+                b,
+                &mut scratch,
+                &mut u_f[b * u_len..(b + 1) * u_len],
+                &mut s_f[b * s_len..(b + 1) * s_len],
+                &mut vt_f[b * vt_len..(b + 1) * vt_len],
+            );
+        }
+    } else {
+        let per = batch_size.div_ceil(threads);
+        let decompose_ref = &decompose;
+        std::thread::scope(|scope| {
+            let mut u_rest: &mut [f64] = u_f.as_mut_slice();
+            let mut s_rest: &mut [f64] = s_f.as_mut_slice();
+            let mut vt_rest: &mut [f64] = vt_f.as_mut_slice();
+            let mut start = 0usize;
+            while start < batch_size {
+                let cnt = per.min(batch_size - start);
+                let (u_chunk, u_tail) = u_rest.split_at_mut(cnt * u_len);
+                let (s_chunk, s_tail) = s_rest.split_at_mut(cnt * s_len);
+                let (vt_chunk, vt_tail) = vt_rest.split_at_mut(cnt * vt_len);
+                u_rest = u_tail;
+                s_rest = s_tail;
+                vt_rest = vt_tail;
+                let s0 = start;
+                scope.spawn(move || {
+                    let mut scratch = SvdScratch::default();
+                    for j in 0..cnt {
+                        decompose_ref(
+                            s0 + j,
+                            &mut scratch,
+                            &mut u_chunk[j * u_len..(j + 1) * u_len],
+                            &mut s_chunk[j * s_len..(j + 1) * s_len],
+                            &mut vt_chunk[j * vt_len..(j + 1) * vt_len],
+                        );
+                    }
+                });
+                start += cnt;
+            }
+        });
+    }
+
+    let u_elements: Vec<Literal> = u_f.into_iter().map(Literal::from_f64).collect();
+    let s_elements: Vec<Literal> = s_f.into_iter().map(Literal::from_f64).collect();
+    let vt_elements: Vec<Literal> = vt_f.into_iter().map(Literal::from_f64).collect();
 
     let u_shape = Shape {
         dims: vec![batch_size as u32, m as u32, u_cols as u32],
@@ -10296,6 +10348,75 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn batch_svd_f32_parallel_path_is_bit_identical_to_serial() {
+        // The non-F64 (F32) SVD path runs the SAME f64 Jacobi decomposition and now
+        // also fans out across threads. With a batch above the threshold, the
+        // production U/S/Vᵀ must be BYTE-FOR-BYTE the same as the serial per-slice
+        // svd_decompose_matrix on the f32→f64-widened input.
+        let (batch, m, n) = (32usize, 24usize, 24usize);
+        let k = m.min(n);
+        assert!(batch * m * n * k >= super::SVD_BATCH_PARALLEL_MIN_WORK);
+        let matrix_len = m * n;
+        let (u_len, s_len, vt_len) = (m * k, k, k * n);
+        // f32 input data; the path widens each element via as_f64 (exact f32→f64).
+        let mut f32lits = Vec::with_capacity(batch * matrix_len);
+        let mut widened = Vec::with_capacity(batch * matrix_len);
+        for b in 0..batch {
+            for v in general_batch_matrix(m, n, b) {
+                let x = v as f32;
+                f32lits.push(Literal::from_f32(x));
+                widened.push(x as f64);
+            }
+        }
+        let input_tensor = TensorValue::new(
+            DType::F32,
+            Shape {
+                dims: vec![batch as u32, m as u32, n as u32],
+            },
+            f32lits,
+        )
+        .unwrap();
+        let input = BatchTracer::batched(Value::Tensor(input_tensor), 0);
+        let outputs = apply_batch_rule_multi(Primitive::Svd, &[input], &BTreeMap::new()).unwrap();
+        let u_act = extract_f64_vec(&outputs[0].value);
+        let s_act = extract_f64_vec(&outputs[1].value);
+        let vt_act = extract_f64_vec(&outputs[2].value);
+
+        let mut scratch = super::SvdScratch::default();
+        let mut u_ref = vec![0.0f64; batch * u_len];
+        let mut s_ref = vec![0.0f64; batch * s_len];
+        let mut vt_ref = vec![0.0f64; batch * vt_len];
+        for b in 0..batch {
+            super::svd_decompose_matrix(
+                m,
+                n,
+                &widened[b * matrix_len..(b + 1) * matrix_len],
+                false,
+                &mut scratch,
+            );
+            u_ref[b * u_len..(b + 1) * u_len].copy_from_slice(&scratch.u_out);
+            s_ref[b * s_len..(b + 1) * s_len].copy_from_slice(&scratch.sigma);
+            vt_ref[b * vt_len..(b + 1) * vt_len].copy_from_slice(&scratch.vt);
+        }
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(
+            bits(&u_act),
+            bits(&u_ref),
+            "F32 U not bit-identical to serial"
+        );
+        assert_eq!(
+            bits(&s_act),
+            bits(&s_ref),
+            "F32 S not bit-identical to serial"
+        );
+        assert_eq!(
+            bits(&vt_act),
+            bits(&vt_ref),
+            "F32 Vᵀ not bit-identical to serial"
+        );
     }
 
     #[test]
