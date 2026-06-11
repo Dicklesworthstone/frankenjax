@@ -7154,6 +7154,16 @@ fn is_identity_perm(perm: &[usize]) -> bool {
 }
 
 fn permute_f64(data: &[f64], orig_dims: &[usize], perm: &[usize]) -> Vec<f64> {
+    permute_strided(data, orig_dims, perm)
+}
+
+/// Materialize `data` (row-major over `orig_dims`) into a new row-major buffer
+/// whose axes are `perm` of the originals. The output element at flat index
+/// `out_flat` reads the original element at the multi-index decoded from
+/// `out_flat` against the permuted strides and re-projected through the original
+/// strides. Generic over the element type so the f64 / i64 / u64 GEMM-routing
+/// paths share one (bit-exact, order-preserving) gather.
+fn permute_strided<T: Copy>(data: &[T], orig_dims: &[usize], perm: &[usize]) -> Vec<T> {
     let rank = orig_dims.len();
     let mut orig_strides = vec![1usize; rank];
     for i in (0..rank.saturating_sub(1)).rev() {
@@ -7164,19 +7174,18 @@ fn permute_f64(data: &[f64], orig_dims: &[usize], perm: &[usize]) -> Vec<f64> {
     for i in (0..rank.saturating_sub(1)).rev() {
         new_strides[i] = new_strides[i + 1] * new_dims[i + 1];
     }
-    let n = data.len();
-    let mut out = vec![0.0_f64; n];
-    for (out_flat, slot) in out.iter_mut().enumerate() {
-        let mut rem = out_flat;
-        let mut orig_flat = 0usize;
-        for ax in 0..rank {
-            let idx = rem / new_strides[ax];
-            rem -= idx * new_strides[ax];
-            orig_flat += idx * orig_strides[perm[ax]];
-        }
-        *slot = data[orig_flat];
-    }
-    out
+    (0..data.len())
+        .map(|out_flat| {
+            let mut rem = out_flat;
+            let mut orig_flat = 0usize;
+            for ax in 0..rank {
+                let idx = rem / new_strides[ax];
+                rem -= idx * new_strides[ax];
+                orig_flat += idx * orig_strides[perm[ax]];
+            }
+            data[orig_flat]
+        })
+        .collect()
 }
 
 /// Extract a real-float tensor's elements as f64 (F64 borrowed; F32/BF16/F16
@@ -7403,6 +7412,94 @@ fn general_real_tensordot(
     Ok(Some(Value::Tensor(TensorValue::new(
         out_dtype, shape, elements,
     )?)))
+}
+
+/// General SIGNED-INTEGER dot_general — ANY rank, ANY number of batch /
+/// contracting dims (I32/I64) — as a single (batched) integer GEMM. The integer
+/// sibling of [`general_real_tensordot`]: permute lhs to
+/// `[batch..., free..., contract...]` and rhs to `[batch..., contract..., free...]`
+/// (collapsing each group to one axis), then `batched_rank2_i64_matmul` over the
+/// flattened batch, and re-tag the dense-i64 result as the output dtype (the
+/// `narrow_i32_tensor_result` chokepoint wraps an I32 output mod 2^32 downstream).
+/// Replaces the generic strided per-element odometer loop for every integer
+/// contraction the canonical fast paths above miss — non-canonical batched
+/// (batched integer matmul in odd orderings), rank>2 tensordot, and
+/// multi-contracting-dim einsum. Bit-identical: i32/i64 are both dense-i64-backed
+/// and the generic signed path folds `wrapping_add(wrapping_mul)` over the
+/// contracting index in ascending row-major order in i64 — exactly what
+/// `batched_rank2_i64_matmul` does — and the permute only reorders memory in that
+/// same row-major contracting order. U32/U64 and complex fall through to the
+/// generic loop.
+#[allow(clippy::too_many_arguments)]
+fn general_integral_tensordot(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    lhs_batch: &[usize],
+    rhs_batch: &[usize],
+    lhs_contracting: &[usize],
+    rhs_contracting: &[usize],
+    lhs_free_dims: &[usize],
+    rhs_free_dims: &[usize],
+    output_dims: &[u32],
+) -> Result<Option<Value>, EvalError> {
+    let int_dtype = match dot_output_kind(lhs, rhs) {
+        DotOutputKind::Integral(dt @ (DType::I32 | DType::I64)) => dt,
+        _ => return Ok(None),
+    };
+    let (Some(lhs_i), Some(rhs_i)) = (lhs.elements.as_i64_slice(), rhs.elements.as_i64_slice())
+    else {
+        return Ok(None);
+    };
+    let lhs_dims: Vec<usize> = lhs.shape.dims.iter().map(|&d| d as usize).collect();
+    let rhs_dims: Vec<usize> = rhs.shape.dims.iter().map(|&d| d as usize).collect();
+    let batch: usize = lhs_batch.iter().map(|&d| lhs_dims[d]).product();
+    let m: usize = lhs_free_dims.iter().map(|&d| lhs_dims[d]).product();
+    let k: usize = lhs_contracting.iter().map(|&d| lhs_dims[d]).product();
+    let n: usize = rhs_free_dims.iter().map(|&d| rhs_dims[d]).product();
+    let rbatch: usize = rhs_batch.iter().map(|&d| rhs_dims[d]).product();
+    let rk: usize = rhs_contracting.iter().map(|&d| rhs_dims[d]).product();
+    if rk != k || rbatch != batch {
+        return Ok(None);
+    }
+    // lhs -> [batch (paired) ++ free (ascending) ++ contract (paired)] = [batch,m,k].
+    let mut lhs_perm: Vec<usize> = lhs_batch.to_vec();
+    lhs_perm.extend_from_slice(lhs_free_dims);
+    lhs_perm.extend_from_slice(lhs_contracting);
+    // rhs -> [batch (paired) ++ contract (paired) ++ free (ascending)] = [batch,k,n].
+    let mut rhs_perm: Vec<usize> = rhs_batch.to_vec();
+    rhs_perm.extend_from_slice(rhs_contracting);
+    rhs_perm.extend_from_slice(rhs_free_dims);
+
+    // Skip the gather when the perm is already the identity (the standard
+    // [m,k]@[k,n] / [B,m,k]@[B,k,n] layouts) — borrow the dense i64 slice directly.
+    let a = if is_identity_perm(&lhs_perm) {
+        Cow::Borrowed(lhs_i)
+    } else {
+        Cow::Owned(permute_strided(lhs_i, &lhs_dims, &lhs_perm))
+    };
+    let b = if is_identity_perm(&rhs_perm) {
+        Cow::Borrowed(rhs_i)
+    } else {
+        Cow::Owned(permute_strided(rhs_i, &rhs_dims, &rhs_perm))
+    };
+    let values = if batch == 1 {
+        rank2_i64_matmul(a.as_ref(), m, k, b.as_ref(), n)
+    } else {
+        batched_rank2_i64_matmul(a.as_ref(), batch, m, k, b.as_ref(), n)
+    };
+    if output_dims.is_empty() {
+        // Full contraction -> scalar (dtype-less i64 literal, matching the odometer's
+        // dot_output_value scalar branch and integral_dot_literal_from_i64).
+        return Ok(Some(Value::Scalar(Literal::I64(values[0]))));
+    }
+    let mut out = TensorValue::new_i64_values(
+        Shape {
+            dims: output_dims.to_vec(),
+        },
+        values,
+    )?;
+    out.dtype = int_dtype;
+    Ok(Some(Value::Tensor(out)))
 }
 
 fn dot_f64_elements(tensor: &TensorValue) -> Option<Cow<'_, [f64]>> {
@@ -8151,6 +8248,26 @@ pub(crate) fn eval_dot_general(
     // multi-contract, AND all non-F64 real dtypes (f32 is the default ML dtype).
     // Bit-identical (same products, ascending k, same round-to-out-dtype).
     if let Some(value) = general_real_tensordot(
+        lhs,
+        rhs,
+        &lhs_batch,
+        &rhs_batch,
+        &lhs_contracting,
+        &rhs_contracting,
+        &lhs_free_dims,
+        &rhs_free_dims,
+        &output_dims,
+    )? {
+        return Ok(value);
+    }
+
+    // General signed-integer dot_general (I32/I64, any rank/batch/multi-contract)
+    // as a single (batched) integer GEMM via permute -> batched_rank2_i64_matmul,
+    // instead of the generic strided odometer. Catches every integer contraction
+    // the canonical fast paths above miss (non-canonical batched, rank>2 tensordot,
+    // multi-contract einsum). Bit-identical wrapping-i64 fold (see
+    // general_integral_dot_general_matches_generic).
+    if let Some(value) = general_integral_tensordot(
         lhs,
         rhs,
         &lhs_batch,
@@ -11413,6 +11530,119 @@ mod tests {
     }
 
     #[test]
+    fn general_integral_dot_general_matches_generic() {
+        // Rank>2, multi-contracting-dim, and non-canonical batched I64 contractions
+        // now route through general_integral_tensordot (permute + batched i64 GEMM)
+        // instead of the generic strided odometer. Each must be bit-for-bit identical
+        // to the textbook ascending-(flattened-k) WRAPPING i64 reference. Salted with
+        // large multipliers so the contraction actually overflows i64 (wrapping), to
+        // prove the kernel's wrapping ring fold matches the generic loop's.
+        let i64s = |v: &Value| -> Vec<i64> {
+            let Value::Tensor(t) = v else {
+                panic!("expected tensor")
+            };
+            t.elements
+                .iter()
+                .map(|l| match l {
+                    Literal::I64(b) => *b,
+                    o => panic!("unexpected {o:?}"),
+                })
+                .collect()
+        };
+        let mk = |len: usize, salt: i64| -> Vec<i64> {
+            (0..len as i64)
+                .map(|i| (i.wrapping_mul(salt)).wrapping_sub(0x4000_0000_0000 * (i & 1)))
+                .collect()
+        };
+
+        // (1) rank-3 single contract: A[2,3,4]·B[4,5] contract A:2,B:0 -> [2,3,5].
+        let a = mk(2 * 3 * 4, 0x1_0000_0001);
+        let b = mk(4 * 5, 0x3_0000_0007);
+        let p = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "2".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "0".to_owned()),
+        ]);
+        let got = eval_dot_general(
+            &[tensor_i64(vec![2, 3, 4], &a), tensor_i64(vec![4, 5], &b)],
+            &p,
+        )
+        .unwrap();
+        let mut want = vec![0i64; 2 * 3 * 5];
+        for i in 0..2 {
+            for j in 0..3 {
+                for l in 0..5 {
+                    let mut s = 0i64;
+                    for kk in 0..4 {
+                        s = s.wrapping_add(a[(i * 3 + j) * 4 + kk].wrapping_mul(b[kk * 5 + l]));
+                    }
+                    want[(i * 3 + j) * 5 + l] = s;
+                }
+            }
+        }
+        assert_eq!(i64s(&got), want, "rank3");
+
+        // (2) multi-contract: A[2,3,4]·B[3,4,5] contract (A:1,2)/(B:0,1) -> [2,5].
+        let a = mk(2 * 3 * 4, 0x2_0000_0003);
+        let b = mk(3 * 4 * 5, 0x5_0000_0009);
+        let p = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "1,2".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "0,1".to_owned()),
+        ]);
+        let got = eval_dot_general(
+            &[tensor_i64(vec![2, 3, 4], &a), tensor_i64(vec![3, 4, 5], &b)],
+            &p,
+        )
+        .unwrap();
+        let mut want = [0i64; 2 * 5];
+        for i in 0..2 {
+            for l in 0..5 {
+                let mut s = 0i64;
+                for j in 0..3 {
+                    for kk in 0..4 {
+                        s = s.wrapping_add(
+                            a[(i * 3 + j) * 4 + kk].wrapping_mul(b[(j * 4 + kk) * 5 + l]),
+                        );
+                    }
+                }
+                want[i * 5 + l] = s;
+            }
+        }
+        assert_eq!(i64s(&got), want.to_vec(), "multi");
+
+        // (3) non-canonical batched: A[2,4,3]·B[2,5,4] batch A:0,B:0, contract A:1,B:2
+        //     -> [2,3,5] (batched, transposed orderings — the canonical batched i64
+        //     path requires the K|N boundary layout and misses this).
+        let a = mk(2 * 4 * 3, 0x7_0000_000b);
+        let b = mk(2 * 5 * 4, 0x9_0000_000d);
+        let p = BTreeMap::from([
+            ("lhs_batch_dims".to_owned(), "0".to_owned()),
+            ("rhs_batch_dims".to_owned(), "0".to_owned()),
+            ("lhs_contracting_dims".to_owned(), "1".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "2".to_owned()),
+        ]);
+        let got = eval_dot_general(
+            &[tensor_i64(vec![2, 4, 3], &a), tensor_i64(vec![2, 5, 4], &b)],
+            &p,
+        )
+        .unwrap();
+        let mut want = vec![0i64; 2 * 3 * 5];
+        for t in 0..2 {
+            for j in 0..3 {
+                for l in 0..5 {
+                    let mut s = 0i64;
+                    for kk in 0..4 {
+                        s = s.wrapping_add(
+                            a[(t * 4 + kk) * 3 + j].wrapping_mul(b[(t * 5 + l) * 4 + kk]),
+                        );
+                    }
+                    want[(t * 3 + j) * 5 + l] = s;
+                }
+            }
+        }
+        assert_eq!(i64s(&got), want, "batched-T");
+    }
+
+    #[test]
     fn f32_dot_general_gemm_bit_identical_to_reference() {
         // f32 dot_general (the default ML dtype) now routes through the GEMM path
         // (f32 inputs, f32 accumulation, f32 output). Must be bit-for-bit
@@ -11716,6 +11946,141 @@ mod tests {
         };
         run(256, 256, 256);
         run(512, 128, 512);
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_integral_dot_general_gemm_vs_odometer() {
+        // A/B (same binary): the new general_integral_tensordot GEMM routing vs a
+        // faithful reproduction of the OLD generic strided odometer (per-element
+        // linear_to_multi_index decode + strided gather, threaded over the output
+        // space exactly like the replaced code) on a non-canonical batched I64
+        // contraction A[b,m,k]·B[b,n,k] (contract last dim of both) -> [b,m,n].
+        use std::time::Instant;
+        let (bt, m, k, n) = (8usize, 96usize, 96usize, 128usize);
+        let a: Vec<i64> = (0..bt * m * k as usize)
+            .map(|i| (i as i64).wrapping_mul(0x1_0000_0001))
+            .collect();
+        let b: Vec<i64> = (0..bt * n * k)
+            .map(|i| (i as i64).wrapping_mul(0x3_0000_0007))
+            .collect();
+        let lhs = tensor_i64(vec![bt as u32, m as u32, k as u32], &a);
+        let rhs = tensor_i64(vec![bt as u32, n as u32, k as u32], &b);
+        let params = BTreeMap::from([
+            ("lhs_batch_dims".to_owned(), "0".to_owned()),
+            ("rhs_batch_dims".to_owned(), "0".to_owned()),
+            ("lhs_contracting_dims".to_owned(), "2".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "2".to_owned()),
+        ]);
+        let inputs = [lhs, rhs];
+
+        // OLD path: faithful copy of the replaced generic strided odometer — per
+        // output element decodes batch/free multi-indices, and per contract step
+        // allocates a contract multi-index via linear_to_multi_index + sums strides
+        // over each dim group (exactly the replaced eval_dot_general parallel loop).
+        let odometer = || -> Vec<i64> {
+            let (Value::Tensor(l), Value::Tensor(r)) = (&inputs[0], &inputs[1]) else {
+                unreachable!()
+            };
+            let lhs_strides = compute_strides(&l.shape.dims);
+            let rhs_strides = compute_strides(&r.shape.dims);
+            let le = l.elements.as_i64_slice().unwrap();
+            let re = r.elements.as_i64_slice().unwrap();
+            let (lbatch, rbatch) = (vec![0usize], vec![0usize]);
+            let (lfree, rfree) = (vec![1usize], vec![1usize]);
+            let (lcon, rcon) = (vec![2usize], vec![2usize]);
+            let (batch_ranges, lhs_free_ranges, rhs_free_ranges, contract_ranges) = (
+                vec![bt as u32],
+                vec![m as u32],
+                vec![n as u32],
+                vec![k as u32],
+            );
+            let out_count = bt * m * n;
+            let mut out = vec![0i64; out_count];
+            let threads = std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1)
+                .min(out_count);
+            let chunk = out_count.div_ceil(threads);
+            std::thread::scope(|scope| {
+                let mut rest = out.as_mut_slice();
+                let mut start = 0usize;
+                while start < out_count {
+                    let len = chunk.min(out_count - start);
+                    let (blk, tail) = rest.split_at_mut(len);
+                    rest = tail;
+                    let s = start;
+                    let (ls, rs) = (&lhs_strides, &rhs_strides);
+                    let (br, lfr, rfr, cr) =
+                        (&batch_ranges, &lhs_free_ranges, &rhs_free_ranges, &contract_ranges);
+                    let (lb, rb, lf, rf, lc, rc) =
+                        (&lbatch, &rbatch, &lfree, &rfree, &lcon, &rcon);
+                    scope.spawn(move || {
+                        for (idx, slot) in blk.iter_mut().enumerate() {
+                            let o = s + idx;
+                            let rhs_free_flat = o % n;
+                            let t2 = o / n;
+                            let lhs_free_flat = t2 % m;
+                            let batch_flat = (t2 / m) % bt;
+                            let batch_idx = linear_to_multi_index(batch_flat, br);
+                            let lhs_free_idx = linear_to_multi_index(lhs_free_flat, lfr);
+                            let rhs_free_idx = linear_to_multi_index(rhs_free_flat, rfr);
+                            let mut acc = 0i64;
+                            for kk in 0..k {
+                                let contract_idx = linear_to_multi_index(kk, cr);
+                                let mut li = 0usize;
+                                for (i2, &d) in lb.iter().enumerate() {
+                                    li += batch_idx[i2] * ls[d];
+                                }
+                                for (i2, &d) in lf.iter().enumerate() {
+                                    li += lhs_free_idx[i2] * ls[d];
+                                }
+                                for (i2, &d) in lc.iter().enumerate() {
+                                    li += contract_idx[i2] * ls[d];
+                                }
+                                let mut ri = 0usize;
+                                for (i2, &d) in rb.iter().enumerate() {
+                                    ri += batch_idx[i2] * rs[d];
+                                }
+                                for (i2, &d) in rf.iter().enumerate() {
+                                    ri += rhs_free_idx[i2] * rs[d];
+                                }
+                                for (i2, &d) in rc.iter().enumerate() {
+                                    ri += contract_idx[i2] * rs[d];
+                                }
+                                acc = acc.wrapping_add(le[li].wrapping_mul(re[ri]));
+                            }
+                            *slot = acc;
+                        }
+                    });
+                    start += len;
+                }
+            });
+            out
+        };
+
+        let best = |mut f: Box<dyn FnMut()>| -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..10 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let old = best(Box::new(|| {
+            std::hint::black_box(odometer());
+        }));
+        let new = best(Box::new(|| {
+            std::hint::black_box(eval_dot_general(&inputs, &params).unwrap());
+        }));
+        println!(
+            "BENCH i64 dot_general [{bt},{m},{n}]/k={k}: odometer {:.3}ms -> GEMM {:.3}ms = {:.2}x",
+            old * 1e3,
+            new * 1e3,
+            old / new
+        );
     }
 
     #[test]
