@@ -5037,6 +5037,33 @@ fn one_hot_params_for_leading_batch(
 
 // ── Passthrough Leading Dim (Gather, Scatter, DynamicSlice, etc.) ──
 
+/// Primitives whose generic batched passthrough (one `eval_primitive` per slice) is
+/// an EXPENSIVE O(n³) per-matrix factorization (blocked LU): vmap over a batch of
+/// these is fully serial today, and each per-slice eval is itself serial at moderate
+/// `n` (below the internal matmul threading threshold), so fanning the batch out
+/// across threads pays. Cheap / memory-bound passthrough ops (gather, control flow,
+/// reshape, …) stay serial — threading them is spawn-dominated and regresses.
+#[inline]
+fn passthrough_expensive_linalg(primitive: Primitive) -> bool {
+    matches!(
+        primitive,
+        Primitive::Solve | Primitive::Det | Primitive::Lu | Primitive::Slogdet
+    )
+}
+
+/// O(n³)-ish work estimate for a batched passthrough whose per-slice input is an
+/// `n×n` matrix: per-slice element count ≈ `n²`, so `n³ ≈ per_slice · √per_slice`.
+fn passthrough_work_estimate(batched: &Value, batch_size: usize) -> usize {
+    if batch_size == 0 {
+        return 0;
+    }
+    let total = batched.as_tensor().map(|t| t.elements.len()).unwrap_or(0);
+    let per_slice = total / batch_size;
+    batch_size
+        .saturating_mul(per_slice)
+        .saturating_mul(per_slice.isqrt())
+}
+
 fn batch_passthrough_leading(
     primitive: Primitive,
     inputs: &[BatchTracer],
@@ -5069,18 +5096,68 @@ fn batch_passthrough_leading(
         .collect();
     let values = values?;
 
-    // Loop over batch dimension and evaluate per slice
-    let mut results = Vec::with_capacity(batch_size);
-    for i in 0..batch_size {
-        let slices: Result<Vec<Value>, BatchError> = values
-            .iter()
-            .map(|value| value.slice_for_batch(i))
-            .collect();
-        let slices = slices?;
-        let r = eval_primitive(primitive, &slices, params)
-            .map_err(|e| BatchError::EvalError(e.to_string()))?;
-        results.push(r);
-    }
+    // For EXPENSIVE linalg primitives (O(n³) per slice), fan the per-slice eval out
+    // across a work-scaled thread count — each slice is independent and the per-slice
+    // eval is serial at moderate n. Cheap / control-flow passthrough stays serial.
+    let threads = if passthrough_expensive_linalg(primitive) {
+        batch_parallel_threads(
+            passthrough_work_estimate(&batched.value, batch_size),
+            batch_size,
+        )
+    } else {
+        1
+    };
+
+    let results: Vec<Value> = if threads <= 1 {
+        let mut results = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            let slices: Result<Vec<Value>, BatchError> = values
+                .iter()
+                .map(|value| value.slice_for_batch(i))
+                .collect();
+            let r = eval_primitive(primitive, &slices?, params)
+                .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            results.push(r);
+        }
+        results
+    } else {
+        // BIT-IDENTICAL: each slice is eval'd by the same deterministic
+        // `eval_primitive` and written to its fixed batch index; only execution order
+        // changes. Errors are captured per slot and surfaced in batch order.
+        let mut slots: Vec<Option<Result<Value, BatchError>>> =
+            (0..batch_size).map(|_| None).collect();
+        let values_ref = &values;
+        let per = batch_size.div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut rest = slots.as_mut_slice();
+            let mut start = 0usize;
+            while start < batch_size {
+                let cnt = per.min(batch_size - start);
+                let (chunk, tail) = rest.split_at_mut(cnt);
+                rest = tail;
+                let s0 = start;
+                scope.spawn(move || {
+                    for (j, slot) in chunk.iter_mut().enumerate() {
+                        let i = s0 + j;
+                        let r = values_ref
+                            .iter()
+                            .map(|value| value.slice_for_batch(i))
+                            .collect::<Result<Vec<Value>, BatchError>>()
+                            .and_then(|slices| {
+                                eval_primitive(primitive, &slices, params)
+                                    .map_err(|e| BatchError::EvalError(e.to_string()))
+                            });
+                        *slot = Some(r);
+                    }
+                });
+                start += cnt;
+            }
+        });
+        slots
+            .into_iter()
+            .map(|slot| slot.expect("every batch slot filled"))
+            .collect::<Result<Vec<Value>, BatchError>>()?
+    };
 
     let stacked =
         TensorValue::stack_axis0(&results).map_err(|e| BatchError::TensorError(e.to_string()))?;
@@ -5138,8 +5215,7 @@ fn batch_passthrough_leading_multi(
         .collect();
     let values = values?;
 
-    let mut per_output: Option<Vec<Vec<Value>>> = None;
-    for i in 0..batch_size {
+    let slice_eval = |i: usize| -> Result<Vec<Value>, BatchError> {
         let slices: Result<Vec<Value>, BatchError> = values
             .iter()
             .map(|v| match v {
@@ -5149,28 +5225,67 @@ fn batch_passthrough_leading_multi(
                 Value::Scalar(_) => Ok(v.clone()),
             })
             .collect();
-        let outputs = eval_primitive_multi(primitive, &slices?, params)
-            .map_err(|e| BatchError::EvalError(e.to_string()))?;
+        eval_primitive_multi(primitive, &slices?, params)
+            .map_err(|e| BatchError::EvalError(e.to_string()))
+    };
 
-        let buckets = per_output.get_or_insert_with(|| {
-            (0..outputs.len())
-                .map(|_| Vec::with_capacity(batch_size))
-                .collect()
+    // EXPENSIVE linalg (Lu/Slogdet, O(n³) per slice) fans the per-slice eval out
+    // across a work-scaled thread count; cheap passthrough stays serial.
+    let threads = if passthrough_expensive_linalg(primitive) {
+        batch_parallel_threads(
+            passthrough_work_estimate(&batched.value, batch_size),
+            batch_size,
+        )
+    } else {
+        1
+    };
+
+    // Per-slice multi-outputs, in batch order (bit-identical to the serial loop).
+    let per_slice: Vec<Vec<Value>> = if threads <= 1 {
+        (0..batch_size).map(slice_eval).collect::<Result<_, _>>()?
+    } else {
+        let mut slots: Vec<Option<Result<Vec<Value>, BatchError>>> =
+            (0..batch_size).map(|_| None).collect();
+        let slice_eval_ref = &slice_eval;
+        let per = batch_size.div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut rest = slots.as_mut_slice();
+            let mut start = 0usize;
+            while start < batch_size {
+                let cnt = per.min(batch_size - start);
+                let (chunk, tail) = rest.split_at_mut(cnt);
+                rest = tail;
+                let s0 = start;
+                scope.spawn(move || {
+                    for (j, slot) in chunk.iter_mut().enumerate() {
+                        *slot = Some(slice_eval_ref(s0 + j));
+                    }
+                });
+                start += cnt;
+            }
         });
-        if buckets.len() != outputs.len() {
+        slots
+            .into_iter()
+            .map(|slot| slot.expect("every batch slot filled"))
+            .collect::<Result<_, _>>()?
+    };
+
+    // Transpose [slice][output] → [output][slice] and stack each output.
+    let arity = per_slice.first().map(|o| o.len()).unwrap_or(0);
+    let mut buckets: Vec<Vec<Value>> = (0..arity).map(|_| Vec::with_capacity(batch_size)).collect();
+    for outputs in per_slice {
+        if outputs.len() != arity {
             return Err(BatchError::InterpreterError(format!(
                 "primitive {} returned inconsistent output arity across batch slices",
                 primitive.as_str()
             )));
         }
-
         for (bucket, output) in buckets.iter_mut().zip(outputs) {
             bucket.push(output);
         }
     }
 
-    per_output
-        .unwrap_or_default()
+    buckets
         .into_iter()
         .map(|outputs| {
             TensorValue::stack_axis0(&outputs)
@@ -9746,6 +9861,179 @@ mod tests {
             );
             assert_f64_close(&extract_f64_vec(&actual.value), &extract_f64_vec(&stacked));
         }
+    }
+
+    /// Deterministic well-conditioned (strongly diagonally-dominant) n×n matrix.
+    fn diag_dominant_matrix(n: usize, seed: usize) -> Vec<f64> {
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = (((i * 17 + j * 29 + seed * 13 + 5) % 11) as f64 - 5.0) * 0.1;
+            }
+            a[i * n + i] += n as f64;
+        }
+        a
+    }
+
+    #[test]
+    fn batch_lu_passthrough_parallel_matches_oracle() {
+        // A batch large enough to trip the work-scaled fan-out in
+        // batch_passthrough_leading_multi (Lu is the expensive-linalg allowlist) must
+        // produce exactly the per-slice oracle — Lu's partial-pivot factorization is
+        // unique, so the multi-output oracle is sign/order-unambiguous.
+        let (batch, n) = (64usize, 48usize);
+        let mut data = Vec::with_capacity(batch * n * n);
+        let mut matrices = Vec::with_capacity(batch);
+        for b in 0..batch {
+            let a = diag_dominant_matrix(n, b);
+            matrices.push(make_f64_matrix(n, n, &a));
+            data.extend_from_slice(&a);
+        }
+        // Confirm the parallel branch is actually exercised.
+        assert!(
+            super::batch_parallel_threads(
+                super::passthrough_work_estimate(
+                    &make_f64_tensor(&[batch as u32, n as u32, n as u32], &data),
+                    batch
+                ),
+                batch
+            ) > 1
+        );
+        let input = BatchTracer::batched(
+            make_f64_tensor(&[batch as u32, n as u32, n as u32], &data),
+            0,
+        );
+        let outputs = apply_batch_rule_multi(Primitive::Lu, &[input], &BTreeMap::new()).unwrap();
+        assert_multi_matches_slice_oracle(Primitive::Lu, &outputs, &matrices, &BTreeMap::new());
+    }
+
+    #[test]
+    fn batch_solve_passthrough_parallel_matches_oracle() {
+        // vmap(solve) over a large batch trips the fan-out in batch_passthrough_leading
+        // (single output). solve's x = A⁻¹b is unique, so compare to the per-slice
+        // oracle directly (stack of eval_primitive(Solve) per slice).
+        let (batch, n) = (64usize, 48usize);
+        let mut a_data = Vec::with_capacity(batch * n * n);
+        let mut b_data = Vec::with_capacity(batch * n);
+        let mut expected = Vec::with_capacity(batch);
+        for bch in 0..batch {
+            let a = diag_dominant_matrix(n, bch);
+            let bvec: Vec<f64> = (0..n).map(|i| ((i * 7 + bch) % 13) as f64 - 6.0).collect();
+            let a_val = make_f64_matrix(n, n, &a);
+            let b_val = make_f64_vector(&bvec);
+            let x = eval_primitive(Primitive::Solve, &[a_val, b_val], &BTreeMap::new()).unwrap();
+            expected.push(x);
+            a_data.extend_from_slice(&a);
+            b_data.extend_from_slice(&bvec);
+        }
+        let a_input = BatchTracer::batched(
+            make_f64_tensor(&[batch as u32, n as u32, n as u32], &a_data),
+            0,
+        );
+        let b_input = BatchTracer::batched(make_f64_tensor(&[batch as u32, n as u32], &b_data), 0);
+        let result =
+            apply_batch_rule(Primitive::Solve, &[a_input, b_input], &BTreeMap::new()).unwrap();
+        let stacked = Value::Tensor(TensorValue::stack_axis0(&expected).unwrap());
+        assert_eq!(
+            result.value.as_tensor().unwrap().shape.dims,
+            stacked.as_tensor().unwrap().shape.dims
+        );
+        let bits = |v: &Value| {
+            extract_f64_vec(v)
+                .into_iter()
+                .map(f64::to_bits)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            bits(&result.value),
+            bits(&stacked),
+            "batched parallel solve not bit-identical to per-slice oracle"
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_batch_solve_passthrough_parallel_vs_serial() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        let run = |batch: usize, n: usize| {
+            let a_slices: Vec<Value> = (0..batch)
+                .map(|b| make_f64_matrix(n, n, &diag_dominant_matrix(n, b)))
+                .collect();
+            let b_slices: Vec<Value> = (0..batch)
+                .map(|b| {
+                    make_f64_vector(
+                        &(0..n)
+                            .map(|i| ((i + b) % 13) as f64 - 6.0)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            let a_ref = &a_slices;
+            let b_ref = &b_slices;
+            let serial = best_time(|| {
+                let mut out = Vec::with_capacity(batch);
+                for b in 0..batch {
+                    out.push(
+                        eval_primitive(
+                            Primitive::Solve,
+                            &[a_ref[b].clone(), b_ref[b].clone()],
+                            &BTreeMap::new(),
+                        )
+                        .unwrap(),
+                    );
+                }
+                std::hint::black_box(out);
+            });
+            let threads = super::batch_parallel_threads(batch * n * n * n, batch);
+            let parallel = best_time(|| {
+                let mut slots: Vec<Option<Value>> = (0..batch).map(|_| None).collect();
+                let per = batch.div_ceil(threads.max(1));
+                std::thread::scope(|scope| {
+                    let mut rest = slots.as_mut_slice();
+                    let mut start = 0usize;
+                    while start < batch {
+                        let cnt = per.min(batch - start);
+                        let (chunk, tail) = rest.split_at_mut(cnt);
+                        rest = tail;
+                        let s0 = start;
+                        scope.spawn(move || {
+                            for (j, slot) in chunk.iter_mut().enumerate() {
+                                let b = s0 + j;
+                                *slot = Some(
+                                    eval_primitive(
+                                        Primitive::Solve,
+                                        &[a_ref[b].clone(), b_ref[b].clone()],
+                                        &BTreeMap::new(),
+                                    )
+                                    .unwrap(),
+                                );
+                            }
+                        });
+                        start += cnt;
+                    }
+                });
+                std::hint::black_box(slots);
+            });
+            println!(
+                "BENCH batch solve batch={batch} n={n} (threads={threads}): serial {:.3}ms -> parallel {:.3}ms = {:.2}x",
+                serial * 1e3,
+                parallel * 1e3,
+                serial / parallel
+            );
+        };
+        run(64, 48);
+        run(128, 64);
+        run(256, 96);
     }
 
     #[test]
