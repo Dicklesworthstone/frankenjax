@@ -797,7 +797,9 @@ fn bench_scalar_mul_64k_i64_literal_reference(c: &mut Criterion) {
 // path (bead frankenjax-d15qd) vs the Vec<Literal> generic per-element broadcast.
 // relu/clamp are lone ops (never fuse), so the generic path is what they hit today.
 fn relu_f32_dense_64k() -> Value {
-    let data: Vec<f32> = (0..LARGE_ELEMENTWISE_LEN).map(|i| i as f32 * 1e-3 - 30.0).collect();
+    let data: Vec<f32> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| i as f32 * 1e-3 - 30.0)
+        .collect();
     Value::Tensor(
         TensorValue::new_f32_values(Shape::vector(LARGE_ELEMENTWISE_LEN as u32), data).unwrap(),
     )
@@ -2010,7 +2012,9 @@ fn bench_reduce_sum_64k_i64_literal_reference(c: &mut Criterion) {
 // stride). Both accumulate in a single f64 accumulator ascending, so bit-identical.
 // Same-invocation A/B. This is the softmax-denominator / loss / norm hot path.
 fn bench_reduce_sum_64k_f32_dense(c: &mut Criterion) {
-    let data: Vec<f32> = (0..LARGE_ELEMENTWISE_LEN).map(|i| (i as f32) * 1e-3).collect();
+    let data: Vec<f32> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| (i as f32) * 1e-3)
+        .collect();
     let input = Value::Tensor(
         TensorValue::new_f32_values(Shape::vector(LARGE_ELEMENTWISE_LEN as u32), data).unwrap(),
     );
@@ -2086,10 +2090,12 @@ fn bench_reduce_sum_64k_bf16_literal_reference(c: &mut Criterion) {
 // dense path now widens u16->f32 and folds via a SIMD min/max reduce.
 fn bench_reduce_max_64k_bf16_dense(c: &mut Criterion) {
     let bits: Vec<u16> = (0..LARGE_ELEMENTWISE_LEN)
-        .map(|i| match Literal::from_bf16_f64(((i % 4099) as f64) * 1e-2 - 20.0) {
-            Literal::BF16Bits(b) => b,
-            _ => unreachable!(),
-        })
+        .map(
+            |i| match Literal::from_bf16_f64(((i % 4099) as f64) * 1e-2 - 20.0) {
+                Literal::BF16Bits(b) => b,
+                _ => unreachable!(),
+            },
+        )
         .collect();
     let input = Value::Tensor(
         TensorValue::new_half_float_values(
@@ -2110,14 +2116,22 @@ fn bench_reduce_max_64k_bf16_dense(c: &mut Criterion) {
 fn bench_reduce_max_axis1_256_bf16(c: &mut Criterion) {
     let n = 256usize;
     let bits: Vec<u16> = (0..n * n)
-        .map(|i| match Literal::from_bf16_f64(((i % 4099) as f64) * 1e-2 - 20.0) {
-            Literal::BF16Bits(b) => b,
-            _ => unreachable!(),
-        })
+        .map(
+            |i| match Literal::from_bf16_f64(((i % 4099) as f64) * 1e-2 - 20.0) {
+                Literal::BF16Bits(b) => b,
+                _ => unreachable!(),
+            },
+        )
         .collect();
     let input = Value::Tensor(
-        TensorValue::new_half_float_values(DType::BF16, Shape { dims: vec![n as u32, n as u32] }, bits)
-            .unwrap(),
+        TensorValue::new_half_float_values(
+            DType::BF16,
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            bits,
+        )
+        .unwrap(),
     );
     let mut p = BTreeMap::new();
     p.insert("axes".to_owned(), "1".to_owned());
@@ -2698,9 +2712,17 @@ fn bench_reduce_max_64k_f64_literal_reference(c: &mut Criterion) {
 // reduce instead of the scalar jax_max fold.
 fn bench_reduce_max_axis1_256_f64(c: &mut Criterion) {
     let n = 256usize;
-    let data: Vec<f64> = (0..n * n).map(|i| ((i % 4099) as f64) * 0.013 - 26.0).collect();
+    let data: Vec<f64> = (0..n * n)
+        .map(|i| ((i % 4099) as f64) * 0.013 - 26.0)
+        .collect();
     let input = Value::Tensor(
-        TensorValue::new_f64_values(Shape { dims: vec![n as u32, n as u32] }, data).unwrap(),
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            data,
+        )
+        .unwrap(),
     );
     let mut p = BTreeMap::new();
     p.insert("axes".to_owned(), "1".to_owned());
@@ -4112,9 +4134,12 @@ fn bench_i64_matmul_512_transposed_literal_reference(c: &mut Criterion) {
     let lhs = Value::Tensor(TensorValue::new(DType::I64, Shape { dims: dims.clone() }, a).unwrap());
     let rhs = Value::Tensor(TensorValue::new(DType::I64, Shape { dims }, b).unwrap());
     let p = i64_matmul_transposed_params();
-    c.bench_function("eval/matmul_512x512_i64_transposed_literal_ref", |bencher| {
-        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
-    });
+    c.bench_function(
+        "eval/matmul_512x512_i64_transposed_literal_ref",
+        |bencher| {
+            bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+        },
+    );
 }
 
 // Transposed i32 [512,512]·[512,512]ᵀ matmul: dense (i32 branch of
@@ -4153,9 +4178,12 @@ fn bench_i32_matmul_512_transposed_literal_reference(c: &mut Criterion) {
     let lhs = Value::Tensor(TensorValue::new(DType::I32, Shape { dims: dims.clone() }, a).unwrap());
     let rhs = Value::Tensor(TensorValue::new(DType::I32, Shape { dims }, b).unwrap());
     let p = i64_matmul_transposed_params();
-    c.bench_function("eval/matmul_512x512_i32_transposed_literal_ref", |bencher| {
-        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
-    });
+    c.bench_function(
+        "eval/matmul_512x512_i32_transposed_literal_ref",
+        |bencher| {
+            bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+        },
+    );
 }
 
 // Batched i32 [64,64,64]@[64,64,64]: dense (i32 branch of batched_rank2_i64_matmul,
@@ -4256,8 +4284,12 @@ fn bench_complex64_matmul_256_dense(c: &mut Criterion) {
         .collect();
     let dims = vec![n as u32, n as u32];
     let lhs = Value::Tensor(
-        TensorValue::new_complex_values(DType::Complex64, Shape { dims: dims.clone() }, vals.clone())
-            .unwrap(),
+        TensorValue::new_complex_values(
+            DType::Complex64,
+            Shape { dims: dims.clone() },
+            vals.clone(),
+        )
+        .unwrap(),
     );
     let rhs = Value::Tensor(
         TensorValue::new_complex_values(DType::Complex64, Shape { dims }, vals).unwrap(),
@@ -4271,11 +4303,21 @@ fn bench_complex64_matmul_256_dense(c: &mut Criterion) {
 fn bench_complex64_matmul_256_literal_reference(c: &mut Criterion) {
     let n = 256usize;
     let elems: Vec<Literal> = (0..(n * n) as i64)
-        .map(|i| Literal::from_complex64((i as f64 * 0.5 - 3.0) as f32, (i as f64 * -0.25 + 1.0) as f32))
+        .map(|i| {
+            Literal::from_complex64(
+                (i as f64 * 0.5 - 3.0) as f32,
+                (i as f64 * -0.25 + 1.0) as f32,
+            )
+        })
         .collect();
     let dims = vec![n as u32, n as u32];
     let lhs = Value::Tensor(
-        TensorValue::new(DType::Complex64, Shape { dims: dims.clone() }, elems.clone()).unwrap(),
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: dims.clone() },
+            elems.clone(),
+        )
+        .unwrap(),
     );
     let rhs = Value::Tensor(TensorValue::new(DType::Complex64, Shape { dims }, elems).unwrap());
     let p = i64_matmul_params();
@@ -4308,9 +4350,12 @@ fn bench_complex_matmul_256_transposed_dense(c: &mut Criterion) {
     let mut p = no_params();
     p.insert("lhs_contracting_dims".to_owned(), "1".to_owned());
     p.insert("rhs_contracting_dims".to_owned(), "1".to_owned());
-    c.bench_function("eval/matmul_256x256_complex128_transposed_dense", |bencher| {
-        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
-    });
+    c.bench_function(
+        "eval/matmul_256x256_complex128_transposed_dense",
+        |bencher| {
+            bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+        },
+    );
 }
 
 fn bench_complex_matmul_256_transposed_literal_reference(c: &mut Criterion) {
@@ -5006,7 +5051,12 @@ fn bench_qr_blocked_ab(c: &mut Criterion) {
         });
         c.bench_function(&format!("linalg/qr_{n}_blocked"), |bencher| {
             bencher.iter(|| {
-                black_box(fj_lax::linalg::qr_real_bench(black_box(a.clone()), n, n, true))
+                black_box(fj_lax::linalg::qr_real_bench(
+                    black_box(a.clone()),
+                    n,
+                    n,
+                    true,
+                ))
             })
         });
     }

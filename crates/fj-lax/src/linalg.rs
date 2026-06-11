@@ -841,6 +841,7 @@ fn eval_qr_real_matrix(
 /// columns `[j, col_end)` of the row-major `r` (stride `n`). Stores the reflector in
 /// the flat packed `v_store` (slot at `qr_reflector_offset(m, j)`) and its scale in
 /// `tau_store[j]`. `col_end == n` reproduces the original scalar factor loop exactly.
+#[allow(clippy::too_many_arguments)]
 fn qr_factor_col(
     r: &mut [f64],
     n: usize,
@@ -6364,7 +6365,10 @@ mod tests {
         }
         assert!(max_res < 1e-9, "QR reconstruction residual {max_res}");
         assert!(max_orth < 1e-9, "Q orthonormality residual {max_orth}");
-        assert!(max_vs_scalar < 1e-9, "blocked Q vs scalar Q {max_vs_scalar}");
+        assert!(
+            max_vs_scalar < 1e-9,
+            "blocked Q vs scalar Q {max_vs_scalar}"
+        );
     }
 
     #[test]

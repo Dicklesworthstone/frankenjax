@@ -240,10 +240,10 @@ fn fill_u32_bits(out: &mut [u32], global_start: usize, key: PRNGKey) {
 
     // Scalar tail (range length % LANES): same absolute counters, bit-identical
     // to the SIMD lanes per word.
-    for j in (chunks * LANES)..n {
+    for (j, slot) in out.iter_mut().enumerate().skip(chunks * LANES) {
         let i = (global_start + j) as u32;
         let [a, b] = threefry2x32(key.0, [0, i]);
-        out[j] = a ^ b;
+        *slot = a ^ b;
     }
 }
 
@@ -397,11 +397,11 @@ fn fill_uniform_simd(out: &mut [f64], global_start: usize, key: PRNGKey, minval:
 
     // Scalar tail (range length % LANES): same exact-f64 unit formula, same
     // absolute counters — bit-identical to the SIMD lanes per element.
-    for j in (chunks * LANES)..n {
+    for (j, slot) in out.iter_mut().enumerate().skip(chunks * LANES) {
         let i = (global_start + j) as u32;
         let [a, b] = threefry2x32(key.0, [0, i]);
         let mantissa = (a ^ b) >> 9;
-        out[j] = minval + f64::from(mantissa) * INV_2POW23 * scale;
+        *slot = minval + f64::from(mantissa) * INV_2POW23 * scale;
     }
 }
 
@@ -740,9 +740,7 @@ pub fn random_logistic(key: PRNGKey, count: usize, loc: f64, scale: f64) -> Vec<
     let uniforms = random_uniform(key, count, tiny, 1.0);
     // log(x) - log1p(-x); JAX computes it in exactly this two-term form rather
     // than as a single log(x/(1-x)) for accuracy as x -> 1.
-    map_uniforms_parallel(uniforms, move |x| {
-        loc + scale * (x.ln() - (-x).ln_1p())
-    })
+    map_uniforms_parallel(uniforms, move |x| loc + scale * (x.ln() - (-x).ln_1p()))
 }
 
 /// Generate random integers uniformly in [minval, maxval).
@@ -1306,6 +1304,8 @@ pub fn random_geometric(key: PRNGKey, count: usize, p: f64) -> Vec<u64> {
 
 #[cfg(test)]
 mod tests {
+    // Test-only `[(&str, fn(f64) -> f64); N]` transform tables.
+    #![allow(clippy::type_complexity)]
     use super::*;
 
     #[test]
@@ -1509,7 +1509,13 @@ mod tests {
         let key = PRNGKey([0x1357_9BDF, 0x2468_ACE0]);
         let (lo, scale) = (-2.0_f64, 5.0_f64);
         let whole = random_uniform_serial_simd(key, 50_000, lo, lo + scale);
-        for &(start, len) in &[(0usize, 13usize), (1, 8), (7, 9), (12_345, 6_789), (40_000, 9_999)] {
+        for &(start, len) in &[
+            (0usize, 13usize),
+            (1, 8),
+            (7, 9),
+            (12_345, 6_789),
+            (40_000, 9_999),
+        ] {
             let mut block = vec![0.0_f64; len];
             fill_uniform_simd(&mut block, start, key, lo, scale);
             for (j, b) in block.iter().enumerate() {
@@ -2472,8 +2478,7 @@ mod tests {
         let key = random_key(42);
         let n = 64; // ceil(3*ln(64)/ln(u32max)) = ceil(0.56) = 1 round
         let exponent = 3.0_f64;
-        let num_rounds =
-            (exponent * (n as f64).ln() / f64::from(u32::MAX).ln()).ceil() as usize;
+        let num_rounds = (exponent * (n as f64).ln() / f64::from(u32::MAX).ln()).ceil() as usize;
         assert_eq!(num_rounds, 1, "this test assumes the single-round regime");
 
         let (_next, subkey) = random_split(key);
@@ -2577,7 +2582,10 @@ mod tests {
             random_choice(key, 8, 4, true, None),
             random_choice(key, 8, 4, true, None)
         );
-        assert_eq!(random_choice(key, 5, 0, false, None).unwrap(), Vec::<usize>::new());
+        assert_eq!(
+            random_choice(key, 5, 0, false, None).unwrap(),
+            Vec::<usize>::new()
+        );
         assert_eq!(
             random_choice(key, 0, 3, true, None),
             Err(ChoiceError::EmptyPopulation)

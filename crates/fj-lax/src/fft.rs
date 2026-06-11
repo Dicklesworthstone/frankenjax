@@ -2205,7 +2205,12 @@ mod tests {
         for &n in &[18usize, 24, 36, 50, 81, 125, 250, 1080] {
             assert!(is_mixed_radix_smooth(n), "n={n} should be smooth");
             let input: Vec<(f64, f64)> = (0..n)
-                .map(|j| ((j as f64 * 0.41).cos() * 3.0 - 0.7, (j as f64 * 0.23).sin() + 0.1))
+                .map(|j| {
+                    (
+                        (j as f64 * 0.41).cos() * 3.0 - 0.7,
+                        (j as f64 * 0.23).sin() + 0.1,
+                    )
+                })
                 .collect();
             assert_complex_close(&fft_1d(&input), &dft_1d(&input), 1e-9);
             assert_complex_close(&ifft_1d(&input), &idft_1d(&input), 1e-9);
@@ -2214,7 +2219,9 @@ mod tests {
         // A prime length stays on Bluestein and must still match the DFT.
         let p = 59usize;
         assert!(!is_mixed_radix_smooth(p));
-        let pin: Vec<(f64, f64)> = (0..p).map(|j| (j as f64 * 0.1, -(j as f64) * 0.05)).collect();
+        let pin: Vec<(f64, f64)> = (0..p)
+            .map(|j| (j as f64 * 0.1, -(j as f64) * 0.05))
+            .collect();
         assert_complex_close(&fft_1d(&pin), &dft_1d(&pin), 1e-9);
     }
 

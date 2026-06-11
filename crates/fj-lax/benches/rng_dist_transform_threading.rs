@@ -61,7 +61,14 @@ fn main() {
     let key = random_key(0x1234_5678_9ABC_DEF0);
     let eps = f64::from(f32::EPSILON);
     let tiny = f64::from(f32::MIN_POSITIVE);
-    for &count in &[131_072_usize, 262_144, 524_288, 1_048_576, 4_194_304, 16_777_216] {
+    for &count in &[
+        131_072_usize,
+        262_144,
+        524_288,
+        1_048_576,
+        4_194_304,
+        16_777_216,
+    ] {
         // Cauchy: tan transform.
         bench_case(
             "cauchy(tan)",

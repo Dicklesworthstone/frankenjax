@@ -115,7 +115,9 @@ mod tests {
     use super::*;
 
     fn mk(len: usize, salt: f32) -> Vec<f32> {
-        (0..len).map(|i| (i as f32 * salt).sin() * 1.3 - 0.2).collect()
+        (0..len)
+            .map(|i| (i as f32 * salt).sin() * 1.3 - 0.2)
+            .collect()
     }
 
     #[test]

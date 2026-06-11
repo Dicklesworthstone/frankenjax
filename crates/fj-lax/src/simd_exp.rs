@@ -20,6 +20,7 @@
 //!   * default portable build (NO `+fma`): **0.79x** — SLOWER than libm. Without FMA the
 //!     degree-13 Horner `mul_add` chain either libcalls `fma()` (very slow) or de-fuses to
 //!     mul+add (≈0.8x), and glibc's scalar `exp` is already well-optimized (~4.5ns/elem).
+//!
 //! CONCLUSION for cz0g0: SIMD-poly `exp` needs BOTH (a) the polynomial approximation
 //! (breaks the exp self-golden) AND (b) FMA contraction (breaks bit-exact-to-ijk-style
 //! accumulation, same parity class). With both, f64 gets ~2.2x; f32/bf16 (wider vectors,
@@ -48,9 +49,13 @@ const LOG2E: f64 = std::f64::consts::LOG2_E; // 1/ln2
 // Cody-Waite split of ln2: LN2_HI is exactly representable (11355 * 2^-14), so for the
 // `n` magnitudes that survive the overflow clamp, `n * LN2_HI` is exact.
 const LN2_HI: f64 = 6.931_457_519_531_25e-1;
+// Full-precision Cody-Waite / clamp constants: the trailing digits document the
+// intended mathematical value (they round to the same f64), so keep them verbatim.
+#[allow(clippy::excessive_precision)]
 const LN2_LO: f64 = 1.428_606_820_309_417_232_12e-6;
 // Past these, exp overflows to +inf / underflows to 0 in f64.
 const OVERFLOW_X: f64 = 709.782_712_893_384;
+#[allow(clippy::excessive_precision)]
 const UNDERFLOW_X: f64 = -745.133_219_101_941_22;
 
 // Taylor coefficients 1/k! for k = 0..=13 (Horner evaluates from C[13] down to C[0]).
@@ -184,7 +189,9 @@ mod tests {
             xs.push(x);
             x += 0.013;
         }
-        for &v in &[-1e-12, -0.0, 0.0, 1e-12, 1.0, -1.0, 0.5, -0.5, 88.0, -88.0, 700.0] {
+        for &v in &[
+            -1e-12, -0.0, 0.0, 1e-12, 1.0, -1.0, 0.5, -0.5, 88.0, -88.0, 700.0,
+        ] {
             xs.push(v);
         }
         // Pad to a non-multiple of 8 so the scalar tail path is exercised.

@@ -3563,7 +3563,11 @@ fn eval_reduce_window(
     let dilated_input_dims: Vec<usize> = (0..rank)
         .map(|d| {
             let n = tensor.shape.dims[d] as usize;
-            if n == 0 { 0 } else { (n - 1) * base_dilation[d] + 1 }
+            if n == 0 {
+                0
+            } else {
+                (n - 1) * base_dilation[d] + 1
+            }
         })
         .collect();
 
@@ -3811,7 +3815,7 @@ fn eval_reduce_window(
                 // real operand element, so it contributes the reduction init value — handled
                 // identically to an out-of-bounds/padding tap (`pad_literal`). For `db == 1`
                 // this never triggers and `real_pos == input_pos` (bit-identical).
-                if input_pos % base_dilation[d] != 0 {
+                if !input_pos.is_multiple_of(base_dilation[d]) {
                     in_bounds = false;
                     break;
                 }
@@ -3908,7 +3912,9 @@ mod tests {
             )
         };
         let out_i64s = |v: &Value| -> Vec<i64> {
-            let Value::Tensor(t) = v else { panic!("tensor") };
+            let Value::Tensor(t) = v else {
+                panic!("tensor")
+            };
             assert_eq!(t.dtype, DType::I32, "result must stay I32");
             t.elements
                 .iter()
@@ -3962,7 +3968,10 @@ mod tests {
         dot_p.insert("rhs_contracting_dims".to_owned(), "0".to_owned());
         let r = eval_primitive(
             Primitive::DotGeneral,
-            &[i32t(vec![1, 2], &[100_000, 100_000]), i32t(vec![2, 1], &[100_000, 100_000])],
+            &[
+                i32t(vec![1, 2], &[100_000, 100_000]),
+                i32t(vec![2, 1], &[100_000, 100_000]),
+            ],
             &dot_p,
         )
         .unwrap();
@@ -10352,10 +10361,14 @@ mod tests {
         // with the reduction init value in the holes. Cover sum (init 0) and max (init
         // -inf) over a 2-D operand with asymmetric per-axis dilation and a stride.
         let dims = [3usize, 4usize];
-        let data: Vec<f64> = (0..(dims[0] * dims[1])).map(|i| (i as f64) * 0.5 - 2.0).collect();
+        let data: Vec<f64> = (0..(dims[0] * dims[1]))
+            .map(|i| (i as f64) * 0.5 - 2.0)
+            .collect();
         let operand = Value::Tensor(
             TensorValue::new_f64_values(
-                Shape { dims: vec![dims[0] as u32, dims[1] as u32] },
+                Shape {
+                    dims: vec![dims[0] as u32, dims[1] as u32],
+                },
                 data.clone(),
             )
             .unwrap(),
@@ -10375,7 +10388,9 @@ mod tests {
             }
             let dilated_operand = Value::Tensor(
                 TensorValue::new_f64_values(
-                    Shape { dims: vec![dd[0] as u32, dd[1] as u32] },
+                    Shape {
+                        dims: vec![dd[0] as u32, dd[1] as u32],
+                    },
                     dilated,
                 )
                 .unwrap(),
@@ -10383,9 +10398,12 @@ mod tests {
 
             let mut p_dil = rw_params(op, "2,2", "2,1");
             p_dil.insert("base_dilation".to_owned(), "2,3".to_owned());
-            let got =
-                eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&operand), &p_dil)
-                    .unwrap();
+            let got = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&operand),
+                &p_dil,
+            )
+            .unwrap();
 
             let p_ref = rw_params(op, "2,2", "2,1"); // base_dilation defaults to 1
             let want = eval_primitive(
@@ -10399,8 +10417,16 @@ mod tests {
                 panic!("expected tensors")
             };
             assert_eq!(gt.shape.dims, wt.shape.dims, "{op}: shape mismatch");
-            let gv: Vec<u64> = gt.elements.iter().map(|l| l.as_f64().unwrap().to_bits()).collect();
-            let wv: Vec<u64> = wt.elements.iter().map(|l| l.as_f64().unwrap().to_bits()).collect();
+            let gv: Vec<u64> = gt
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect();
+            let wv: Vec<u64> = wt
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect();
             assert_eq!(gv, wv, "{op}: base_dilation != explicit dilated operand");
         }
     }

@@ -41,7 +41,12 @@ fn bench_one(count: usize) {
 
     let t0 = Instant::now();
     for _ in 0..iters {
-        black_box(random_uniform_serial_simd(black_box(key), black_box(count), lo, hi));
+        black_box(random_uniform_serial_simd(
+            black_box(key),
+            black_box(count),
+            lo,
+            hi,
+        ));
     }
     let serial = t0.elapsed().as_secs_f64() / iters as f64;
 

@@ -1355,7 +1355,14 @@ fn batched_matmul_row_block_bf16_in_scalar(
 ///   "f32simd" — native-f32-accum SIMD (production), "f64simd" — prior f64-accum
 ///   SIMD (a71f4c78), "f64scalar" — original scalar f64-accum reference.
 #[doc(hidden)]
-pub fn bf16_matmul_bench(a: &[u16], m: usize, k: usize, b: &[u16], n: usize, mode: &str) -> Vec<u16> {
+pub fn bf16_matmul_bench(
+    a: &[u16],
+    m: usize,
+    k: usize,
+    b: &[u16],
+    n: usize,
+    mode: &str,
+) -> Vec<u16> {
     let mut out = vec![0u16; m * n];
     match mode {
         "f64simd" => batched_matmul_row_block_bf16_in_f64acc(a, b, m, k, n, 0, &mut out),
@@ -1370,7 +1377,14 @@ pub fn bf16_matmul_bench(a: &[u16], m: usize, k: usize, b: &[u16], n: usize, mod
 /// prior promote path (decode F16->f64, f64 [`batched_matmul_2d`], round F16) so the
 /// native-f32 lever's speedup is measurable in one process.
 #[doc(hidden)]
-pub fn f16_matmul_bench(a: &[u16], m: usize, k: usize, b: &[u16], n: usize, native: bool) -> Vec<u16> {
+pub fn f16_matmul_bench(
+    a: &[u16],
+    m: usize,
+    k: usize,
+    b: &[u16],
+    n: usize,
+    native: bool,
+) -> Vec<u16> {
     if native {
         return batched_matmul_2d_f16_in(a, 1, m, k, b, n);
     }
@@ -1479,11 +1493,7 @@ pub fn batched_matmul_2d_f16_in(
     b: &[u16],
     n: usize,
 ) -> Vec<u16> {
-    let decode = |bits: u16| -> f32 {
-        fj_core::Literal::F16Bits(bits)
-            .as_f16_f32()
-            .unwrap_or(0.0)
-    };
+    let decode = |bits: u16| -> f32 { fj_core::Literal::F16Bits(bits).as_f16_f32().unwrap_or(0.0) };
     let a32: Vec<f32> = a.iter().map(|&x| decode(x)).collect();
     let b32: Vec<f32> = b.iter().map(|&x| decode(x)).collect();
     let out32 = batched_matmul_2d_f32_in(&a32, batch, m, k, &b32, n);
@@ -1516,7 +1526,9 @@ fn batched_matmul_row_block_bf16_in(
         let bt = g / m;
         let a_off = g * k;
         let b_off = bt * k * n;
-        acc_chunks.iter_mut().for_each(|acc| *acc = F32xN::splat(0.0));
+        acc_chunks
+            .iter_mut()
+            .for_each(|acc| *acc = F32xN::splat(0.0));
         acc_tail.iter_mut().for_each(|x| *x = 0.0);
         for l in 0..k {
             let a_scalar = bf16_bits_to_f32(a[a_off + l]);
@@ -1565,7 +1577,9 @@ fn batched_matmul_row_block_bf16_in_f64acc(
         let bt = g / m;
         let a_off = g * k;
         let b_off = bt * k * n;
-        acc_chunks.iter_mut().for_each(|acc| *acc = F64xN::splat(0.0));
+        acc_chunks
+            .iter_mut()
+            .for_each(|acc| *acc = F64xN::splat(0.0));
         acc_tail.iter_mut().for_each(|x| *x = 0.0);
         for l in 0..k {
             let a_scalar = bf16_bits_to_f64(a[a_off + l]);
@@ -1978,7 +1992,10 @@ mod tests {
             let yv = bf16_bits_to_f32(*y);
             let diff = (xv - yv).abs();
             // bf16 has a ~7-bit mantissa; allow up to a couple of bf16 ULP-scale steps.
-            assert!(diff <= 0.06 * yv.abs().max(1.0), "f32 vs f64 accum diverged: {xv} vs {yv}");
+            assert!(
+                diff <= 0.06 * yv.abs().max(1.0),
+                "f32 vs f64 accum diverged: {xv} vs {yv}"
+            );
         }
     }
 

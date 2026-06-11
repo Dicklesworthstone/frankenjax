@@ -82,7 +82,9 @@ mod tests {
     use super::*;
 
     fn mk(len: usize, salt: f64) -> Vec<f64> {
-        (0..len).map(|i| (i as f64 * salt).sin() * 1.3 - 0.2).collect()
+        (0..len)
+            .map(|i| (i as f64 * salt).sin() * 1.3 - 0.2)
+            .collect()
     }
 
     #[test]
