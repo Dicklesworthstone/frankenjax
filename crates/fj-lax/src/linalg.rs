@@ -7095,6 +7095,216 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct JacobiSvdCounterReport {
+        sweeps: usize,
+        visited_pairs: usize,
+        accepted_rotations: usize,
+        skipped_rotations: usize,
+        per_sweep_pair_visits: Vec<usize>,
+        per_sweep_active_pairs: Vec<usize>,
+        zero_singular_columns: usize,
+        near_zero_singular_columns: usize,
+    }
+
+    fn svd_48_profile_matrix_data() -> Vec<f64> {
+        (0..48 * 48)
+            .map(|i| {
+                let x = i as f64;
+                (x * 0.125).sin() + (x * 0.03125).cos()
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn one_sided_jacobi_svd_real_counter_report(
+        m: usize,
+        n: usize,
+        a: &[f64],
+    ) -> JacobiSvdCounterReport {
+        let mut w = vec![0.0_f64; m * n];
+        let mut initial_norm_sq = vec![0.0_f64; n];
+        for row in 0..m {
+            for col in 0..n {
+                let value = a[row * n + col];
+                w[col * m + row] = value;
+                initial_norm_sq[col] += value * value;
+            }
+        }
+        let mut v = vec![0.0_f64; n * n];
+        for i in 0..n {
+            v[i * n + i] = 1.0;
+        }
+        let mut initial_order: Vec<usize> = (0..n).collect();
+        initial_order.sort_by(|&left, &right| {
+            initial_norm_sq[right]
+                .total_cmp(&initial_norm_sq[left])
+                .then_with(|| left.cmp(&right))
+        });
+        if initial_order
+            .iter()
+            .enumerate()
+            .any(|(idx, &col)| idx != col)
+        {
+            let mut ordered_w = vec![0.0_f64; m * n];
+            let mut ordered_v = vec![0.0_f64; n * n];
+            for (new_col, &old_col) in initial_order.iter().enumerate() {
+                let src = old_col * m;
+                let dst = new_col * m;
+                ordered_w[dst..dst + m].copy_from_slice(&w[src..src + m]);
+                ordered_v[new_col * n + old_col] = 1.0;
+            }
+            w = ordered_w;
+            v = ordered_v;
+        }
+
+        let eps = f64::EPSILON;
+        let max_sweeps = 60;
+        let mut visited_pairs = 0usize;
+        let mut accepted_rotations = 0usize;
+        let mut skipped_rotations = 0usize;
+        let mut per_sweep_pair_visits = Vec::new();
+        let mut per_sweep_active_pairs = Vec::new();
+        for _ in 0..max_sweeps {
+            let mut converged = true;
+            let mut sweep_pair_visits = 0usize;
+            let mut sweep_active_pairs = 0usize;
+            for p in 0..n.saturating_sub(1) {
+                for q in (p + 1)..n {
+                    visited_pairs += 1;
+                    sweep_pair_visits += 1;
+                    let mut alpha = 0.0_f64;
+                    let mut beta = 0.0_f64;
+                    let mut gamma = 0.0_f64;
+                    for i in 0..m {
+                        let wip = w[p * m + i];
+                        let wiq = w[q * m + i];
+                        alpha += wip * wip;
+                        beta += wiq * wiq;
+                        gamma += wip * wiq;
+                    }
+                    if gamma.abs() <= eps * (alpha * beta).sqrt() {
+                        skipped_rotations += 1;
+                        continue;
+                    }
+                    converged = false;
+                    accepted_rotations += 1;
+                    sweep_active_pairs += 1;
+                    let tau = (beta - alpha) / (2.0 * gamma);
+                    let t = if tau >= 0.0 {
+                        1.0 / (tau + (1.0 + tau * tau).sqrt())
+                    } else {
+                        -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                    };
+                    let c = 1.0 / (1.0 + t * t).sqrt();
+                    let s = t * c;
+                    for i in 0..m {
+                        let wip = w[p * m + i];
+                        let wiq = w[q * m + i];
+                        w[p * m + i] = c * wip - s * wiq;
+                        w[q * m + i] = s * wip + c * wiq;
+                    }
+                    for i in 0..n {
+                        let vip = v[p * n + i];
+                        let viq = v[q * n + i];
+                        v[p * n + i] = c * vip - s * viq;
+                        v[q * n + i] = s * vip + c * viq;
+                    }
+                }
+            }
+            per_sweep_pair_visits.push(sweep_pair_visits);
+            per_sweep_active_pairs.push(sweep_active_pairs);
+            if converged {
+                break;
+            }
+        }
+
+        let mut zero_singular_columns = 0usize;
+        let mut near_zero_singular_columns = 0usize;
+        for j in 0..n {
+            let mut s2 = 0.0_f64;
+            for i in 0..m {
+                let wij = w[j * m + i];
+                s2 += wij * wij;
+            }
+            let sigma = s2.sqrt();
+            if sigma == 0.0 {
+                zero_singular_columns += 1;
+            } else if sigma <= f64::EPSILON * 1e4 {
+                near_zero_singular_columns += 1;
+            }
+        }
+
+        JacobiSvdCounterReport {
+            sweeps: per_sweep_pair_visits.len(),
+            visited_pairs,
+            accepted_rotations,
+            skipped_rotations,
+            per_sweep_pair_visits,
+            per_sweep_active_pairs,
+            zero_singular_columns,
+            near_zero_singular_columns,
+        }
+    }
+
+    #[test]
+    fn one_sided_jacobi_svd_real_48x48_profile_counters() {
+        let data = svd_48_profile_matrix_data();
+        let report = one_sided_jacobi_svd_real_counter_report(48, 48, &data);
+
+        eprintln!("SVD 48x48 profile counters: {report:#?}");
+        assert_eq!(
+            report.visited_pairs,
+            report.accepted_rotations + report.skipped_rotations
+        );
+        assert_eq!(report.per_sweep_pair_visits.len(), report.sweeps);
+        assert_eq!(report.per_sweep_active_pairs.len(), report.sweeps);
+        assert!(
+            report.accepted_rotations > 0,
+            "profile target should exercise Jacobi rotations"
+        );
+        assert_eq!(report.sweeps, 13);
+        assert_eq!(report.visited_pairs, 14_664);
+        assert_eq!(report.accepted_rotations, 10_264);
+        assert_eq!(report.skipped_rotations, 4_400);
+        assert_eq!(
+            report.per_sweep_active_pairs,
+            vec![
+                1128, 1128, 1128, 1128, 1059, 957, 955, 961, 956, 711, 149, 4, 0
+            ]
+        );
+        assert_eq!(
+            report.zero_singular_columns, 0,
+            "benchmark fixture should have no exactly zero singular columns"
+        );
+        assert_eq!(
+            report.near_zero_singular_columns, 44,
+            "profile target's near-zero columns are the active-pair compaction signal"
+        );
+    }
+
+    #[test]
+    fn svd_48x48_f64_golden_output_digest() -> Result<(), Box<dyn std::error::Error>> {
+        let data = svd_48_profile_matrix_data();
+        let result = eval_svd(&[make_matrix(48, 48, &data)], &BTreeMap::new())?;
+        let output_bits: Vec<Vec<u64>> = result
+            .iter()
+            .map(|value| {
+                extract_f64_elements(value)
+                    .iter()
+                    .map(|element| element.to_bits())
+                    .collect()
+            })
+            .collect();
+        let digest = fj_test_utils::fixture_id_from_json(&output_bits)?;
+        eprintln!("SVD 48x48 f64 golden digest: {digest}");
+        assert_eq!(
+            digest, "6f1b0069586dda5b23d377bbb171a18ac0e24b6e0309dabc4ad0e0d2d1864d90",
+            "SVD 48x48 f64 golden output digest changed"
+        );
+        Ok(())
+    }
+
     fn one_sided_jacobi_svd_real_rowmajor_v_reference(
         m: usize,
         n: usize,
