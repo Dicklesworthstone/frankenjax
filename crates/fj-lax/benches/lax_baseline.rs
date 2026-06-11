@@ -1698,6 +1698,35 @@ fn bench_matmul_2d_512(c: &mut Criterion) {
     });
 }
 
+// f32 conv2d GEMM accumulation A/B at a ResNet-ish im2col shape (out=26x26=676 rows,
+// kdim=3*3*32=288, c_out=64). The im2col GATHER is identical for both paths, so the
+// GEMM accumulation ratio is the native-f32-conv lever's win: native f32 (16-lane
+// f32-accum, XLA parity) vs the prior promote (f32->f64, cache-blocked f64 GEMM).
+fn conv_gemm_shapes() -> (usize, usize, usize) {
+    (676usize, 288usize, 64usize) // num_rows, kdim, c_out
+}
+fn bench_conv2d_gemm_f32_native(c: &mut Criterion) {
+    let (rows, kdim, cout) = conv_gemm_shapes();
+    let col: Vec<f32> = (0..rows * kdim).map(|i| (i as f32 * 1e-3).sin()).collect();
+    let filt: Vec<f32> = (0..kdim * cout).map(|i| (i as f32 * 2e-3).cos()).collect();
+    c.bench_function("linalg/conv2d_gemm_f32_native", |bencher| {
+        bencher.iter(|| {
+            fj_lax::tensor_contraction::batched_matmul_2d_f32_in(&col, 1, rows, kdim, &filt, cout)
+        })
+    });
+}
+fn bench_conv2d_gemm_f64_promote_reference(c: &mut Criterion) {
+    let (rows, kdim, cout) = conv_gemm_shapes();
+    let col: Vec<f64> = (0..rows * kdim).map(|i| (i as f64 * 1e-3).sin()).collect();
+    let filt: Vec<f64> = (0..kdim * cout).map(|i| (i as f64 * 2e-3).cos()).collect();
+    c.bench_function("linalg/conv2d_gemm_f64_promote_ref", |bencher| {
+        bencher.iter(|| {
+            let out = fj_lax::tensor_contraction::matmul_2d(&col, rows, kdim, &filt, cout);
+            std::hint::black_box(out.iter().map(|&v| v as f32).collect::<Vec<f32>>())
+        })
+    });
+}
+
 fn bench_matmul_2d_1024(c: &mut Criterion) {
     // Large GEMM (B = 8MB, deeply spills L3): the regime where B-streaming
     // bandwidth, not the microkernel, binds. Used to measure panel-packing wins.
@@ -5072,6 +5101,8 @@ criterion_group!(
     bench_f16_matmul_512_f32accum,
     bench_f16_matmul_512_promote_reference,
     bench_matmul_2d_512,
+    bench_conv2d_gemm_f32_native,
+    bench_conv2d_gemm_f64_promote_reference,
     bench_matmul_2d_1024,
     bench_matmul_2d_2048,
     bench_conv2d_32x32x8_3x3x16_f64_vec,

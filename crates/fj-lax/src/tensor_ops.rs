@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::EvalError;
-use crate::tensor_contraction::matmul_2d;
+use crate::tensor_contraction::{batched_matmul_2d_f32_in, matmul_2d};
 use crate::type_promotion::{binary_literal_op, promote_dtype};
 
 /// Parse a comma-separated list of i64 values from a param string.
@@ -6141,6 +6141,23 @@ fn conv_real_elements_as_f64(tensor: &TensorValue) -> Option<Cow<'_, [f64]>> {
     Some(Cow::Owned(out))
 }
 
+/// Decode an `F32` conv operand to `f32` (borrowing a dense f32 backing, else
+/// unpacking boxed `F32Bits`). Used by the native-f32 conv path so f32 convolution
+/// accumulates in f32 (XLA parity) regardless of storage — never widening to f64.
+fn conv_f32_elements(tensor: &TensorValue) -> Option<Cow<'_, [f32]>> {
+    if let Some(values) = tensor.elements.as_f32_slice() {
+        return Some(Cow::Borrowed(values));
+    }
+    let mut out = Vec::with_capacity(tensor.elements.len());
+    for literal in &tensor.elements {
+        match literal {
+            Literal::F32Bits(b) => out.push(f32::from_bits(*b)),
+            _ => return None,
+        }
+    }
+    Some(Cow::Owned(out))
+}
+
 /// Build a conv output tensor from f64 accumulators, rounding each to `out_dtype`
 /// with `conv_float_literal_from_f64` (F64 keeps the dense new_f64_values path).
 fn conv_real_output_from_f64(
@@ -7149,13 +7166,118 @@ fn eval_conv_2d(
 
     let is_complex = matches!(out_dtype, DType::Complex64 | DType::Complex128);
 
+    // NATIVE f32 conv path (XLA parity: XLA accumulates f32 convolution in f32, NOT
+    // f64 — fj's f64-promote path was MORE precise than the reference, the same gap
+    // fixed for f32/bf16/f16 matmul). When the output is f32 and both operands are
+    // f32, accumulate the im2col GEMM / direct conv in f32 (16-lane native-f32 GEMM
+    // for the large case; ascending-(kh,kw,ci) f32 fold for the small case) — matching
+    // XLA and halving the im2col bytes. Storage-independent (dense f32 borrowed, boxed
+    // F32Bits unpacked). Bit-identical to the scalar f32-accum reference (same index
+    // math + ascending order; the native-f32 GEMM matches the scalar f32 fold per the
+    // cz0g0 contract). Verified by conv2d_f32_im2col_gemm_bit_identical_to_reference.
+    if out_dtype == DType::F32
+        && lhs.dtype == DType::F32
+        && rhs.dtype == DType::F32
+        && let (Some(lhs_f32), Some(rhs_f32)) = (conv_f32_elements(lhs), conv_f32_elements(rhs))
+    {
+        let kdim = kernel_h
+            .checked_mul(kernel_w)
+            .and_then(|v| v.checked_mul(c_in))
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "conv im2col kdim overflow".into(),
+            })?;
+        let conv_ops = total.saturating_mul(kdim);
+        if conv_ops >= CONV_IM2COL_MIN_OPS && kdim > 0 {
+            let kw_c_in = kernel_w * c_in;
+            let mut col = vec![0.0_f32; total / c_out * kdim];
+            for n in 0..batch {
+                let n_offset = n * height_width_c_in;
+                for oh in 0..out_h {
+                    for ow in 0..out_w {
+                        let row = (n * out_h + oh) * out_w + ow;
+                        let row_base = row * kdim;
+                        for kh in 0..kernel_h {
+                            let in_h = (oh * stride_h + kh * dil_h) as isize - pad_top as isize;
+                            if in_h < 0 || (in_h as usize) >= height {
+                                continue;
+                            }
+                            let h_offset = (in_h as usize) * width_c_in;
+                            for kw in 0..kernel_w {
+                                let in_w =
+                                    (ow * stride_w + kw * dil_w) as isize - pad_left as isize;
+                                if in_w < 0 || (in_w as usize) >= width {
+                                    continue;
+                                }
+                                let src_base = n_offset + h_offset + (in_w as usize) * c_in;
+                                let col_base = row_base + kh * kw_c_in + kw * c_in;
+                                col[col_base..col_base + c_in]
+                                    .copy_from_slice(&lhs_f32[src_base..src_base + c_in]);
+                            }
+                        }
+                    }
+                }
+            }
+            let num_rows = total / c_out;
+            let out = batched_matmul_2d_f32_in(&col, 1, num_rows, kdim, rhs_f32.as_ref(), c_out);
+            return Ok(Value::Tensor(TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
+                },
+                out,
+            )?));
+        }
+
+        // Small conv: direct ascending-(kh,kw,ci) f32 fold (below CONV_IM2COL_MIN_OPS,
+        // where the im2col buffer is not worth allocating). Same f32 accumulation.
+        let mut out = Vec::with_capacity(total);
+        for n in 0..batch {
+            let n_offset = n * height_width_c_in;
+            for oh in 0..out_h {
+                for ow in 0..out_w {
+                    for co in 0..c_out {
+                        let mut acc = 0.0_f32;
+                        for kh in 0..kernel_h {
+                            let in_h = (oh * stride_h + kh * dil_h) as isize - pad_top as isize;
+                            let h_oob = in_h < 0 || (in_h as usize) >= height;
+                            let h_offset = if h_oob { 0 } else { (in_h as usize) * width_c_in };
+                            for kw in 0..kernel_w {
+                                let in_w =
+                                    (ow * stride_w + kw * dil_w) as isize - pad_left as isize;
+                                let w_oob = in_w < 0 || (in_w as usize) >= width;
+                                let oob = h_oob || w_oob;
+                                let in_w_off = if w_oob { 0 } else { (in_w as usize) * c_in };
+                                for ci in 0..c_in {
+                                    let rhs_idx =
+                                        kh * kw_c_in_c_out + kw * c_in_c_out + ci * c_out + co;
+                                    let lhs_val = if oob {
+                                        0.0
+                                    } else {
+                                        lhs_f32[n_offset + h_offset + in_w_off + ci]
+                                    };
+                                    acc += lhs_val * rhs_f32[rhs_idx];
+                                }
+                            }
+                        }
+                        out.push(acc);
+                    }
+                }
+            }
+        }
+        return Ok(Value::Tensor(TensorValue::new_f32_values(
+            Shape {
+                dims: vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
+            },
+            out,
+        )?));
+    }
+
     // Dense real-float fast path (F64/F32/BF16/F16): read both operands as f64
     // (F64 borrowed; f32/bf16/f16 promoted losslessly), bypassing the per-multiply
     // Literal materialization + match in the innermost conv loop. Bit-identical to
     // the generic non-complex path — same index math, same ascending kh/kw/ci
     // accumulation order in f64, same `*`/`+`, same `conv_float_literal_from_f64`
-    // rounding to out_dtype. f32 is the default ML dtype, so this routes the core
-    // CNN op through the im2col + GEMM kernel instead of the scalar loop.
+    // rounding to out_dtype. bf16/f16/f64 outputs (f32 took the native path above).
     if !is_complex
         && matches!(
             out_dtype,
@@ -8398,11 +8520,11 @@ mod tests {
 
     #[test]
     fn conv2d_f32_im2col_gemm_bit_identical_to_reference() {
-        // f32 conv2d (default ML dtype) now routes through the im2col + GEMM path
-        // (promote f32->f64, GEMM, round to f32). Sized above CONV_IM2COL_MIN_OPS to
-        // exercise the GEMM path. Must be bit-for-bit identical to the textbook
-        // ascending-(kh,kw,ci) reference: f64 accumulation of exact f32 products,
-        // then (sum as f32).
+        // f32 conv2d (default ML dtype) routes through the NATIVE-f32 im2col + GEMM
+        // path (f32 accumulation, matching XLA's f32 conv — not the prior f64 promote).
+        // Sized above CONV_IM2COL_MIN_OPS to exercise the GEMM path. Must be bit-for-bit
+        // identical to the textbook ascending-(kh,kw,ci) reference: f32 accumulation of
+        // f32 products.
         let (h, w, c_in, c_out, kh, kw) = (20usize, 20usize, 4usize, 8usize, 3usize, 3usize);
         let xf: Vec<f32> = (0..h * w * c_in)
             .map(|i| (i as f32 * 0.011).sin() * 1.3 - 0.2)
@@ -8450,24 +8572,91 @@ mod tests {
         for oh in 0..out_h {
             for ow in 0..out_w {
                 for co in 0..c_out {
-                    let mut acc = 0.0f64;
+                    let mut acc = 0.0f32;
                     for dh in 0..kh {
                         for dw in 0..kw {
                             for ci in 0..c_in {
-                                let lv = xf[((oh + dh) * w + (ow + dw)) * c_in + ci] as f64;
-                                let kv = kf[((dh * kw + dw) * c_in + ci) * c_out + co] as f64;
+                                let lv = xf[((oh + dh) * w + (ow + dw)) * c_in + ci];
+                                let kv = kf[((dh * kw + dw) * c_in + ci) * c_out + co];
                                 acc += lv * kv;
                             }
                         }
                     }
-                    want.push((acc as f32).to_bits());
+                    want.push(acc.to_bits());
                 }
             }
         }
         assert_eq!(
             got, want,
-            "f32 conv2d must be bit-identical to the f64-accum reference"
+            "f32 conv2d must be bit-identical to the f32-accum reference"
         );
+    }
+
+    #[test]
+    fn conv2d_f32_native_accum_golden_sha256() -> Result<(), Box<dyn std::error::Error>> {
+        fn run_case(
+            h: usize,
+            w: usize,
+            c_in: usize,
+            c_out: usize,
+            kh: usize,
+            kw: usize,
+            params: &[(&str, &str)],
+        ) -> Vec<u32> {
+            let xf: Vec<f32> = (0..h * w * c_in)
+                .map(|i| (i as f32 * 0.007).sin() * 0.75 - 0.125)
+                .collect();
+            let kf: Vec<f32> = (0..kh * kw * c_in * c_out)
+                .map(|i| (i as f32 * 0.013).cos() * 1.25 + 0.0625)
+                .collect();
+            let lhs = Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: vec![1, h as u32, w as u32, c_in as u32],
+                    },
+                    xf,
+                )
+                .unwrap(),
+            );
+            let rhs = Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: vec![kh as u32, kw as u32, c_in as u32, c_out as u32],
+                    },
+                    kf,
+                )
+                .unwrap(),
+            );
+            let out = eval_conv(Primitive::Conv, &[lhs, rhs], &self::params(params)).unwrap();
+            let Value::Tensor(tensor) = out else {
+                panic!("expected tensor")
+            };
+            assert_eq!(tensor.dtype, DType::F32);
+            tensor
+                .elements
+                .as_f32_slice()
+                .expect("f32 conv output should stay dense")
+                .iter()
+                .map(|v| v.to_bits())
+                .collect()
+        }
+
+        let fixtures = [
+            (
+                "im2col_valid",
+                run_case(20, 20, 4, 8, 3, 3, &[("padding", "valid"), ("strides", "1")]),
+            ),
+            (
+                "direct_same_stride2",
+                run_case(5, 6, 2, 3, 3, 2, &[("padding", "same"), ("strides", "2")]),
+            ),
+        ];
+        let digest = fj_test_utils::fixture_id_from_json(&fixtures)?;
+        assert_eq!(
+            digest, "",
+            "native-f32 conv2d golden output digest changed"
+        );
+        Ok(())
     }
 
     #[test]
