@@ -1802,13 +1802,17 @@ fn one_sided_jacobi_svd_real(m: usize, n: usize, a: &[f64]) -> (Vec<f64>, Vec<f6
         let mut converged = true;
         for p in 0..n.saturating_sub(1) {
             for q in (p + 1)..n {
+                let p_base = p * m;
+                let q_base = q * m;
                 // 2×2 Gram of columns p,q of the current W (never the full AᵀA).
                 let mut alpha = 0.0_f64; // ‖col_p‖²
                 let mut beta = 0.0_f64; //  ‖col_q‖²
                 let mut gamma = 0.0_f64; // col_p · col_q
+                let p_col = &w[p_base..p_base + m];
+                let q_col = &w[q_base..q_base + m];
                 for i in 0..m {
-                    let wip = w[p * m + i];
-                    let wiq = w[q * m + i];
+                    let wip = p_col[i];
+                    let wiq = q_col[i];
                     alpha += wip * wip;
                     beta += wiq * wiq;
                     gamma += wip * wiq;
@@ -1829,18 +1833,26 @@ fn one_sided_jacobi_svd_real(m: usize, n: usize, a: &[f64]) -> (Vec<f64>, Vec<f6
                 let c = 1.0 / (1.0 + t * t).sqrt();
                 let s = t * c;
                 // Rotate columns p,q of W: new_p = c·p − s·q, new_q = s·p + c·q.
+                let (w_left, w_right) = w.split_at_mut(q_base);
+                let p_col = &mut w_left[p_base..p_base + m];
+                let q_col = &mut w_right[..m];
                 for i in 0..m {
-                    let wip = w[p * m + i];
-                    let wiq = w[q * m + i];
-                    w[p * m + i] = c * wip - s * wiq;
-                    w[q * m + i] = s * wip + c * wiq;
+                    let wip = p_col[i];
+                    let wiq = q_col[i];
+                    p_col[i] = c * wip - s * wiq;
+                    q_col[i] = s * wip + c * wiq;
                 }
                 // Accumulate the same rotation into V.
+                let p_base = p * n;
+                let q_base = q * n;
+                let (v_left, v_right) = v.split_at_mut(q_base);
+                let p_col = &mut v_left[p_base..p_base + n];
+                let q_col = &mut v_right[..n];
                 for i in 0..n {
-                    let vip = v[p * n + i];
-                    let viq = v[q * n + i];
-                    v[p * n + i] = c * vip - s * viq;
-                    v[q * n + i] = s * vip + c * viq;
+                    let vip = p_col[i];
+                    let viq = q_col[i];
+                    p_col[i] = c * vip - s * viq;
+                    q_col[i] = s * vip + c * viq;
                 }
             }
         }
