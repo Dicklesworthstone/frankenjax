@@ -6,6 +6,7 @@ use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 
 use crate::EvalError;
 use crate::tensor_contraction::matmul_2d_into;
+use crate::tensor_contraction::rank2_complex_matmul;
 use crate::type_promotion::promote_dtype;
 
 type ComplexScalar = (f64, f64);
@@ -2933,12 +2934,175 @@ pub(crate) fn eval_eigh(
 /// error: the zero/near-zero pivot divides through to inf/NaN, matching `eval_solve`'s
 /// real-path contract (JAX returns inf/NaN; NumPy raises). All `ncols` right-hand
 /// sides share one O(n³) factorization.
+/// Cache-blocked right-looking complex LU with partial pivoting, factoring the
+/// row-major n×n complex matrix `lu` in place and returning the swap-built row
+/// permutation `perm` (`perm[i]` = original row now in position `i`). Mirrors
+/// [`lu_factor_real_blocked`]: each panel of `LU_BLOCK_SIZE` columns is factored
+/// over all rows below (full-column complex pivot, whole-row swaps, panel-local
+/// rank-1 updates), then the trailing block row `U12 = L11⁻¹·A12` is forward-solved
+/// and the Schur update `A22 -= L21·U12` runs through the threaded complex GEMM
+/// [`rank2_complex_matmul`]. Combined L\U is stored in `lu` (unit-diagonal L below,
+/// U on/above). Numerically equivalent to the scalar elimination (P·A = L·U to
+/// machine precision) — the block-reordered GEMM sum differs only at ulp level,
+/// exactly JAX's blocked complex getrf guarantee. Divides through tiny pivots (no
+/// skip), so a singular column propagates inf/NaN, matching `complex_solve_system`.
+fn complex_lu_factor_blocked(lu: &mut [(f64, f64)], n: usize) -> Vec<usize> {
+    let mut perm: Vec<usize> = (0..n).collect();
+    let nb = LU_BLOCK_SIZE;
+
+    let mut j = 0;
+    while j < n {
+        let jb = nb.min(n - j);
+        let panel_end = j + jb;
+
+        // (1) Factor panel columns [j, panel_end) over rows [j, n): full-column
+        //     complex pivot + whole-row swap, rank-1 updates confined to the panel.
+        for col in j..panel_end {
+            let mut best = complex_abs(lu[col * n + col]);
+            let mut max_row = col;
+            for row in (col + 1)..n {
+                let mag = complex_abs(lu[row * n + col]);
+                if mag > best {
+                    best = mag;
+                    max_row = row;
+                }
+            }
+            if max_row != col {
+                perm.swap(col, max_row);
+                for c in 0..n {
+                    lu.swap(col * n + c, max_row * n + c);
+                }
+            }
+            let pivot = lu[col * n + col];
+            for row in (col + 1)..n {
+                let factor = complex_div(lu[row * n + col], pivot);
+                lu[row * n + col] = factor;
+                for c in (col + 1)..panel_end {
+                    lu[row * n + c] =
+                        complex_sub(lu[row * n + c], complex_mul(factor, lu[col * n + c]));
+                }
+            }
+        }
+
+        // (2) Forward-solve U12 = L11⁻¹ · A12 (panel rows × trailing columns).
+        if panel_end < n {
+            for ri in 1..jb {
+                let r = j + ri;
+                for t in 0..ri {
+                    let l_rt = lu[r * n + (j + t)];
+                    if l_rt != (0.0, 0.0) {
+                        let trow = j + t;
+                        for c in panel_end..n {
+                            lu[r * n + c] =
+                                complex_sub(lu[r * n + c], complex_mul(l_rt, lu[trow * n + c]));
+                        }
+                    }
+                }
+            }
+        }
+
+        // (3) Trailing Schur update A22 -= L21 · U12 via the threaded complex GEMM.
+        let rows_below = n - panel_end;
+        let cols_right = n - panel_end;
+        if rows_below > 0 && cols_right > 0 {
+            let mut l21 = Vec::with_capacity(rows_below * jb);
+            for p in 0..rows_below {
+                let src = (panel_end + p) * n + j;
+                l21.extend_from_slice(&lu[src..src + jb]);
+            }
+            let mut u12 = Vec::with_capacity(jb * cols_right);
+            for t in 0..jb {
+                let src = (j + t) * n + panel_end;
+                u12.extend_from_slice(&lu[src..src + cols_right]);
+            }
+            let prod = rank2_complex_matmul(&l21, rows_below, jb, &u12, cols_right);
+            for p in 0..rows_below {
+                let row = (panel_end + p) * n + panel_end;
+                let pr = p * cols_right;
+                for q in 0..cols_right {
+                    lu[row + q] = complex_sub(lu[row + q], prod[pr + q]);
+                }
+            }
+        }
+
+        j = panel_end;
+    }
+
+    perm
+}
+
+/// Forward/back substitution for the combined complex L\U factor from
+/// [`complex_lu_factor_blocked`], solving `A·X = B` for the `ncols` RHS columns of
+/// `b` (row-major n×ncols) under row permutation `perm`. Unit-diagonal L (forward,
+/// no divide), U on/above the diagonal (back, divide by `U[i,i]`).
+fn complex_lu_solve(
+    lu: &[(f64, f64)],
+    perm: &[usize],
+    b: &[(f64, f64)],
+    n: usize,
+    ncols: usize,
+) -> Vec<(f64, f64)> {
+    let mut x = vec![(0.0_f64, 0.0_f64); n * ncols];
+    for jcol in 0..ncols {
+        let mut y = vec![(0.0_f64, 0.0_f64); n];
+        for i in 0..n {
+            let mut s = b[perm[i] * ncols + jcol];
+            for k in 0..i {
+                s = complex_sub(s, complex_mul(lu[i * n + k], y[k]));
+            }
+            y[i] = s;
+        }
+        for i in (0..n).rev() {
+            let mut s = y[i];
+            for k in (i + 1)..n {
+                s = complex_sub(s, complex_mul(lu[i * n + k], x[k * ncols + jcol]));
+            }
+            x[i * ncols + jcol] = complex_div(s, lu[i * n + i]);
+        }
+    }
+    x
+}
+
+/// Parity sign `(-1)^(transpositions)` of a permutation given as `perm[i]` = the
+/// element now at position `i`. A cycle of length `L` is `L-1` transpositions, so
+/// even-length cycles flip the sign.
+fn complex_perm_sign(perm: &[usize]) -> f64 {
+    let n = perm.len();
+    let mut visited = vec![false; n];
+    let mut sign = 1.0_f64;
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        let mut len = 0usize;
+        let mut node = start;
+        while !visited[node] {
+            visited[node] = true;
+            node = perm[node];
+            len += 1;
+        }
+        if len % 2 == 0 {
+            sign = -sign;
+        }
+    }
+    sign
+}
+
 fn complex_solve_system(
     a: &[(f64, f64)],
     b: &[(f64, f64)],
     n: usize,
     ncols: usize,
 ) -> Vec<(f64, f64)> {
+    // Large systems route through the cache-blocked complex LU whose O(n³) Schur
+    // update runs at complex-GEMM speed; small n keeps the bit-identical augmented
+    // Gaussian elimination below (parity goldens, same gate as the real path).
+    if n >= LU_BLOCK_THRESHOLD {
+        let mut lu = a.to_vec();
+        let perm = complex_lu_factor_blocked(&mut lu, n);
+        return complex_lu_solve(&lu, &perm, b, n, ncols);
+    }
+
     let w = n + ncols;
     let mut m = vec![(0.0_f64, 0.0_f64); n * w];
     for i in 0..n {
@@ -3216,6 +3380,24 @@ fn eval_solve_complex(
 /// pivots times `(-1)^(row swaps)`. Returns `(0,0)` for a singular matrix (a zero
 /// pivot). `n == 0` gives the empty-product `1`.
 fn complex_det(a: &[(f64, f64)], n: usize) -> (f64, f64) {
+    // Large inputs route through the cache-blocked complex LU (det = sign(P) ·
+    // Π U_ii). Numerically equivalent to the scalar elimination, gated above the
+    // parity-golden sizes (small n stays bit-identical). An exactly-zero pivot on
+    // the U diagonal short-circuits to (0,0) as the scalar path does.
+    if n >= LU_BLOCK_THRESHOLD {
+        let mut lu = a.to_vec();
+        let perm = complex_lu_factor_blocked(&mut lu, n);
+        let mut det = (complex_perm_sign(&perm), 0.0_f64);
+        for i in 0..n {
+            let u = lu[i * n + i];
+            if u == (0.0, 0.0) {
+                return (0.0, 0.0);
+            }
+            det = complex_mul(det, u);
+        }
+        return det;
+    }
+
     let mut m = a.to_vec();
     let mut det = (1.0_f64, 0.0_f64);
     for col in 0..n {
@@ -7182,7 +7364,10 @@ mod tests {
 
         let d_blocked = det(&a, n);
         let d_ref = naive_det_ref(&a, n);
-        assert!(d_blocked.is_finite() && d_ref != 0.0, "det must be finite/nonzero");
+        assert!(
+            d_blocked.is_finite() && d_ref != 0.0,
+            "det must be finite/nonzero"
+        );
         // Block-reordered GEMM Schur update is numerically equivalent, agreeing to ~ulp.
         assert!(
             (d_blocked / d_ref - 1.0).abs() < 1e-9,
@@ -7237,6 +7422,208 @@ mod tests {
             });
             println!(
                 "BENCH det n={n}: naive-LU {:.3}ms -> blocked-GEMM-LU {:.3}ms = {:.2}x",
+                naive * 1e3,
+                blocked * 1e3,
+                naive / blocked
+            );
+        };
+        run(512);
+        run(1024);
+    }
+
+    // ── Blocked complex LU (solve/det) tests ────────────────────────
+
+    /// Well-conditioned complex system with a strongly dominant real diagonal.
+    fn complex_solve_test_system(n: usize) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+        let mut a = vec![(0.0f64, 0.0f64); n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let re = (((i * 131 + j * 17 + 7) % 1000) as f64 / 500.0 - 1.0) * 0.01;
+                let im = (((i * 43 + j * 91 + 3) % 1000) as f64 / 500.0 - 1.0) * 0.01;
+                a[i * n + j] = (re, im);
+            }
+            a[i * n + i] = (n as f64, 0.0);
+        }
+        let b: Vec<(f64, f64)> = (0..n)
+            .map(|i| (((i * 13 % 97) as f64) - 48.0, ((i * 7 % 53) as f64) - 26.0))
+            .collect();
+        (a, b)
+    }
+
+    /// Naive augmented-elimination complex solve — the exact algorithm
+    /// `complex_solve_system` runs below `LU_BLOCK_THRESHOLD`.
+    fn naive_complex_solve_ref(
+        a: &[(f64, f64)],
+        b: &[(f64, f64)],
+        n: usize,
+        ncols: usize,
+    ) -> Vec<(f64, f64)> {
+        let w = n + ncols;
+        let mut m = vec![(0.0_f64, 0.0_f64); n * w];
+        for i in 0..n {
+            m[i * w..i * w + n].copy_from_slice(&a[i * n..i * n + n]);
+            m[i * w + n..i * w + w].copy_from_slice(&b[i * ncols..i * ncols + ncols]);
+        }
+        for col in 0..n {
+            let mut piv = col;
+            let mut best = complex_abs(m[col * w + col]);
+            for r in (col + 1)..n {
+                let mag = complex_abs(m[r * w + col]);
+                if mag > best {
+                    best = mag;
+                    piv = r;
+                }
+            }
+            if piv != col {
+                for c in 0..w {
+                    m.swap(col * w + c, piv * w + c);
+                }
+            }
+            let pivot = m[col * w + col];
+            for r in (col + 1)..n {
+                let factor = complex_div(m[r * w + col], pivot);
+                for c in col..w {
+                    m[r * w + c] = complex_sub(m[r * w + c], complex_mul(factor, m[col * w + c]));
+                }
+            }
+        }
+        let mut x = vec![(0.0_f64, 0.0_f64); n * ncols];
+        for jcol in 0..ncols {
+            for row in (0..n).rev() {
+                let mut s = m[row * w + n + jcol];
+                for c in (row + 1)..n {
+                    s = complex_sub(s, complex_mul(m[row * w + c], x[c * ncols + jcol]));
+                }
+                x[row * ncols + jcol] = complex_div(s, m[row * w + row]);
+            }
+        }
+        x
+    }
+
+    #[test]
+    fn blocked_complex_solve_matches_naive_within_tolerance_and_residual() {
+        // n ≥ LU_BLOCK_THRESHOLD routes `complex_solve_system` through the cache-
+        // blocked complex GEMM LU. Verify it (a) reconstructs b and (b) matches the
+        // naive augmented-elimination reference to tolerance (P·A=L·U, ulp-level).
+        let n = 300usize;
+        assert!(n >= LU_BLOCK_THRESHOLD, "must exercise the blocked path");
+        let ncols = 3usize;
+        let (a, bvec) = complex_solve_test_system(n);
+        // matrix RHS: ncols columns built from the vector b plus a shift.
+        let mut b = vec![(0.0f64, 0.0f64); n * ncols];
+        for i in 0..n {
+            for j in 0..ncols {
+                b[i * ncols + j] = (bvec[i].0 + j as f64, bvec[i].1 - j as f64);
+            }
+        }
+
+        let x = complex_solve_system(&a, &b, n, ncols);
+
+        // (a) residual ‖A·x − b‖_∞.
+        let mut max_res = 0.0f64;
+        for i in 0..n {
+            for j in 0..ncols {
+                let mut s = (0.0f64, 0.0f64);
+                for k in 0..n {
+                    s = complex_add(s, complex_mul(a[i * n + k], x[k * ncols + j]));
+                }
+                let d = complex_sub(s, b[i * ncols + j]);
+                max_res = max_res.max(complex_abs(d));
+            }
+        }
+        assert!(max_res < 1e-9, "complex residual too large: {max_res}");
+
+        // (b) vs naive augmented elimination.
+        let xref = naive_complex_solve_ref(&a, &b, n, ncols);
+        let mut max_diff = 0.0f64;
+        for i in 0..(n * ncols) {
+            max_diff = max_diff.max(complex_abs(complex_sub(x[i], xref[i])));
+        }
+        assert!(
+            max_diff < 1e-9,
+            "blocked vs naive complex solve diff: {max_diff}"
+        );
+    }
+
+    #[test]
+    fn blocked_complex_det_matches_naive_within_tolerance() {
+        // Strongly diagonally-dominant complex matrix whose determinant stays
+        // finite (diagonals in [1.0, 1.3], tiny off-diagonals).
+        let n = 300usize;
+        assert!(n >= LU_BLOCK_THRESHOLD);
+        let mut a = vec![(0.0f64, 0.0f64); n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let re = (((i * 131 + j * 17 + 7) % 13) as f64 - 6.0) * 1e-5;
+                let im = (((i * 29 + j * 53 + 1) % 11) as f64 - 5.0) * 1e-5;
+                a[i * n + j] = (re, im);
+            }
+            a[i * n + i] = (1.0 + ((i % 7) as f64) * 0.05, ((i % 5) as f64) * 0.01);
+        }
+
+        let d_blocked = complex_det(&a, n);
+        // Naive scalar complex-LU det reference (the < threshold path).
+        let mut m = a.clone();
+        let mut d_ref = (1.0_f64, 0.0_f64);
+        for col in 0..n {
+            let mut piv = col;
+            let mut best = complex_abs(m[col * n + col]);
+            for r in (col + 1)..n {
+                let mag = complex_abs(m[r * n + col]);
+                if mag > best {
+                    best = mag;
+                    piv = r;
+                }
+            }
+            if piv != col {
+                for c in 0..n {
+                    m.swap(col * n + c, piv * n + c);
+                }
+                d_ref = (-d_ref.0, -d_ref.1);
+            }
+            let pivot = m[col * n + col];
+            d_ref = complex_mul(d_ref, pivot);
+            for r in (col + 1)..n {
+                let factor = complex_div(m[r * n + col], pivot);
+                for c in (col + 1)..n {
+                    m[r * n + c] = complex_sub(m[r * n + c], complex_mul(factor, m[col * n + c]));
+                }
+            }
+        }
+        let rel = complex_abs(complex_sub(d_blocked, d_ref)) / complex_abs(d_ref).max(1e-300);
+        assert!(
+            rel < 1e-9,
+            "blocked complex det {d_blocked:?} vs naive {d_ref:?} rel {rel}"
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_complex_solve_blocked_vs_naive() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..7 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        let run = |n: usize| {
+            let (a, bvec) = complex_solve_test_system(n);
+            let b: Vec<(f64, f64)> = bvec.clone();
+            let naive = best_time(|| {
+                std::hint::black_box(naive_complex_solve_ref(std::hint::black_box(&a), &b, n, 1));
+            });
+            let blocked = best_time(|| {
+                let mut lu = a.clone();
+                let perm = complex_lu_factor_blocked(&mut lu, n);
+                std::hint::black_box(complex_lu_solve(&lu, &perm, &b, n, 1));
+            });
+            println!(
+                "BENCH complex solve n={n}: naive-LU {:.3}ms -> blocked-GEMM-LU {:.3}ms = {:.2}x",
                 naive * 1e3,
                 blocked * 1e3,
                 naive / blocked
