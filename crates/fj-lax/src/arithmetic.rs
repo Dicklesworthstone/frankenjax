@@ -570,88 +570,149 @@ enum Bf16Op {
     Div,
 }
 
-/// SIMD BF16⊗BF16 → BF16 for add/sub/mul/div, BIT-IDENTICAL to the scalar
-/// [`half_binary_apply`] path: it runs the EXACT same chain — widen each bf16 to f64
-/// (bf16→f32 bitcast is exact, f32→f64 exact), apply the op in f64, then round f64→bf16
-/// via the round-to-odd f32 intermediate ([`Literal::from_bf16_f64`]) — only 8 lanes
-/// wide. The widen/round bit-shuffling is the measured compute floor of the scalar half
-/// path, so it vectorizes cleanly under AVX2. The `< 8` remainder runs the scalar
-/// `half_binary_apply` (identical f64 op + `from_bf16_f64` round).
-fn bf16_binary_simd(lhs: &[u16], rhs: &[u16], op: Bf16Op) -> Vec<u16> {
+const BF16_SIMD_L: usize = 8;
+
+/// Widen 8 BF16 bit patterns to exact f64 (BF16 is the high 16 bits of an f32, so the
+/// bitcast `(bits << 16)` is exact and `f32 -> f64` is exact). Matches
+/// `Literal::BF16Bits(_).as_f64()` lane-wise.
+#[inline]
+fn bf16_widen8(u: std::simd::Simd<u16, BF16_SIMD_L>) -> std::simd::Simd<f64, BF16_SIMD_L> {
+    use std::simd::Simd;
+    use std::simd::num::{SimdFloat, SimdUint};
+    Simd::<f32, BF16_SIMD_L>::from_bits(u.cast::<u32>() << Simd::splat(16u32)).cast()
+}
+
+/// Round 8 f64 values to BF16 bits, replicating `Literal::from_bf16_f64` lane-wise:
+/// round-to-odd f64 -> f32 (`Literal::f64_to_f32_round_to_odd`) then RNE f32 -> BF16
+/// (`half::bf16::from_f32`). Callers must handle NaN-result chunks separately (the
+/// SIMD op may pick a different IEEE-unspecified NaN payload than the scalar path).
+#[inline]
+fn bf16_round8(x: std::simd::Simd<f64, BF16_SIMD_L>) -> std::simd::Simd<u16, BF16_SIMD_L> {
     use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
     use std::simd::num::{SimdFloat, SimdUint};
     use std::simd::{Select, Simd};
-    const L: usize = 8;
-    let scalar_op: fn(f64, f64) -> f64 = match op {
+    type U32s = Simd<u32, BF16_SIMD_L>;
+    type F32s = Simd<f32, BF16_SIMD_L>;
+    type F64s = Simd<f64, BF16_SIMD_L>;
+    // round-to-odd f64 -> f32
+    let nearest: F32s = x.cast();
+    let nbits: U32s = nearest.to_bits();
+    let back: F64s = nearest.cast();
+    let exact = back.simd_eq(x).cast::<i32>();
+    let odd = (nbits & U32s::splat(1)).simd_eq(U32s::splat(1));
+    let expmask = U32s::splat(0x7F80_0000);
+    let nonfinite = (nbits & expmask).simd_eq(expmask);
+    let passthrough = exact | odd | nonfinite;
+    let toward_larger = x.simd_gt(back).cast::<i32>();
+    let negative = (nbits & U32s::splat(0x8000_0000)).simd_ne(U32s::splat(0));
+    let step_up = toward_larger ^ negative;
+    let neighbor = step_up.select(nbits + U32s::splat(1), nbits - U32s::splat(1));
+    let f = F32s::from_bits(passthrough.select(nbits, neighbor));
+    // RNE f32 -> bf16
+    let b: U32s = f.to_bits();
+    let nan = (b & U32s::splat(0x7FFF_FFFF)).simd_gt(U32s::splat(0x7F80_0000));
+    let nan_res = (b >> U32s::splat(16)) | U32s::splat(0x0040);
+    let rb_set = (b & U32s::splat(0x0000_8000)).simd_ne(U32s::splat(0));
+    let sticky = (b & U32s::splat(0x0001_7FFF)).simd_ne(U32s::splat(0));
+    let round_up = (rb_set & sticky).select(U32s::splat(1), U32s::splat(0));
+    let normal = (b >> U32s::splat(16)) + round_up;
+    nan.select(nan_res, normal).cast::<u16>()
+}
+
+#[inline]
+fn bf16_scalar_op(op: Bf16Op) -> fn(f64, f64) -> f64 {
+    match op {
         Bf16Op::Add => |a, b| a + b,
         Bf16Op::Sub => |a, b| a - b,
         Bf16Op::Mul => |a, b| a * b,
         Bf16Op::Div => |a, b| a / b,
-    };
-    type U16s = Simd<u16, L>;
-    type U32s = Simd<u32, L>;
-    type F32s = Simd<f32, L>;
-    type F64s = Simd<f64, L>;
+    }
+}
 
-    // u16 bf16 bits -> exact f64 value (bf16 is the high 16 bits of an f32).
-    let widen = |u: U16s| -> F64s { F32s::from_bits(u.cast::<u32>() << U32s::splat(16)).cast() };
+#[inline]
+fn bf16_op_f64(op: Bf16Op, a: std::simd::Simd<f64, BF16_SIMD_L>, b: std::simd::Simd<f64, BF16_SIMD_L>) -> std::simd::Simd<f64, BF16_SIMD_L> {
+    match op {
+        Bf16Op::Add => a + b,
+        Bf16Op::Sub => a - b,
+        Bf16Op::Mul => a * b,
+        Bf16Op::Div => a / b,
+    }
+}
 
-    // f64 -> f32 round-to-odd, replicating `Literal::f64_to_f32_round_to_odd` lane-wise.
-    let round_to_odd = |x: F64s| -> F32s {
-        let nearest: F32s = x.cast();
-        let nbits: U32s = nearest.to_bits();
-        let back: F64s = nearest.cast();
-        // passthrough when exact / already-odd / non-finite (all in the u32 mask domain).
-        let exact = back.simd_eq(x).cast::<i32>();
-        let odd = (nbits & U32s::splat(1)).simd_eq(U32s::splat(1));
-        let expmask = U32s::splat(0x7F80_0000);
-        let nonfinite = (nbits & expmask).simd_eq(expmask);
-        let passthrough = exact | odd | nonfinite;
-        let toward_larger = x.simd_gt(back).cast::<i32>();
-        let negative = (nbits & U32s::splat(0x8000_0000)).simd_ne(U32s::splat(0));
-        let step_up = toward_larger ^ negative;
-        let neighbor = step_up.select(nbits + U32s::splat(1), nbits - U32s::splat(1));
-        F32s::from_bits(passthrough.select(nbits, neighbor))
-    };
-
-    // f32 -> bf16 round-to-nearest-even, replicating `half::bf16::from_f32` lane-wise.
-    let to_bf16 = |f: F32s| -> U16s {
-        let x: U32s = f.to_bits();
-        let nan = (x & U32s::splat(0x7FFF_FFFF)).simd_gt(U32s::splat(0x7F80_0000));
-        let nan_res = (x >> U32s::splat(16)) | U32s::splat(0x0040);
-        let rb_set = (x & U32s::splat(0x0000_8000)).simd_ne(U32s::splat(0));
-        let sticky = (x & U32s::splat(0x0001_7FFF)).simd_ne(U32s::splat(0));
-        let round_up = (rb_set & sticky).select(U32s::splat(1), U32s::splat(0));
-        let normal = (x >> U32s::splat(16)) + round_up;
-        nan.select(nan_res, normal).cast::<u16>()
-    };
-
+/// SIMD BF16⊗BF16 → BF16 for add/sub/mul/div, BIT-IDENTICAL to the scalar
+/// [`half_binary_apply`] path (widen each bf16 to f64, op in f64, round f64→bf16 via
+/// round-to-odd), only 8 lanes wide. The widen/round bit-shuffling is the measured
+/// compute floor of the scalar half path. NaN-result chunks (IEEE-unspecified payload)
+/// and the `< 8` remainder run the scalar path so the output is byte-identical.
+fn bf16_binary_simd(lhs: &[u16], rhs: &[u16], op: Bf16Op) -> Vec<u16> {
+    use std::simd::Simd;
+    use std::simd::num::SimdFloat;
+    const L: usize = BF16_SIMD_L;
+    let scalar_op = bf16_scalar_op(op);
     let n = lhs.len();
     let mut out = vec![0u16; n];
     let mut i = 0;
     while i + L <= n {
-        let a = widen(U16s::from_slice(&lhs[i..i + L]));
-        let b = widen(U16s::from_slice(&rhs[i..i + L]));
-        let r = match op {
-            Bf16Op::Add => a + b,
-            Bf16Op::Sub => a - b,
-            Bf16Op::Mul => a * b,
-            Bf16Op::Div => a / b,
-        };
-        // A NaN result's payload bits are IEEE-UNSPECIFIED, and the SIMD `vaddpd`/etc.
-        // can pick a different payload than the scalar add. Fall the (rare) NaN-producing
-        // chunk back to the scalar path so the output stays byte-identical to it.
+        let a = bf16_widen8(Simd::from_slice(&lhs[i..i + L]));
+        let b = bf16_widen8(Simd::from_slice(&rhs[i..i + L]));
+        let r = bf16_op_f64(op, a, b);
         if r.is_nan().any() {
             for t in 0..L {
                 out[i + t] = half_binary_apply(DType::BF16, lhs[i + t], rhs[i + t], &scalar_op);
             }
         } else {
-            to_bf16(round_to_odd(r)).copy_to_slice(&mut out[i..i + L]);
+            bf16_round8(r).copy_to_slice(&mut out[i..i + L]);
         }
         i += L;
     }
     for j in i..n {
         out[j] = half_binary_apply(DType::BF16, lhs[j], rhs[j], &scalar_op);
+    }
+    out
+}
+
+/// SIMD BF16-tensor ⊗ BF16-scalar (broadcast) for add/sub/mul/div — the scaling/bias
+/// hot path. BIT-IDENTICAL to the scalar `eval_half_float_scalar_broadcast_binop` map:
+/// same widen→f64-op→round chain (shared with [`bf16_binary_simd`]) with the scalar
+/// splatted; NaN-result chunks + the `< 8` remainder fall back to the scalar path.
+fn bf16_scalar_broadcast_simd(
+    values: &[u16],
+    scalar_bits: u16,
+    scalar_on_left: bool,
+    op: Bf16Op,
+) -> Vec<u16> {
+    use std::simd::Simd;
+    use std::simd::num::SimdFloat;
+    const L: usize = BF16_SIMD_L;
+    let scalar_op = bf16_scalar_op(op);
+    let scalar_f64 = f64::from(f32::from_bits((scalar_bits as u32) << 16));
+    let svec = Simd::<f64, L>::splat(scalar_f64);
+    let scalar_apply = |bits: u16| -> u16 {
+        let (l, r) = if scalar_on_left {
+            (scalar_bits, bits)
+        } else {
+            (bits, scalar_bits)
+        };
+        half_binary_apply(DType::BF16, l, r, &scalar_op)
+    };
+    let n = values.len();
+    let mut out = vec![0u16; n];
+    let mut i = 0;
+    while i + L <= n {
+        let x = bf16_widen8(Simd::from_slice(&values[i..i + L]));
+        let (a, b) = if scalar_on_left { (svec, x) } else { (x, svec) };
+        let r = bf16_op_f64(op, a, b);
+        if r.is_nan().any() {
+            for t in 0..L {
+                out[i + t] = scalar_apply(values[i + t]);
+            }
+        } else {
+            bf16_round8(r).copy_to_slice(&mut out[i..i + L]);
+        }
+        i += L;
+    }
+    for j in i..n {
+        out[j] = scalar_apply(values[j]);
     }
     out
 }
@@ -666,6 +727,19 @@ pub fn bf16_binary_bench(a: &[u16], b: &[u16], simd: bool) -> Vec<u16> {
         a.iter()
             .zip(b)
             .map(|(&l, &r)| half_binary_apply(DType::BF16, l, r, &|x, y| x * y))
+            .collect()
+    }
+}
+
+/// Bench-only same-binary A/B for the bf16 scalar-broadcast lever (`tensor * scalar`).
+#[doc(hidden)]
+pub fn bf16_scalar_broadcast_bench(values: &[u16], scalar: u16, simd: bool) -> Vec<u16> {
+    if simd {
+        bf16_scalar_broadcast_simd(values, scalar, false, Bf16Op::Mul)
+    } else {
+        values
+            .iter()
+            .map(|&v| half_binary_apply(DType::BF16, v, scalar, &|x, y| x * y))
             .collect()
     }
 }
@@ -1119,6 +1193,24 @@ fn eval_half_float_scalar_broadcast_binop(
     let Some(values) = tensor.elements.as_half_float_slice() else {
         return Ok(None);
     };
+    // Dense BF16 add/sub/mul/div: vectorize the widen/round floor (bit-identical to the
+    // scalar map below). F16 + Max/Min stay scalar.
+    if dt == DType::BF16
+        && let Some(bf_op) = match primitive {
+            Primitive::Add => Some(Bf16Op::Add),
+            Primitive::Sub => Some(Bf16Op::Sub),
+            Primitive::Mul => Some(Bf16Op::Mul),
+            Primitive::Div => Some(Bf16Op::Div),
+            _ => None,
+        }
+    {
+        let out = bf16_scalar_broadcast_simd(values, scalar_bits, scalar_on_left, bf_op);
+        return Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+            dt,
+            tensor.shape.clone(),
+            out,
+        )?)));
+    }
     let op: fn(f64, f64) -> f64 = match primitive {
         Primitive::Add => |a, b| a + b,
         Primitive::Sub => |a, b| a - b,
@@ -14022,6 +14114,41 @@ mod tests {
                     "bf16 simd mismatch op={} a={a:#06x} b={b:#06x}: got {:#06x} want {:#06x}",
                     op as u8, got[k], want
                 );
+            }
+        }
+    }
+
+    /// The SIMD bf16 scalar-broadcast path must be BIT-IDENTICAL to the scalar
+    /// `half_binary_apply` (with the scalar on either side) over the same edge-case
+    /// patterns, both operand orders, all four ops, crossing the 8-lane + remainder.
+    #[test]
+    fn bf16_scalar_broadcast_simd_bit_identical_to_scalar() {
+        let pats: [u16; 22] = [
+            0x0000, 0x8000, 0x0001, 0x007F, 0x0080, 0x7F7F, 0x3F80, 0xBF80, 0x4049, 0x40C9,
+            0x7F80, 0xFF80, 0x7FC0, 0x7F81, 0x3F81, 0x4100, 0xC100, 0x0040, 0x7E00, 0x7F00,
+            0x3FAB, 0xBFAB,
+        ];
+        // tensor = all patterns repeated to overrun a multiple of 8 (exercise remainder).
+        let mut tensor: Vec<u16> = Vec::new();
+        for _ in 0..3 {
+            tensor.extend_from_slice(&pats);
+        }
+        tensor.push(0x3F80); // len % 8 != 0
+        for &scalar in &[0x3F80u16, 0x4049, 0x7F80, 0x7FC0, 0x0080, 0x8000] {
+            for op in [Bf16Op::Add, Bf16Op::Sub, Bf16Op::Mul, Bf16Op::Div] {
+                let scalar_op = bf16_scalar_op(op);
+                for &on_left in &[false, true] {
+                    let got = bf16_scalar_broadcast_simd(&tensor, scalar, on_left, op);
+                    for (k, &v) in tensor.iter().enumerate() {
+                        let (l, r) = if on_left { (scalar, v) } else { (v, scalar) };
+                        let want = half_binary_apply(DType::BF16, l, r, &scalar_op);
+                        assert_eq!(
+                            got[k], want,
+                            "bf16 scalar-bcast mismatch op={} on_left={on_left} s={scalar:#06x} v={v:#06x}: got {:#06x} want {:#06x}",
+                            op as u8, got[k], want
+                        );
+                    }
+                }
             }
         }
     }
