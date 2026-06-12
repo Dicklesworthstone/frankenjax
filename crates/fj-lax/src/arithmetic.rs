@@ -644,13 +644,13 @@ fn bf16_op_f64(op: Bf16Op, a: std::simd::Simd<f64, BF16_SIMD_L>, b: std::simd::S
 /// round-to-odd), only 8 lanes wide. The widen/round bit-shuffling is the measured
 /// compute floor of the scalar half path. NaN-result chunks (IEEE-unspecified payload)
 /// and the `< 8` remainder run the scalar path so the output is byte-identical.
-fn bf16_binary_simd(lhs: &[u16], rhs: &[u16], op: Bf16Op) -> Vec<u16> {
+/// Slice-writing core of the same-shape bf16 SIMD op (`out.len() == lhs.len() == rhs.len()`).
+fn bf16_binary_into(lhs: &[u16], rhs: &[u16], op: Bf16Op, out: &mut [u16]) {
     use std::simd::Simd;
     use std::simd::num::SimdFloat;
     const L: usize = BF16_SIMD_L;
     let scalar_op = bf16_scalar_op(op);
     let n = lhs.len();
-    let mut out = vec![0u16; n];
     let mut i = 0;
     while i + L <= n {
         let a = bf16_widen8(Simd::from_slice(&lhs[i..i + L]));
@@ -668,19 +668,23 @@ fn bf16_binary_simd(lhs: &[u16], rhs: &[u16], op: Bf16Op) -> Vec<u16> {
     for j in i..n {
         out[j] = half_binary_apply(DType::BF16, lhs[j], rhs[j], &scalar_op);
     }
+}
+
+fn bf16_binary_simd(lhs: &[u16], rhs: &[u16], op: Bf16Op) -> Vec<u16> {
+    let mut out = vec![0u16; lhs.len()];
+    bf16_binary_into(lhs, rhs, op, &mut out);
     out
 }
 
-/// SIMD BF16-tensor ⊗ BF16-scalar (broadcast) for add/sub/mul/div — the scaling/bias
-/// hot path. BIT-IDENTICAL to the scalar `eval_half_float_scalar_broadcast_binop` map:
-/// same widen→f64-op→round chain (shared with [`bf16_binary_simd`]) with the scalar
-/// splatted; NaN-result chunks + the `< 8` remainder fall back to the scalar path.
-fn bf16_scalar_broadcast_simd(
+/// Slice-writing core of the scalar-broadcast bf16 SIMD op (`out.len() == values.len()`),
+/// the `scalar` already a bf16 bit pattern. BIT-IDENTICAL to the scalar map.
+fn bf16_scalar_broadcast_into(
     values: &[u16],
     scalar_bits: u16,
     scalar_on_left: bool,
     op: Bf16Op,
-) -> Vec<u16> {
+    out: &mut [u16],
+) {
     use std::simd::Simd;
     use std::simd::num::SimdFloat;
     const L: usize = BF16_SIMD_L;
@@ -696,7 +700,6 @@ fn bf16_scalar_broadcast_simd(
         half_binary_apply(DType::BF16, l, r, &scalar_op)
     };
     let n = values.len();
-    let mut out = vec![0u16; n];
     let mut i = 0;
     while i + L <= n {
         let x = bf16_widen8(Simd::from_slice(&values[i..i + L]));
@@ -714,7 +717,30 @@ fn bf16_scalar_broadcast_simd(
     for j in i..n {
         out[j] = scalar_apply(values[j]);
     }
+}
+
+/// SIMD BF16-tensor ⊗ BF16-scalar (broadcast) for add/sub/mul/div — the scaling/bias
+/// hot path. BIT-IDENTICAL to the scalar `eval_half_float_scalar_broadcast_binop` map.
+fn bf16_scalar_broadcast_simd(
+    values: &[u16],
+    scalar_bits: u16,
+    scalar_on_left: bool,
+    op: Bf16Op,
+) -> Vec<u16> {
+    let mut out = vec![0u16; values.len()];
+    bf16_scalar_broadcast_into(values, scalar_bits, scalar_on_left, op, &mut out);
     out
+}
+
+/// Map a binary [`Primitive`] to the SIMD-able [`Bf16Op`] (add/sub/mul/div only).
+fn bf16_op_of(primitive: Primitive) -> Option<Bf16Op> {
+    match primitive {
+        Primitive::Add => Some(Bf16Op::Add),
+        Primitive::Sub => Some(Bf16Op::Sub),
+        Primitive::Mul => Some(Bf16Op::Mul),
+        Primitive::Div => Some(Bf16Op::Div),
+        _ => None,
+    }
 }
 
 /// Bench-only same-binary A/B for the bf16 elementwise lever: `simd=true` runs the
@@ -742,6 +768,31 @@ pub fn bf16_scalar_broadcast_bench(values: &[u16], scalar: u16, simd: bool) -> V
             .map(|&v| half_binary_apply(DType::BF16, v, scalar, &|x, y| x * y))
             .collect()
     }
+}
+
+/// Bench-only same-binary A/B for the bf16 general-broadcast lever (`[N,C] + [C]` bias-add).
+#[doc(hidden)]
+pub fn bf16_bias_add_bench(mat: &[u16], bias: &[u16], cols: usize, simd: bool) -> Vec<u16> {
+    let rows = mat.len() / cols;
+    let mut out = vec![0u16; mat.len()];
+    if simd {
+        for r in 0..rows {
+            bf16_binary_into(
+                &mat[r * cols..(r + 1) * cols],
+                bias,
+                Bf16Op::Add,
+                &mut out[r * cols..(r + 1) * cols],
+            );
+        }
+    } else {
+        for r in 0..rows {
+            for c in 0..cols {
+                out[r * cols + c] =
+                    half_binary_apply(DType::BF16, mat[r * cols + c], bias[c], &|x, y| x + y);
+            }
+        }
+    }
+    out
 }
 
 fn eval_same_shape_half_float_binop(
@@ -2542,6 +2593,7 @@ fn broadcast_binary_tensors(
     if matches!(lhs.dtype, DType::BF16 | DType::F16)
         && lhs.dtype == rhs.dtype
         && let Some(value) = broadcast_binary_half_float(
+            primitive,
             lhs,
             rhs,
             &out_shape,
@@ -3048,6 +3100,7 @@ fn broadcast_binary_f32(
     reason = "mirrors broadcast_binary_f32's explicit stride/shape signature"
 )]
 fn broadcast_binary_half_float(
+    primitive: Primitive,
     lhs: &TensorValue,
     rhs: &TensorValue,
     out_shape: &Shape,
@@ -3068,8 +3121,85 @@ fn broadcast_binary_half_float(
         return Ok(None);
     };
     let _ = out_strides;
-    let op = |l: u16, r: u16| half_binary_apply(dt, l, r, float_op);
     let rank = out_shape.dims.len();
+
+    // Dense BF16 add/sub/mul/div fast path: vectorize the contiguous inner-row cases
+    // (bias-add `[N,C]+[C]` is `(1,1)` with the bias row reused; scale is `(1,0)/(0,1)`)
+    // via the shared SIMD widen/round helpers, writing each row directly into the output
+    // buffer. Bit-identical to the scalar map (the `_into` cores fall back to the scalar
+    // `half_binary_apply` for NaN chunks + the `< 8` remainder); strided rows stay scalar.
+    if dt == DType::BF16
+        && rank >= 1
+        && out_count > 0
+        && let Some(bop) = bf16_op_of(primitive)
+    {
+        let inner = out_shape.dims[rank - 1] as usize;
+        let inner_ls = lhs_strides[rank - 1];
+        let inner_rs = rhs_strides[rank - 1];
+        let outer = out_count / inner.max(1);
+        let scalar_op = bf16_scalar_op(bop);
+        let mut values = vec![0u16; out_count];
+        let mut coord = vec![0usize; rank.saturating_sub(1)];
+        let (mut lb, mut rb, mut w) = (0usize, 0usize, 0usize);
+        for _ in 0..outer {
+            let dst = &mut values[w..w + inner];
+            match (inner_ls, inner_rs) {
+                (1, 1) => {
+                    bf16_binary_into(&lhs_values[lb..lb + inner], &rhs_values[rb..rb + inner], bop, dst)
+                }
+                (1, 0) => bf16_scalar_broadcast_into(
+                    &lhs_values[lb..lb + inner],
+                    rhs_values[rb],
+                    false,
+                    bop,
+                    dst,
+                ),
+                (0, 1) => bf16_scalar_broadcast_into(
+                    &rhs_values[rb..rb + inner],
+                    lhs_values[lb],
+                    true,
+                    bop,
+                    dst,
+                ),
+                _ => {
+                    for k in 0..inner {
+                        dst[k] = half_binary_apply(
+                            DType::BF16,
+                            lhs_values[lb + k * inner_ls],
+                            rhs_values[rb + k * inner_rs],
+                            &scalar_op,
+                        );
+                    }
+                }
+            }
+            w += inner;
+            if rank >= 2 {
+                let mut ax = rank - 2;
+                loop {
+                    coord[ax] += 1;
+                    lb += lhs_strides[ax];
+                    rb += rhs_strides[ax];
+                    if coord[ax] < out_shape.dims[ax] as usize {
+                        break;
+                    }
+                    coord[ax] = 0;
+                    lb -= lhs_strides[ax] * out_shape.dims[ax] as usize;
+                    rb -= rhs_strides[ax] * out_shape.dims[ax] as usize;
+                    if ax == 0 {
+                        break;
+                    }
+                    ax -= 1;
+                }
+            }
+        }
+        return Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+            dt,
+            out_shape.clone(),
+            values,
+        )?)));
+    }
+
+    let op = |l: u16, r: u16| half_binary_apply(dt, l, r, float_op);
     let mut values = Vec::with_capacity(out_count);
     if rank >= 1 && out_count > 0 {
         let inner = out_shape.dims[rank - 1] as usize;
@@ -14114,6 +14244,53 @@ mod tests {
                     "bf16 simd mismatch op={} a={a:#06x} b={b:#06x}: got {:#06x} want {:#06x}",
                     op as u8, got[k], want
                 );
+            }
+        }
+    }
+
+    /// The SIMD bf16 general-broadcast path must be BIT-IDENTICAL to the boxed-`Literal`
+    /// generic broadcast for the column-broadcast `(1,0)/(0,1)` cases (`[N,C]⊗[N,1]` and
+    /// `[N,1]⊗[N,C]`) — the per-row scalar-broadcast branch — over edge bit patterns and
+    /// an inner width that crosses the 8-lane + remainder boundary.
+    #[test]
+    fn bf16_general_broadcast_column_bit_identical() {
+        use fj_core::{DType, Shape, TensorValue};
+        let pats: [u16; 22] = [
+            0x0000, 0x8000, 0x0001, 0x007F, 0x0080, 0x7F7F, 0x3F80, 0xBF80, 0x4049, 0x40C9,
+            0x7F80, 0xFF80, 0x7FC0, 0x7F81, 0x3F81, 0x4100, 0xC100, 0x0040, 0x7E00, 0x7F00,
+            0x3FAB, 0xBFAB,
+        ];
+        let (rows, cols) = (4usize, pats.len()); // cols=22 crosses 8-lane + remainder
+        let mat: Vec<u16> = (0..rows).flat_map(|_| pats.iter().copied()).collect();
+        let col: Vec<u16> = (0..rows).map(|r| pats[(r * 7) % pats.len()]).collect();
+        let lits = |bits: &[u16]| -> Vec<Literal> {
+            bits.iter().map(|&b| Literal::BF16Bits(b)).collect()
+        };
+        let out_bits = |v: &Value| -> Vec<u16> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::BF16Bits(b) => *b,
+                    o => panic!("{o:?}"),
+                })
+                .collect()
+        };
+        let mat_shape = Shape { dims: vec![rows as u32, cols as u32] };
+        let col_shape = Shape { dims: vec![rows as u32, 1] };
+        let mat_d = Value::Tensor(TensorValue::new_half_float_values(DType::BF16, mat_shape.clone(), mat.clone()).unwrap());
+        let col_d = Value::Tensor(TensorValue::new_half_float_values(DType::BF16, col_shape.clone(), col.clone()).unwrap());
+        let mat_b = Value::Tensor(TensorValue::new(DType::BF16, mat_shape, lits(&mat)).unwrap());
+        let col_b = Value::Tensor(TensorValue::new(DType::BF16, col_shape, lits(&col)).unwrap());
+        for prim in [Primitive::Add, Primitive::Sub, Primitive::Mul, Primitive::Div] {
+            for (l_d, r_d, l_b, r_b) in [
+                (&mat_d, &col_d, &mat_b, &col_b),
+                (&col_d, &mat_d, &col_b, &mat_b),
+            ] {
+                let dense = crate::eval_primitive(prim, &[l_d.clone(), r_d.clone()], &BTreeMap::new()).unwrap();
+                let boxed = crate::eval_primitive(prim, &[l_b.clone(), r_b.clone()], &BTreeMap::new()).unwrap();
+                assert_eq!(out_bits(&dense), out_bits(&boxed), "{prim:?} column-broadcast dense != boxed");
             }
         }
     }
