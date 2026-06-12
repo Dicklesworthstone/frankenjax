@@ -2518,6 +2518,93 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_f32_vs_f64_gemm_ratio() {
+        // Decides mixed-precision-solve viability: mixed precision wins ~2x only if the
+        // f32 GEMM is ~2x the f64 GEMM on this worker (AVX2 = f32 8-wide vs f64 4-wide).
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..3 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        // Does the f64 KC-blocked kernel help the deep-k narrow-n conv shape? (block_k
+        // is gated off for it in production: k*n < BLOCKED_B_MIN_KN.) Single-thread to
+        // isolate the macro-kernel. If blocked wins, porting it to f32 is the lever.
+        for &(m, k, n) in &[(8192usize, 576, 64), (8192, 576, 128)] {
+            let af64: Vec<f64> = (0..m * k).map(|i| (i as f64 * 0.0007).sin() - 0.3).collect();
+            let bf64: Vec<f64> = (0..k * n).map(|i| (i as f64 * 0.0009).cos() + 0.2).collect();
+            let plan_flat = super::MatmulPlan { threads: 1, pack_b: true, block_k: false };
+            let plan_blk = super::MatmulPlan { threads: 1, pack_b: true, block_k: true };
+            let t_flat = best_time(|| {
+                std::hint::black_box(super::matmul_2d_with_threads(&af64, m, k, &bf64, n, plan_flat));
+            });
+            let t_blk = best_time(|| {
+                std::hint::black_box(super::matmul_2d_with_threads(&af64, m, k, &bf64, n, plan_blk));
+            });
+            let gf = 2.0 * (m * k * n) as f64 / 1e9;
+            println!(
+                "BENCH f64 conv-shape KC-block m={m} k={k} n={n}: flat {:.1}ms ({:.0} GF/s) -> blocked {:.1}ms ({:.0} GF/s) = {:.2}x",
+                t_flat * 1e3,
+                gf / t_flat,
+                t_blk * 1e3,
+                gf / t_blk,
+                t_flat / t_blk
+            );
+        }
+        // Conv-shaped (tall, deep-k, narrow-n=Cout) f32 GEMMs: packed vs unpacked,
+        // same invocation — these fall below PACK_B_MIN_KN_F32 so production runs them
+        // unpacked. Does packing the small-but-deep B (k*n) help the narrow shape?
+        for &(m, k, n) in &[(25088usize, 576, 64), (12544, 576, 128), (50176, 288, 64)] {
+            let af32: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.0007).sin() - 0.3).collect();
+            let bf32: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.0009).cos() + 0.2).collect();
+            let t_un = best_time(|| {
+                std::hint::black_box(super::f32_matmul_bench(&af32, m, k, &bf32, n, "default"));
+            });
+            let t_pk = best_time(|| {
+                std::hint::black_box(super::f32_matmul_bench(&af32, m, k, &bf32, n, "packed"));
+            });
+            let gf = 2.0 * (m * k * n) as f64 / 1e9;
+            println!(
+                "BENCH f32 conv-shape m={m} k={k} n={n} (k*n={}): unpacked {:.1}ms ({:.0} GF/s) -> packed {:.1}ms ({:.0} GF/s) = {:.2}x",
+                k * n,
+                t_un * 1e3,
+                gf / t_un,
+                t_pk * 1e3,
+                gf / t_pk,
+                t_un / t_pk
+            );
+        }
+        for &sz in &[1024usize, 2048] {
+            let (m, k, n) = (sz, sz, sz);
+            let af64: Vec<f64> = (0..m * k).map(|i| (i as f64 * 0.0007).sin() - 0.3).collect();
+            let bf64: Vec<f64> = (0..k * n).map(|i| (i as f64 * 0.0009).cos() + 0.2).collect();
+            let af32: Vec<f32> = af64.iter().map(|&x| x as f32).collect();
+            let bf32: Vec<f32> = bf64.iter().map(|&x| x as f32).collect();
+            let t64 = best_time(|| {
+                std::hint::black_box(super::matmul_2d(&af64, m, k, &bf64, n));
+            });
+            let t32 = best_time(|| {
+                std::hint::black_box(super::batched_matmul_2d_f32_in(&af32, 1, m, k, &bf32, n));
+            });
+            let gf = 2.0 * (m * k * n) as f64 / 1e9;
+            println!(
+                "BENCH f32-vs-f64 GEMM {sz}^3: f64 {:.1}ms ({:.1} GF/s) | f32 {:.1}ms ({:.1} GF/s) | f32 is {:.2}x f64",
+                t64 * 1e3,
+                gf / t64,
+                t32 * 1e3,
+                gf / t32,
+                t64 / t32
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_f32_gemm_native_vs_promote() {
         use std::time::Instant;
