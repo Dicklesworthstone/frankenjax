@@ -5660,25 +5660,28 @@ fn pinv_svd(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
     // the pseudoinverse is the zero matrix — matching the prior Gram behaviour.
     let sigma_max = sigma.first().copied().unwrap_or(0.0);
     let cutoff = rcond.abs() * sigma_max;
-    // A⁺[i][j] = Σ_{l: σ_l > cutoff} V[i,l] · (1/σ_l) · U[j,l]   (n×m).
-    let mut result = vec![0.0_f64; n * m];
-    for l in 0..k {
-        let sg = sigma[l];
-        if sg > cutoff && sg > 0.0 {
-            let inv = 1.0 / sg;
-            for i in 0..n {
-                let vil = v[i * n + l];
-                if vil == 0.0 {
-                    continue;
-                }
-                let vil_inv = vil * inv;
-                for j in 0..m {
-                    result[i * m + j] += vil_inv * u_cols[l * m + j];
-                }
-            }
-        }
+    // A⁺ = (V·Σ⁺)·Uᵀ over the KEPT singular values: `V_scaled[i,c] = V[i,l]/σ_l` (n×kk)
+    // times `u_kept[c,j] = U[j,l]` (kk×m). Computing it as one cache-blocked, threaded
+    // `matmul_2d` instead of the prior scalar `Σ_l` outer-product triple loop. The GEMM
+    // accumulates each output's k-sum in ascending column order — the same ascending-`l`
+    // order over kept σ as the old loop — so it is bit-for-bit identical.
+    let kept: Vec<usize> = (0..k)
+        .filter(|&l| sigma[l] > cutoff && sigma[l] > 0.0)
+        .collect();
+    let kk = kept.len();
+    if kk == 0 {
+        return vec![0.0_f64; n * m];
     }
-    result
+    let mut v_scaled = vec![0.0_f64; n * kk];
+    let mut u_kept = vec![0.0_f64; kk * m];
+    for (c, &l) in kept.iter().enumerate() {
+        let inv = 1.0 / sigma[l];
+        for i in 0..n {
+            v_scaled[i * kk + c] = v[i * n + l] * inv;
+        }
+        u_kept[c * m..c * m + m].copy_from_slice(&u_cols[l * m..l * m + m]);
+    }
+    crate::tensor_contraction::matmul_2d(&v_scaled, n, kk, &u_kept, m)
 }
 
 // ── Norms ───────────────────────────────────────────────────────────
@@ -9912,6 +9915,53 @@ mod tests {
                 "pinv[{idx}] rel err {rel}: got {}, expected {}",
                 got[idx],
                 expected[idx]
+            );
+        }
+    }
+
+    #[test]
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_pinv_reconstruction_scalar_vs_matmul() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..3 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        // The pinv reconstruction A⁺ = V_scaled (n×kk) · u_kept (kk×m): isolate the
+        // scalar outer-product triple loop vs matmul_2d on the same data.
+        for &(n, m, kk) in &[(1024usize, 1024, 1024), (1500, 800, 800)] {
+            let v_scaled: Vec<f64> = (0..n * kk).map(|i| (i as f64 * 0.0007).sin() - 0.3).collect();
+            let u_kept: Vec<f64> = (0..kk * m).map(|i| (i as f64 * 0.0009).cos() + 0.2).collect();
+            let t_matmul = best_time(|| {
+                std::hint::black_box(crate::tensor_contraction::matmul_2d(&v_scaled, n, kk, &u_kept, m));
+            });
+            let t_scalar = best_time(|| {
+                let mut result = vec![0.0f64; n * m];
+                for c in 0..kk {
+                    for i in 0..n {
+                        let vic = v_scaled[i * kk + c];
+                        if vic == 0.0 {
+                            continue;
+                        }
+                        for j in 0..m {
+                            result[i * m + j] += vic * u_kept[c * m + j];
+                        }
+                    }
+                }
+                std::hint::black_box(result);
+            });
+            println!(
+                "BENCH pinv reconstruction n={n} m={m} kk={kk}: scalar {:.1}ms -> matmul {:.1}ms = {:.2}x",
+                t_scalar * 1e3,
+                t_matmul * 1e3,
+                t_scalar / t_matmul
             );
         }
     }
