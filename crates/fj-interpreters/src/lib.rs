@@ -3282,6 +3282,147 @@ fn run_scalar_f32_arith_plan_into(
     Some(Ok(()))
 }
 
+// ── scalar single-comparison plan (for while/scan cond predicates) ──────────
+// A `while`/`scan` cond sub-jaxpr is RE-EVALUATED every iteration, and the
+// canonical predicate is a SINGLE comparison `var CMP (var|literal)` (e.g.
+// `i > 0`, `x < n`). With the body on the compiled arena, this 1-op cond on the
+// generic path becomes the per-iteration bottleneck. This plan resolves the two
+// operands directly (no env / scratch / eval_primitive) and applies the SAME
+// semantics as fj-lax `compare_literals`: two I64s compare as integers, any
+// float operand compares via f64 (NaN → all-false except Ne), producing a bool.
+
+#[derive(Clone, Copy)]
+enum CompareOperand {
+    Const(usize),
+    Input(usize),
+    Lit(Literal),
+}
+
+struct ScalarComparePlan {
+    op: Primitive,
+    lhs: CompareOperand,
+    rhs: CompareOperand,
+    n_consts: usize,
+    n_inputs: usize,
+}
+
+fn compare_atom_operand(atom: &Atom, jaxpr: &Jaxpr) -> Option<CompareOperand> {
+    match atom {
+        Atom::Var(var) => {
+            if let Some(i) = jaxpr.constvars.iter().position(|c| c == var) {
+                Some(CompareOperand::Const(i))
+            } else if let Some(i) = jaxpr.invars.iter().position(|iv| iv == var) {
+                Some(CompareOperand::Input(i))
+            } else {
+                None // an equation-produced intermediate — impossible for a 1-op cond
+            }
+        }
+        Atom::Lit(lit) => Some(CompareOperand::Lit(*lit)),
+    }
+}
+
+fn build_scalar_compare_plan(jaxpr: &Jaxpr) -> Option<ScalarComparePlan> {
+    if jaxpr.equations.len() != 1 || !jaxpr.effects.is_empty() || jaxpr.outvars.len() != 1 {
+        return None;
+    }
+    let eqn = &jaxpr.equations[0];
+    if !eqn.params.is_empty()
+        || !eqn.sub_jaxprs.is_empty()
+        || !eqn.effects.is_empty()
+        || eqn.inputs.len() != 2
+        || eqn.outputs.len() != 1
+        || eqn.outputs[0] != jaxpr.outvars[0]
+    {
+        return None;
+    }
+    let op = match eqn.primitive {
+        Primitive::Eq
+        | Primitive::Ne
+        | Primitive::Lt
+        | Primitive::Le
+        | Primitive::Gt
+        | Primitive::Ge => eqn.primitive,
+        _ => return None,
+    };
+    Some(ScalarComparePlan {
+        op,
+        lhs: compare_atom_operand(&eqn.inputs[0], jaxpr)?,
+        rhs: compare_atom_operand(&eqn.inputs[1], jaxpr)?,
+        n_consts: jaxpr.constvars.len(),
+        n_inputs: jaxpr.invars.len(),
+    })
+}
+
+fn resolve_compare_operand(
+    operand: CompareOperand,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Literal> {
+    let value = match operand {
+        CompareOperand::Lit(lit) => return Some(lit),
+        CompareOperand::Const(i) => const_values.get(i)?,
+        CompareOperand::Input(i) => args.get(i)?,
+    };
+    match value {
+        Value::Scalar(lit) => Some(*lit),
+        Value::Tensor(_) => None,
+    }
+}
+
+fn compare_float_operand(lit: Literal) -> Option<f64> {
+    match lit {
+        Literal::F64Bits(bits) => Some(f64::from_bits(bits)),
+        Literal::F32Bits(bits) => Some(f64::from(f32::from_bits(bits))),
+        _ => None,
+    }
+}
+
+fn apply_int_compare(op: Primitive, lhs: i64, rhs: i64) -> bool {
+    match op {
+        Primitive::Eq => lhs == rhs,
+        Primitive::Ne => lhs != rhs,
+        Primitive::Lt => lhs < rhs,
+        Primitive::Le => lhs <= rhs,
+        Primitive::Gt => lhs > rhs,
+        _ => lhs >= rhs, // Ge (only comparison ops reach here)
+    }
+}
+
+fn apply_float_compare(op: Primitive, lhs: f64, rhs: f64) -> bool {
+    match op {
+        Primitive::Eq => lhs == rhs,
+        Primitive::Ne => lhs != rhs,
+        Primitive::Lt => lhs < rhs,
+        Primitive::Le => lhs <= rhs,
+        Primitive::Gt => lhs > rhs,
+        _ => lhs >= rhs, // Ge
+    }
+}
+
+/// Run the single-comparison plan. `Some(b)` = computed; `None` = not applicable
+/// (operand not a fast-path scalar dtype, or arity off) → caller falls back to the
+/// generic interpreter, which produces the same value/error. Mirrors
+/// `compare_literals`: both I64 → integer compare; any float operand → f64 compare.
+fn run_scalar_compare_plan(
+    plan: &ScalarComparePlan,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<bool> {
+    if const_values.len() != plan.n_consts || args.len() != plan.n_inputs {
+        return None;
+    }
+    let lhs = resolve_compare_operand(plan.lhs, const_values, args)?;
+    let rhs = resolve_compare_operand(plan.rhs, const_values, args)?;
+    match (lhs, rhs) {
+        (Literal::I64(a), Literal::I64(b)) => Some(apply_int_compare(plan.op, a, b)),
+        _ => {
+            let a = compare_float_operand(lhs)?;
+            let b = compare_float_operand(rhs)?;
+            Some(apply_float_compare(plan.op, a, b))
+        }
+    }
+}
+
 /// Reusable scratch arenas for the three monomorphic scalar-arith executors —
 /// one allocation each, reused across every loop iteration. A loop body builds
 /// only the plan(s) whose literals match its dtype (or all, if it has no
@@ -3305,6 +3446,7 @@ struct DenseEvalPlan {
     scalar_f64_plan: Option<ScalarF64Plan>,
     scalar_i64_plan: Option<ScalarI64Plan>,
     scalar_f32_plan: Option<ScalarF32Plan>,
+    scalar_compare_plan: Option<ScalarComparePlan>,
 }
 
 /// Build a [`DenseEvalPlan`] iff the jaxpr's variable ids are dense enough for the
@@ -3331,6 +3473,7 @@ fn build_dense_plan(jaxpr: &Jaxpr) -> Option<DenseEvalPlan> {
             scalar_f64_plan: build_scalar_f64_arith_plan(jaxpr, slots),
             scalar_i64_plan: build_scalar_i64_arith_plan(jaxpr, slots),
             scalar_f32_plan: build_scalar_f32_arith_plan(jaxpr, slots),
+            scalar_compare_plan: build_scalar_compare_plan(jaxpr),
         })
     } else {
         None
@@ -3349,6 +3492,7 @@ fn eval_jaxpr_dense_env(
         scalar_f64_plan: build_scalar_f64_arith_plan(jaxpr, slots),
         scalar_i64_plan: build_scalar_i64_arith_plan(jaxpr, slots),
         scalar_f32_plan: build_scalar_f32_arith_plan(jaxpr, slots),
+        scalar_compare_plan: build_scalar_compare_plan(jaxpr),
     };
     let mut env: Vec<Option<Value>> = vec![None; slots];
     run_dense_plan(jaxpr, const_values, args, &mut env, &plan)
@@ -3409,6 +3553,13 @@ fn run_dense_plan_into(
             run_scalar_f32_arith_plan_into(p, const_values, args, out, &mut scalar_buffers.f32)
     {
         return result;
+    }
+    if let Some(p) = &plan.scalar_compare_plan
+        && let Some(result) = run_scalar_compare_plan(p, const_values, args)
+    {
+        out.clear();
+        out.push(Value::scalar_bool(result));
+        return Ok(());
     }
     run_dense_env_into(jaxpr, const_values, args, env, &plan.last_use, scratch, out)
 }
@@ -5045,6 +5196,96 @@ mod tests {
         }
     }
 
+    // Single-comparison cond body `out = cmp(x, lit)` — the canonical while/scan
+    // predicate the scalar-compare plan accelerates.
+    fn scalar_compare_body_jaxpr(op: Primitive, lit: Literal) -> Jaxpr {
+        let (x, out) = (VarId(0), VarId(1));
+        Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![Equation {
+                primitive: op,
+                inputs: smallvec![Atom::Var(x), Atom::Lit(lit)],
+                outputs: smallvec![out],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        )
+    }
+
+    #[test]
+    fn scalar_compare_i64_matches_generic() {
+        let ops = [
+            Primitive::Eq,
+            Primitive::Ne,
+            Primitive::Lt,
+            Primitive::Le,
+            Primitive::Gt,
+            Primitive::Ge,
+        ];
+        for op in ops {
+            let jaxpr = scalar_compare_body_jaxpr(op, Literal::I64(0));
+            for x in [-3_i64, 0, 5, i64::MIN, i64::MAX] {
+                let args = [Value::scalar_i64(x)];
+                let planned = eval_jaxpr(&jaxpr, &args).expect("planned");
+                let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic");
+                assert_eq!(planned, generic, "op={op:?} x={x}");
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_compare_f64_matches_generic_incl_nan() {
+        let ops = [
+            Primitive::Eq,
+            Primitive::Ne,
+            Primitive::Lt,
+            Primitive::Le,
+            Primitive::Gt,
+            Primitive::Ge,
+        ];
+        for op in ops {
+            let jaxpr = scalar_compare_body_jaxpr(op, Literal::from_f64(1.0));
+            for x in [
+                -2.0_f64,
+                1.0,
+                3.0,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                -0.0,
+            ] {
+                let args = [Value::scalar_f64(x)];
+                let planned = eval_jaxpr(&jaxpr, &args).expect("planned");
+                let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic");
+                assert_eq!(planned, generic, "op={op:?} x={x:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_compare_f32_matches_generic_incl_nan() {
+        let jaxpr = scalar_compare_body_jaxpr(Primitive::Lt, Literal::from_f32(1.0_f32));
+        for x in [-2.0_f32, 1.0, 3.0, f32::NAN, f32::INFINITY] {
+            let args = [Value::scalar_f32(x)];
+            let planned = eval_jaxpr(&jaxpr, &args).expect("planned");
+            let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic");
+            assert_eq!(planned, generic, "x={x:?}");
+        }
+    }
+
+    #[test]
+    fn scalar_compare_guard_miss_uses_generic() {
+        // Tensor operand → not a fast-path scalar → bails to generic.
+        let jaxpr = scalar_compare_body_jaxpr(Primitive::Gt, Literal::I64(0));
+        let t = f64_tensor(4, |i| i as f64 - 1.0);
+        let planned = eval_jaxpr(&jaxpr, &[t.clone()]).expect("planned");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[t]).expect("generic");
+        assert_eq!(planned, generic);
+    }
+
     #[test]
     fn const_arity_mismatch_is_reported() {
         let jaxpr = Jaxpr::new(
@@ -5610,6 +5851,83 @@ mod tests {
             t_compiled * 1e9 / n as f64,
             t_generic / t_compiled,
             sha256,
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_scalar_compare_cond_overhead() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        // The canonical while/scan predicate `x > 0` (i64). With a compiled body
+        // the cond is the per-iteration bottleneck; this A/Bs the cond eval alone.
+        let body = scalar_compare_body_jaxpr(Primitive::Gt, Literal::I64(0));
+        let n: usize = 4_000_000;
+        let args = [Value::scalar_i64(3)];
+        let plan = super::build_dense_plan(&body).expect("dense");
+
+        let t_generic = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut acc = 0u64;
+            for _ in 0..n {
+                super::run_dense_env_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan.last_use,
+                    &mut scratch,
+                    &mut o,
+                )
+                .expect("generic");
+                if let Value::Scalar(Literal::Bool(b)) = &o[0] {
+                    acc += u64::from(*b);
+                }
+            }
+            std::hint::black_box(acc);
+        });
+
+        let t_compiled = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut bufs = super::ScalarPlanBuffers::default();
+            let mut acc = 0u64;
+            for _ in 0..n {
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan,
+                    &mut scratch,
+                    &mut o,
+                    &mut bufs,
+                )
+                .expect("compiled");
+                if let Value::Scalar(Literal::Bool(b)) = &o[0] {
+                    acc += u64::from(*b);
+                }
+            }
+            std::hint::black_box(acc);
+        });
+
+        println!(
+            "BENCH scalar cond `x>0` {n} evals: GENERIC {:.1}ns/eval -> COMPILED {:.1}ns/eval = {:.2}x",
+            t_generic * 1e9 / n as f64,
+            t_compiled * 1e9 / n as f64,
+            t_generic / t_compiled,
         );
     }
 
