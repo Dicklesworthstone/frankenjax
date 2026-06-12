@@ -5823,9 +5823,199 @@ fn lu_factor_for_solve(a: &[f64], n: usize) -> Option<(Vec<f64>, Vec<usize>)> {
     }
 }
 
+/// Below this `n` the f64 LU already dominates (the O(n³) trailing GEMM is too
+/// small for the f32 GEMM's ~2× to pay against the f32-factor + refinement
+/// overhead), so the mixed-precision solve only engages at scale.
+const MIXED_PRECISION_SOLVE_MIN_N: usize = 512;
+/// Refinement iteration cap; well-conditioned systems converge to f64 accuracy in
+/// 2–3, so a higher cap only ever helps borderline cases before the f64 fallback.
+const MIXED_REFINE_MAX_ITERS: usize = 6;
+
+/// f32 blocked LU (LAPACK `getrf` shape), a single-precision mirror of
+/// [`lu_factor_real_blocked`] with the trailing Schur update `A22 -= L21·U12` run
+/// through the native-f32 GEMM (~2× the f64 kernel — see the f32-vs-f64 GEMM
+/// diagnostic). For the mixed-precision solve ONLY (NOT `eval_lu`, whose goldens
+/// need f64). `lu` holds the combined L\U on return; the returned `perm` is the
+/// swap-from-identity row permutation consumed by [`lu_solve_f32`].
+fn lu_factor_real_blocked_f32(lu: &mut [f32], n: usize) -> Vec<usize> {
+    let m = n;
+    let mut perm: Vec<usize> = (0..m).collect();
+    let nb = LU_BLOCK_SIZE;
+    let mut j = 0;
+    while j < n {
+        let jb = nb.min(n - j);
+        let panel_end = j + jb;
+        for col in j..panel_end {
+            let mut max_val = lu[col * n + col].abs();
+            let mut max_row = col;
+            for row in (col + 1)..m {
+                let v = lu[row * n + col].abs();
+                if v > max_val {
+                    max_val = v;
+                    max_row = row;
+                }
+            }
+            if max_row != col {
+                perm.swap(col, max_row);
+                for jj in 0..n {
+                    lu.swap(col * n + jj, max_row * n + jj);
+                }
+            }
+            let diag = lu[col * n + col];
+            if diag.abs() < f32::EPSILON * 1e-6 {
+                continue;
+            }
+            for row in (col + 1)..m {
+                let factor = lu[row * n + col] / diag;
+                lu[row * n + col] = factor;
+                for jj in (col + 1)..panel_end {
+                    lu[row * n + jj] -= factor * lu[col * n + jj];
+                }
+            }
+        }
+        if panel_end < n {
+            for ri in 1..jb {
+                let r = j + ri;
+                for t in 0..ri {
+                    let l_rt = lu[r * n + (j + t)];
+                    if l_rt != 0.0 {
+                        let trow = j + t;
+                        for jj in panel_end..n {
+                            lu[r * n + jj] -= l_rt * lu[trow * n + jj];
+                        }
+                    }
+                }
+            }
+        }
+        let rows_below = m - panel_end;
+        let cols_right = n - panel_end;
+        if rows_below > 0 && cols_right > 0 {
+            let mut l21 = Vec::with_capacity(rows_below * jb);
+            for p in 0..rows_below {
+                let src = (panel_end + p) * n + j;
+                l21.extend_from_slice(&lu[src..src + jb]);
+            }
+            let mut u12 = Vec::with_capacity(jb * cols_right);
+            for t in 0..jb {
+                let src = (j + t) * n + panel_end;
+                u12.extend_from_slice(&lu[src..src + cols_right]);
+            }
+            let prod = crate::tensor_contraction::batched_matmul_2d_f32_in(
+                &l21, 1, rows_below, jb, &u12, cols_right,
+            );
+            for p in 0..rows_below {
+                let row = (panel_end + p) * n + panel_end;
+                let pr = p * cols_right;
+                for q in 0..cols_right {
+                    lu[row + q] -= prod[pr + q];
+                }
+            }
+        }
+        j = panel_end;
+    }
+    perm
+}
+
+/// Solve `L·U·x = P·b` with f32 combined-L\U factors (unit-lower `L`), all in f32.
+fn lu_solve_f32(lu: &[f32], p: &[usize], b: &[f32], n: usize) -> Vec<f32> {
+    let mut y = vec![0.0f32; n];
+    for i in 0..n {
+        let mut sum = b[p[i]];
+        for j in 0..i {
+            sum -= lu[i * n + j] * y[j];
+        }
+        y[i] = sum;
+    }
+    let mut x = vec![0.0f32; n];
+    for i in (0..n).rev() {
+        let mut sum = y[i];
+        for j in (i + 1)..n {
+            sum -= lu[i * n + j] * x[j];
+        }
+        x[i] = sum / lu[i * n + i];
+    }
+    x
+}
+
+/// Mixed-precision iterative-refinement solve: factor `A` ONCE in f32 (≈2× faster
+/// than f64 at scale), then recover f64 accuracy by refining against f64-precision
+/// residuals (`r = b − A·x` in f64; solve `A·dx = r` with the cached f32 factors;
+/// `x += dx`). Classical Wilkinson refinement: a backward-stable f32 factorization
+/// plus f64 residuals converges to a result whose residual is at working (f64)
+/// precision for well-conditioned `A`, so it matches the plain f64 solve to within
+/// `solve`'s tolerance. Returns `None` (caller falls back to the f64 solve) when
+/// the f32 factor is singular or refinement fails to reach f64-quality within
+/// [`MIXED_REFINE_MAX_ITERS`] (ill-conditioned `A`) — so parity is never at risk.
+fn solve_mixed_precision(a: &[f64], b: &[f64], n: usize) -> Option<Vec<f64>> {
+    let mut lu32: Vec<f32> = a.iter().map(|&x| x as f32).collect();
+    let perm = lu_factor_real_blocked_f32(&mut lu32, n);
+    for i in 0..n {
+        let d = lu32[i * n + i];
+        if !d.is_finite() || d == 0.0 {
+            return None;
+        }
+    }
+    let bnorm = b.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if bnorm == 0.0 {
+        return Some(vec![0.0; n]);
+    }
+    // `r = b − A·x` in f64; returns its 2-norm.
+    let residual = |x: &[f64], r: &mut [f64]| -> f64 {
+        let mut s2 = 0.0f64;
+        for i in 0..n {
+            let row = i * n;
+            let mut s = b[i];
+            for j in 0..n {
+                s -= a[row + j] * x[j];
+            }
+            r[i] = s;
+            s2 += s * s;
+        }
+        s2.sqrt()
+    };
+
+    let b32: Vec<f32> = b.iter().map(|&v| v as f32).collect();
+    let mut x: Vec<f64> = lu_solve_f32(&lu32, &perm, &b32, n)
+        .iter()
+        .map(|&v| v as f64)
+        .collect();
+
+    let accept = 1e-12 * (bnorm + 1.0); // f64-quality residual → matches the f64 solve
+    let mut r = vec![0.0f64; n];
+    let mut prev = f64::INFINITY;
+    for _ in 0..MIXED_REFINE_MAX_ITERS {
+        let rnorm = residual(&x, &mut r);
+        if rnorm <= accept {
+            return Some(x);
+        }
+        if rnorm >= prev {
+            // refinement stalled (f32-factor / conditioning limit) — fail to f64.
+            return None;
+        }
+        prev = rnorm;
+        let r32: Vec<f32> = r.iter().map(|&v| v as f32).collect();
+        let dx = lu_solve_f32(&lu32, &perm, &r32, n);
+        for i in 0..n {
+            x[i] += dx[i] as f64;
+        }
+    }
+    if residual(&x, &mut r) <= accept {
+        Some(x)
+    } else {
+        None
+    }
+}
+
 pub fn solve(a: &[f64], b: &[f64], n: usize) -> Option<Vec<f64>> {
     if a.len() != n * n || b.len() != n {
         return None;
+    }
+    // Mixed-precision iterative refinement at scale (falls through to f64 on
+    // singular / ill-conditioned non-convergence so the result is always f64-quality).
+    if n >= MIXED_PRECISION_SOLVE_MIN_N
+        && let Some(x) = solve_mixed_precision(a, b, n)
+    {
+        return Some(x);
     }
     let (lu, p) = lu_factor_for_solve(a, n)?;
     Some(lu_solve(&lu, &p, b, n))
@@ -10199,6 +10389,83 @@ mod tests {
             vals.iter().any(|v| !v.is_finite()),
             "singular solve output must be non-finite, got {vals:?}"
         );
+    }
+
+    // Build a deterministic, well-conditioned (diagonally dominant) n×n system and
+    // its dense RHS for the mixed-precision tests/bench.
+    fn mixed_solve_system(n: usize) -> (Vec<f64>, Vec<f64>) {
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = if i == j {
+                    (n as f64) + (i as f64) * 0.01 + 4.0
+                } else {
+                    (((i * 131 + j * 71 + 7) % 23) as f64 - 11.0) * 0.05
+                };
+            }
+        }
+        let b: Vec<f64> = (0..n).map(|i| ((i * 37 + 5) % 29) as f64 * 0.1 - 1.4).collect();
+        (a, b)
+    }
+
+    #[test]
+    fn mixed_precision_solve_matches_f64_within_tolerance() {
+        // At n ≥ MIXED_PRECISION_SOLVE_MIN_N the production `solve` runs the
+        // mixed-precision path; its result must match the f64 reference solve to
+        // within the solve tolerance (iterative refinement recovers f64 accuracy).
+        let n = super::MIXED_PRECISION_SOLVE_MIN_N + 13;
+        let (a, b) = mixed_solve_system(n);
+        // Direct mixed-precision result.
+        let mixed = super::solve_mixed_precision(&a, &b, n).expect("mixed should converge");
+        // f64 reference (the pre-mixed path).
+        let (lu, p) = super::lu_factor_for_solve(&a, n).unwrap();
+        let f64ref = super::lu_solve(&lu, &p, &b, n);
+        let mut max_rel = 0.0f64;
+        for i in 0..n {
+            let d = (mixed[i] - f64ref[i]).abs();
+            max_rel = max_rel.max(d / (f64ref[i].abs() + 1.0));
+        }
+        assert!(
+            max_rel < 1e-9,
+            "mixed-precision solve diverged from f64: max_rel={max_rel:.3e}"
+        );
+        // And the production `solve` (which routes through mixed) also matches.
+        let prod = super::solve(&a, &b, n).unwrap();
+        for i in 0..n {
+            assert!((prod[i] - f64ref[i]).abs() / (f64ref[i].abs() + 1.0) < 1e-9);
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_mixed_precision_solve_vs_f64() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..3 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        for &n in &[512usize, 1024, 2048] {
+            let (a, b) = mixed_solve_system(n);
+            let t_mixed = best_time(|| {
+                std::hint::black_box(super::solve_mixed_precision(&a, &b, n).unwrap());
+            });
+            let t_f64 = best_time(|| {
+                let (lu, p) = super::lu_factor_for_solve(&a, n).unwrap();
+                std::hint::black_box(super::lu_solve(&lu, &p, &b, n));
+            });
+            println!(
+                "BENCH mixed-precision solve n={n}: f64 {:.2}ms -> mixed {:.2}ms = {:.2}x",
+                t_f64 * 1e3,
+                t_mixed * 1e3,
+                t_f64 / t_mixed
+            );
+        }
     }
 
     #[test]
