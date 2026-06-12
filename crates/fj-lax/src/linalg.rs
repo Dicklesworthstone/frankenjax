@@ -595,6 +595,60 @@ fn cholesky_real_blocked(n: usize, a_in: &[f64]) -> Vec<f64> {
 /// unchanged — only the loop nesting differs. `forward` = substitute rows in
 /// ascending order (`lower != transpose`); `transpose` reads `A[k][i]` instead of
 /// `A[i][k]`; the diagonal is `A[i][i]` in every case.
+/// REAL fast path for [`batched_tri_solve`]: when A and B are real, the per-element
+/// complex `(ac−bd, ad+bc)` mul / `ac/c²` div degenerate to real `a·x` / `x/d` but
+/// still cost ~4× the mults and read 2× the bytes. This does the substitution in
+/// pure f64 across all `n_b` columns at once — ~2-4× faster, and `x/d` is also the
+/// exact real division JAX uses (the complex path's `a·c/c²` double-rounds). Same
+/// loop structure / ascending-`k` fold as the complex version.
+fn batched_tri_solve_real(
+    a: &[f64],
+    x: &mut [f64],
+    n: usize,
+    n_b: usize,
+    forward: bool,
+    transpose: bool,
+    unit_diagonal: bool,
+) {
+    let a_at = |i: usize, k: usize| -> f64 {
+        if transpose { a[k * n + i] } else { a[i * n + k] }
+    };
+    let solve_row = |i: usize, ks: std::ops::Range<usize>, x: &mut [f64]| {
+        for k in ks {
+            let aik = a_at(i, k);
+            if k < i {
+                let (head, tail) = x.split_at_mut(i * n_b);
+                let xk = &head[k * n_b..k * n_b + n_b];
+                let xi = &mut tail[..n_b];
+                for col in 0..n_b {
+                    xi[col] -= aik * xk[col];
+                }
+            } else {
+                let (head, tail) = x.split_at_mut(k * n_b);
+                let xi = &mut head[i * n_b..i * n_b + n_b];
+                let xk = &tail[..n_b];
+                for col in 0..n_b {
+                    xi[col] -= aik * xk[col];
+                }
+            }
+        }
+        let d = if unit_diagonal { 1.0 } else { a[i * n + i] };
+        let xi = &mut x[i * n_b..i * n_b + n_b];
+        for col in 0..n_b {
+            xi[col] /= d;
+        }
+    };
+    if forward {
+        for i in 0..n {
+            solve_row(i, 0..i, x);
+        }
+    } else {
+        for i in (0..n).rev() {
+            solve_row(i, (i + 1)..n, x);
+        }
+    }
+}
+
 fn batched_tri_solve(
     a: &[(f64, f64)],
     x: &mut [(f64, f64)],
@@ -694,15 +748,27 @@ pub(crate) fn eval_triangular_solve(
         .is_some_and(|v| v.trim() == "true");
 
     let n = m_a;
-    // Solve all n_b RHS columns together, streaming A once (bit-identical to the
-    // per-column substitution). JAX's triangular_solve does not raise for a
-    // zero/near-zero diagonal — complex_div yields inf/nan (singular) or a finite
-    // large value (near-singular), matching jnp (NumPy raises).
-    let mut x = b.clone();
     let forward = lower != transpose_a;
-    batched_tri_solve(&a, &mut x, n, n_b, forward, transpose_a, unit_diagonal);
-
     let out_dtype = promote_dtype(dtype_a, dtype_b);
+
+    // REAL fast path: when neither operand is complex, do the substitution in pure
+    // f64 (≈2-4× the complex path: 1 vs 4 mults/step, half the bytes). Output reuses
+    // the shared builder via (v, 0) tuples. JAX's triangular_solve does not raise for
+    // a zero/near-zero diagonal — `x/d` yields inf/nan (singular) or a finite large
+    // value (near-singular), matching jnp (NumPy raises).
+    let is_real = !matches!(dtype_a, DType::Complex64 | DType::Complex128)
+        && !matches!(dtype_b, DType::Complex64 | DType::Complex128);
+    if is_real {
+        let ar: Vec<f64> = a.iter().map(|t| t.0).collect();
+        let mut xr: Vec<f64> = b.iter().map(|t| t.0).collect();
+        batched_tri_solve_real(&ar, &mut xr, n, n_b, forward, transpose_a, unit_diagonal);
+        let x: Vec<(f64, f64)> = xr.into_iter().map(|v| (v, 0.0)).collect();
+        return complex_matrix_to_value(n, n_b, &x, out_dtype);
+    }
+
+    // Complex path: solve all n_b RHS columns together, streaming A once.
+    let mut x = b.clone();
+    batched_tri_solve(&a, &mut x, n, n_b, forward, transpose_a, unit_diagonal);
     complex_matrix_to_value(n, n_b, &x, out_dtype)
 }
 
@@ -8414,33 +8480,31 @@ mod tests {
         }
     }
 
-    // Inline per-column lower/no-transpose triangular solve reference using the SAME
-    // complex arithmetic as eval_triangular_solve (the prior loop structure), so the
-    // batched-vs-per-column comparison is bit-exact. Returns the real parts.
+    // Inline per-column lower/no-transpose REAL triangular solve reference (matching
+    // the real fast path's `a·x` / `x/d` f64 arithmetic), so the batched-vs-per-column
+    // comparison is bit-exact for real inputs.
     fn tri_solve_per_column_lower(adata: &[f64], bdata: &[f64], n: usize, n_b: usize) -> Vec<f64> {
-        let a: Vec<(f64, f64)> = adata.iter().map(|&v| (v, 0.0)).collect();
-        let b: Vec<(f64, f64)> = bdata.iter().map(|&v| (v, 0.0)).collect();
-        let mut x = vec![(0.0_f64, 0.0_f64); n * n_b];
-        let mut b_col = vec![(0.0_f64, 0.0_f64); n];
+        let mut x = vec![0.0f64; n * n_b];
+        let mut b_col = vec![0.0f64; n];
         for col in 0..n_b {
             for row in 0..n {
-                b_col[row] = b[row * n_b + col];
+                b_col[row] = bdata[row * n_b + col];
             }
             for i in 0..n {
                 for k in 0..i {
-                    b_col[i] = complex_sub(b_col[i], complex_mul(a[i * n + k], x[k * n_b + col]));
+                    b_col[i] -= adata[i * n + k] * x[k * n_b + col];
                 }
-                x[i * n_b + col] = complex_div(b_col[i], a[i * n + i]);
+                x[i * n_b + col] = b_col[i] / adata[i * n + i];
             }
         }
-        x.iter().map(|t| t.0).collect()
+        x
     }
 
     #[test]
     fn triangular_solve_batched_bit_identical_to_per_column() {
-        // The batched eval_triangular_solve must equal the per-column substitution
-        // bit-for-bit (only loop nesting differs) at a size/column count that
-        // exercises the vectorized inner loop.
+        // The real-fast-path eval_triangular_solve must equal the per-column real
+        // substitution bit-for-bit (only loop nesting differs) at a size/column count
+        // that exercises the vectorized inner loop.
         let n = 160usize;
         let n_b = 40usize;
         // Lower-triangular, diagonally dominant A.
@@ -8465,7 +8529,7 @@ mod tests {
 
     #[test]
     #[ignore = "benchmark: run with --ignored --nocapture"]
-    fn bench_triangular_solve_batched_vs_per_column() {
+    fn bench_triangular_solve_real_vs_complex() {
         use std::time::Instant;
         fn best_time(mut f: impl FnMut()) -> f64 {
             f();
@@ -8477,6 +8541,8 @@ mod tests {
             }
             best
         }
+        // Real fast path (production for real inputs) vs the complex batched kernel
+        // (the prior path), on identical real data.
         for &(n, n_b) in &[(1024usize, 64usize), (1024, 256), (2048, 128)] {
             let mut adata = vec![0.0f64; n * n];
             for i in 0..n {
@@ -8488,19 +8554,22 @@ mod tests {
             let bdata: Vec<f64> = (0..n * n_b)
                 .map(|k| (((k * 53 + 11) % 37) as f64) * 0.1 - 1.8)
                 .collect();
-            let a = make_matrix(n, n, &adata);
-            let b = make_matrix(n, n_b, &bdata);
-            let t_batched = best_time(|| {
-                std::hint::black_box(eval_triangular_solve(&[a.clone(), b.clone()], &BTreeMap::new()).unwrap());
+            let ac: Vec<(f64, f64)> = adata.iter().map(|&v| (v, 0.0)).collect();
+            let t_complex = best_time(|| {
+                let mut x: Vec<(f64, f64)> = bdata.iter().map(|&v| (v, 0.0)).collect();
+                super::batched_tri_solve(&ac, &mut x, n, n_b, true, false, false);
+                std::hint::black_box(x);
             });
-            let t_percol = best_time(|| {
-                std::hint::black_box(tri_solve_per_column_lower(&adata, &bdata, n, n_b));
+            let t_real = best_time(|| {
+                let mut x = bdata.clone();
+                super::batched_tri_solve_real(&adata, &mut x, n, n_b, true, false, false);
+                std::hint::black_box(x);
             });
             println!(
-                "BENCH triangular_solve n={n} n_b={n_b}: per-column {:.2}ms -> batched {:.2}ms = {:.2}x",
-                t_percol * 1e3,
-                t_batched * 1e3,
-                t_percol / t_batched
+                "BENCH triangular_solve real vs complex n={n} n_b={n_b}: complex {:.2}ms -> real {:.2}ms = {:.2}x",
+                t_complex * 1e3,
+                t_real * 1e3,
+                t_complex / t_real
             );
         }
     }
