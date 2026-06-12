@@ -538,13 +538,34 @@ fn eval_dense_float_full_reduce(
             }
             Some(Value::Scalar(reduce_real_literal(DType::BF16, acc)))
         }
-        // F16 is not a simple shift (different exponent bias), so its widen doesn't
-        // vectorize cheaply; keep the scalar dense fold (still bit-identical, reading the
-        // packed u16 backing instead of 24-byte boxed Literals — a modest free win).
+        // F16 needs the IEEE 5-bit-exponent decode (not a shift), and that widen is the
+        // compute floor of the fold. Vectorize it 8 lanes via `f16_widen8` for chunks whose
+        // inputs are all NORMAL/±0 (the common case); any chunk with a subnormal/inf/NaN f16
+        // and the tail decode each value scalar via `Literal::F16Bits.as_f64()`. The fold is
+        // a SINGLE scalar f64 accumulator over the lanes in ascending order (no reassociation,
+        // and the SIMD widen equals `as_f64` exactly for normal/±0), so it is BIT-IDENTICAL
+        // to the per-element scalar fold incl ±inf/NaN/subnormal/signed-zero.
         DType::F16 => {
+            use std::simd::Simd;
+            use std::simd::num::SimdFloat;
+            const LANES: usize = 8;
             let values = tensor.elements.as_half_float_slice()?;
             let mut acc = float_init;
-            for &bits in values {
+            let chunks = values.chunks_exact(LANES);
+            let tail = chunks.remainder();
+            for chunk in chunks {
+                let u = Simd::<u16, LANES>::from_slice(chunk);
+                if crate::arithmetic::f16_input_needs_scalar(u) {
+                    for &bits in chunk {
+                        acc = float_op(acc, Literal::F16Bits(bits).as_f64().unwrap_or(0.0));
+                    }
+                } else {
+                    for &v in crate::arithmetic::f16_widen8(u).to_array().iter() {
+                        acc = float_op(acc, v);
+                    }
+                }
+            }
+            for &bits in tail {
                 acc = float_op(acc, Literal::F16Bits(bits).as_f64().unwrap_or(0.0));
             }
             Some(Value::Scalar(reduce_real_literal(DType::F16, acc)))

@@ -657,7 +657,7 @@ fn round_to_odd_f64x8(x: std::simd::Simd<f64, BF16_SIMD_L>) -> std::simd::Simd<f
 /// Per-lane mask of F16 bit patterns that need the SCALAR f16 decode (subnormal, inf, NaN)
 /// — i.e. NOT (normal | ±0). Used to gate the SIMD f16 widen, which only handles normal/±0.
 #[inline]
-fn f16_input_needs_scalar(h: std::simd::Simd<u16, BF16_SIMD_L>) -> bool {
+pub(crate) fn f16_input_needs_scalar(h: std::simd::Simd<u16, BF16_SIMD_L>) -> bool {
     use std::simd::cmp::SimdPartialEq;
     use std::simd::num::SimdFloat;
     use std::simd::Simd;
@@ -671,7 +671,7 @@ fn f16_input_needs_scalar(h: std::simd::Simd<u16, BF16_SIMD_L>) -> bool {
 
 /// SIMD widen 8 F16 bit patterns (NORMAL or ±0 only — caller filters the rest) to exact f64.
 #[inline]
-fn f16_widen8(h: std::simd::Simd<u16, BF16_SIMD_L>) -> std::simd::Simd<f64, BF16_SIMD_L> {
+pub(crate) fn f16_widen8(h: std::simd::Simd<u16, BF16_SIMD_L>) -> std::simd::Simd<f64, BF16_SIMD_L> {
     use std::simd::cmp::SimdPartialEq;
     use std::simd::num::{SimdFloat, SimdUint};
     use std::simd::{Select, Simd};
@@ -1155,6 +1155,38 @@ pub fn bf16_neg_abs_bench(values: &[u16], is_abs: bool, simd: bool) -> Vec<u16> 
             .map(|&v| half_unary_apply(DType::BF16, v, &op_f64))
             .collect()
     }
+}
+
+/// Bench-only same-binary A/B for the f16 reduce-sum lever (SIMD vs scalar IEEE-decode widen).
+#[doc(hidden)]
+pub fn f16_reduce_sum_bench(values: &[u16], simd: bool) -> f64 {
+    use std::simd::Simd;
+    let mut acc = 0.0f64;
+    if simd {
+        const L: usize = BF16_SIMD_L;
+        let chunks = values.chunks_exact(L);
+        let tail = chunks.remainder();
+        for chunk in chunks {
+            let u = Simd::<u16, L>::from_slice(chunk);
+            if f16_input_needs_scalar(u) {
+                for &b in chunk {
+                    acc += Literal::F16Bits(b).as_f64().unwrap_or(0.0);
+                }
+            } else {
+                for &v in f16_widen8(u).to_array().iter() {
+                    acc += v;
+                }
+            }
+        }
+        for &b in tail {
+            acc += Literal::F16Bits(b).as_f64().unwrap_or(0.0);
+        }
+    } else {
+        for &b in values {
+            acc += Literal::F16Bits(b).as_f64().unwrap_or(0.0);
+        }
+    }
+    acc
 }
 
 /// Bench-only same-binary A/B for the f16 relu lever (`max(x, +0)`).
@@ -14775,6 +14807,45 @@ mod tests {
                     op as u8, got[k], want
                 );
             }
+        }
+    }
+
+    /// The SIMD-widen f16 reduce-sum fold must be BIT-IDENTICAL (same f64 accumulator bits,
+    /// same ascending order) to the scalar per-element `as_f64` fold over edge patterns
+    /// (±0/subnormal/inf/NaN/normal), exercising the edge-chunk + tail scalar fallback.
+    #[test]
+    fn f16_reduce_sum_simd_bit_identical_to_scalar() {
+        let pats: [u16; 24] = [
+            0x0000, 0x8000, 0x0001, 0x03FF, 0x0400, 0x7BFF, 0x3C00, 0xBC00, 0x3800, 0x4000,
+            0x6400, 0xEC00, 0x7C00, 0xFC00, 0x7E00, 0x7D00, 0x3555, 0xB555, 0x0200, 0x7800,
+            0x4900, 0xC900, 0x5640, 0x1234,
+        ];
+        // Several arrangements crossing the 8-lane boundary + tail, incl. all-normal,
+        // edges-only, and mixed (so the edge-chunk fallback AND SIMD chunk both run).
+        let normals: [u16; 10] = [
+            0x3C00, 0x4000, 0x3800, 0x4400, 0x4800, 0xBC00, 0xC000, 0x3555, 0x4900, 0x5640,
+        ];
+        let mut cases: Vec<Vec<u16>> = vec![pats.to_vec()];
+        let mut tiled = Vec::new();
+        for _ in 0..5 {
+            tiled.extend_from_slice(&normals);
+        }
+        tiled.push(0x0001); // one subnormal in the tail
+        cases.push(tiled);
+        let mut mixed = Vec::new();
+        for i in 0..40 {
+            mixed.push(if i % 9 == 0 { pats[i % pats.len()] } else { normals[i % normals.len()] });
+        }
+        cases.push(mixed);
+        for v in &cases {
+            let simd = super::f16_reduce_sum_bench(v, true);
+            let scalar = super::f16_reduce_sum_bench(v, false);
+            assert_eq!(
+                simd.to_bits(),
+                scalar.to_bits(),
+                "f16 reduce-sum simd={simd} scalar={scalar} (len {})",
+                v.len()
+            );
         }
     }
 
