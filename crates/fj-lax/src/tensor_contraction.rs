@@ -334,6 +334,139 @@ struct MatmulRhs<'a> {
     block_k: bool,
 }
 
+/// Base-case threshold for [`strassen_matmul_2d`]: once any of `m,k,n` drops to this,
+/// the recursion bottoms out in the bit-exact [`matmul_2d`].
+const STRASSEN_BASE: usize = 256;
+
+/// Strassen–Winograd `O(n^2.807)` matrix multiply for `[m,k]@[k,n]` f64, bottoming out
+/// in the bit-exact [`matmul_2d`] once any dimension reaches [`STRASSEN_BASE`].
+///
+/// Strassen replaces one of every eight block multiplies with ~18 block add/subs, so it
+/// is a DIFFERENT COMPLEXITY CLASS than the O(n³) kernel and wins even without FMA (the
+/// gap that caps the bit-exact GEMM). It is NOT bit-identical to the ascending-`l`
+/// reference — it reassociates the `+`, so its relative error grows ~ a small factor per
+/// recursion level (≈1e-13 for well-conditioned f64 at one or two levels). That is inside
+/// the TOLERANCE that fj-lax linalg (LU/QR/Cholesky/SVD/solve) is held to, so this kernel
+/// is legal ONLY behind those tolerance call sites — NEVER on the bit-exact `dot_general`
+/// path. Odd dimensions are zero-padded to even at each level (the padding contributes
+/// exact zeros) and the result is cropped back, so arbitrary `m,k,n` are handled.
+///
+/// NOTE (staged): the recursion + tolerance correctness is proven by
+/// `strassen_matmul_2d_matches_matmul_2d_within_tol`; wiring it into the large-matrix
+/// linalg call sites (blocked LU/QR/Cholesky trailing GEMM, SVD reconstruction, solve)
+/// plus the same-invocation perf A/B is the follow-up (bead strassen-linalg-gemm).
+pub fn strassen_matmul_2d(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64> {
+    if m == 0 || k == 0 || n == 0 {
+        return vec![0.0; m * n];
+    }
+    if m <= STRASSEN_BASE || k <= STRASSEN_BASE || n <= STRASSEN_BASE {
+        return matmul_2d(a, m, k, b, n);
+    }
+
+    // Pad each odd dimension up to even; the extra zero row/col contributes nothing,
+    // then crop the (me×ne) product back to (m×n).
+    let me = m + (m & 1);
+    let ke = k + (k & 1);
+    let ne = n + (n & 1);
+    if me != m || ke != k || ne != n {
+        let ap = strassen_pad(a, m, k, me, ke);
+        let bp = strassen_pad(b, k, n, ke, ne);
+        let cp = strassen_matmul_2d(&ap, me, ke, &bp, ne);
+        return strassen_crop(&cp, ne, m, n);
+    }
+
+    let (m2, k2, n2) = (m / 2, k / 2, n / 2);
+    // Quadrants of A (m×k) and B (k×n).
+    let a11 = strassen_sub(a, k, 0, 0, m2, k2);
+    let a12 = strassen_sub(a, k, 0, k2, m2, k2);
+    let a21 = strassen_sub(a, k, m2, 0, m2, k2);
+    let a22 = strassen_sub(a, k, m2, k2, m2, k2);
+    let b11 = strassen_sub(b, n, 0, 0, k2, n2);
+    let b12 = strassen_sub(b, n, 0, n2, k2, n2);
+    let b21 = strassen_sub(b, n, k2, 0, k2, n2);
+    let b22 = strassen_sub(b, n, k2, n2, k2, n2);
+
+    let ak = m2 * k2;
+    let bk = k2 * n2;
+    // The 7 Strassen products, each on (m2×k2)@(k2×n2).
+    let p1 = strassen_matmul_2d(&strassen_add(&a11, &a22, ak), m2, k2, &strassen_add(&b11, &b22, bk), n2);
+    let p2 = strassen_matmul_2d(&strassen_add(&a21, &a22, ak), m2, k2, &b11, n2);
+    let p3 = strassen_matmul_2d(&a11, m2, k2, &strassen_diff(&b12, &b22, bk), n2);
+    let p4 = strassen_matmul_2d(&a22, m2, k2, &strassen_diff(&b21, &b11, bk), n2);
+    let p5 = strassen_matmul_2d(&strassen_add(&a11, &a12, ak), m2, k2, &b22, n2);
+    let p6 = strassen_matmul_2d(&strassen_diff(&a21, &a11, ak), m2, k2, &strassen_add(&b11, &b12, bk), n2);
+    let p7 = strassen_matmul_2d(&strassen_diff(&a12, &a22, ak), m2, k2, &strassen_add(&b21, &b22, bk), n2);
+
+    // C11=P1+P4-P5+P7; C12=P3+P5; C21=P2+P4; C22=P1-P2+P3+P6.
+    let mut c = vec![0.0; m * n];
+    for r in 0..m2 {
+        for col in 0..n2 {
+            let q = r * n2 + col;
+            let c11 = p1[q] + p4[q] - p5[q] + p7[q];
+            let c12 = p3[q] + p5[q];
+            let c21 = p2[q] + p4[q];
+            let c22 = p1[q] - p2[q] + p3[q] + p6[q];
+            c[r * n + col] = c11;
+            c[r * n + n2 + col] = c12;
+            c[(m2 + r) * n + col] = c21;
+            c[(m2 + r) * n + n2 + col] = c22;
+        }
+    }
+    c
+}
+
+/// Copy `rows×cols` of `src` into the top-left of a zeroed `new_rows×new_cols` matrix.
+fn strassen_pad(src: &[f64], rows: usize, cols: usize, new_rows: usize, new_cols: usize) -> Vec<f64> {
+    let mut out = vec![0.0; new_rows * new_cols];
+    for r in 0..rows {
+        out[r * new_cols..r * new_cols + cols].copy_from_slice(&src[r * cols..r * cols + cols]);
+    }
+    out
+}
+
+/// Crop the top-left `new_rows×new_cols` out of a `?×src_cols` matrix.
+fn strassen_crop(src: &[f64], src_cols: usize, new_rows: usize, new_cols: usize) -> Vec<f64> {
+    let mut out = vec![0.0; new_rows * new_cols];
+    for r in 0..new_rows {
+        out[r * new_cols..r * new_cols + new_cols]
+            .copy_from_slice(&src[r * src_cols..r * src_cols + new_cols]);
+    }
+    out
+}
+
+/// Extract the `rows×cols` sub-block at `(row0,col0)` from a `?×src_cols` matrix.
+fn strassen_sub(
+    src: &[f64],
+    src_cols: usize,
+    row0: usize,
+    col0: usize,
+    rows: usize,
+    cols: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0; rows * cols];
+    for r in 0..rows {
+        let s = (row0 + r) * src_cols + col0;
+        out[r * cols..r * cols + cols].copy_from_slice(&src[s..s + cols]);
+    }
+    out
+}
+
+fn strassen_add(x: &[f64], y: &[f64], len: usize) -> Vec<f64> {
+    let mut o = vec![0.0; len];
+    for i in 0..len {
+        o[i] = x[i] + y[i];
+    }
+    o
+}
+
+fn strassen_diff(x: &[f64], y: &[f64], len: usize) -> Vec<f64> {
+    let mut o = vec![0.0; len];
+    for i in 0..len {
+        o[i] = x[i] - y[i];
+    }
+    o
+}
+
 /// Matrix multiplication as a special case of tensordot.
 ///
 /// Matches `jnp.matmul(a, b)` for 2D arrays.
@@ -3404,6 +3537,40 @@ mod tests {
                 gflops / (s / 1e3),
                 gflops / (p / 1e3),
                 s / p
+            );
+        }
+    }
+
+    #[test]
+    fn strassen_matmul_2d_matches_matmul_2d_within_tol() {
+        // Exercises multi-level recursion + odd-dim zero-padding (each shape forces a
+        // dimension above STRASSEN_BASE=256 so the recursion actually fires, and several
+        // are odd so the even-padding path is hit). Strassen reassociates the additions,
+        // so it is NOT bit-identical — it must agree with the bit-exact matmul_2d only
+        // within a tight relative tolerance (well inside the linalg parity tolerance it
+        // will run behind).
+        for &(m, k, n) in &[
+            (300usize, 280usize, 290usize), // all even, one level
+            (513, 257, 400),                // odd m,k → padding + two levels
+            (260, 600, 259),                // odd n, k spans multiple levels
+        ] {
+            let a: Vec<f64> = (0..m * k)
+                .map(|i| (i as f64 * 0.001_37).sin() * 1.5 - 0.2)
+                .collect();
+            let b: Vec<f64> = (0..k * n)
+                .map(|i| (i as f64 * 0.000_91).cos() * 1.1 + 0.3)
+                .collect();
+            let got = super::strassen_matmul_2d(&a, m, k, &b, n);
+            let want = super::matmul_2d(&a, m, k, &b, n);
+            assert_eq!(got.len(), want.len());
+            let mut max_rel = 0.0f64;
+            for (g, w) in got.iter().zip(&want) {
+                let denom = w.abs().max(1.0);
+                max_rel = max_rel.max((g - w).abs() / denom);
+            }
+            assert!(
+                max_rel < 1e-10,
+                "strassen vs matmul_2d max_rel={max_rel:e} at m={m} k={k} n={n}"
             );
         }
     }
