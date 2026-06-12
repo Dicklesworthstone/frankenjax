@@ -629,6 +629,151 @@ fn bf16_scalar_op(op: Bf16Op) -> fn(f64, f64) -> f64 {
     }
 }
 
+/// f64 → f32 round-to-odd (`Literal::f64_to_f32_round_to_odd`), 8 lanes — the shared
+/// intermediate of both half-float rounds. (bf16 inlines its own copy; f16 reuses this.)
+#[inline]
+fn round_to_odd_f64x8(x: std::simd::Simd<f64, BF16_SIMD_L>) -> std::simd::Simd<f32, BF16_SIMD_L> {
+    use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+    use std::simd::num::SimdFloat;
+    use std::simd::{Select, Simd};
+    type U32s = Simd<u32, BF16_SIMD_L>;
+    type F32s = Simd<f32, BF16_SIMD_L>;
+    type F64s = Simd<f64, BF16_SIMD_L>;
+    let nearest: F32s = x.cast();
+    let nbits: U32s = nearest.to_bits();
+    let back: F64s = nearest.cast();
+    let exact = back.simd_eq(x).cast::<i32>();
+    let odd = (nbits & U32s::splat(1)).simd_eq(U32s::splat(1));
+    let expmask = U32s::splat(0x7F80_0000);
+    let nonfinite = (nbits & expmask).simd_eq(expmask);
+    let passthrough = exact | odd | nonfinite;
+    let toward_larger = x.simd_gt(back).cast::<i32>();
+    let negative = (nbits & U32s::splat(0x8000_0000)).simd_ne(U32s::splat(0));
+    let step_up = toward_larger ^ negative;
+    let neighbor = step_up.select(nbits + U32s::splat(1), nbits - U32s::splat(1));
+    F32s::from_bits(passthrough.select(nbits, neighbor))
+}
+
+/// Per-lane mask of F16 bit patterns that need the SCALAR f16 decode (subnormal, inf, NaN)
+/// — i.e. NOT (normal | ±0). Used to gate the SIMD f16 widen, which only handles normal/±0.
+#[inline]
+fn f16_input_needs_scalar(h: std::simd::Simd<u16, BF16_SIMD_L>) -> bool {
+    use std::simd::cmp::SimdPartialEq;
+    use std::simd::num::SimdFloat;
+    use std::simd::Simd;
+    type U16s = Simd<u16, BF16_SIMD_L>;
+    let he = h & U16s::splat(0x7C00);
+    let man = h & U16s::splat(0x03FF);
+    let subnormal = he.simd_eq(U16s::splat(0)) & man.simd_ne(U16s::splat(0));
+    let infnan = he.simd_eq(U16s::splat(0x7C00));
+    (subnormal | infnan).any()
+}
+
+/// SIMD widen 8 F16 bit patterns (NORMAL or ±0 only — caller filters the rest) to exact f64.
+#[inline]
+fn f16_widen8(h: std::simd::Simd<u16, BF16_SIMD_L>) -> std::simd::Simd<f64, BF16_SIMD_L> {
+    use std::simd::cmp::SimdPartialEq;
+    use std::simd::num::{SimdFloat, SimdUint};
+    use std::simd::{Select, Simd};
+    type U32s = Simd<u32, BF16_SIMD_L>;
+    let h32 = h.cast::<u32>();
+    let sign = (h32 & U32s::splat(0x8000)) << U32s::splat(16);
+    let half_exp = (h32 & U32s::splat(0x7C00)) >> U32s::splat(10);
+    let f32_exp = (half_exp + U32s::splat(112)) << U32s::splat(23);
+    let f32_man = (h32 & U32s::splat(0x03FF)) << U32s::splat(13);
+    let normal_bits = sign | f32_exp | f32_man;
+    let is_zero = (h32 & U32s::splat(0x7FFF)).simd_eq(U32s::splat(0));
+    Simd::<f32, BF16_SIMD_L>::from_bits(is_zero.select(sign, normal_bits)).cast()
+}
+
+/// Per-lane mask of f32 results whose `f32 → f16` round needs the SCALAR path (overflow to
+/// inf, partial-underflow to f16-subnormal, or NaN). Normal-range + exact-zero results round
+/// in SIMD. F16 max normal = 65504, min normal = 2^-14 ≈ 6.10352e-5.
+#[inline]
+fn f16_result_needs_scalar(f: std::simd::Simd<f32, BF16_SIMD_L>) -> bool {
+    use std::simd::cmp::SimdPartialOrd;
+    use std::simd::num::SimdFloat;
+    use std::simd::Simd;
+    type F32s = Simd<f32, BF16_SIMD_L>;
+    let af = f.abs();
+    let overflow = af.simd_ge(F32s::splat(65504.0));
+    let subnormal = af.simd_gt(F32s::splat(0.0)) & af.simd_lt(F32s::splat(6.103_515_6e-5));
+    let nan = f.is_nan();
+    (overflow | subnormal | nan).any()
+}
+
+/// SIMD RNE `f32 → f16` for NORMAL or exact-zero results only (caller gates via
+/// [`f16_result_needs_scalar`]), replicating `half::f16::from_f32`'s normal branch.
+#[inline]
+fn f16_rne_from_f32x8(f: std::simd::Simd<f32, BF16_SIMD_L>) -> std::simd::Simd<u16, BF16_SIMD_L> {
+    use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+    use std::simd::num::{SimdFloat, SimdUint};
+    use std::simd::{Select, Simd};
+    type U32s = Simd<u32, BF16_SIMD_L>;
+    let bits = f.to_bits();
+    let sign = (bits & U32s::splat(0x8000_0000)) >> U32s::splat(16);
+    let exp = (bits & U32s::splat(0x7F80_0000)) >> U32s::splat(23);
+    let man = bits & U32s::splat(0x007F_FFFF);
+    // Gated to normal results, so f32 exp >= 113 and `exp - 112` (= f16 biased exp 1..30)
+    // never underflows u32.
+    let half_exp = exp - U32s::splat(112);
+    let he = half_exp << U32s::splat(10);
+    let half_man = man >> U32s::splat(13);
+    let round_bit = U32s::splat(0x1000);
+    let round_up =
+        ((man & round_bit).simd_ne(U32s::splat(0)) & (man & U32s::splat(0x2FFF)).simd_ne(U32s::splat(0)))
+            .select(U32s::splat(1), U32s::splat(0));
+    let normal_res = (sign | he | half_man) + round_up;
+    let is_zero = (bits & U32s::splat(0x7FFF_FFFF)).simd_eq(U32s::splat(0));
+    is_zero.select(sign, normal_res).cast::<u16>()
+}
+
+/// SIMD F16⊗F16 → F16 for add/sub/mul/div, BIT-IDENTICAL to the scalar `half_binary_apply`:
+/// the exact same chain (widen each f16 to f64, op in f64, round f64→f16 via round-to-odd)
+/// for chunks whose inputs are all normal/±0 AND whose results are all normal/zero; any chunk
+/// with a subnormal/inf/NaN input or an overflow/subnormal/NaN result (and the `< 8` remainder)
+/// falls back to the scalar path, so the output is byte-identical.
+fn f16_binary_simd(lhs: &[u16], rhs: &[u16], op: Bf16Op) -> Vec<u16> {
+    use std::simd::Simd;
+    const L: usize = BF16_SIMD_L;
+    let scalar_op = bf16_scalar_op(op);
+    let n = lhs.len();
+    let mut out = vec![0u16; n];
+    let scalar_chunk = |i: usize, out: &mut [u16]| {
+        for t in 0..L {
+            out[i + t] = half_unary_pair_f16(lhs[i + t], rhs[i + t], &scalar_op);
+        }
+    };
+    let mut i = 0;
+    while i + L <= n {
+        let lu = Simd::<u16, L>::from_slice(&lhs[i..i + L]);
+        let ru = Simd::<u16, L>::from_slice(&rhs[i..i + L]);
+        if f16_input_needs_scalar(lu) || f16_input_needs_scalar(ru) {
+            scalar_chunk(i, &mut out);
+        } else {
+            let r = bf16_op_f64(op, f16_widen8(lu), f16_widen8(ru));
+            let f = round_to_odd_f64x8(r);
+            if f16_result_needs_scalar(f) {
+                scalar_chunk(i, &mut out);
+            } else {
+                f16_rne_from_f32x8(f).copy_to_slice(&mut out[i..i + L]);
+            }
+        }
+        i += L;
+    }
+    for j in i..n {
+        out[j] = half_unary_pair_f16(lhs[j], rhs[j], &scalar_op);
+    }
+    out
+}
+
+/// Scalar f16 binary apply via the boxed-`Literal` round chain (`Literal::from_f16_f64`),
+/// matching `half_binary_apply(DType::F16, ..)`.
+#[inline]
+fn half_unary_pair_f16(l: u16, r: u16, op: &impl Fn(f64, f64) -> f64) -> u16 {
+    half_binary_apply(DType::F16, l, r, op)
+}
+
 #[inline]
 fn bf16_op_f64(op: Bf16Op, a: std::simd::Simd<f64, BF16_SIMD_L>, b: std::simd::Simd<f64, BF16_SIMD_L>) -> std::simd::Simd<f64, BF16_SIMD_L> {
     match op {
@@ -887,6 +1032,19 @@ pub fn bf16_scalar_broadcast_bench(values: &[u16], scalar: u16, simd: bool) -> V
     }
 }
 
+/// Bench-only same-binary A/B for the f16 elementwise lever (mul).
+#[doc(hidden)]
+pub fn f16_binary_bench(a: &[u16], b: &[u16], simd: bool) -> Vec<u16> {
+    if simd {
+        f16_binary_simd(a, b, Bf16Op::Mul)
+    } else {
+        a.iter()
+            .zip(b)
+            .map(|(&l, &r)| half_binary_apply(DType::F16, l, r, &|x, y| x * y))
+            .collect()
+    }
+}
+
 /// Bench-only same-binary A/B for the bf16 relu lever (`max(x, +0)`).
 #[doc(hidden)]
 pub fn bf16_relu_bench(values: &[u16], simd: bool) -> Vec<u16> {
@@ -957,6 +1115,22 @@ fn eval_same_shape_half_float_binop(
                 values,
             )?)));
         }
+    }
+    // Dense F16 add/sub/mul/div: vectorize normal/±0 lanes (edge inputs/results fall back
+    // to scalar), bit-identical to the scalar map. Max/Min stay scalar.
+    if lhs.dtype == DType::F16
+        && rhs.dtype == DType::F16
+        && let Some(op) = bf16_op_of(primitive)
+        && let (Some(a), Some(b)) = (
+            lhs.elements.as_half_float_slice(),
+            rhs.elements.as_half_float_slice(),
+        )
+    {
+        return Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+            DType::F16,
+            lhs.shape.clone(),
+            f16_binary_simd(a, b, op),
+        )?)));
     }
     match primitive {
         Primitive::Add => eval_same_shape_half_float_map(lhs, rhs, |a, b| a + b),
@@ -14384,6 +14558,49 @@ mod tests {
                 assert_eq!(
                     got[k], want,
                     "bf16 simd mismatch op={} a={a:#06x} b={b:#06x}: got {:#06x} want {:#06x}",
+                    op as u8, got[k], want
+                );
+            }
+        }
+    }
+
+    /// The SIMD f16 add/sub/mul/div path must be BIT-IDENTICAL to the scalar
+    /// `half_binary_apply` over an exhaustive set of f16 edge bit patterns (±0, smallest/
+    /// largest subnormal, smallest/largest normal, ±1, near-overflow, ±inf, qNaN/sNaN) AND
+    /// across the 8-lane + scalar remainder — exercising the normal SIMD path, the
+    /// edge-input fallback, AND the overflow/subnormal-result fallback.
+    #[test]
+    fn f16_binary_simd_bit_identical_to_scalar() {
+        // f16 bit patterns: ±0, min/max subnormal, min/max normal, ±1, 0.5, 2, 1024,
+        // 60000 (near max), ±inf, qNaN, sNaN.
+        let pats: [u16; 24] = [
+            0x0000, 0x8000, 0x0001, 0x03FF, 0x0400, 0x7BFF, 0x3C00, 0xBC00, 0x3800, 0x4000,
+            0x6400, 0xEC00, 0x7C00, 0xFC00, 0x7E00, 0x7D00, 0x3555, 0xB555, 0x0200, 0x7800,
+            0x4900, 0xC900, 0x5640, 0x1234,
+        ];
+        let mut lhs = Vec::new();
+        let mut rhs = Vec::new();
+        for (i, &a) in pats.iter().enumerate() {
+            for j in 0..pats.len() {
+                lhs.push(a);
+                rhs.push(pats[(i + j) % pats.len()]);
+            }
+        }
+        lhs.push(0x3C00);
+        rhs.push(0x4000); // len % 8 != 0
+        for op in [Bf16Op::Add, Bf16Op::Sub, Bf16Op::Mul, Bf16Op::Div] {
+            let got = f16_binary_simd(&lhs, &rhs, op);
+            let scalar_op: fn(f64, f64) -> f64 = match op {
+                Bf16Op::Add => |a, b| a + b,
+                Bf16Op::Sub => |a, b| a - b,
+                Bf16Op::Mul => |a, b| a * b,
+                Bf16Op::Div => |a, b| a / b,
+            };
+            for (k, (&a, &b)) in lhs.iter().zip(&rhs).enumerate() {
+                let want = half_binary_apply(DType::F16, a, b, &scalar_op);
+                assert_eq!(
+                    got[k], want,
+                    "f16 simd mismatch op={} a={a:#06x} b={b:#06x}: got {:#06x} want {:#06x}",
                     op as u8, got[k], want
                 );
             }
