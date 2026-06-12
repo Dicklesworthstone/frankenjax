@@ -1133,6 +1133,30 @@ pub fn f16_binary_bench(a: &[u16], b: &[u16], simd: bool) -> Vec<u16> {
     }
 }
 
+/// Bench-only same-binary A/B for the bf16 neg/abs lever (sign-bit op vs round chain).
+#[doc(hidden)]
+pub fn bf16_neg_abs_bench(values: &[u16], is_abs: bool, simd: bool) -> Vec<u16> {
+    use fj_core::Shape;
+    let op_f64: fn(f64) -> f64 = if is_abs { f64::abs } else { |x| -x };
+    if simd {
+        let t = TensorValue::new_half_float_values(
+            DType::BF16,
+            Shape::vector(values.len() as u32),
+            values.to_vec(),
+        )
+        .unwrap();
+        match half_neg_abs_simd(&t, is_abs) {
+            Some(Value::Tensor(out)) => out.elements.as_half_float_slice().unwrap().to_vec(),
+            _ => unreachable!(),
+        }
+    } else {
+        values
+            .iter()
+            .map(|&v| half_unary_apply(DType::BF16, v, &op_f64))
+            .collect()
+    }
+}
+
 /// Bench-only same-binary A/B for the f16 relu lever (`max(x, +0)`).
 #[doc(hidden)]
 pub fn f16_relu_bench(values: &[u16], simd: bool) -> Vec<u16> {
@@ -4228,10 +4252,66 @@ fn eval_unary_complex_abs(primitive: Primitive, inputs: &[Value]) -> Result<Valu
     }
 }
 
+/// SIMD bf16/f16 Neg/Abs via pure sign-bit ops (neg = XOR 0x8000, abs = AND 0x7FFF) — the
+/// negation/abs of an exact half value is the exact half of -x/|x|, i.e. the sign-bit
+/// flip/clear, so this is BIT-IDENTICAL to the scalar `half_unary_apply` round chain for
+/// every finite / ±0 / inf / subnormal value. Only NaN (whose round chain canonicalizes the
+/// payload while the bit op preserves it) falls the (rare) lane's chunk back to scalar. This
+/// skips the widen→f64→op→round chain — the scalar half compute floor — entirely.
+fn half_neg_abs_simd(tensor: &TensorValue, is_abs: bool) -> Option<Value> {
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialEq;
+    let dt = tensor.dtype;
+    if !matches!(dt, DType::BF16 | DType::F16) {
+        return None;
+    }
+    let values = tensor.elements.as_half_float_slice()?;
+    const L: usize = 16;
+    type U16s = Simd<u16, L>;
+    let (exp_mask, man_mask) = if dt == DType::BF16 {
+        (0x7F80u16, 0x007Fu16)
+    } else {
+        (0x7C00u16, 0x03FFu16)
+    };
+    let op_f64: fn(f64) -> f64 = if is_abs { f64::abs } else { |x| -x };
+    let n = values.len();
+    let mut out = vec![0u16; n];
+    let mut i = 0;
+    while i + L <= n {
+        let v = U16s::from_slice(&values[i..i + L]);
+        let is_nan = (v & U16s::splat(exp_mask)).simd_eq(U16s::splat(exp_mask))
+            & (v & U16s::splat(man_mask)).simd_ne(U16s::splat(0));
+        if is_nan.any() {
+            for t in 0..L {
+                out[i + t] = half_unary_apply(dt, values[i + t], &op_f64);
+            }
+        } else {
+            let r = if is_abs {
+                v & U16s::splat(0x7FFF)
+            } else {
+                v ^ U16s::splat(0x8000)
+            };
+            r.copy_to_slice(&mut out[i..i + L]);
+        }
+        i += L;
+    }
+    for j in i..n {
+        out[j] = half_unary_apply(dt, values[j], &op_f64);
+    }
+    Some(Value::Tensor(
+        TensorValue::new_half_float_values(dt, tensor.shape.clone(), out).ok()?,
+    ))
+}
+
 pub(crate) fn eval_neg(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.first().is_some_and(value_contains_complex) {
         eval_unary_complex_map(primitive, inputs, |re, im| (-re, -im))
     } else {
+        if let Some(Value::Tensor(t)) = inputs.first()
+            && let Some(v) = half_neg_abs_simd(t, false)
+        {
+            return Ok(v);
+        }
         eval_unary_int_or_float(
             primitive,
             inputs,
@@ -4247,6 +4327,11 @@ pub(crate) fn eval_abs(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
     if inputs.first().is_some_and(value_contains_complex) {
         eval_unary_complex_abs(primitive, inputs)
     } else {
+        if let Some(Value::Tensor(t)) = inputs.first()
+            && let Some(v) = half_neg_abs_simd(t, true)
+        {
+            return Ok(v);
+        }
         eval_unary_int_or_float(
             primitive,
             inputs,
@@ -14689,6 +14774,52 @@ mod tests {
                     "bf16 simd mismatch op={} a={a:#06x} b={b:#06x}: got {:#06x} want {:#06x}",
                     op as u8, got[k], want
                 );
+            }
+        }
+    }
+
+    /// SIMD bf16/f16 Neg/Abs (sign-bit op) must be BIT-IDENTICAL to the scalar
+    /// `half_unary_apply` round chain over edge bit patterns (±0/subnormal/inf/NaN/normal),
+    /// for both dtypes, crossing the 16-lane + scalar remainder.
+    #[test]
+    fn half_neg_abs_simd_bit_identical_to_scalar() {
+        use fj_core::{Shape, TensorValue};
+        // Mixed bf16/f16-shaped patterns (interpreted per dtype); both share sign 0x8000.
+        let pats: [u16; 26] = [
+            0x0000, 0x8000, 0x0001, 0x8001, 0x007F, 0x3F80, 0xBF80, 0x7F80, 0xFF80, 0x7FC0,
+            0x7F81, 0xFFC1, 0x4049, 0xC049, 0x0080, 0x7C00, 0xFC00, 0x7E00, 0x03FF, 0x7BFF,
+            0x3C00, 0x0040, 0x1234, 0x9234, 0x5640, 0x4900,
+        ];
+        let mut bits: Vec<u16> = Vec::new();
+        for _ in 0..3 {
+            bits.extend_from_slice(&pats);
+        }
+        bits.push(0x3C00); // len % 16 != 0
+        for dt in [DType::BF16, DType::F16] {
+            let tensor = TensorValue::new_half_float_values(
+                dt,
+                Shape::vector(bits.len() as u32),
+                bits.clone(),
+            )
+            .unwrap();
+            for is_abs in [false, true] {
+                let op_f64: fn(f64) -> f64 = if is_abs { f64::abs } else { |x| -x };
+                let Some(Value::Tensor(out)) = half_neg_abs_simd(&tensor, is_abs) else {
+                    panic!("expected half neg/abs SIMD path");
+                };
+                let got: Vec<u16> = out
+                    .elements
+                    .as_half_float_slice()
+                    .unwrap()
+                    .to_vec();
+                for (k, &v) in bits.iter().enumerate() {
+                    let want = half_unary_apply(dt, v, &op_f64);
+                    assert_eq!(
+                        got[k], want,
+                        "half neg/abs mismatch dt={dt:?} is_abs={is_abs} v={v:#06x}: got {:#06x} want {:#06x}",
+                        got[k], want
+                    );
+                }
             }
         }
     }
