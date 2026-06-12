@@ -2718,12 +2718,17 @@ fn compute_dense_last_use(jaxpr: &Jaxpr, slots: usize) -> Vec<usize> {
     last_use
 }
 
+// Binary op tag shared by all three scalar-arith plans (f64/i64/f32). Max/Min use
+// JAX's NaN-propagating semantics for floats (canonical NaN if either operand is
+// NaN; see jax_max_f64 / jax_min_f64 in fj-lax) and plain Rust max/min for i64.
 #[derive(Clone, Copy)]
 enum ScalarF64BinaryOp {
     Add,
     Sub,
     Mul,
     Div,
+    Max,
+    Min,
 }
 
 #[derive(Clone, Copy)]
@@ -2760,6 +2765,8 @@ fn scalar_f64_binary_op(primitive: Primitive) -> Option<ScalarF64BinaryOp> {
         Primitive::Sub => Some(ScalarF64BinaryOp::Sub),
         Primitive::Mul => Some(ScalarF64BinaryOp::Mul),
         Primitive::Div => Some(ScalarF64BinaryOp::Div),
+        Primitive::Max => Some(ScalarF64BinaryOp::Max),
+        Primitive::Min => Some(ScalarF64BinaryOp::Min),
         _ => None,
     }
 }
@@ -2846,12 +2853,30 @@ fn read_scalar_f64_operand(
     }
 }
 
+fn jax_max_f64(lhs: f64, rhs: f64) -> f64 {
+    if lhs.is_nan() || rhs.is_nan() {
+        f64::NAN
+    } else {
+        lhs.max(rhs)
+    }
+}
+
+fn jax_min_f64(lhs: f64, rhs: f64) -> f64 {
+    if lhs.is_nan() || rhs.is_nan() {
+        f64::NAN
+    } else {
+        lhs.min(rhs)
+    }
+}
+
 fn apply_scalar_f64_binary(op: ScalarF64BinaryOp, lhs: f64, rhs: f64) -> f64 {
     match op {
         ScalarF64BinaryOp::Add => lhs + rhs,
         ScalarF64BinaryOp::Sub => lhs - rhs,
         ScalarF64BinaryOp::Mul => lhs * rhs,
         ScalarF64BinaryOp::Div => lhs / rhs,
+        ScalarF64BinaryOp::Max => jax_max_f64(lhs, rhs),
+        ScalarF64BinaryOp::Min => jax_min_f64(lhs, rhs),
     }
 }
 
@@ -3022,6 +3047,8 @@ fn apply_scalar_i64_binary(op: ScalarF64BinaryOp, lhs: i64, rhs: i64) -> i64 {
         ScalarF64BinaryOp::Sub => lhs.wrapping_sub(rhs),
         ScalarF64BinaryOp::Mul => lhs.wrapping_mul(rhs),
         ScalarF64BinaryOp::Div => lhs.checked_div(rhs).unwrap_or(0),
+        ScalarF64BinaryOp::Max => lhs.max(rhs),
+        ScalarF64BinaryOp::Min => lhs.min(rhs),
     }
 }
 
@@ -3192,6 +3219,8 @@ fn apply_scalar_f32_binary(op: ScalarF64BinaryOp, lhs: f32, rhs: f32) -> f32 {
         ScalarF64BinaryOp::Sub => lhs - rhs,
         ScalarF64BinaryOp::Mul => lhs * rhs,
         ScalarF64BinaryOp::Div => lhs / rhs,
+        ScalarF64BinaryOp::Max => jax_max_f64(lhs, rhs),
+        ScalarF64BinaryOp::Min => jax_min_f64(lhs, rhs),
     };
     result as f32
 }
@@ -4940,6 +4969,82 @@ mod tests {
         }
     }
 
+    // clamp-shaped body `out = min(max(a, b), a)` — exercises Max then Min, the
+    // relu/clamp/saturation pattern that scalar recurrences use.
+    fn scalar_minmax_body_jaxpr() -> Jaxpr {
+        let (a, b, m, out) = (VarId(0), VarId(1), VarId(2), VarId(3));
+        let mk =
+            |primitive: Primitive, inputs: smallvec::SmallVec<[Atom; 4]>, output: VarId| Equation {
+                primitive,
+                inputs,
+                outputs: smallvec![output],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            };
+        Jaxpr::new(
+            vec![a, b],
+            vec![],
+            vec![out],
+            vec![
+                mk(Primitive::Max, smallvec![Atom::Var(a), Atom::Var(b)], m),
+                mk(Primitive::Min, smallvec![Atom::Var(m), Atom::Var(a)], out),
+            ],
+        )
+    }
+
+    #[test]
+    fn scalar_f64_minmax_matches_generic_bits() {
+        // JAX Max/Min propagate NaN (canonical), unlike Rust f64::max/min — the
+        // plan must match eval_primitive's jax_max/jax_min bit-for-bit.
+        let jaxpr = scalar_minmax_body_jaxpr();
+        let cases = [
+            (1.0_f64, 2.0_f64),
+            (-0.0, 0.0),
+            (f64::INFINITY, 5.0),
+            (f64::NEG_INFINITY, 5.0),
+            (f64::NAN, 1.0),
+            (1.0, f64::NAN),
+            (f64::from_bits(0x7ff8_0000_0000_1234), 2.0),
+        ];
+        for (a, b) in cases {
+            let args = [Value::scalar_f64(a), Value::scalar_f64(b)];
+            let planned = eval_jaxpr(&jaxpr, &args).expect("planned");
+            let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic");
+            assert_eq!(planned, generic, "a={a:?} b={b:?}");
+        }
+    }
+
+    #[test]
+    fn scalar_i64_minmax_matches_generic() {
+        let jaxpr = scalar_minmax_body_jaxpr();
+        let cases = [(1_i64, 2), (-5, 4), (i64::MAX, i64::MIN), (7, 7)];
+        for (a, b) in cases {
+            let args = [Value::scalar_i64(a), Value::scalar_i64(b)];
+            let planned = eval_jaxpr(&jaxpr, &args).expect("planned");
+            let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic");
+            assert_eq!(planned, generic, "a={a} b={b}");
+        }
+    }
+
+    #[test]
+    fn scalar_f32_minmax_matches_generic_bits() {
+        let jaxpr = scalar_minmax_body_jaxpr();
+        let cases = [
+            (1.0_f32, 2.0_f32),
+            (f32::INFINITY, 5.0),
+            (f32::NAN, 1.0),
+            (1.0, f32::NAN),
+            (f32::from_bits(0x7fc0_1234), 2.0),
+        ];
+        for (a, b) in cases {
+            let args = [Value::scalar_f32(a), Value::scalar_f32(b)];
+            let planned = eval_jaxpr(&jaxpr, &args).expect("planned");
+            let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic");
+            assert_eq!(planned, generic, "a={a:?} b={b:?}");
+        }
+    }
+
     #[test]
     fn const_arity_mismatch_is_reported() {
         let jaxpr = Jaxpr::new(
@@ -5505,6 +5610,82 @@ mod tests {
             t_compiled * 1e9 / n as f64,
             t_generic / t_compiled,
             sha256,
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_scalar_f64_minmax_plan_overhead() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        // Max/Min sibling A/B: a clamp body (max then min) over f64 scalars.
+        let body = scalar_minmax_body_jaxpr();
+        let n: usize = 4_000_000;
+        let args = [Value::scalar_f64(2.5), Value::scalar_f64(-1.0)];
+        let plan = super::build_dense_plan(&body).expect("dense");
+
+        let t_generic = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_env_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan.last_use,
+                    &mut scratch,
+                    &mut o,
+                )
+                .expect("generic");
+                if let Value::Scalar(Literal::F64Bits(b)) = &o[0] {
+                    acc += f64::from_bits(*b);
+                }
+            }
+            std::hint::black_box(acc);
+        });
+
+        let t_compiled = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut bufs = super::ScalarPlanBuffers::default();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan,
+                    &mut scratch,
+                    &mut o,
+                    &mut bufs,
+                )
+                .expect("compiled");
+                if let Value::Scalar(Literal::F64Bits(b)) = &o[0] {
+                    acc += f64::from_bits(*b);
+                }
+            }
+            std::hint::black_box(acc);
+        });
+
+        println!(
+            "BENCH scalar-f64 clamp(max,min) {n} evals (2-op): GENERIC {:.1}ns/eval -> COMPILED {:.1}ns/eval = {:.2}x",
+            t_generic * 1e9 / n as f64,
+            t_compiled * 1e9 / n as f64,
+            t_generic / t_compiled,
         );
     }
 
