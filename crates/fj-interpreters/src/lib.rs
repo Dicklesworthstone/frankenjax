@@ -358,19 +358,21 @@ fn evaluate_while_sub_jaxprs(
     // for the cond result and the next carry — so a converged-body loop performs
     // ZERO heap allocations per iteration (the carry is swapped, not reallocated).
     let mut scratch: Vec<Value> = Vec::new();
+    let mut scalar_slots: Vec<ScalarF64Slot> = Vec::new();
     let mut cond_outputs: Vec<Value> = Vec::new();
     let mut next_carry: Vec<Value> = Vec::new();
 
     for _ in 0..max_iter {
         match &cond_plan {
-            Some(plan) => run_dense_env_into(
+            Some(plan) => run_dense_plan_into(
                 cond_jaxpr,
                 cond_consts,
                 &carry,
                 &mut cond_env,
-                &plan.last_use,
+                plan,
                 &mut scratch,
                 &mut cond_outputs,
+                &mut scalar_slots,
             ),
             None => eval_jaxpr_with_consts(cond_jaxpr, cond_consts, &carry).map(|o| {
                 cond_outputs = o;
@@ -394,14 +396,15 @@ fn evaluate_while_sub_jaxprs(
         }
 
         match &body_plan {
-            Some(plan) => run_dense_env_into(
+            Some(plan) => run_dense_plan_into(
                 body_jaxpr,
                 body_consts,
                 &carry,
                 &mut body_env,
-                &plan.last_use,
+                plan,
                 &mut scratch,
                 &mut next_carry,
+                &mut scalar_slots,
             ),
             None => eval_jaxpr_with_consts(body_jaxpr, body_consts, &carry).map(|o| {
                 next_carry = o;
@@ -532,6 +535,7 @@ fn evaluate_scan_sub_jaxprs(
     let body_plan = build_dense_plan(body_jaxpr);
     let mut body_env: Vec<Option<Value>> = vec![None; body_plan.as_ref().map_or(0, |p| p.slots)];
     let mut scratch: Vec<Value> = Vec::new();
+    let mut scalar_slots: Vec<ScalarF64Slot> = Vec::new();
     let mut body_out: Vec<Value> = Vec::new();
 
     let scan_context = ScanIterationContext {
@@ -553,6 +557,7 @@ fn evaluate_scan_sub_jaxprs(
                 &mut body_args,
                 &mut body_env,
                 &mut scratch,
+                &mut scalar_slots,
                 &mut body_out,
             )?;
         }
@@ -566,6 +571,7 @@ fn evaluate_scan_sub_jaxprs(
                 &mut body_args,
                 &mut body_env,
                 &mut scratch,
+                &mut scalar_slots,
                 &mut body_out,
             )?;
         }
@@ -725,6 +731,7 @@ fn evaluate_scan_iteration(
     body_args: &mut Vec<Value>,
     body_env: &mut [Option<Value>],
     scratch: &mut Vec<Value>,
+    scalar_slots: &mut Vec<ScalarF64Slot>,
     body_out: &mut Vec<Value>,
 ) -> Result<(), InterpreterError> {
     let x_slice = scan_slice_at(context.xs, scan_idx)?;
@@ -737,14 +744,15 @@ fn evaluate_scan_iteration(
     // Reuse the prepared plan + buffers when the body is dense-eligible (zero
     // per-step analysis/allocation); else the self-contained allocating path.
     match context.body_plan {
-        Some(plan) => run_dense_env_into(
+        Some(plan) => run_dense_plan_into(
             context.body_jaxpr,
             context.const_values,
             body_args,
             body_env,
-            &plan.last_use,
+            plan,
             scratch,
             body_out,
+            scalar_slots,
         ),
         None => eval_jaxpr_with_consts(context.body_jaxpr, context.const_values, body_args)
             .map(|o| *body_out = o),
@@ -2710,6 +2718,200 @@ fn compute_dense_last_use(jaxpr: &Jaxpr, slots: usize) -> Vec<usize> {
     last_use
 }
 
+#[derive(Clone, Copy)]
+enum ScalarF64BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+#[derive(Clone, Copy)]
+enum ScalarF64Operand {
+    Slot(usize),
+    Literal(f64),
+}
+
+struct ScalarF64Step {
+    op: ScalarF64BinaryOp,
+    lhs: ScalarF64Operand,
+    rhs: ScalarF64Operand,
+    out_slot: usize,
+}
+
+struct ScalarF64Plan {
+    slots: usize,
+    const_slots: Vec<usize>,
+    input_slots: Vec<usize>,
+    out_slots: Vec<usize>,
+    steps: Vec<ScalarF64Step>,
+}
+
+#[derive(Clone, Copy)]
+enum ScalarF64Slot {
+    Missing,
+    NonF64,
+    F64(f64),
+}
+
+fn scalar_f64_binary_op(primitive: Primitive) -> Option<ScalarF64BinaryOp> {
+    match primitive {
+        Primitive::Add => Some(ScalarF64BinaryOp::Add),
+        Primitive::Sub => Some(ScalarF64BinaryOp::Sub),
+        Primitive::Mul => Some(ScalarF64BinaryOp::Mul),
+        Primitive::Div => Some(ScalarF64BinaryOp::Div),
+        _ => None,
+    }
+}
+
+fn scalar_f64_operand(atom: &Atom, slots: usize) -> Option<ScalarF64Operand> {
+    match atom {
+        Atom::Var(var) => {
+            let slot = var.0 as usize;
+            (slot < slots).then_some(ScalarF64Operand::Slot(slot))
+        }
+        Atom::Lit(Literal::F64Bits(bits)) => Some(ScalarF64Operand::Literal(f64::from_bits(*bits))),
+        Atom::Lit(_) => None,
+    }
+}
+
+fn var_slots(vars: &[VarId], slots: usize) -> Option<Vec<usize>> {
+    let mut out = Vec::with_capacity(vars.len());
+    for var in vars {
+        let slot = var.0 as usize;
+        if slot >= slots {
+            return None;
+        }
+        out.push(slot);
+    }
+    Some(out)
+}
+
+fn build_scalar_f64_arith_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarF64Plan> {
+    if jaxpr.equations.is_empty() || !jaxpr.effects.is_empty() {
+        return None;
+    }
+
+    let mut steps = Vec::with_capacity(jaxpr.equations.len());
+    for equation in &jaxpr.equations {
+        if !equation.params.is_empty()
+            || !equation.sub_jaxprs.is_empty()
+            || !equation.effects.is_empty()
+            || equation.inputs.len() != 2
+            || equation.outputs.len() != 1
+        {
+            return None;
+        }
+
+        let op = scalar_f64_binary_op(equation.primitive)?;
+        let out_slot = equation.outputs[0].0 as usize;
+        if out_slot >= slots {
+            return None;
+        }
+        steps.push(ScalarF64Step {
+            op,
+            lhs: scalar_f64_operand(&equation.inputs[0], slots)?,
+            rhs: scalar_f64_operand(&equation.inputs[1], slots)?,
+            out_slot,
+        });
+    }
+
+    Some(ScalarF64Plan {
+        slots,
+        const_slots: var_slots(&jaxpr.constvars, slots)?,
+        input_slots: var_slots(&jaxpr.invars, slots)?,
+        out_slots: var_slots(&jaxpr.outvars, slots)?,
+        steps,
+    })
+}
+
+fn scalar_f64_slot_from_value(value: &Value) -> ScalarF64Slot {
+    match value {
+        Value::Scalar(Literal::F64Bits(bits)) => ScalarF64Slot::F64(f64::from_bits(*bits)),
+        Value::Scalar(_) | Value::Tensor(_) => ScalarF64Slot::NonF64,
+    }
+}
+
+fn read_scalar_f64_operand(
+    slots: &[ScalarF64Slot],
+    operand: ScalarF64Operand,
+) -> Result<Option<f64>, InterpreterError> {
+    match operand {
+        ScalarF64Operand::Literal(value) => Ok(Some(value)),
+        ScalarF64Operand::Slot(slot) => match slots[slot] {
+            ScalarF64Slot::F64(value) => Ok(Some(value)),
+            ScalarF64Slot::NonF64 => Ok(None),
+            ScalarF64Slot::Missing => Err(InterpreterError::MissingVariable(VarId(slot as u32))),
+        },
+    }
+}
+
+fn apply_scalar_f64_binary(op: ScalarF64BinaryOp, lhs: f64, rhs: f64) -> f64 {
+    match op {
+        ScalarF64BinaryOp::Add => lhs + rhs,
+        ScalarF64BinaryOp::Sub => lhs - rhs,
+        ScalarF64BinaryOp::Mul => lhs * rhs,
+        ScalarF64BinaryOp::Div => lhs / rhs,
+    }
+}
+
+fn run_scalar_f64_arith_plan_into(
+    plan: &ScalarF64Plan,
+    const_values: &[Value],
+    args: &[Value],
+    out: &mut Vec<Value>,
+    slots: &mut Vec<ScalarF64Slot>,
+) -> Option<Result<(), InterpreterError>> {
+    if const_values.len() != plan.const_slots.len() {
+        return Some(Err(InterpreterError::ConstArity {
+            expected: plan.const_slots.len(),
+            actual: const_values.len(),
+        }));
+    }
+    if args.len() != plan.input_slots.len() {
+        return Some(Err(InterpreterError::InputArity {
+            expected: plan.input_slots.len(),
+            actual: args.len(),
+        }));
+    }
+
+    slots.clear();
+    slots.resize(plan.slots, ScalarF64Slot::Missing);
+    for (&slot, value) in plan.const_slots.iter().zip(const_values) {
+        slots[slot] = scalar_f64_slot_from_value(value);
+    }
+    for (&slot, value) in plan.input_slots.iter().zip(args) {
+        slots[slot] = scalar_f64_slot_from_value(value);
+    }
+
+    for step in &plan.steps {
+        let lhs = match read_scalar_f64_operand(slots, step.lhs) {
+            Ok(Some(value)) => value,
+            Ok(None) => return None,
+            Err(error) => return Some(Err(error)),
+        };
+        let rhs = match read_scalar_f64_operand(slots, step.rhs) {
+            Ok(Some(value)) => value,
+            Ok(None) => return None,
+            Err(error) => return Some(Err(error)),
+        };
+        slots[step.out_slot] = ScalarF64Slot::F64(apply_scalar_f64_binary(step.op, lhs, rhs));
+    }
+
+    out.clear();
+    out.reserve(plan.out_slots.len());
+    for &slot in &plan.out_slots {
+        match slots[slot] {
+            ScalarF64Slot::F64(value) => out.push(Value::scalar_f64(value)),
+            ScalarF64Slot::NonF64 => return None,
+            ScalarF64Slot::Missing => {
+                return Some(Err(InterpreterError::MissingVariable(VarId(slot as u32))));
+            }
+        }
+    }
+    Some(Ok(()))
+}
+
 /// A reusable dense-evaluation plan for a jaxpr: the slot count and the
 /// value-independent liveness map. Build it ONCE with [`build_dense_plan`] and
 /// feed it (plus a reusable `env` buffer) to [`run_dense_env`] on every call —
@@ -2718,6 +2920,7 @@ fn compute_dense_last_use(jaxpr: &Jaxpr, slots: usize) -> Vec<usize> {
 struct DenseEvalPlan {
     slots: usize,
     last_use: Vec<usize>,
+    scalar_f64_plan: Option<ScalarF64Plan>,
 }
 
 /// Build a [`DenseEvalPlan`] iff the jaxpr's variable ids are dense enough for the
@@ -2741,6 +2944,7 @@ fn build_dense_plan(jaxpr: &Jaxpr) -> Option<DenseEvalPlan> {
         Some(DenseEvalPlan {
             slots,
             last_use: compute_dense_last_use(jaxpr, slots),
+            scalar_f64_plan: build_scalar_f64_arith_plan(jaxpr, slots),
         })
     } else {
         None
@@ -2753,36 +2957,56 @@ fn eval_jaxpr_dense_env(
     args: &[Value],
     slots: usize,
 ) -> Result<Vec<Value>, InterpreterError> {
-    let last_use = compute_dense_last_use(jaxpr, slots);
+    let plan = DenseEvalPlan {
+        slots,
+        last_use: compute_dense_last_use(jaxpr, slots),
+        scalar_f64_plan: build_scalar_f64_arith_plan(jaxpr, slots),
+    };
     let mut env: Vec<Option<Value>> = vec![None; slots];
-    run_dense_env(jaxpr, const_values, args, &mut env, &last_use)
+    run_dense_plan(jaxpr, const_values, args, &mut env, &plan)
 }
 
-/// Run the dense interpreter over a CALLER-OWNED `env` buffer and a PRECOMPUTED
-/// `last_use` map. `env` only needs `len() >= slots`; it is reset to `None` on
-/// entry, so the same allocation can be reused across many calls (e.g. every
-/// iteration of a `while` body). Bit-for-bit identical to the original
-/// per-call-allocating loop — same input resolution, same fusion, same liveness
-/// frees, same dispatch, same `MissingVariable` errors.
-fn run_dense_env(
+fn run_dense_plan(
     jaxpr: &Jaxpr,
     const_values: &[Value],
     args: &[Value],
     env: &mut [Option<Value>],
-    last_use: &[usize],
+    plan: &DenseEvalPlan,
 ) -> Result<Vec<Value>, InterpreterError> {
     let mut scratch: Vec<Value> = Vec::new();
     let mut out: Vec<Value> = Vec::new();
-    run_dense_env_into(
+    let mut scalar_slots: Vec<ScalarF64Slot> = Vec::new();
+    run_dense_plan_into(
         jaxpr,
         const_values,
         args,
         env,
-        last_use,
+        plan,
         &mut scratch,
         &mut out,
+        &mut scalar_slots,
     )?;
     Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_dense_plan_into(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+    env: &mut [Option<Value>],
+    plan: &DenseEvalPlan,
+    scratch: &mut Vec<Value>,
+    out: &mut Vec<Value>,
+    scalar_slots: &mut Vec<ScalarF64Slot>,
+) -> Result<(), InterpreterError> {
+    if let Some(scalar_plan) = &plan.scalar_f64_plan
+        && let Some(result) =
+            run_scalar_f64_arith_plan_into(scalar_plan, const_values, args, out, scalar_slots)
+    {
+        return result;
+    }
+    run_dense_env_into(jaxpr, const_values, args, env, &plan.last_use, scratch, out)
 }
 
 /// [`run_dense_env`] writing its `outvars` into a caller-owned `out` buffer and
@@ -4179,6 +4403,67 @@ mod tests {
         );
     }
 
+    fn scalar_f64_arith_body_jaxpr() -> Jaxpr {
+        let (carry, x, prod, sum, out) = (VarId(0), VarId(1), VarId(2), VarId(3), VarId(4));
+        let mk =
+            |primitive: Primitive, inputs: smallvec::SmallVec<[Atom; 4]>, output: VarId| Equation {
+                primitive,
+                inputs,
+                outputs: smallvec![output],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            };
+        Jaxpr::new(
+            vec![carry, x],
+            vec![],
+            vec![out],
+            vec![
+                mk(
+                    Primitive::Mul,
+                    smallvec![Atom::Var(carry), Atom::Var(x)],
+                    prod,
+                ),
+                mk(
+                    Primitive::Add,
+                    smallvec![Atom::Var(prod), Atom::Var(carry)],
+                    sum,
+                ),
+                mk(Primitive::Sub, smallvec![Atom::Var(sum), Atom::Var(x)], out),
+            ],
+        )
+    }
+
+    #[test]
+    fn scalar_f64_arith_plan_matches_generic_bits() {
+        let jaxpr = scalar_f64_arith_body_jaxpr();
+        let cases = [
+            (1.0001, 0.9999),
+            (-0.0, 3.0),
+            (f64::INFINITY, 0.0),
+            (f64::NEG_INFINITY, -2.0),
+            (f64::from_bits(0x7ff8_0000_0000_1234), 2.0),
+            (f64::MIN_POSITIVE, -2.0),
+        ];
+
+        for (carry, x) in cases {
+            let args = [Value::scalar_f64(carry), Value::scalar_f64(x)];
+            let planned = eval_jaxpr(&jaxpr, &args).expect("planned path evaluates");
+            let generic =
+                eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic path evaluates");
+            assert_eq!(planned, generic, "carry={carry:?} x={x:?}");
+        }
+    }
+
+    #[test]
+    fn scalar_f64_arith_plan_guard_miss_uses_generic_path() {
+        let jaxpr = scalar_f64_arith_body_jaxpr();
+        let args = [Value::scalar_i64(7), Value::scalar_i64(3)];
+        let planned = eval_jaxpr(&jaxpr, &args).expect("guard miss should fall back");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic path evaluates");
+        assert_eq!(planned, generic);
+    }
+
     #[test]
     fn const_arity_mismatch_is_reported() {
         let jaxpr = Jaxpr::new(
@@ -4617,9 +4902,11 @@ mod tests {
             best
         }
         // SAME-INVOCATION A/B for the scan per-step body eval: a realistic
-        // multi-equation f64 body (carry,x -> mul,add,sub), which does NOT hit
-        // the i64 add/emit scan fast path, so a real scan now runs each step
-        // through run_dense_env_into (NEW) instead of eval_jaxpr_with_consts (OLD).
+        // multi-equation f64 body (carry,x -> mul,add,sub). GENERIC is the
+        // prepared dense runner that still resolves every equation through the
+        // generic interpreter machinery; COMPILED is the pre-resolved scalar f64
+        // step plan carried by DenseEvalPlan. Both execute the same operations in
+        // the same order and must produce bit-identical output.
         let mk = |p: Primitive, ins: smallvec::SmallVec<[Atom; 4]>, o: VarId| Equation {
             primitive: p,
             inputs: ins,
@@ -4650,19 +4937,45 @@ mod tests {
         let n: usize = 4_000_000;
         let args = [Value::scalar_f64(1.0001), Value::scalar_f64(0.9999)];
 
-        let t_old = best_time(|| {
-            let mut acc = 0.0f64;
-            for _ in 0..n {
-                let o = eval_jaxpr_with_consts(&body, &[], &args).expect("old");
-                if let Value::Scalar(Literal::F64Bits(b)) = &o[0] {
-                    acc += f64::from_bits(*b);
-                }
-            }
-            std::hint::black_box(acc);
-        });
-
         let plan = super::build_dense_plan(&body).expect("dense");
-        let t_new = best_time(|| {
+        let mut generic_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut generic_scratch: Vec<Value> = Vec::new();
+        let mut generic_out: Vec<Value> = Vec::new();
+        super::run_dense_env_into(
+            &body,
+            &[],
+            &args,
+            &mut generic_env,
+            &plan.last_use,
+            &mut generic_scratch,
+            &mut generic_out,
+        )
+        .expect("generic sample");
+
+        let mut compiled_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut compiled_scratch: Vec<Value> = Vec::new();
+        let mut compiled_out: Vec<Value> = Vec::new();
+        let mut scalar_slots: Vec<super::ScalarF64Slot> = Vec::new();
+        super::run_dense_plan_into(
+            &body,
+            &[],
+            &args,
+            &mut compiled_env,
+            &plan,
+            &mut compiled_scratch,
+            &mut compiled_out,
+            &mut scalar_slots,
+        )
+        .expect("compiled sample");
+        assert_eq!(compiled_out, generic_out);
+        let sha256 = fj_test_utils::fixture_id_from_json(&("frankenjax-z6o97", &compiled_out))
+            .expect("golden digest");
+        assert_eq!(
+            sha256, "14e69331aa9141028f837a867c840db5556926f145329ea1a60f8b318b934a58",
+            "compiled scalar f64 plan output digest changed"
+        );
+
+        let t_generic = best_time(|| {
             let mut env: Vec<Option<Value>> = vec![None; plan.slots];
             let mut scratch: Vec<Value> = Vec::new();
             let mut o: Vec<Value> = Vec::new();
@@ -4685,11 +4998,37 @@ mod tests {
             std::hint::black_box(acc);
         });
 
+        let t_compiled = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut scalar_slots: Vec<super::ScalarF64Slot> = Vec::new();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan,
+                    &mut scratch,
+                    &mut o,
+                    &mut scalar_slots,
+                )
+                .expect("compiled");
+                if let Value::Scalar(Literal::F64Bits(b)) = &o[0] {
+                    acc += f64::from_bits(*b);
+                }
+            }
+            std::hint::black_box(acc);
+        });
+
         println!(
-            "BENCH scan-body dispatch {n} evals (3-op f64): OLD {:.1}ns/eval -> NEW {:.1}ns/eval = {:.2}x",
-            t_old * 1e9 / n as f64,
-            t_new * 1e9 / n as f64,
-            t_old / t_new,
+            "BENCH scan-body dispatch {n} evals (3-op f64): GENERIC {:.1}ns/eval -> COMPILED {:.1}ns/eval = {:.2}x sha256={}",
+            t_generic * 1e9 / n as f64,
+            t_compiled * 1e9 / n as f64,
+            t_generic / t_compiled,
+            sha256,
         );
     }
 
