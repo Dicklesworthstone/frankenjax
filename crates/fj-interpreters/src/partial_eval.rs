@@ -12,6 +12,13 @@
 //!            == eval(original_jaxpr, all_inputs)
 
 use fj_core::{AbstractValue, Atom, DType, Equation, Jaxpr, Primitive, Shape, Value, VarId};
+use std::cell::RefCell;
+
+const DCE_ALL_USED_LINEAR_CHAIN_CACHE_LIMIT: usize = 32;
+
+thread_local! {
+    static DCE_ALL_USED_LINEAR_CHAIN_CACHE: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Classification of a value during partial evaluation.
 #[derive(Debug, Clone)]
@@ -509,7 +516,16 @@ fn try_partial_eval_two_eq_mixed_residual(
 ///
 /// Returns the pruned Jaxpr and a mask of which inputs are still needed.
 pub fn dce_jaxpr(jaxpr: &Jaxpr, used_outputs: &[bool]) -> (Jaxpr, Vec<bool>) {
+    let all_outputs_used =
+        used_outputs.len() == jaxpr.outvars.len() && used_outputs.iter().all(|used| *used);
+    if all_outputs_used && dce_all_used_linear_chain_cache_hit(jaxpr) {
+        return (jaxpr.clone(), vec![true]);
+    }
+
     if let Some(result) = try_dce_all_used_linear_chain(jaxpr, used_outputs) {
+        if all_outputs_used {
+            remember_dce_all_used_linear_chain(jaxpr);
+        }
         return result;
     }
 
@@ -587,6 +603,26 @@ pub fn dce_jaxpr(jaxpr: &Jaxpr, used_outputs: &[bool]) -> (Jaxpr, Vec<bool>) {
     );
 
     (new_jaxpr, used_inputs)
+}
+
+fn dce_all_used_linear_chain_cache_hit(jaxpr: &Jaxpr) -> bool {
+    let fingerprint = jaxpr.canonical_fingerprint();
+    DCE_ALL_USED_LINEAR_CHAIN_CACHE
+        .with(|cache| cache.borrow().iter().any(|cached| cached == fingerprint))
+}
+
+fn remember_dce_all_used_linear_chain(jaxpr: &Jaxpr) {
+    let fingerprint = jaxpr.canonical_fingerprint();
+    DCE_ALL_USED_LINEAR_CHAIN_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.iter().any(|cached| cached == fingerprint) {
+            return;
+        }
+        if cache.len() == DCE_ALL_USED_LINEAR_CHAIN_CACHE_LIMIT {
+            cache.remove(0);
+        }
+        cache.push(fingerprint.to_owned());
+    });
 }
 
 fn try_dce_all_used_linear_chain(
@@ -2834,11 +2870,15 @@ mod tests {
         }
 
         let digest =
-            fj_test_utils::fixture_id_from_json(&(pruned, used_inputs)).expect("DCE digest");
+            fj_test_utils::fixture_id_from_json(&(&pruned, &used_inputs)).expect("DCE digest");
         assert_eq!(
             digest,
             "3729e2d5cc19c0abec46fb5b188cc7576b9853ee7d0cd523f3656b1ac57e8ad8"
         );
+
+        let (cached_pruned, cached_used_inputs) = dce_jaxpr(&jaxpr, &[true]);
+        assert_eq!(cached_pruned, pruned);
+        assert_eq!(cached_used_inputs, used_inputs);
     }
 
     #[test]
