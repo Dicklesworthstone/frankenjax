@@ -2718,7 +2718,7 @@ fn compute_dense_last_use(jaxpr: &Jaxpr, slots: usize) -> Vec<usize> {
     last_use
 }
 
-// Op tag shared by all three scalar-arith plans (f64/i64/f32). Max/Min use JAX's
+// Op tag shared by the scalar-arith plans. Max/Min use JAX's
 // NaN-propagating semantics for floats (canonical NaN if either operand is NaN;
 // see jax_max_f64 / jax_min_f64 in fj-lax) and plain Rust max/min for i64. Neg/Abs
 // are unary and carry no rhs operand, avoiding a duplicate slot read in tight
@@ -3575,6 +3575,235 @@ fn run_scalar_f32_arith_plan_into(
             ScalarF32Slot::F32(value) => out.push(Value::scalar_f32(value)),
             ScalarF32Slot::NonF32 => return None,
             ScalarF32Slot::Missing => {
+                return Some(Err(InterpreterError::MissingVariable(VarId(slot as u32))));
+            }
+        }
+    }
+    Some(Ok(()))
+}
+
+// ── scalar half-float (BF16/F16) arena plan ────────────────────────────────
+// BF16/F16 scalar arithmetic has the same per-op contract as the half tensor
+// fusion path: widen operands to f64, apply the JAX op, then round the result
+// back to the same half dtype. Keeping this as a dtype-parametric scalar arena
+// avoids the generic env/scratch/eval_primitive dispatch for half activation
+// bodies while preserving every intermediate half rounding point.
+
+#[derive(Clone, Copy)]
+enum ScalarHalfOperand {
+    Slot(usize),
+    Literal(u16),
+}
+
+struct ScalarHalfStep {
+    op: ScalarF64BinaryOp,
+    lhs: ScalarHalfOperand,
+    rhs: Option<ScalarHalfOperand>,
+    out_slot: usize,
+}
+
+struct ScalarHalfPlan {
+    dtype: DType,
+    slots: usize,
+    const_slots: Vec<usize>,
+    input_slots: Vec<usize>,
+    out_slots: Vec<usize>,
+    steps: Vec<ScalarHalfStep>,
+}
+
+#[derive(Clone, Copy)]
+enum ScalarHalfSlot {
+    Missing,
+    NonHalf,
+    Half(u16),
+}
+
+fn scalar_half_binary_op(primitive: Primitive) -> Option<ScalarF64BinaryOp> {
+    match primitive {
+        Primitive::Add => Some(ScalarF64BinaryOp::Add),
+        Primitive::Sub => Some(ScalarF64BinaryOp::Sub),
+        Primitive::Mul => Some(ScalarF64BinaryOp::Mul),
+        Primitive::Div => Some(ScalarF64BinaryOp::Div),
+        Primitive::Max => Some(ScalarF64BinaryOp::Max),
+        Primitive::Min => Some(ScalarF64BinaryOp::Min),
+        _ => None,
+    }
+}
+
+fn scalar_half_unary_op(primitive: Primitive) -> Option<ScalarF64BinaryOp> {
+    match primitive {
+        Primitive::Neg => Some(ScalarF64BinaryOp::Neg),
+        Primitive::Abs => Some(ScalarF64BinaryOp::Abs),
+        _ => None,
+    }
+}
+
+fn scalar_half_operand(atom: &Atom, slots: usize, dtype: DType) -> Option<ScalarHalfOperand> {
+    match (dtype, atom) {
+        (_, Atom::Var(var)) => {
+            let slot = var.0 as usize;
+            (slot < slots).then_some(ScalarHalfOperand::Slot(slot))
+        }
+        (DType::BF16, Atom::Lit(Literal::BF16Bits(bits)))
+        | (DType::F16, Atom::Lit(Literal::F16Bits(bits))) => {
+            Some(ScalarHalfOperand::Literal(*bits))
+        }
+        _ => None,
+    }
+}
+
+fn build_scalar_half_arith_plan(
+    jaxpr: &Jaxpr,
+    slots: usize,
+    dtype: DType,
+) -> Option<ScalarHalfPlan> {
+    if jaxpr.equations.is_empty() || !jaxpr.effects.is_empty() {
+        return None;
+    }
+    let mut steps = Vec::with_capacity(jaxpr.equations.len());
+    for equation in &jaxpr.equations {
+        if !equation.params.is_empty()
+            || !equation.sub_jaxprs.is_empty()
+            || !equation.effects.is_empty()
+            || equation.outputs.len() != 1
+        {
+            return None;
+        }
+        let out_slot = equation.outputs[0].0 as usize;
+        if out_slot >= slots {
+            return None;
+        }
+        let (op, lhs, rhs) = match equation.inputs.as_slice() {
+            [a, b] => (
+                scalar_half_binary_op(equation.primitive)?,
+                scalar_half_operand(a, slots, dtype)?,
+                Some(scalar_half_operand(b, slots, dtype)?),
+            ),
+            [a] => {
+                let operand = scalar_half_operand(a, slots, dtype)?;
+                (scalar_half_unary_op(equation.primitive)?, operand, None)
+            }
+            _ => return None,
+        };
+        steps.push(ScalarHalfStep {
+            op,
+            lhs,
+            rhs,
+            out_slot,
+        });
+    }
+    Some(ScalarHalfPlan {
+        dtype,
+        slots,
+        const_slots: var_slots(&jaxpr.constvars, slots)?,
+        input_slots: var_slots(&jaxpr.invars, slots)?,
+        out_slots: var_slots(&jaxpr.outvars, slots)?,
+        steps,
+    })
+}
+
+fn scalar_half_slot_from_value(value: &Value, dtype: DType) -> ScalarHalfSlot {
+    match (dtype, value) {
+        (DType::BF16, Value::Scalar(Literal::BF16Bits(bits)))
+        | (DType::F16, Value::Scalar(Literal::F16Bits(bits))) => ScalarHalfSlot::Half(*bits),
+        (_, Value::Scalar(_) | Value::Tensor(_)) => ScalarHalfSlot::NonHalf,
+    }
+}
+
+fn read_scalar_half_operand(
+    slots: &[ScalarHalfSlot],
+    operand: ScalarHalfOperand,
+) -> Result<Option<u16>, InterpreterError> {
+    match operand {
+        ScalarHalfOperand::Literal(bits) => Ok(Some(bits)),
+        ScalarHalfOperand::Slot(slot) => match slots[slot] {
+            ScalarHalfSlot::Half(bits) => Ok(Some(bits)),
+            ScalarHalfSlot::NonHalf => Ok(None),
+            ScalarHalfSlot::Missing => Err(InterpreterError::MissingVariable(VarId(slot as u32))),
+        },
+    }
+}
+
+fn apply_scalar_half_op(
+    dtype: DType,
+    op: ScalarF64BinaryOp,
+    lhs_bits: u16,
+    rhs_bits: u16,
+) -> Option<u16> {
+    let lhs = half_fusion_widen(dtype, lhs_bits);
+    let rhs = half_fusion_widen(dtype, rhs_bits);
+    Some(match op {
+        ScalarF64BinaryOp::Add => half_fused_binary(dtype, CheapOp::Add, lhs, rhs),
+        ScalarF64BinaryOp::Sub => half_fused_binary(dtype, CheapOp::Sub, lhs, rhs),
+        ScalarF64BinaryOp::Mul => half_fused_binary(dtype, CheapOp::Mul, lhs, rhs),
+        ScalarF64BinaryOp::Div => half_fused_binary(dtype, CheapOp::Div, lhs, rhs),
+        ScalarF64BinaryOp::Max => half_fused_binary(dtype, CheapOp::Max, lhs, rhs),
+        ScalarF64BinaryOp::Min => half_fused_binary(dtype, CheapOp::Min, lhs, rhs),
+        ScalarF64BinaryOp::Neg => half_fusion_round(dtype, -lhs),
+        ScalarF64BinaryOp::Abs => half_fusion_round(dtype, lhs.abs()),
+        _ => return None,
+    })
+}
+
+fn run_scalar_half_arith_plan_into(
+    plan: &ScalarHalfPlan,
+    const_values: &[Value],
+    args: &[Value],
+    out: &mut Vec<Value>,
+    slots: &mut Vec<ScalarHalfSlot>,
+) -> Option<Result<(), InterpreterError>> {
+    if const_values.len() != plan.const_slots.len() {
+        return Some(Err(InterpreterError::ConstArity {
+            expected: plan.const_slots.len(),
+            actual: const_values.len(),
+        }));
+    }
+    if args.len() != plan.input_slots.len() {
+        return Some(Err(InterpreterError::InputArity {
+            expected: plan.input_slots.len(),
+            actual: args.len(),
+        }));
+    }
+
+    slots.clear();
+    slots.resize(plan.slots, ScalarHalfSlot::Missing);
+    for (&slot, value) in plan.const_slots.iter().zip(const_values) {
+        slots[slot] = scalar_half_slot_from_value(value, plan.dtype);
+    }
+    for (&slot, value) in plan.input_slots.iter().zip(args) {
+        slots[slot] = scalar_half_slot_from_value(value, plan.dtype);
+    }
+
+    for step in &plan.steps {
+        let lhs = match read_scalar_half_operand(slots, step.lhs) {
+            Ok(Some(value)) => value,
+            Ok(None) => return None,
+            Err(error) => return Some(Err(error)),
+        };
+        let rhs = match step.rhs {
+            Some(rhs) => match read_scalar_half_operand(slots, rhs) {
+                Ok(Some(value)) => value,
+                Ok(None) => return None,
+                Err(error) => return Some(Err(error)),
+            },
+            None => lhs,
+        };
+        let value = apply_scalar_half_op(plan.dtype, step.op, lhs, rhs)?;
+        slots[step.out_slot] = ScalarHalfSlot::Half(value);
+    }
+
+    out.clear();
+    out.reserve(plan.out_slots.len());
+    for &slot in &plan.out_slots {
+        match slots[slot] {
+            ScalarHalfSlot::Half(bits) if plan.dtype == DType::BF16 => {
+                out.push(Value::Scalar(Literal::BF16Bits(bits)));
+            }
+            ScalarHalfSlot::Half(bits) if plan.dtype == DType::F16 => {
+                out.push(Value::Scalar(Literal::F16Bits(bits)));
+            }
+            ScalarHalfSlot::Half(_) | ScalarHalfSlot::NonHalf => return None,
+            ScalarHalfSlot::Missing => {
                 return Some(Err(InterpreterError::MissingVariable(VarId(slot as u32))));
             }
         }
@@ -4487,6 +4716,8 @@ struct ScalarPlanBuffers {
     f64: Vec<ScalarF64Slot>,
     i64: Vec<ScalarI64Slot>,
     f32: Vec<ScalarF32Slot>,
+    bf16: Vec<ScalarHalfSlot>,
+    f16: Vec<ScalarHalfSlot>,
     bools: Vec<Option<bool>>,
     mixed: Vec<MixedSlot>,
     mixed_i64: Vec<MixedI64Slot>,
@@ -4503,6 +4734,8 @@ struct DenseEvalPlan {
     scalar_f64_plan: Option<ScalarF64Plan>,
     scalar_i64_plan: Option<ScalarI64Plan>,
     scalar_f32_plan: Option<ScalarF32Plan>,
+    scalar_bf16_plan: Option<ScalarHalfPlan>,
+    scalar_f16_plan: Option<ScalarHalfPlan>,
     scalar_compare_plan: Option<ScalarComparePlan>,
     scalar_compound_compare_plan: Option<ScalarCompoundComparePlan>,
     scalar_select_plan: Option<ScalarSelectPlan>,
@@ -4533,6 +4766,8 @@ fn build_dense_plan(jaxpr: &Jaxpr) -> Option<DenseEvalPlan> {
             scalar_f64_plan: build_scalar_f64_arith_plan(jaxpr, slots),
             scalar_i64_plan: build_scalar_i64_arith_plan(jaxpr, slots),
             scalar_f32_plan: build_scalar_f32_arith_plan(jaxpr, slots),
+            scalar_bf16_plan: build_scalar_half_arith_plan(jaxpr, slots, DType::BF16),
+            scalar_f16_plan: build_scalar_half_arith_plan(jaxpr, slots, DType::F16),
             scalar_compare_plan: build_scalar_compare_plan(jaxpr),
             scalar_compound_compare_plan: build_scalar_compound_compare_plan(jaxpr, slots),
             scalar_select_plan: build_scalar_select_plan(jaxpr, slots),
@@ -4555,6 +4790,8 @@ fn eval_jaxpr_dense_env(
         scalar_f64_plan: build_scalar_f64_arith_plan(jaxpr, slots),
         scalar_i64_plan: build_scalar_i64_arith_plan(jaxpr, slots),
         scalar_f32_plan: build_scalar_f32_arith_plan(jaxpr, slots),
+        scalar_bf16_plan: build_scalar_half_arith_plan(jaxpr, slots, DType::BF16),
+        scalar_f16_plan: build_scalar_half_arith_plan(jaxpr, slots, DType::F16),
         scalar_compare_plan: build_scalar_compare_plan(jaxpr),
         scalar_compound_compare_plan: build_scalar_compound_compare_plan(jaxpr, slots),
         scalar_select_plan: build_scalar_select_plan(jaxpr, slots),
@@ -4601,7 +4838,7 @@ fn run_dense_plan_into(
     // Try each monomorphic scalar-arith executor; each bails (returns None) on the
     // first operand that is not its dtype at runtime, so for a given call at most
     // one actually runs. A body with a typed literal builds only the matching plan;
-    // a literal-free body builds all three and the runtime dtype selects one.
+    // a literal-free body builds multiple dtype plans and the runtime dtype selects one.
     if let Some(p) = &plan.scalar_f64_plan
         && let Some(result) =
             run_scalar_f64_arith_plan_into(p, const_values, args, out, &mut scalar_buffers.f64)
@@ -4617,6 +4854,18 @@ fn run_dense_plan_into(
     if let Some(p) = &plan.scalar_f32_plan
         && let Some(result) =
             run_scalar_f32_arith_plan_into(p, const_values, args, out, &mut scalar_buffers.f32)
+    {
+        return result;
+    }
+    if let Some(p) = &plan.scalar_bf16_plan
+        && let Some(result) =
+            run_scalar_half_arith_plan_into(p, const_values, args, out, &mut scalar_buffers.bf16)
+    {
+        return result;
+    }
+    if let Some(p) = &plan.scalar_f16_plan
+        && let Some(result) =
+            run_scalar_half_arith_plan_into(p, const_values, args, out, &mut scalar_buffers.f16)
     {
         return result;
     }
@@ -6132,7 +6381,7 @@ mod tests {
 
     #[test]
     fn scalar_i64_arith_plan_matches_generic() {
-        // The literal-free Mul/Add/Sub body builds all three scalar plans; i64
+        // The literal-free Mul/Add/Sub body builds multiple scalar plans; i64
         // args select the i64 executor at runtime. Cover wrapping at the extremes.
         let jaxpr = scalar_f64_arith_body_jaxpr();
         let cases = [
@@ -6286,6 +6535,134 @@ mod tests {
             let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic");
             assert_eq!(planned, generic, "a={a:?} b={b:?}");
         }
+    }
+
+    fn scalar_half_literal(dtype: DType, bits: u16) -> Literal {
+        if dtype == DType::BF16 {
+            Literal::BF16Bits(bits)
+        } else {
+            Literal::F16Bits(bits)
+        }
+    }
+
+    fn scalar_half_from_f64(dtype: DType, value: f64) -> Literal {
+        if dtype == DType::BF16 {
+            Literal::from_bf16_f64(value)
+        } else {
+            Literal::from_f16_f64(value)
+        }
+    }
+
+    fn scalar_half_output_bits(output: &Value, dtype: DType) -> u16 {
+        match (dtype, output) {
+            (DType::BF16, Value::Scalar(Literal::BF16Bits(bits)))
+            | (DType::F16, Value::Scalar(Literal::F16Bits(bits))) => *bits,
+            _ => 0,
+        }
+    }
+
+    fn scalar_half_arith_body_jaxpr(dtype: DType) -> Jaxpr {
+        let (x, y, neg, abs, prod, sum, quot, out) = (
+            VarId(0),
+            VarId(1),
+            VarId(2),
+            VarId(3),
+            VarId(4),
+            VarId(5),
+            VarId(6),
+            VarId(7),
+        );
+        let mk =
+            |primitive: Primitive, inputs: smallvec::SmallVec<[Atom; 4]>, output: VarId| Equation {
+                primitive,
+                inputs,
+                outputs: smallvec![output],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            };
+        Jaxpr::new(
+            vec![x, y],
+            vec![],
+            vec![out],
+            vec![
+                mk(Primitive::Neg, smallvec![Atom::Var(x)], neg),
+                mk(Primitive::Abs, smallvec![Atom::Var(neg)], abs),
+                mk(
+                    Primitive::Mul,
+                    smallvec![Atom::Var(abs), Atom::Var(y)],
+                    prod,
+                ),
+                mk(
+                    Primitive::Add,
+                    smallvec![
+                        Atom::Var(prod),
+                        Atom::Lit(scalar_half_from_f64(dtype, 0.25))
+                    ],
+                    sum,
+                ),
+                mk(
+                    Primitive::Div,
+                    smallvec![Atom::Var(sum), Atom::Var(y)],
+                    quot,
+                ),
+                mk(
+                    Primitive::Max,
+                    smallvec![Atom::Var(quot), Atom::Var(x)],
+                    out,
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn scalar_half_arith_plan_matches_generic_bits() {
+        // Scalar BF16/F16 must preserve the existing half contract exactly:
+        // widen each operand to f64, apply the op in equation order, then round
+        // every intermediate back to the same half dtype. The forced hash-map
+        // path is the reference because it cannot take the dense scalar arena.
+        let mut golden_rows: Vec<(&'static str, u16, u16, u16)> = Vec::new();
+        let cases = [
+            (0x3f80, 0x4000), // 1.0, 2.0 in BF16; harmless finite F16 patterns too
+            (0x8000, 0x3f80), // -0.0, finite
+            (0x7f80, 0x4000), // +inf, finite (BF16)
+            (0xff80, 0x4000), // -inf, finite (BF16)
+            (0x7fc1, 0x4000), // NaN payload, finite (BF16)
+            (0x0001, 0x4000), // smallest subnormal-ish payload
+        ];
+        for dtype in [DType::BF16, DType::F16] {
+            let jaxpr = scalar_half_arith_body_jaxpr(dtype);
+            let plan = super::build_dense_plan(&jaxpr).expect("dense plan should build");
+            if dtype == DType::BF16 {
+                assert!(plan.scalar_bf16_plan.is_some());
+                assert!(plan.scalar_f16_plan.is_none());
+            } else {
+                assert!(plan.scalar_bf16_plan.is_none());
+                assert!(plan.scalar_f16_plan.is_some());
+            }
+            for (a, b) in cases {
+                let args = [
+                    Value::Scalar(scalar_half_literal(dtype, a)),
+                    Value::Scalar(scalar_half_literal(dtype, b)),
+                ];
+                let planned = eval_jaxpr(&jaxpr, &args).expect("planned");
+                let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic reference");
+                assert_eq!(planned, generic, "dtype={dtype:?} a={a:#06x} b={b:#06x}");
+                let dtype_name = if dtype == DType::BF16 { "bf16" } else { "f16" };
+                golden_rows.push((
+                    dtype_name,
+                    a,
+                    b,
+                    scalar_half_output_bits(&planned[0], dtype),
+                ));
+            }
+        }
+        let digest = fj_test_utils::fixture_id_from_json(&golden_rows)
+            .expect("scalar half golden rows should hash");
+        assert_eq!(
+            digest,
+            "2a61385a28dd56a659b204ce161fb1d9cbcd30bd6a6f8e42e57f328894746d1c"
+        );
     }
 
     // Single-comparison cond body `out = cmp(x, lit)` — the canonical while/scan
@@ -6453,7 +6830,7 @@ mod tests {
         // Tensor operand → not a fast-path scalar → bails to generic.
         let jaxpr = scalar_compare_body_jaxpr(Primitive::Gt, Literal::I64(0));
         let t = f64_tensor(4, |i| i as f64 - 1.0);
-        let planned = eval_jaxpr(&jaxpr, &[t.clone()]).expect("planned");
+        let planned = eval_jaxpr(&jaxpr, std::slice::from_ref(&t)).expect("planned");
         let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[t]).expect("generic");
         assert_eq!(planned, generic);
     }
@@ -6537,7 +6914,7 @@ mod tests {
         let jaxpr =
             compound_scalar_compare_body_jaxpr(Literal::from_f64(0.0), Literal::from_f64(10.0));
         let t = f64_tensor(4, |i| i as f64 - 1.0);
-        let planned = eval_jaxpr(&jaxpr, &[t.clone()]).expect("planned");
+        let planned = eval_jaxpr(&jaxpr, std::slice::from_ref(&t)).expect("planned");
         let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[t]).expect("generic");
         assert_eq!(planned, generic);
     }
@@ -6554,7 +6931,7 @@ mod tests {
     }
 
     // Body mixing unary + binary: `out = abs(neg(x) - y)` (Neg, Sub, Abs).
-    // Literal-free → builds all three plans; runtime dtype selects.
+    // Literal-free -> builds multiple dtype plans; runtime dtype selects.
     fn scalar_unary_body_jaxpr() -> Jaxpr {
         let (x, y, n, d, out) = (VarId(0), VarId(1), VarId(2), VarId(3), VarId(4));
         let mk =

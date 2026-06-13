@@ -106,6 +106,64 @@ fn make_scan_sub_jaxpr_eval_jaxpr(reverse: bool) -> Jaxpr {
     )
 }
 
+fn make_scalar_half_arith_jaxpr(literal: Literal) -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(8)],
+        vec![
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec::smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec::smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Abs,
+                inputs: smallvec::smallvec![Atom::Var(VarId(3))],
+                outputs: smallvec::smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(2))],
+                outputs: smallvec::smallvec![VarId(5)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![Atom::Var(VarId(5)), Atom::Lit(literal)],
+                outputs: smallvec::smallvec![VarId(6)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Div,
+                inputs: smallvec::smallvec![Atom::Var(VarId(6)), Atom::Var(VarId(2))],
+                outputs: smallvec::smallvec![VarId(7)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Max,
+                inputs: smallvec::smallvec![Atom::Var(VarId(7)), Atom::Var(VarId(1))],
+                outputs: smallvec::smallvec![VarId(8)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 // ── 1. Partial Eval Benchmarks ──────────────────────────────────────
 
 fn bench_partial_eval(c: &mut Criterion) {
@@ -249,6 +307,34 @@ fn bench_eval(c: &mut Criterion) {
             black_box(
                 eval_jaxpr(black_box(&jaxpr), black_box(&inputs))
                     .expect("scan eval should succeed"),
+            );
+        });
+    });
+
+    group.bench_function("scalar_bf16_half_arith_body", |b| {
+        let jaxpr = make_scalar_half_arith_jaxpr(Literal::from_bf16_f64(0.25));
+        let inputs = vec![
+            Value::Scalar(Literal::from_bf16_f64(-1.25)),
+            Value::Scalar(Literal::from_bf16_f64(2.5)),
+        ];
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(black_box(&jaxpr), black_box(&inputs))
+                    .expect("scalar bf16 eval should succeed"),
+            );
+        });
+    });
+
+    group.bench_function("scalar_f16_half_arith_body", |b| {
+        let jaxpr = make_scalar_half_arith_jaxpr(Literal::from_f16_f64(0.25));
+        let inputs = vec![
+            Value::Scalar(Literal::from_f16_f64(-1.25)),
+            Value::Scalar(Literal::from_f16_f64(2.5)),
+        ];
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(black_box(&jaxpr), black_box(&inputs))
+                    .expect("scalar f16 eval should succeed"),
             );
         });
     });
