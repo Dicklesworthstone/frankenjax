@@ -3515,6 +3515,164 @@ fn eval_reduce_window_dense_float(
     }
 }
 
+/// Dense i64 reduce_window (any rank, sum/max/min, I64 input).
+///
+/// The I64-accumulator integer case of the generic loop, specialized for a dense
+/// `i64` source: the per-tap `Literal` gather + string-dispatched accumulate is
+/// replaced by a direct `i64` read and a single op selected ONCE, with the same
+/// interior-vs-border classification and precomputed flat tap-offset stencil used
+/// by `eval_reduce_window_dense_float`.
+///
+/// BIT-FOR-BIT identical to the generic per-`Literal` loop for I64 input: same
+/// row-major tap order, same i64 init (max=`i64::MIN`/min=`i64::MAX`/sum=0), the
+/// same `i64::max`/`i64::min`/`wrapping_add` ops the I64 accumulator uses, and the
+/// same OOB→init contribution (init is the identity for every op: `wrapping_add(0)`,
+/// `max(_, i64::MIN)`, `min(_, i64::MAX)` are all no-ops). Output is `Literal::I64`,
+/// matching `reduce_window_accumulator_literal` for the I64 dtype.
+#[allow(clippy::too_many_arguments)]
+fn eval_reduce_window_dense_i64(
+    reduce_op: &str,
+    src: &[i64],
+    window_dims: &[usize],
+    strides: &[usize],
+    out_dims: &[u32],
+    pad_lows: &[usize],
+    input_dims: &[usize],
+    input_strides: &[usize],
+    total_output: usize,
+) -> Result<Value, EvalError> {
+    let rank = window_dims.len();
+    let win_total: usize = window_dims.iter().product();
+
+    // Precompute, in row-major window order (last dim fastest — matching the
+    // generic odometer), each tap's per-dim coord and its flat offset from the
+    // window's input top-left corner.
+    let mut tap_coord = vec![0usize; rank];
+    let mut tap_offsets: Vec<usize> = Vec::with_capacity(win_total);
+    let mut tap_coords: Vec<Vec<usize>> = Vec::with_capacity(win_total);
+    for _ in 0..win_total {
+        let mut off = 0usize;
+        for d in 0..rank {
+            off += tap_coord[d] * input_strides[d];
+        }
+        tap_offsets.push(off);
+        tap_coords.push(tap_coord.clone());
+        let mut carry = true;
+        for d in (0..rank).rev() {
+            if carry {
+                tap_coord[d] += 1;
+                if tap_coord[d] >= window_dims[d] {
+                    tap_coord[d] = 0;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Op {
+        Sum,
+        Max,
+        Min,
+    }
+    let op = match reduce_op {
+        "max" => Op::Max,
+        "min" => Op::Min,
+        _ => Op::Sum,
+    };
+    let init = match op {
+        Op::Max => i64::MIN,
+        Op::Min => i64::MAX,
+        Op::Sum => 0,
+    };
+
+    let out_dims_usize: Vec<usize> = out_dims.iter().map(|&d| d as usize).collect();
+    let mut out_idx = vec![0usize; rank];
+    let mut values: Vec<i64> = Vec::with_capacity(total_output);
+
+    for _ in 0..total_output {
+        // Window's input top-left corner per dim (may be negative under padding).
+        // Interior iff every tap lands in bounds.
+        let mut interior = true;
+        let mut base: isize = 0;
+        for d in 0..rank {
+            let corner = out_idx[d] as isize * strides[d] as isize - pad_lows[d] as isize;
+            if corner < 0 || corner + (window_dims[d] as isize - 1) >= input_dims[d] as isize {
+                interior = false;
+                break;
+            }
+            base += corner * input_strides[d] as isize;
+        }
+
+        let mut acc = init;
+        if interior {
+            let base = base as usize;
+            match op {
+                Op::Sum => {
+                    for &off in &tap_offsets {
+                        acc = acc.wrapping_add(src[base + off]);
+                    }
+                }
+                Op::Max => {
+                    for &off in &tap_offsets {
+                        acc = acc.max(src[base + off]);
+                    }
+                }
+                Op::Min => {
+                    for &off in &tap_offsets {
+                        acc = acc.min(src[base + off]);
+                    }
+                }
+            }
+        } else {
+            for coords in &tap_coords {
+                let mut in_bounds = true;
+                let mut flat = 0usize;
+                for d in (0..rank).rev() {
+                    let padded = out_idx[d] * strides[d] + coords[d];
+                    if padded < pad_lows[d] {
+                        in_bounds = false;
+                        break;
+                    }
+                    let ip = padded - pad_lows[d];
+                    if ip >= input_dims[d] {
+                        in_bounds = false;
+                        break;
+                    }
+                    flat += ip * input_strides[d];
+                }
+                let tap = if in_bounds { src[flat] } else { init };
+                match op {
+                    Op::Sum => acc = acc.wrapping_add(tap),
+                    Op::Max => acc = acc.max(tap),
+                    Op::Min => acc = acc.min(tap),
+                }
+            }
+        }
+        values.push(acc);
+
+        let mut carry = true;
+        for d in (0..rank).rev() {
+            if carry {
+                out_idx[d] += 1;
+                if out_idx[d] >= out_dims_usize[d] {
+                    out_idx[d] = 0;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+    }
+
+    let shape = Shape {
+        dims: out_dims.to_vec(),
+    };
+    Ok(Value::Tensor(
+        TensorValue::new_i64_values(shape, values).map_err(EvalError::from)?,
+    ))
+}
+
 #[inline]
 fn reduce_window_new_extreme_dominates(old: f64, new: f64, is_max: bool) -> bool {
     debug_assert!(!old.is_nan());
@@ -3882,6 +4040,42 @@ fn eval_reduce_window(
             output_dtype,
             reduce_op,
             src.as_ref(),
+            &window_dims,
+            &strides,
+            &out_dims,
+            &pad_lows,
+            &input_dims,
+            &input_strides,
+            total_output,
+        );
+    }
+
+    // Dense i64 fast path (ANY rank, sum/max/min): integer pooling/windowed
+    // reductions ran the generic per-`Literal` gather + string-dispatched
+    // accumulate — the slowest path. I64 tensors densify, so read the i64 buffer
+    // directly and run the hoisted op over the same tap-offset stencil the float
+    // path uses. Bit-identical to the generic I64 accumulator (see
+    // eval_reduce_window_dense_i64). I32 stays on the generic path (i32 is stored
+    // boxed → no i64 slice view) and is narrowed mod-2^32 by the eval_primitive
+    // chokepoint regardless.
+    if no_base_dilation
+        && no_window_dilation
+        && tensor.dtype == fj_core::DType::I64
+        && (matches!(reduce_op, "max" | "min") || reduce_window_sum_like(reduce_op))
+        && let Some(src) = tensor.elements.as_i64_slice()
+    {
+        let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+        let mut input_strides = vec![1usize; rank];
+        let mut stride_mult = 1usize;
+        for d in (0..rank).rev() {
+            input_strides[d] = stride_mult;
+            stride_mult = stride_mult.checked_mul(input_dims[d]).ok_or_else(|| {
+                reduce_window_unsupported(primitive, "reduce_window stride multiplier overflow")
+            })?;
+        }
+        return eval_reduce_window_dense_i64(
+            reduce_op,
+            src,
             &window_dims,
             &strides,
             &out_dims,
@@ -12263,6 +12457,107 @@ mod tests {
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_reduce_window_dense_i64_vs_generic() {
+        use std::time::Instant;
+        // 2D i64 sum-pool [512,512] window 3x3 stride 1 (VALID -> [510,510], all
+        // interior). Compares the dense i64 fast path (production) against the
+        // generic per-`Literal` gather + reduce_window_accumulate_literal loop it
+        // replaces (both build an output buffer, isolating the Literal
+        // materialization + string-dispatched accumulate).
+        let (n, w) = (512usize, 3usize);
+        let raw: Vec<i64> = (0..n * n)
+            .map(|i| (i as i64).wrapping_mul(2_654_435_761) ^ 0x5555)
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                raw,
+            )
+            .unwrap(),
+        );
+        let params = rw_params("sum", "3,3", "1,1");
+        let out_n = n - w + 1;
+
+        let best = |mut f: Box<dyn FnMut() -> i64>| {
+            f();
+            let mut b = f64::MAX;
+            let mut dg = 0i64;
+            for _ in 0..5 {
+                let t = Instant::now();
+                dg = std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            (b, dg)
+        };
+
+        // Generic reference: per-tap Literal gather + the SAME accumulate helpers
+        // the generic loop calls, building a Vec<Literal> output like the real path.
+        let t_ref = tensor.clone();
+        let (t_gen, d_gen) = best(Box::new(move || {
+            let t = t_ref.as_tensor().unwrap();
+            let mut out_elems: Vec<Literal> = Vec::with_capacity(out_n * out_n);
+            for oy in 0..out_n {
+                for ox in 0..out_n {
+                    let mut accum = reduce_window_initial_accumulator(DType::I64, "sum");
+                    for wy in 0..w {
+                        for wx in 0..w {
+                            let flat = (oy + wy) * n + (ox + wx);
+                            reduce_window_accumulate_literal(
+                                Primitive::ReduceWindow,
+                                "sum",
+                                &mut accum,
+                                t.elements[flat],
+                            )
+                            .unwrap();
+                        }
+                    }
+                    out_elems.push(
+                        reduce_window_accumulator_literal(
+                            Primitive::ReduceWindow,
+                            DType::I64,
+                            accum,
+                        )
+                        .unwrap(),
+                    );
+                }
+            }
+            out_elems.iter().fold(0i64, |acc, l| match l {
+                Literal::I64(v) => acc.wrapping_add(*v),
+                _ => acc,
+            })
+        }));
+
+        let t_fast = tensor.clone();
+        let (t_dense, d_dense) = best(Box::new(move || {
+            let out =
+                eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t_fast), &params)
+                    .unwrap();
+            out.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0i64, |acc, l| match l {
+                    Literal::I64(v) => acc.wrapping_add(*v),
+                    _ => acc,
+                })
+        }));
+
+        assert_eq!(
+            d_gen, d_dense,
+            "dense i64 reduce_window checksum must match generic"
+        );
+        println!(
+            "BENCH reduce_window i64 sum([{n},{n}],win=3x3,stride=1): generic={:.4}ms dense={:.4}ms speedup={:.2}x",
+            t_gen * 1e3,
+            t_dense * 1e3,
+            t_gen / t_dense,
+        );
     }
 
     #[test]
