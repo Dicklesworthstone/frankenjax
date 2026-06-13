@@ -2943,6 +2943,61 @@ fn eval_cumulative_dense(
         )?)));
     }
 
+    if matches!(tensor.dtype, DType::BF16 | DType::F16) {
+        let Some(src) = tensor.elements.as_half_float_slice() else {
+            return Ok(None);
+        };
+        // Dense half-float cumulative: scan each line reading the raw u16 backing,
+        // accumulating in f64 (widen INLINE per element via the SAME `as_f64`
+        // conversion the generic per-`Literal` path uses), storing each step's
+        // running value rounded back to the half dtype via the SAME
+        // `reduce_real_literal` rounding. BIT-IDENTICAL to the generic float scan
+        // (lib path: `acc = float_op(acc, lit.as_f64()); store reduce_real_literal
+        // (dtype, acc)`) — same f64 accumulator (never rounded mid-scan), same
+        // per-step round, same per-line order. The scan is a sequential dependency
+        // (acc feeds the next step), so it CANNOT reassociate/vectorize — exact
+        // incl. NaN. Mirrors the dense F32 path; the win is reading the 2-byte u16
+        // backing + emitting dense half storage instead of materializing the
+        // 24-byte `Literal` per element on both input and output.
+        let dt = tensor.dtype;
+        let widen = |u: u16| -> f64 {
+            match dt {
+                DType::BF16 => Literal::BF16Bits(u).as_f64(),
+                _ => Literal::F16Bits(u).as_f64(),
+            }
+            .unwrap_or(0.0)
+        };
+        let round = |acc: f64| -> u16 {
+            match reduce_real_literal(dt, acc) {
+                Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                _ => 0,
+            }
+        };
+        let mut out = vec![0u16; total];
+        for outer in 0..outer_count {
+            let base = line_base(outer);
+            let mut acc = float_init;
+            if reverse {
+                for i in (0..axis_dim).rev() {
+                    let fi = base + i * axis_stride;
+                    acc = float_op(acc, widen(src[fi]));
+                    out[fi] = round(acc);
+                }
+            } else {
+                for i in 0..axis_dim {
+                    let fi = base + i * axis_stride;
+                    acc = float_op(acc, widen(src[fi]));
+                    out[fi] = round(acc);
+                }
+            }
+        }
+        return Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+            dt,
+            tensor.shape.clone(),
+            out,
+        )?)));
+    }
+
     Ok(None)
 }
 
@@ -6743,6 +6798,90 @@ mod tests {
             dense_t * 1e3,
             generic / dense_t
         );
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_half_cumsum_dense_vs_generic() {
+        use std::time::Instant;
+        // Dense half-float (BF16/F16) cumsum vs the generic per-`Literal` scan.
+        // Dense HalfFloat storage (`as_half_float_slice`) takes the new dense path;
+        // a boxed `Literal::BF16Bits`/`F16Bits` tensor falls to the generic loop.
+        // Also a parity proof: the half bits must match element-for-element.
+        let (rows, cols) = (2048usize, 2048usize); // cumsum over last axis (finite data, no NaN)
+        let p = BTreeMap::from([("axis".to_owned(), "1".to_owned())]);
+        for dt in [DType::BF16, DType::F16] {
+            let bits = |v: f64| -> u16 {
+                match reduce_real_literal(dt, v) {
+                    Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                    _ => 0,
+                }
+            };
+            let lit = |b: u16| -> Literal {
+                match dt {
+                    DType::BF16 => Literal::BF16Bits(b),
+                    _ => Literal::F16Bits(b),
+                }
+            };
+            let raw: Vec<u16> = (0..rows * cols)
+                .map(|i| bits(((i % 251) as f64) * 0.013 - 1.6))
+                .collect();
+            let dims = vec![rows as u32, cols as u32];
+            let dense = Value::Tensor(
+                TensorValue::new_half_float_values(dt, Shape { dims: dims.clone() }, raw.clone())
+                    .unwrap(),
+            );
+            let boxed = Value::Tensor(
+                TensorValue::new(
+                    dt,
+                    Shape { dims: dims.clone() },
+                    raw.iter().copied().map(lit).collect(),
+                )
+                .unwrap(),
+            );
+            let half_bits = |v: &Value| -> Vec<u16> {
+                v.as_tensor()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::BF16Bits(b) | Literal::F16Bits(b) => *b,
+                        _ => 0,
+                    })
+                    .collect()
+            };
+            let d_out =
+                crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(&dense), &p).unwrap();
+            let g_out =
+                crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(&boxed), &p).unwrap();
+            assert_eq!(
+                half_bits(&d_out),
+                half_bits(&g_out),
+                "{dt:?} dense cumsum half bits must match generic per-Literal scan"
+            );
+
+            let time = |input: &Value| {
+                let _ = crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(input), &p)
+                    .unwrap();
+                let mut best = f64::MAX;
+                for _ in 0..20 {
+                    let t = Instant::now();
+                    let _ =
+                        crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(input), &p)
+                            .unwrap();
+                    best = best.min(t.elapsed().as_secs_f64());
+                }
+                best
+            };
+            let generic = time(&boxed);
+            let dense_t = time(&dense);
+            println!(
+                "BENCH {dt:?} cumsum axis1 [{rows},{cols}]: generic(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
+                generic * 1e3,
+                dense_t * 1e3,
+                generic / dense_t
+            );
+        }
     }
 
     /// Isomorphism proof for the parallel cumulative scan: a last-axis scan large
