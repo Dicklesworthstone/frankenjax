@@ -3342,6 +3342,27 @@ fn reduce_window_dense_f64_view(tensor: &TensorValue) -> Option<Cow<'_, [f64]>> 
             .elements
             .as_f32_slice()
             .map(|s| Cow::Owned(s.iter().map(|&v| f64::from(v)).collect())),
+        // BF16/F16 widen EXACTLY as `Literal::as_f64` does (the same conversion the
+        // generic per-`Literal` path applies per tap), so the dense f64-accumulator
+        // path is bit-identical: same widen, same f64 accumulate order, same final
+        // round (`reduce_window_literal_from_f64`). Half pooling (bf16/f16) is JAX's
+        // common ML dtype and otherwise ran the slow generic path.
+        dt @ (fj_core::DType::BF16 | fj_core::DType::F16) => {
+            tensor.elements.as_half_float_slice().map(|s| {
+                Cow::Owned(
+                    s.iter()
+                        .map(|&u| {
+                            match dt {
+                                fj_core::DType::BF16 => fj_core::Literal::BF16Bits(u),
+                                _ => fj_core::Literal::F16Bits(u),
+                            }
+                            .as_f64()
+                            .unwrap_or(0.0)
+                        })
+                        .collect(),
+                )
+            })
+        }
         _ => None,
     }
 }
@@ -3507,6 +3528,24 @@ fn eval_reduce_window_dense_float(
             let f32_values: Vec<f32> = values.iter().map(|&v| v as f32).collect();
             Ok(Value::Tensor(
                 TensorValue::new_f32_values(shape, f32_values).map_err(EvalError::from)?,
+            ))
+        }
+        fj_core::DType::BF16 | fj_core::DType::F16 => {
+            // Round each f64 accumulator to the half dtype via the SAME
+            // reduce_window_literal_from_f64 the generic path uses, and emit dense
+            // half storage. (Sum accumulates in f64 then rounds once — identical to
+            // the generic F64-accumulator path; max/min select an exactly-widened
+            // input value so the round-trip is exact.)
+            let bits: Vec<u16> = values
+                .iter()
+                .map(|&v| match reduce_window_literal_from_f64(output_dtype, v) {
+                    fj_core::Literal::BF16Bits(b) | fj_core::Literal::F16Bits(b) => b,
+                    _ => 0,
+                })
+                .collect();
+            Ok(Value::Tensor(
+                TensorValue::new_half_float_values(output_dtype, shape, bits)
+                    .map_err(EvalError::from)?,
             ))
         }
         _ => Ok(Value::Tensor(
@@ -4495,7 +4534,10 @@ fn eval_reduce_window(
     // generic loop below (see eval_reduce_window_dense_float).
     if no_base_dilation
         && no_window_dilation
-        && matches!(output_dtype, fj_core::DType::F64 | fj_core::DType::F32)
+        && matches!(
+            output_dtype,
+            fj_core::DType::F64 | fj_core::DType::F32 | fj_core::DType::BF16 | fj_core::DType::F16
+        )
         && (matches!(reduce_op, "max" | "min") || reduce_window_sum_like(reduce_op))
         && let Some(src) = reduce_window_dense_f64_view(tensor)
     {
@@ -13515,6 +13557,68 @@ mod tests {
             t_sat * 1e3,
             t_win / t_sat,
         );
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_reduce_window_half_dense_vs_generic() {
+        use std::time::Instant;
+        // bf16/f16 2D pooling: dense f64-accumulator path (HalfFloat storage) vs the
+        // generic per-`Literal` path (boxed Literal storage). Parity: half bits match.
+        let (n, w) = (512usize, 3usize);
+        let out_n = n - w + 1;
+        for (dt, op) in [
+            (DType::BF16, "sum"),
+            (DType::BF16, "max"),
+            (DType::F16, "sum"),
+            (DType::F16, "max"),
+        ] {
+            let bits = |v: f64| -> u16 {
+                let l = if dt == DType::BF16 {
+                    Literal::from_bf16_f64(v)
+                } else {
+                    Literal::from_f16_f64(v)
+                };
+                match l {
+                    Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                    _ => 0,
+                }
+            };
+            let lit = |b: u16| -> Literal {
+                if dt == DType::BF16 { Literal::BF16Bits(b) } else { Literal::F16Bits(b) }
+            };
+            let raw: Vec<u16> = (0..n * n).map(|i| bits(((i % 31) as f64) * 0.1 - 1.5)).collect();
+            let dims = vec![n as u32, n as u32];
+            let dense = Value::Tensor(
+                TensorValue::new_half_float_values(dt, Shape { dims: dims.clone() }, raw.clone())
+                    .unwrap(),
+            );
+            let boxed = Value::Tensor(
+                TensorValue::new(dt, Shape { dims: dims.clone() }, raw.iter().copied().map(lit).collect())
+                    .unwrap(),
+            );
+            let params = rw_params(op, "3,3", "1,1");
+            let half_bits = |v: &Value| -> Vec<u16> {
+                v.as_tensor().unwrap().elements.iter().map(|l| match l {
+                    Literal::BF16Bits(b) | Literal::F16Bits(b) => *b,
+                    _ => 0,
+                }).collect()
+            };
+            let d_out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &params).unwrap();
+            let g_out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &params).unwrap();
+            assert_eq!(half_bits(&d_out), half_bits(&g_out), "{dt:?} {op} dense != generic half bits");
+            let time = |input: &Value| {
+                let _ = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(input), &params).unwrap();
+                let mut best = f64::MAX;
+                for _ in 0..10 { let t = Instant::now(); let _ = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(input), &params).unwrap(); best = best.min(t.elapsed().as_secs_f64()); }
+                best
+            };
+            let g = time(&boxed); let d = time(&dense);
+            println!(
+                "BENCH reduce_window {dt:?} {op}([{n},{n}],win=3x3): generic={:.4}ms dense={:.4}ms speedup={:.2}x (out {out_n}x{out_n})",
+                g*1e3, d*1e3, g/d,
+            );
+        }
     }
 
     #[test]
