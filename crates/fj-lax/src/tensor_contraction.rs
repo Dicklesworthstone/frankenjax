@@ -1132,7 +1132,110 @@ pub fn batched_matmul_2d(
 /// matmul into `block`. Global row `g` is batch `g / m`, row `g % m`: its A row
 /// is `a[g*k .. g*k+k]` (A is `[batch,m,k]` so `(bt*m+i)*k == g*k`) and its B
 /// panel is batch `g/m`'s `[k,n]` block. Ascending-`l` accumulation.
+/// Register-blocked native-f64 batched matmul row-block: an `MR × NR` output tile
+/// is held in `MR` local `F64xN` accumulators (compiler-register-resident) and
+/// streamed over `k`, reusing each loaded `B[l][j..j+NR]` across the `MR` rows and
+/// each `A` element across the `NR` columns — the same microkernel the non-batched
+/// `matmul_2d_row_block` and the `batched_matmul_row_block_f32_in` already use.
+/// Tiles never cross a batch boundary (rows in a tile share `b_off`); the MR/NR
+/// remainders run the same ascending-`l` sweep with scalar / per-row accumulators.
+/// BIT-IDENTICAL to the per-row kernel [`batched_matmul_row_block_naive`]: each
+/// output still folds its own ascending-`l` `*`/`+` sum (no FMA contraction, no
+/// k-reassociation), only the (i,j) iteration order changes.
 fn batched_matmul_row_block(
+    a: &[f64],
+    b: &[f64],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [f64],
+) {
+    let total_rows = block.len() / n;
+    let full_cols = n / NR * NR;
+    let mut ri = 0;
+    while ri < total_rows {
+        // A row-tile must stay inside one batch (shared `b_off`) and inside the block.
+        let g0 = g_start + ri;
+        let bt = g0 / m;
+        let b_off = bt * k * n;
+        let tile_rows = (total_rows - ri).min((bt + 1) * m - g0);
+        let full_rows = tile_rows / MR * MR;
+
+        // Full MR×NR register-microkernel tiles. Process each NR-wide B panel across
+        // every MR-row tile; B[l][j..j+NR] is loaded once and fanned into the MR rows.
+        let mut j = 0;
+        while j < full_cols {
+            let mut i = 0;
+            while i < full_rows {
+                let ar0 = (g0 + i) * k;
+                let (ar1, ar2, ar3) = (ar0 + k, ar0 + 2 * k, ar0 + 3 * k);
+                let mut c0 = F64xN::splat(0.0);
+                let mut c1 = F64xN::splat(0.0);
+                let mut c2 = F64xN::splat(0.0);
+                let mut c3 = F64xN::splat(0.0);
+                for l in 0..k {
+                    let bbase = b_off + l * n + j;
+                    let bv = F64xN::from_slice(&b[bbase..bbase + NR]);
+                    c0 += F64xN::splat(a[ar0 + l]) * bv;
+                    c1 += F64xN::splat(a[ar1 + l]) * bv;
+                    c2 += F64xN::splat(a[ar2 + l]) * bv;
+                    c3 += F64xN::splat(a[ar3 + l]) * bv;
+                }
+                let ob = (ri + i) * n + j;
+                block[ob..ob + NR].copy_from_slice(c0.as_array());
+                block[ob + n..ob + n + NR].copy_from_slice(c1.as_array());
+                block[ob + 2 * n..ob + 2 * n + NR].copy_from_slice(c2.as_array());
+                block[ob + 3 * n..ob + 3 * n + NR].copy_from_slice(c3.as_array());
+                i += MR;
+            }
+            j += NR;
+        }
+
+        // Column remainder (n not a multiple of NR) for the full MR-row tiles.
+        let mut i = 0;
+        while i < full_rows {
+            let ar0 = (g0 + i) * k;
+            let mut jj = full_cols;
+            while jj < n {
+                let mut s = [0.0f64; MR];
+                for l in 0..k {
+                    let bv = b[b_off + l * n + jj];
+                    for (r, sr) in s.iter_mut().enumerate() {
+                        *sr += a[ar0 + r * k + l] * bv;
+                    }
+                }
+                for (r, sr) in s.iter().enumerate() {
+                    block[(ri + i + r) * n + jj] = *sr;
+                }
+                jj += 1;
+            }
+            i += MR;
+        }
+
+        // Row remainder (tile_rows not a multiple of MR): per-row ascending-`l` sweep.
+        while i < tile_rows {
+            let a_row = (g0 + i) * k;
+            let c_row = &mut block[(ri + i) * n..(ri + i) * n + n];
+            c_row.fill(0.0);
+            for l in 0..k {
+                let a_il = a[a_row + l];
+                let src = &b[b_off + l * n..b_off + l * n + n];
+                for (cx, bx) in c_row.iter_mut().zip(src) {
+                    *cx += a_il * *bx;
+                }
+            }
+            i += 1;
+        }
+
+        ri += tile_rows;
+    }
+}
+
+/// Pre-register-blocking per-row reference kernel, kept so a same-binary A/B can
+/// isolate the MR×NR register-blocking win and to pin bit-identity.
+#[doc(hidden)]
+fn batched_matmul_row_block_naive(
     a: &[f64],
     b: &[f64],
     m: usize,
@@ -2568,6 +2671,86 @@ mod tests {
         }
         for idx in 0..bt * m * n {
             assert_eq!(got[idx].to_bits(), want[idx].to_bits(), "mismatch at {idx}");
+        }
+    }
+
+    /// The register-blocked f64 batched microkernel must equal the per-row naive
+    /// reference BIT-FOR-BIT across shapes that exercise the full MR×NR tiles, the
+    /// NR-column remainder, the MR-row remainder, and batch boundaries.
+    #[test]
+    fn batched_matmul_2d_f64_microkernel_matches_naive() {
+        // m / n chosen to hit: full MR-row tiles + 2-row remainder (m=10, MR=4);
+        // full NR-col panel + 3-col remainder (n=11, NR=8); several batches.
+        for &(bt, m, k, n) in &[
+            (1usize, 8usize, 5usize, 16usize), // pure full MR×NR tiles
+            (3, 10, 6, 11),                    // both remainders + batches
+            (2, 4, 7, 8),                      // exactly one MR tile, one NR panel
+            (4, 1, 3, 5),                      // m=1 (all row-remainder), n<NR
+        ] {
+            let a: Vec<f64> = (0..bt * m * k)
+                .map(|i| (i as f64 * 0.017).sin() * 2.0 - 0.5)
+                .collect();
+            let b: Vec<f64> = (0..bt * k * n)
+                .map(|i| (i as f64 * 0.023).cos() * 1.6 + 0.3)
+                .collect();
+            let total_rows = bt * m;
+            let mut got = vec![0.0f64; bt * m * n];
+            super::batched_matmul_row_block(&a, &b, m, k, n, 0, &mut got[..total_rows * n]);
+            let mut want = vec![0.0f64; bt * m * n];
+            super::batched_matmul_row_block_naive(&a, &b, m, k, n, 0, &mut want[..total_rows * n]);
+            for idx in 0..bt * m * n {
+                assert_eq!(
+                    got[idx].to_bits(),
+                    want[idx].to_bits(),
+                    "mismatch (bt={bt} m={m} k={k} n={n}) at {idx}"
+                );
+            }
+            // And the threaded public entry must match too.
+            let threaded = batched_matmul_2d(&a, bt, m, k, &b, n);
+            for idx in 0..bt * m * n {
+                assert_eq!(threaded[idx].to_bits(), want[idx].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_batched_matmul_f64_microkernel_vs_naive() {
+        use std::time::Instant;
+        fn best(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..3 {
+                let t = Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        }
+        // Attention-shaped batched matmul: bt batches of [m,k]@[k,n].
+        for &(bt, m, k, n) in &[(64usize, 128usize, 64usize, 128usize), (32, 256, 128, 256)] {
+            let a: Vec<f64> = (0..bt * m * k).map(|i| (i as f64 * 1e-3).sin()).collect();
+            let b: Vec<f64> = (0..bt * k * n).map(|i| (i as f64 * 7e-4).cos()).collect();
+            let total_rows = bt * m;
+            let t_naive = best(|| {
+                let mut out = vec![0.0f64; bt * m * n];
+                super::batched_matmul_row_block_naive(&a, &b, m, k, n, 0, &mut out[..total_rows * n]);
+                std::hint::black_box(&out);
+            });
+            let t_micro = best(|| {
+                let mut out = vec![0.0f64; bt * m * n];
+                super::batched_matmul_row_block(&a, &b, m, k, n, 0, &mut out[..total_rows * n]);
+                std::hint::black_box(&out);
+            });
+            let gflop = 2.0 * (bt * m * k * n) as f64;
+            println!(
+                "BENCH batched-matmul f64 bt={bt} {m}x{k}x{n}: NAIVE {:.2}ms ({:.1} GF/s) -> MICRO {:.2}ms ({:.1} GF/s) = {:.2}x",
+                t_naive * 1e3,
+                gflop / t_naive,
+                t_micro * 1e3,
+                gflop / t_micro,
+                t_naive / t_micro,
+            );
         }
     }
 
