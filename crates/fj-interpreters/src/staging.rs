@@ -5,7 +5,7 @@
 //! Provides `make_jaxpr` for standalone Jaxpr construction from program specs,
 //! and `StagedProgram` for the staging pipeline used by JIT.
 
-use fj_core::{Jaxpr, ProgramSpec, Value, build_program};
+use fj_core::{Atom, Jaxpr, ProgramSpec, Value, build_program};
 
 use crate::partial_eval::{PartialEvalError, PartialEvalResult, partial_eval_jaxpr_with_consts};
 use crate::{InterpreterError, eval_jaxpr, eval_jaxpr_with_consts};
@@ -176,6 +176,12 @@ pub fn execute_staged(
     let expected_unknown = staged.out_unknowns.iter().filter(|u| **u).count();
     let expected_known = staged.out_unknowns.len().saturating_sub(expected_unknown);
 
+    if let Some(result) =
+        try_execute_single_unknown_equation(staged, dynamic_args, expected_known, expected_unknown)
+    {
+        return result;
+    }
+
     let unknown_outputs = if staged.jaxpr_unknown.outvars.is_empty() {
         Vec::new()
     } else {
@@ -208,6 +214,100 @@ pub fn execute_staged(
     }
 
     Ok(combined)
+}
+
+fn try_execute_single_unknown_equation(
+    staged: &StagedProgram,
+    dynamic_args: &[Value],
+    expected_known: usize,
+    expected_unknown: usize,
+) -> Option<Result<Vec<Value>, StagingError>> {
+    if expected_known != 0
+        || expected_unknown != 1
+        || !staged.known_outputs.is_empty()
+        || staged.out_unknowns.as_slice() != [true]
+        || !staged.jaxpr_unknown.constvars.is_empty()
+        || staged.jaxpr_unknown.outvars.len() != 1
+        || staged.jaxpr_unknown.equations.len() != 1
+    {
+        return None;
+    }
+
+    let expected_inputs = staged.jaxpr_unknown.invars.len();
+    let actual_inputs = staged.residuals.len() + dynamic_args.len();
+    if actual_inputs != expected_inputs {
+        return Some(Err(StagingError::UnknownEval(
+            InterpreterError::InputArity {
+                expected: expected_inputs,
+                actual: actual_inputs,
+            },
+        )));
+    }
+
+    let equation = staged.jaxpr_unknown.equations.first()?;
+    if !equation.effects.is_empty()
+        || equation.outputs.as_slice() != staged.jaxpr_unknown.outvars.as_slice()
+    {
+        return None;
+    }
+
+    let mut resolved = Vec::with_capacity(equation.inputs.len());
+    for atom in &equation.inputs {
+        match atom {
+            Atom::Lit(literal) => resolved.push(Value::Scalar(*literal)),
+            Atom::Var(var) => {
+                let Some(input_pos) = staged
+                    .jaxpr_unknown
+                    .invars
+                    .iter()
+                    .position(|input_var| input_var == var)
+                else {
+                    return Some(Err(StagingError::UnknownEval(
+                        InterpreterError::MissingVariable(*var),
+                    )));
+                };
+                if input_pos < staged.residuals.len() {
+                    let Some(value) = staged.residuals.get(input_pos).cloned() else {
+                        return Some(Err(StagingError::UnknownEval(
+                            InterpreterError::InputArity {
+                                expected: expected_inputs,
+                                actual: actual_inputs,
+                            },
+                        )));
+                    };
+                    resolved.push(value);
+                } else {
+                    let dynamic_pos = input_pos - staged.residuals.len();
+                    let Some(value) = dynamic_args.get(dynamic_pos).cloned() else {
+                        return Some(Err(StagingError::UnknownEval(
+                            InterpreterError::InputArity {
+                                expected: expected_inputs,
+                                actual: actual_inputs,
+                            },
+                        )));
+                    };
+                    resolved.push(value);
+                }
+            }
+        }
+    }
+
+    Some(
+        crate::eval_equation_outputs_from_resolved(equation, &resolved)
+            .map_err(StagingError::UnknownEval)
+            .and_then(|outputs| {
+                if outputs.len() == 1 {
+                    Ok(outputs)
+                } else {
+                    Err(StagingError::OutputReconstruction {
+                        expected_known: 0,
+                        actual_known: 0,
+                        expected_unknown: 1,
+                        actual_unknown: outputs.len(),
+                    })
+                }
+            }),
+    )
 }
 
 #[cfg(test)]
@@ -638,6 +738,36 @@ mod tests {
                     eval_jaxpr(&jaxpr, &[Value::scalar_i64(5), Value::scalar_i64(3)]).unwrap();
                 assert_eq!(result, full);
                 Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_staging_single_unknown_equation_fast_path_golden() {
+        run_logged_test(
+            "test_staging_single_unknown_equation_fast_path_golden",
+            &("staging", "execute", "single_unknown_equation_fast_path"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = make_neg_mul_jaxpr();
+                let staged = stage_jaxpr(&jaxpr, &[false, true], &[Value::scalar_i64(5)]).unwrap();
+                let result = execute_staged(&staged, &[Value::scalar_i64(3)]).unwrap();
+                let full =
+                    eval_jaxpr(&jaxpr, &[Value::scalar_i64(5), Value::scalar_i64(3)]).unwrap();
+                assert_eq!(result, full);
+
+                let digest = fj_test_utils::fixture_id_from_json(&(
+                    staged.jaxpr_unknown,
+                    staged.residuals,
+                    result,
+                ))
+                .expect("staging fast path digest");
+                eprintln!("single-unknown staged execution golden digest: {digest}");
+                assert_eq!(
+                    digest,
+                    "a3cb705ac10423c13f45917bfb71b6daeae347b7a42765da666800bf6e8f48af"
+                );
+                Ok(vec![format!("golden-sha256:{digest}")])
             },
         );
     }
