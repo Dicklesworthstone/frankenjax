@@ -4728,6 +4728,10 @@ enum PolyVal {
     F32(f32),
     I64(i64),
     Bool(bool),
+    /// A bf16/f16 bit pattern (the dtype distinguishes them). Carried only across
+    /// `convert` boundaries — the hot bf16↔f32 mixed-precision cast — so half ARITH /
+    /// compare bail (the math happens in f32/f64 after the cast).
+    Half(DType, u16),
 }
 
 #[derive(Clone, Copy)]
@@ -4749,6 +4753,8 @@ enum PolyConvTarget {
     F32,
     I64,
     Bool,
+    BF16,
+    F16,
 }
 
 enum PolyStep {
@@ -4795,6 +4801,8 @@ fn poly_operand(atom: &Atom, slots: usize) -> Option<PolyOperand> {
         Atom::Lit(Literal::F32Bits(b)) => Some(PolyOperand::Lit(PolyVal::F32(f32::from_bits(*b)))),
         Atom::Lit(Literal::I64(v)) => Some(PolyOperand::Lit(PolyVal::I64(*v))),
         Atom::Lit(Literal::Bool(b)) => Some(PolyOperand::Lit(PolyVal::Bool(*b))),
+        Atom::Lit(Literal::BF16Bits(b)) => Some(PolyOperand::Lit(PolyVal::Half(DType::BF16, *b))),
+        Atom::Lit(Literal::F16Bits(b)) => Some(PolyOperand::Lit(PolyVal::Half(DType::F16, *b))),
         Atom::Lit(_) => None,
     }
 }
@@ -4857,6 +4865,8 @@ fn build_scalar_poly_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarPolyPlan>
                 "f32" | "float32" => PolyConvTarget::F32,
                 "i64" => PolyConvTarget::I64,
                 "bool" => PolyConvTarget::Bool,
+                "bf16" | "bfloat16" => PolyConvTarget::BF16,
+                "f16" | "float16" => PolyConvTarget::F16,
                 _ => return None,
             };
             steps.push(PolyStep::Convert {
@@ -4934,6 +4944,8 @@ fn poly_slot_from_value(value: &Value) -> PolySlot {
         Value::Scalar(Literal::F32Bits(b)) => PolySlot::Val(PolyVal::F32(f32::from_bits(*b))),
         Value::Scalar(Literal::I64(v)) => PolySlot::Val(PolyVal::I64(*v)),
         Value::Scalar(Literal::Bool(b)) => PolySlot::Val(PolyVal::Bool(*b)),
+        Value::Scalar(Literal::BF16Bits(b)) => PolySlot::Val(PolyVal::Half(DType::BF16, *b)),
+        Value::Scalar(Literal::F16Bits(b)) => PolySlot::Val(PolyVal::Half(DType::F16, *b)),
         Value::Scalar(_) | Value::Tensor(_) => PolySlot::NonScalar,
     }
 }
@@ -4954,10 +4966,22 @@ fn read_poly(
 
 // Rust `as`-cast convert, matching fj-lax `convert_literal`'s documented scalar
 // semantics for f64/i64/bool (verified bit-for-bit by the parity test).
+/// The f32 value of a half (bf16/f16) bit pattern, via the SAME `Literal` decode
+/// `convert_literal` uses — so I64/Bool targets (which cast an f32 source directly)
+/// stay bit-identical for half sources too.
+fn poly_half_f32(dt: DType, bits: u16) -> f32 {
+    if dt == DType::BF16 {
+        Literal::BF16Bits(bits).as_bf16_f32().unwrap_or(0.0)
+    } else {
+        Literal::F16Bits(bits).as_f16_f32().unwrap_or(0.0)
+    }
+}
+
 fn poly_convert(src: PolyVal, to: PolyConvTarget) -> PolyVal {
     // `convert_literal` routes float TARGETS through `f64_val()` (so a source widens to
-    // f64 first, then `as f32` for F32), but the I64 target casts an F32 source DIRECTLY
-    // (`f32 as i64`) and Bool compares it directly (`f32 != 0.0`). Mirrored exactly here.
+    // f64 first, then `as f32` for F32, or single-rounds to bf16/f16), but the I64 target
+    // casts an F32/half source DIRECTLY (`f32 as i64`) and Bool compares it directly
+    // (`f32 != 0.0`). Mirrored exactly here; half uses fj-core's own round helpers.
     let f64_of = |v: PolyVal| -> f64 {
         match v {
             PolyVal::F64(x) => x,
@@ -4970,22 +4994,45 @@ fn poly_convert(src: PolyVal, to: PolyConvTarget) -> PolyVal {
                     0.0
                 }
             }
+            PolyVal::Half(dt, b) => f64::from(poly_half_f32(dt, b)),
+        }
+    };
+    // The f32 representation used by the DIRECT integer/bool casts (matches the source's
+    // own width: f32 stays f32, half decodes to f32, others widen through f64).
+    let f32_direct = |v: PolyVal| -> f32 {
+        match v {
+            PolyVal::F32(x) => x,
+            PolyVal::Half(dt, b) => poly_half_f32(dt, b),
+            other => f64_of(other) as f32,
+        }
+    };
+    let half_bits = |lit: Literal| -> u16 {
+        match lit {
+            Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+            _ => 0,
         }
     };
     match to {
         PolyConvTarget::F64 => PolyVal::F64(f64_of(src)),
         PolyConvTarget::F32 => PolyVal::F32(f64_of(src) as f32),
+        PolyConvTarget::BF16 => {
+            PolyVal::Half(DType::BF16, half_bits(Literal::from_bf16_f64(f64_of(src))))
+        }
+        PolyConvTarget::F16 => {
+            PolyVal::Half(DType::F16, half_bits(Literal::from_f16_f64(f64_of(src))))
+        }
         PolyConvTarget::I64 => PolyVal::I64(match src {
             PolyVal::F64(v) => v as i64,
-            PolyVal::F32(v) => v as i64,
             PolyVal::I64(v) => v,
             PolyVal::Bool(b) => i64::from(b),
+            // f32 / half cast DIRECTLY from the f32 value (not via f64).
+            PolyVal::F32(_) | PolyVal::Half(..) => f32_direct(src) as i64,
         }),
         PolyConvTarget::Bool => PolyVal::Bool(match src {
             PolyVal::F64(v) => v != 0.0,
-            PolyVal::F32(v) => v != 0.0,
             PolyVal::I64(v) => v != 0,
             PolyVal::Bool(b) => b,
+            PolyVal::F32(_) | PolyVal::Half(..) => f32_direct(src) != 0.0,
         }),
     }
 }
@@ -5105,6 +5152,11 @@ fn run_scalar_poly_plan_into(
             PolySlot::Val(PolyVal::F32(v)) => out.push(Value::scalar_f32(v)),
             PolySlot::Val(PolyVal::I64(v)) => out.push(Value::scalar_i64(v)),
             PolySlot::Val(PolyVal::Bool(v)) => out.push(Value::scalar_bool(v)),
+            PolySlot::Val(PolyVal::Half(dt, b)) => out.push(Value::Scalar(if dt == DType::BF16 {
+                Literal::BF16Bits(b)
+            } else {
+                Literal::F16Bits(b)
+            })),
             PolySlot::NonScalar => return None,
             PolySlot::Missing => {
                 return Some(Err(InterpreterError::MissingVariable(VarId(slot as u32))));
@@ -8073,6 +8125,12 @@ mod tests {
             (Value::Scalar(Literal::F32Bits(x)), Value::Scalar(Literal::F32Bits(y))) => {
                 assert_eq!(x, y, "{ctx} f32 bits")
             }
+            (Value::Scalar(Literal::BF16Bits(x)), Value::Scalar(Literal::BF16Bits(y))) => {
+                assert_eq!(x, y, "{ctx} bf16 bits")
+            }
+            (Value::Scalar(Literal::F16Bits(x)), Value::Scalar(Literal::F16Bits(y))) => {
+                assert_eq!(x, y, "{ctx} f16 bits")
+            }
             (Value::Scalar(Literal::I64(x)), Value::Scalar(Literal::I64(y))) => {
                 assert_eq!(x, y, "{ctx} i64")
             }
@@ -8364,6 +8422,96 @@ mod tests {
                 &format!("mixed_prec({xv})"),
             );
             run_both(&f32_cond, Value::scalar_f32(xv), &format!("f32_cond({xv})"));
+        }
+
+        // bf16/f16 mixed-precision convert (the hot ML training cast: half<->f32).
+        for (name, half_dt) in [("bf16", "bf16"), ("f16", "f16")] {
+            // half -> f64; y = x*pi + 1; -> half  (the canonical mixed-precision body).
+            let (xh, xd, m, s, oh) = (VarId(0), VarId(1), VarId(2), VarId(3), VarId(4));
+            let half_mixed = Jaxpr::new(
+                vec![xh],
+                vec![],
+                vec![oh],
+                vec![
+                    mk(
+                        Primitive::ConvertElementType,
+                        smallvec![Atom::Var(xh)],
+                        conv("f64"),
+                        xd,
+                    ),
+                    mk(
+                        Primitive::Mul,
+                        smallvec![Atom::Var(xd), f64lit(std::f64::consts::PI)],
+                        np(),
+                        m,
+                    ),
+                    mk(
+                        Primitive::Add,
+                        smallvec![Atom::Var(m), f64lit(1.0)],
+                        np(),
+                        s,
+                    ),
+                    mk(
+                        Primitive::ConvertElementType,
+                        smallvec![Atom::Var(s)],
+                        conv(half_dt),
+                        oh,
+                    ),
+                ],
+            );
+            // half -> i64 (DIRECT f32-of-half cast) and half -> bool.
+            let half_to_i64 = Jaxpr::new(
+                vec![VarId(0)],
+                vec![],
+                vec![VarId(1)],
+                vec![mk(
+                    Primitive::ConvertElementType,
+                    smallvec![Atom::Var(VarId(0))],
+                    conv("i64"),
+                    VarId(1),
+                )],
+            );
+            // f64 -> half (downcast, single-rounded).
+            let f64_to_half = Jaxpr::new(
+                vec![VarId(0)],
+                vec![],
+                vec![VarId(1)],
+                vec![mk(
+                    Primitive::ConvertElementType,
+                    smallvec![Atom::Var(VarId(0))],
+                    conv(half_dt),
+                    VarId(1),
+                )],
+            );
+            let mkhalf = |v: f64| -> Value {
+                let lit = if half_dt == "bf16" {
+                    Literal::from_bf16_f64(v)
+                } else {
+                    Literal::from_f16_f64(v)
+                };
+                Value::Scalar(lit)
+            };
+            for &xv in &[
+                -100.0_f64,
+                -3.7,
+                -1.0,
+                -0.0,
+                0.0,
+                0.5,
+                1.0,
+                3.7,
+                100.0,
+                f64::INFINITY,
+                f64::NAN,
+            ] {
+                run_both(&half_mixed, mkhalf(xv), &format!("{name}_mixed({xv})"));
+                run_both(&half_to_i64, mkhalf(xv), &format!("{name}->i64({xv})"));
+                run_both(
+                    &f64_to_half,
+                    Value::scalar_f64(xv),
+                    &format!("f64->{name}({xv})"),
+                );
+            }
         }
     }
 
