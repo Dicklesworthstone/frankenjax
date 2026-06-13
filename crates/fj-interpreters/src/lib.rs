@@ -2733,6 +2733,13 @@ enum ScalarF64BinaryOp {
     Min,
     Neg,
     Abs,
+    // Binary transcendentals. For a REAL f64 scalar the generic dispatch is
+    // `eval_binary_elementwise(.., f64::powf | f64::atan2)` (fj-lax/src/lib.rs Pow/Atan2
+    // arms) → `binary_literal_op` float arm = `Literal::from_f64(f64::FUNC(x, y))`, so
+    // the same `f64::FUNC` here is bit-identical. Float-only: kept OUT of the i64 plan
+    // (whose Pow/Atan2 use a float-powf/atan2-cast-to-i64) via `scalar_int_binary_op`.
+    Pow,
+    Atan2,
     // Unary transcendental / rounding ops. For a REAL f64 scalar these all reduce
     // to `Literal::from_f64(f64::FUNC(x))` in the generic interpreter
     // (`eval_unary_elementwise` scalar arm, reached via `eval_exp`/`eval_log`/… →
@@ -2844,6 +2851,23 @@ enum ScalarF64Slot {
 }
 
 fn scalar_f64_binary_op(primitive: Primitive) -> Option<ScalarF64BinaryOp> {
+    match primitive {
+        Primitive::Add => Some(ScalarF64BinaryOp::Add),
+        Primitive::Sub => Some(ScalarF64BinaryOp::Sub),
+        Primitive::Mul => Some(ScalarF64BinaryOp::Mul),
+        Primitive::Div => Some(ScalarF64BinaryOp::Div),
+        Primitive::Max => Some(ScalarF64BinaryOp::Max),
+        Primitive::Min => Some(ScalarF64BinaryOp::Min),
+        Primitive::Pow => Some(ScalarF64BinaryOp::Pow),
+        Primitive::Atan2 => Some(ScalarF64BinaryOp::Atan2),
+        _ => None,
+    }
+}
+
+/// Integer-valid binary ops only — the float-only `Pow`/`Atan2` arms are excluded so
+/// they never enter the i64 plan (where the generic dispatch casts a float result to
+/// i64, which the integer arena does not model). Mirrors `scalar_int_unary_op`.
+fn scalar_int_binary_op(primitive: Primitive) -> Option<ScalarF64BinaryOp> {
     match primitive {
         Primitive::Add => Some(ScalarF64BinaryOp::Add),
         Primitive::Sub => Some(ScalarF64BinaryOp::Sub),
@@ -2973,6 +2997,8 @@ fn apply_scalar_f64_binary(op: ScalarF64BinaryOp, lhs: f64, rhs: f64) -> f64 {
         ScalarF64BinaryOp::Min => jax_min_f64(lhs, rhs),
         ScalarF64BinaryOp::Neg => -lhs,
         ScalarF64BinaryOp::Abs => lhs.abs(),
+        ScalarF64BinaryOp::Pow => lhs.powf(rhs),
+        ScalarF64BinaryOp::Atan2 => lhs.atan2(rhs),
         // Unary math: `rhs` is a copy of `lhs` (set by the runner for no-rhs steps)
         // and ignored. Each matches the corresponding `f64::FUNC` the generic
         // scalar interpreter applies, so the result bits are identical.
@@ -3131,7 +3157,7 @@ fn build_scalar_i64_arith_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarI64P
         }
         let (op, lhs, rhs) = match equation.inputs.as_slice() {
             [a, b] => (
-                scalar_f64_binary_op(equation.primitive)?,
+                scalar_int_binary_op(equation.primitive)?,
                 scalar_i64_operand(a, slots)?,
                 Some(scalar_i64_operand(b, slots)?),
             ),
@@ -3379,6 +3405,8 @@ fn apply_scalar_f32_binary(op: ScalarF64BinaryOp, lhs: f32, rhs: f32) -> f32 {
         ScalarF64BinaryOp::Min => jax_min_f64(lhs, rhs),
         ScalarF64BinaryOp::Neg => -lhs,
         ScalarF64BinaryOp::Abs => lhs.abs(),
+        ScalarF64BinaryOp::Pow => lhs.powf(rhs),
+        ScalarF64BinaryOp::Atan2 => lhs.atan2(rhs),
         // Widened operands run the f64 op, then `result as f32` narrows — exactly
         // the generic f32 scalar contract `from_f32(f64::FUNC(f64::from(x)) as f32)`.
         ScalarF64BinaryOp::Exp => lhs.exp(),
@@ -6522,6 +6550,61 @@ mod tests {
                     bits_f32(&go32[0]),
                     "{op:?}({xv}) f32 arena bits differ from generic"
                 );
+            }
+        }
+
+        // Binary transcendentals Pow/Atan2: out = x BINOP y, swept over operand pairs
+        // (incl. domain edges: negative base ^ fractional exp -> NaN; atan2(0,0) -> 0).
+        for op in [Primitive::Pow, Primitive::Atan2] {
+            let (a, b, out) = (VarId(0), VarId(1), VarId(2));
+            let body = Jaxpr::new(
+                vec![a, b],
+                vec![],
+                vec![out],
+                vec![mk(op, smallvec![Atom::Var(a), Atom::Var(b)], out)],
+            );
+            let plan = super::build_dense_plan(&body).expect("dense plan");
+            assert!(
+                plan.scalar_f64_plan.is_some() && plan.scalar_f32_plan.is_some(),
+                "{op:?} not routed through the scalar arena"
+            );
+            for &av in &xs {
+                for &bv in &[-2.5_f64, -1.0, -0.0, 0.0, 0.5, 1.0, 2.0, 3.3] {
+                    let args = [Value::scalar_f64(av), Value::scalar_f64(bv)];
+                    let mut genv: Vec<Option<Value>> = vec![None; plan.slots];
+                    let mut gscr: Vec<Value> = Vec::new();
+                    let mut gout: Vec<Value> = Vec::new();
+                    super::run_dense_env_into(
+                        &body,
+                        &[],
+                        &args,
+                        &mut genv,
+                        &plan.last_use,
+                        &mut gscr,
+                        &mut gout,
+                    )
+                    .expect("generic binary");
+                    let mut cenv: Vec<Option<Value>> = vec![None; plan.slots];
+                    let mut cscr: Vec<Value> = Vec::new();
+                    let mut cout: Vec<Value> = Vec::new();
+                    let mut bufs = super::ScalarPlanBuffers::default();
+                    super::run_dense_plan_into(
+                        &body,
+                        &[],
+                        &args,
+                        &mut cenv,
+                        &plan,
+                        &mut cscr,
+                        &mut cout,
+                        &mut bufs,
+                    )
+                    .expect("compiled binary");
+                    assert_eq!(
+                        bits_f64(&cout[0]),
+                        bits_f64(&gout[0]),
+                        "{op:?}({av},{bv}) f64 arena bits differ from generic"
+                    );
+                }
             }
         }
 
