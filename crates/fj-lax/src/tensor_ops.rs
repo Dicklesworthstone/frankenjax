@@ -5273,33 +5273,58 @@ fn sort_along_axis_dense_i64(
     let outer_count = total / axis_dim;
 
     let mut out = vec![0_i64; total];
-    let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(axis_dim);
-    let mut scratch: Vec<(u64, u32)> = vec![(0, 0); axis_dim];
-
-    for_each_sort_slice(
-        rank,
-        axis,
-        &tensor.shape.dims,
-        &strides,
-        outer_count,
-        |base| {
-            pairs.clear();
-            for i in 0..axis_dim {
-                // Sign-flip so byte-wise unsigned order == signed i64 order.
-                let v = values[base + i * axis_stride];
-                pairs.push((((v as u64) ^ (1_u64 << 63)) ^ key_mask, i as u32));
-            }
-            radix_pairs_ascending(&mut pairs, &mut scratch);
-            for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
-                let dst = base + out_pos * axis_stride;
-                out[dst] = if return_indices {
-                    i64::from(orig)
-                } else {
-                    values[base + orig as usize * axis_stride]
-                };
-            }
-        },
-    );
+    if axis_stride == 1 {
+        // Contiguous last axis: slices are disjoint blocks -> fan out across threads.
+        for_each_contiguous_sort_slice(
+            &mut out,
+            axis_dim,
+            outer_count,
+            |s, out_slice, pairs, scratch| {
+                let in_base = s * axis_dim;
+                pairs.clear();
+                for i in 0..axis_dim {
+                    // Sign-flip so byte-wise unsigned order == signed i64 order.
+                    let v = values[in_base + i];
+                    pairs.push((((v as u64) ^ (1_u64 << 63)) ^ key_mask, i as u32));
+                }
+                radix_pairs_ascending(pairs, scratch);
+                for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
+                    out_slice[out_pos] = if return_indices {
+                        i64::from(orig)
+                    } else {
+                        values[in_base + orig as usize]
+                    };
+                }
+            },
+        );
+    } else {
+        let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(axis_dim);
+        let mut scratch: Vec<(u64, u32)> = vec![(0, 0); axis_dim];
+        for_each_sort_slice(
+            rank,
+            axis,
+            &tensor.shape.dims,
+            &strides,
+            outer_count,
+            |base| {
+                pairs.clear();
+                for i in 0..axis_dim {
+                    // Sign-flip so byte-wise unsigned order == signed i64 order.
+                    let v = values[base + i * axis_stride];
+                    pairs.push((((v as u64) ^ (1_u64 << 63)) ^ key_mask, i as u32));
+                }
+                radix_pairs_ascending(&mut pairs, &mut scratch);
+                for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
+                    let dst = base + out_pos * axis_stride;
+                    out[dst] = if return_indices {
+                        i64::from(orig)
+                    } else {
+                        values[base + orig as usize * axis_stride]
+                    };
+                }
+            },
+        );
+    }
 
     let out_value =
         TensorValue::new_i64_values(tensor.shape.clone(), out).map_err(EvalError::InvalidTensor)?;
@@ -5374,41 +5399,86 @@ fn sort_along_axis_dense_f64(
     }
     let outer_count = total / axis_dim;
 
-    let mut out_idx = vec![0_i64; total];
-    let mut out_val = vec![0.0_f64; total];
-    let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(axis_dim);
-    let mut scratch: Vec<(u64, u32)> = vec![(0, 0); axis_dim];
-
-    for_each_sort_slice(
-        rank,
-        axis,
-        &tensor.shape.dims,
-        &strides,
-        outer_count,
-        |base| {
-            pairs.clear();
-            for i in 0..axis_dim {
-                pairs.push((
-                    f64_sort_order_key(values[base + i * axis_stride]) ^ key_mask,
-                    i as u32,
-                ));
-            }
-            radix_pairs_ascending(&mut pairs, &mut scratch);
-            for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
-                let dst = base + out_pos * axis_stride;
-                if return_indices {
-                    out_idx[dst] = i64::from(orig);
-                } else {
-                    out_val[dst] = values[base + orig as usize * axis_stride];
-                }
-            }
-        },
-    );
-
-    let out_value = if return_indices {
-        TensorValue::new_i64_values(tensor.shape.clone(), out_idx)
+    // Contiguous last axis (axis_stride == 1) fans its disjoint slices across
+    // threads; argsort writes i64 indices, sort writes f64 values — each to its
+    // own output buffer so only the needed one is allocated/filled.
+    let out_value = if axis_stride == 1 {
+        if return_indices {
+            let mut out_idx = vec![0_i64; total];
+            for_each_contiguous_sort_slice(
+                &mut out_idx,
+                axis_dim,
+                outer_count,
+                |s, out_slice, pairs, scratch| {
+                    let in_base = s * axis_dim;
+                    pairs.clear();
+                    for i in 0..axis_dim {
+                        pairs.push((f64_sort_order_key(values[in_base + i]) ^ key_mask, i as u32));
+                    }
+                    radix_pairs_ascending(pairs, scratch);
+                    for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
+                        out_slice[out_pos] = i64::from(orig);
+                    }
+                },
+            );
+            TensorValue::new_i64_values(tensor.shape.clone(), out_idx)
+        } else {
+            let mut out_val = vec![0.0_f64; total];
+            for_each_contiguous_sort_slice(
+                &mut out_val,
+                axis_dim,
+                outer_count,
+                |s, out_slice, pairs, scratch| {
+                    let in_base = s * axis_dim;
+                    pairs.clear();
+                    for i in 0..axis_dim {
+                        pairs.push((f64_sort_order_key(values[in_base + i]) ^ key_mask, i as u32));
+                    }
+                    radix_pairs_ascending(pairs, scratch);
+                    for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
+                        out_slice[out_pos] = values[in_base + orig as usize];
+                    }
+                },
+            );
+            TensorValue::new_f64_values(tensor.shape.clone(), out_val)
+        }
     } else {
-        TensorValue::new_f64_values(tensor.shape.clone(), out_val)
+        let mut out_idx = vec![0_i64; total];
+        let mut out_val = vec![0.0_f64; total];
+        let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(axis_dim);
+        let mut scratch: Vec<(u64, u32)> = vec![(0, 0); axis_dim];
+
+        for_each_sort_slice(
+            rank,
+            axis,
+            &tensor.shape.dims,
+            &strides,
+            outer_count,
+            |base| {
+                pairs.clear();
+                for i in 0..axis_dim {
+                    pairs.push((
+                        f64_sort_order_key(values[base + i * axis_stride]) ^ key_mask,
+                        i as u32,
+                    ));
+                }
+                radix_pairs_ascending(&mut pairs, &mut scratch);
+                for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
+                    let dst = base + out_pos * axis_stride;
+                    if return_indices {
+                        out_idx[dst] = i64::from(orig);
+                    } else {
+                        out_val[dst] = values[base + orig as usize * axis_stride];
+                    }
+                }
+            },
+        );
+
+        if return_indices {
+            TensorValue::new_i64_values(tensor.shape.clone(), out_idx)
+        } else {
+            TensorValue::new_f64_values(tensor.shape.clone(), out_val)
+        }
     }
     .map_err(EvalError::InvalidTensor)?;
     Ok(Some(Value::Tensor(out_value)))
@@ -5488,44 +5558,96 @@ fn sort_along_axis_literal_radix(
         keys.push(key);
     }
 
-    let mut out_idx = vec![0_i64; total];
-    let mut out_lit = elems.to_vec();
-    let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(axis_dim);
-    let mut scratch: Vec<(u64, u32)> = vec![(0, 0); axis_dim];
+    let is_u32 = tensor.dtype == DType::U32;
+    let order_pairs = |pairs: &mut Vec<(u64, u32)>, scratch: &mut Vec<(u64, u32)>| {
+        if is_u32 {
+            radix_pairs_ascending_u32(pairs, scratch);
+        } else {
+            radix_pairs_ascending(pairs, scratch);
+        }
+    };
 
-    for_each_sort_slice(
-        rank,
-        axis,
-        &tensor.shape.dims,
-        &strides,
-        outer_count,
-        |base| {
-            pairs.clear();
-            for i in 0..axis_dim {
-                pairs.push((keys[base + i * axis_stride] ^ key_mask, i as u32));
-            }
-            if tensor.dtype == DType::U32 {
-                radix_pairs_ascending_u32(&mut pairs, &mut scratch);
-            } else {
-                radix_pairs_ascending(&mut pairs, &mut scratch);
-            }
-            for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
-                let dst = base + out_pos * axis_stride;
-                if return_indices {
-                    out_idx[dst] = i64::from(orig);
-                } else {
-                    out_lit[dst] = elems[base + orig as usize * axis_stride];
-                }
-            }
-        },
-    );
-
-    let out_value = if return_indices {
-        TensorValue::new_i64_values(tensor.shape.clone(), out_idx)
-            .map_err(EvalError::InvalidTensor)?
+    // Contiguous last axis (axis_stride == 1) fans its disjoint slices across
+    // threads; argsort writes i64 indices, sort writes the reordered literals —
+    // each to its own output buffer.
+    let out_value = if axis_stride == 1 {
+        if return_indices {
+            let mut out_idx = vec![0_i64; total];
+            for_each_contiguous_sort_slice(
+                &mut out_idx,
+                axis_dim,
+                outer_count,
+                |s, out_slice, pairs, scratch| {
+                    let in_base = s * axis_dim;
+                    pairs.clear();
+                    for i in 0..axis_dim {
+                        pairs.push((keys[in_base + i] ^ key_mask, i as u32));
+                    }
+                    order_pairs(pairs, scratch);
+                    for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
+                        out_slice[out_pos] = i64::from(orig);
+                    }
+                },
+            );
+            TensorValue::new_i64_values(tensor.shape.clone(), out_idx)
+                .map_err(EvalError::InvalidTensor)?
+        } else {
+            let mut out_lit = elems.to_vec();
+            for_each_contiguous_sort_slice(
+                &mut out_lit,
+                axis_dim,
+                outer_count,
+                |s, out_slice, pairs, scratch| {
+                    let in_base = s * axis_dim;
+                    pairs.clear();
+                    for i in 0..axis_dim {
+                        pairs.push((keys[in_base + i] ^ key_mask, i as u32));
+                    }
+                    order_pairs(pairs, scratch);
+                    for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
+                        out_slice[out_pos] = elems[in_base + orig as usize];
+                    }
+                },
+            );
+            TensorValue::new(tensor.dtype, tensor.shape.clone(), out_lit)
+                .map_err(EvalError::InvalidTensor)?
+        }
     } else {
-        TensorValue::new(tensor.dtype, tensor.shape.clone(), out_lit)
-            .map_err(EvalError::InvalidTensor)?
+        let mut out_idx = vec![0_i64; total];
+        let mut out_lit = elems.to_vec();
+        let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(axis_dim);
+        let mut scratch: Vec<(u64, u32)> = vec![(0, 0); axis_dim];
+
+        for_each_sort_slice(
+            rank,
+            axis,
+            &tensor.shape.dims,
+            &strides,
+            outer_count,
+            |base| {
+                pairs.clear();
+                for i in 0..axis_dim {
+                    pairs.push((keys[base + i * axis_stride] ^ key_mask, i as u32));
+                }
+                order_pairs(&mut pairs, &mut scratch);
+                for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
+                    let dst = base + out_pos * axis_stride;
+                    if return_indices {
+                        out_idx[dst] = i64::from(orig);
+                    } else {
+                        out_lit[dst] = elems[base + orig as usize * axis_stride];
+                    }
+                }
+            },
+        );
+
+        if return_indices {
+            TensorValue::new_i64_values(tensor.shape.clone(), out_idx)
+                .map_err(EvalError::InvalidTensor)?
+        } else {
+            TensorValue::new(tensor.dtype, tensor.shape.clone(), out_lit)
+                .map_err(EvalError::InvalidTensor)?
+        }
     };
     Ok(Some(Value::Tensor(out_value)))
 }
@@ -5554,6 +5676,78 @@ fn for_each_sort_slice(
         }
         f(base);
     }
+}
+
+/// Minimum total element count before a multi-slice radix sort fans its
+/// independent slices across threads. Each slice's radix is cache-resident (a few
+/// KB of `(key,index)` pairs), so per-slice work is compute-bound and threading
+/// scales near-linearly — but spawning for a small sort loses to thread overhead.
+/// Matches the reduction/RNG threading regime (large workloads only); below it the
+/// single-threaded loop runs unchanged.
+const SORT_PARALLEL_MIN_TOTAL_ELEMS: usize = 1 << 18;
+
+/// Process `outer_count` CONTIGUOUS sort slices — slice `s` occupies
+/// `[s*axis_dim, (s+1)*axis_dim)` of `out` — by calling
+/// `per_slice(s, out_slice, pairs, scratch)`. Used only when the sort axis is the
+/// last/contiguous axis (`axis_stride == 1`), so the slices are disjoint
+/// contiguous blocks in input AND output order.
+///
+/// Large workloads fan out across threads: the slices are partitioned into
+/// contiguous groups, each thread owns a disjoint `out` sub-slice plus its own
+/// `pairs`/`scratch` reused across its slices. Output slice `s` depends only on
+/// input slice `s` (the `per_slice` reader closes over a shared `&[_]`), so the
+/// result is BIT-IDENTICAL to the serial loop for ANY partition — proven by the
+/// `threaded_*_sort_matches_serial` tests. Below the threshold (or with one core)
+/// it runs a single-threaded loop with one shared scratch, identical to the prior
+/// `for_each_sort_slice` path.
+fn for_each_contiguous_sort_slice<Out, F>(
+    out: &mut [Out],
+    axis_dim: usize,
+    outer_count: usize,
+    per_slice: F,
+) where
+    Out: Send,
+    F: Fn(usize, &mut [Out], &mut Vec<(u64, u32)>, &mut Vec<(u64, u32)>) + Sync,
+{
+    let total = outer_count.saturating_mul(axis_dim);
+    let hardware = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    let threads = if total >= SORT_PARALLEL_MIN_TOTAL_ELEMS {
+        hardware.min(total / SORT_PARALLEL_MIN_TOTAL_ELEMS).max(1)
+    } else {
+        1
+    };
+
+    if threads <= 1 {
+        let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(axis_dim);
+        let mut scratch: Vec<(u64, u32)> = vec![(0, 0); axis_dim];
+        for (s, out_slice) in out.chunks_mut(axis_dim).enumerate() {
+            per_slice(s, out_slice, &mut pairs, &mut scratch);
+        }
+        return;
+    }
+
+    let chunk_slices = outer_count.div_ceil(threads);
+    let per_slice = &per_slice;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [Out] = out;
+        let mut start_slice = 0usize;
+        while start_slice < outer_count {
+            let group = chunk_slices.min(outer_count - start_slice);
+            let (block, tail) = rest.split_at_mut(group * axis_dim);
+            rest = tail;
+            let base_slice = start_slice;
+            scope.spawn(move || {
+                let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(axis_dim);
+                let mut scratch: Vec<(u64, u32)> = vec![(0, 0); axis_dim];
+                for (j, out_slice) in block.chunks_mut(axis_dim).enumerate() {
+                    per_slice(base_slice + j, out_slice, &mut pairs, &mut scratch);
+                }
+            });
+            start_slice += group;
+        }
+    });
 }
 
 /// Stable ascending LSD radix sort of `(key, index)` pairs by `key` (8 byte
@@ -13575,6 +13769,212 @@ mod tests {
             mat_want.extend_from_slice(&row);
         }
         assert_eq!(mat_sorted, mat_want, "radix per-row sort");
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_threaded_vs_serial_radix_sort() {
+        use std::time::Instant;
+        // f64 sort(x[R,C], axis=-1): the threaded contiguous-slice driver (eval_sort)
+        // vs the identical single-threaded radix loop (same kernel, one shared
+        // scratch). Isolates the threading win; both produce bit-identical output.
+        let (rows, cols) = (4096usize, 1024usize);
+        let total = rows * cols;
+        let vals: Vec<f64> = (0..total)
+            .map(|i| (((i as i64) * 2654435761).wrapping_rem(1_000_003) - 500_000) as f64 * 0.5)
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                vals.clone(),
+            )
+            .unwrap(),
+        );
+        let p = params(&[("dimension", "1"), ("descending", "false")]);
+        let best = |mut f: Box<dyn FnMut() -> u64>| {
+            f();
+            let mut b = f64::MAX;
+            let mut digest = 0u64;
+            for _ in 0..5 {
+                let t = Instant::now();
+                digest = std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            (b, digest)
+        };
+
+        // Serial baseline: the same radix kernel, single-threaded, one scratch.
+        let vs = vals.clone();
+        let (t_serial, d_serial) = best(Box::new(move || {
+            let mut out = vec![0.0_f64; total];
+            let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(cols);
+            let mut scratch: Vec<(u64, u32)> = vec![(0, 0); cols];
+            for (s, out_slice) in out.chunks_mut(cols).enumerate() {
+                let in_base = s * cols;
+                pairs.clear();
+                for i in 0..cols {
+                    pairs.push((f64_sort_order_key(vs[in_base + i]), i as u32));
+                }
+                radix_pairs_ascending(&mut pairs, &mut scratch);
+                for (pos, &(_, orig)) in pairs.iter().enumerate() {
+                    out_slice[pos] = vs[in_base + orig as usize];
+                }
+            }
+            out.iter().fold(0u64, |a, &v| a ^ v.to_bits())
+        }));
+
+        // End-to-end eval_sort (threaded radix + output tensor build), digested
+        // zero-copy over the output's f64 slice so the fold doesn't bias timing.
+        let (t_threaded, d_threaded) = best(Box::new(move || {
+            let out = eval_sort(Primitive::Sort, std::slice::from_ref(&tensor), &p).unwrap();
+            out.as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .unwrap()
+                .iter()
+                .fold(0u64, |a, &v| a ^ v.to_bits())
+        }));
+
+        assert_eq!(
+            d_serial, d_threaded,
+            "threaded sort digest must match serial"
+        );
+        println!(
+            "BENCH f64 sort(x[{rows},{cols}],axis=-1): serial={:.4}ms threaded={:.4}ms speedup={:.2}x digest={d_serial:016x}",
+            t_serial * 1e3,
+            t_threaded * 1e3,
+            t_serial / t_threaded,
+        );
+    }
+
+    #[test]
+    fn threaded_radix_sort_matches_serial_reference_large_multislice() {
+        // A multi-slice sort over the contiguous last axis whose total element
+        // count exceeds SORT_PARALLEL_MIN_TOTAL_ELEMS (1<<18), so on a multi-core
+        // box `for_each_contiguous_sort_slice` fans the slices across threads. Each
+        // output slice depends only on its input slice, so the threaded result must
+        // be bit-identical to a per-row stable comparison reference for EVERY
+        // partition — covering the dense-i64, dense-f64, and literal (f32) radix
+        // paths, both sort and argsort, ascending and descending.
+        let rows = 2048usize;
+        let cols = 256usize; // == RADIX_SORT_MIN_AXIS; rows*cols = 524288 > 1<<18.
+        let total = rows * cols;
+
+        // Deterministic spread with duplicates (to exercise stable tie order) and
+        // negatives; kept well within i32/f32 exact-integer range.
+        let raw: Vec<i64> = (0..total)
+            .map(|i| (((i as i64) * 2654435761).wrapping_rem(701)) - 350)
+            .collect();
+
+        for descending in [false, true] {
+            let p = params(&[
+                ("dimension", "1"),
+                ("descending", if descending { "true" } else { "false" }),
+            ]);
+
+            // Per-row stable reference permutation (value order, ties by index).
+            let row_perm = |r: usize, key: &dyn Fn(usize) -> i64| -> Vec<usize> {
+                let mut idx: Vec<usize> = (0..cols).collect();
+                idx.sort_by(|&a, &b| {
+                    let (ka, kb) = (key(r * cols + a), key(r * cols + b));
+                    let ord = ka.cmp(&kb);
+                    let ord = if descending { ord.reverse() } else { ord };
+                    ord.then(a.cmp(&b))
+                });
+                idx
+            };
+
+            // ── dense i64 path ──
+            let i64_tensor = Value::Tensor(
+                TensorValue::new_i64_values(
+                    Shape {
+                        dims: vec![rows as u32, cols as u32],
+                    },
+                    raw.clone(),
+                )
+                .unwrap(),
+            );
+            let got_sort = extract_i64_vec(
+                &eval_sort(Primitive::Sort, std::slice::from_ref(&i64_tensor), &p).unwrap(),
+            );
+            let got_arg = extract_i64_vec(
+                &eval_argsort(Primitive::Argsort, std::slice::from_ref(&i64_tensor), &p).unwrap(),
+            );
+            for r in 0..rows {
+                let perm = row_perm(r, &|f| raw[f]);
+                for (pos, &orig) in perm.iter().enumerate() {
+                    assert_eq!(
+                        got_sort[r * cols + pos],
+                        raw[r * cols + orig],
+                        "i64 sort r{r}"
+                    );
+                    assert_eq!(got_arg[r * cols + pos], orig as i64, "i64 argsort r{r}");
+                }
+            }
+
+            // ── dense f64 path ──
+            let f64_raw: Vec<f64> = raw.iter().map(|&v| v as f64).collect();
+            let f64_tensor = Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![rows as u32, cols as u32],
+                    },
+                    f64_raw.clone(),
+                )
+                .unwrap(),
+            );
+            let got_f64 = extract_f64_vec(
+                &eval_sort(Primitive::Sort, std::slice::from_ref(&f64_tensor), &p).unwrap(),
+            );
+            for r in 0..rows {
+                let perm = row_perm(r, &|f| raw[f]);
+                for (pos, &orig) in perm.iter().enumerate() {
+                    assert_eq!(
+                        got_f64[r * cols + pos].to_bits(),
+                        f64_raw[r * cols + orig].to_bits(),
+                        "f64 sort r{r}"
+                    );
+                }
+            }
+
+            // ── literal f32 path ──
+            let f32_lits: Vec<Literal> = raw.iter().map(|&v| Literal::from_f32(v as f32)).collect();
+            let f32_tensor = Value::Tensor(
+                TensorValue::new(
+                    DType::F32,
+                    Shape {
+                        dims: vec![rows as u32, cols as u32],
+                    },
+                    f32_lits.clone(),
+                )
+                .unwrap(),
+            );
+            let got_f32 =
+                eval_sort(Primitive::Sort, std::slice::from_ref(&f32_tensor), &p).unwrap();
+            let got_f32_bits: Vec<u32> = got_f32
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F32Bits(b) => *b,
+                    other => panic!("expected f32, got {other:?}"),
+                })
+                .collect();
+            for r in 0..rows {
+                let perm = row_perm(r, &|f| raw[f]);
+                for (pos, &orig) in perm.iter().enumerate() {
+                    let want = match f32_lits[r * cols + orig] {
+                        Literal::F32Bits(b) => b,
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(got_f32_bits[r * cols + pos], want, "f32 sort r{r}");
+                }
+            }
+        }
     }
 
     #[test]
