@@ -470,10 +470,24 @@ fn cholesky_schur_update_lower_rows(
         let p = p_start + local_p;
         let p_row = &l21[p * jb..p * jb + jb];
         let a_row = &mut rows[local_p * n..local_p * n + n];
-        for q in 0..=p {
+        let mut q = 0usize;
+        while q + 4 <= p + 1 {
+            let q0 = &l21[q * jb..q * jb + jb];
+            let q1 = &l21[(q + 1) * jb..(q + 1) * jb + jb];
+            let q2 = &l21[(q + 2) * jb..(q + 2) * jb + jb];
+            let q3 = &l21[(q + 3) * jb..(q + 3) * jb + jb];
+            let dots = cholesky_schur_dot4(p_row, q0, q1, q2, q3);
+            a_row[base + q] -= dots[0];
+            a_row[base + q + 1] -= dots[1];
+            a_row[base + q + 2] -= dots[2];
+            a_row[base + q + 3] -= dots[3];
+            q += 4;
+        }
+        while q <= p {
             let q_row = &l21[q * jb..q * jb + jb];
             let dot = cholesky_schur_dot(p_row, q_row);
             a_row[base + q] -= dot;
+            q += 1;
         }
     }
 }
@@ -507,6 +521,82 @@ fn cholesky_schur_dot(lhs: &[f64], rhs: &[f64]) -> f64 {
         c += 1;
     }
     dot
+}
+
+#[inline]
+fn cholesky_schur_dot4(
+    lhs: &[f64],
+    rhs0: &[f64],
+    rhs1: &[f64],
+    rhs2: &[f64],
+    rhs3: &[f64],
+) -> [f64; 4] {
+    debug_assert_eq!(lhs.len(), rhs0.len());
+    debug_assert_eq!(lhs.len(), rhs1.len());
+    debug_assert_eq!(lhs.len(), rhs2.len());
+    debug_assert_eq!(lhs.len(), rhs3.len());
+
+    let mut c = 0usize;
+    let mut acc0 = CholeskySchurF64xN::splat(0.0);
+    let mut acc1 = CholeskySchurF64xN::splat(0.0);
+    let mut acc2 = CholeskySchurF64xN::splat(0.0);
+    let mut acc3 = CholeskySchurF64xN::splat(0.0);
+    while c + CHOLESKY_SCHUR_DOT_LANES <= lhs.len() {
+        let lv = cholesky_schur_f64x8(&lhs[c..]);
+        acc0 += lv * cholesky_schur_f64x8(&rhs0[c..]);
+        acc1 += lv * cholesky_schur_f64x8(&rhs1[c..]);
+        acc2 += lv * cholesky_schur_f64x8(&rhs2[c..]);
+        acc3 += lv * cholesky_schur_f64x8(&rhs3[c..]);
+        c += CHOLESKY_SCHUR_DOT_LANES;
+    }
+
+    let lanes0 = acc0.as_array();
+    let lanes1 = acc1.as_array();
+    let lanes2 = acc2.as_array();
+    let lanes3 = acc3.as_array();
+    let mut dots = [
+        lanes0[0]
+            + lanes0[1]
+            + lanes0[2]
+            + lanes0[3]
+            + lanes0[4]
+            + lanes0[5]
+            + lanes0[6]
+            + lanes0[7],
+        lanes1[0]
+            + lanes1[1]
+            + lanes1[2]
+            + lanes1[3]
+            + lanes1[4]
+            + lanes1[5]
+            + lanes1[6]
+            + lanes1[7],
+        lanes2[0]
+            + lanes2[1]
+            + lanes2[2]
+            + lanes2[3]
+            + lanes2[4]
+            + lanes2[5]
+            + lanes2[6]
+            + lanes2[7],
+        lanes3[0]
+            + lanes3[1]
+            + lanes3[2]
+            + lanes3[3]
+            + lanes3[4]
+            + lanes3[5]
+            + lanes3[6]
+            + lanes3[7],
+    ];
+    while c < lhs.len() {
+        let lv = lhs[c];
+        dots[0] += lv * rhs0[c];
+        dots[1] += lv * rhs1[c];
+        dots[2] += lv * rhs2[c];
+        dots[3] += lv * rhs3[c];
+        c += 1;
+    }
+    dots
 }
 
 /// Block size for the right-looking Cholesky panel.
