@@ -6189,14 +6189,27 @@ fn jvp_reduce_window_select(
     let rank = input_tensor.shape.rank();
 
     // window_dilation (atrous max/min pooling) is supported via the dilated tap
-    // mapping below; base_dilation is unsupported in the forward — reject defensively.
-    if params
-        .get("base_dilation")
-        .is_some_and(|v| v.split(',').any(|p| !matches!(p.trim(), "" | "1")))
-    {
-        return Err(AdError::EvalFailed(
-            "reduce_window max/min JVP does not support base_dilation".to_owned(),
-        ));
+    // mapping below. base_dilation (operand dilation) is supported in the forward, so
+    // its JVP dilates BOTH the primal (holes = reduction init, ±∞, so a hole is never
+    // the window extremum) and the tangent (holes = 0, since the inserted operand
+    // elements are constants with zero tangent), then runs the plain (db==1) select
+    // JVP. The output shape is the dilated-input output shape — i.e. exactly the
+    // base_dilation output — so no de-dilation of the result is needed (unlike the VJP,
+    // whose gradient lives on the dilated INPUT and is de-dilated).
+    let base_dilation = parse_reduce_window_base_dilation(params, rank);
+    if base_dilation.iter().any(|&d| d > 1) {
+        let reduce_op_str = params.get("reduce_op").map(|s| s.as_str()).unwrap_or("max");
+        let primal_fill = reduce_window_grad_init_lit(reduce_op_str, input_tensor.dtype);
+        let tan_fill = literal_from_f64_for_dtype(tan_tensor.dtype, 0.0);
+        let dilated_primal = dilate_with_fill(input_tensor, &base_dilation, primal_fill)?;
+        let dilated_tangent = dilate_with_fill(tan_tensor, &base_dilation, tan_fill)?;
+        let mut inner = params.clone();
+        inner.remove("base_dilation");
+        return jvp_reduce_window_select(
+            &[Value::Tensor(dilated_primal)],
+            &[Value::Tensor(dilated_tangent)],
+            &inner,
+        );
     }
 
     // Window geometry: parsed identically to vjp_reduce_window / the fj-lax
@@ -19066,6 +19079,51 @@ mod tests {
             (lhs - rhs).abs() < 1e-12,
             "max-pool JVP/VJP not transposes: <Ju,v>={lhs}, <u,Jᵀv>={rhs}"
         );
+    }
+
+    #[test]
+    fn test_reduce_window_base_dilation_jvp_vjp_are_transposes() {
+        // base_dilation max/min JVP (dilate primal+tangent, run plain select JVP) is
+        // validated against the FD-checked base_dilation VJP via the transpose identity
+        // <J·u, v> == <u, Jᵀ·v>. Distinct primal values → no extremum ties → exact.
+        for reduce_op in ["max", "min"] {
+            let x = f64_tensor_1d(&[1.0, 5.0, 3.0, 2.0, 4.0]);
+            let u = [0.1, 0.2, 0.3, 0.4, 0.5];
+            let params = BTreeMap::from([
+                ("window_dimensions".to_owned(), "2".to_owned()),
+                ("window_strides".to_owned(), "1".to_owned()),
+                ("base_dilation".to_owned(), "2".to_owned()),
+                ("reduce_op".to_owned(), reduce_op.to_owned()),
+            ]);
+            let out_len = eval_primitive(Primitive::ReduceWindow, &[x.clone()], &params)
+                .unwrap()
+                .as_tensor()
+                .unwrap()
+                .elements
+                .len();
+            let v: Vec<f64> = (0..out_len).map(|i| 1.0 - 0.37 * i as f64).collect();
+            let ju = tensor_f64_values(
+                &jvp_rule(
+                    Primitive::ReduceWindow,
+                    &[x.clone()],
+                    &[f64_tensor_1d(&u)],
+                    &params,
+                )
+                .unwrap(),
+            );
+            assert_eq!(ju.len(), out_len, "{reduce_op}: JVP output length");
+            let lhs: f64 = ju.iter().zip(&v).map(|(a, b)| a * b).sum();
+            let jtv =
+                vjp_single(Primitive::ReduceWindow, &[x.clone()], &f64_tensor_1d(&v), &params)
+                    .unwrap();
+            let jtv_vals = tensor_f64_values(&jtv[0]);
+            assert_eq!(jtv_vals.len(), u.len(), "{reduce_op}: VJP input length");
+            let rhs: f64 = jtv_vals.iter().zip(&u).map(|(a, b)| a * b).sum();
+            assert!(
+                (lhs - rhs).abs() < 1e-12,
+                "{reduce_op} base_dilation JVP/VJP not transposes: <Ju,v>={lhs}, <u,Jᵀv>={rhs}"
+            );
+        }
     }
 
     #[test]
