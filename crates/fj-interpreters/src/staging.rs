@@ -6,6 +6,7 @@
 //! and `StagedProgram` for the staging pipeline used by JIT.
 
 use fj_core::{Atom, Jaxpr, ProgramSpec, Value, build_program};
+use std::cell::RefCell;
 
 use crate::partial_eval::{PartialEvalError, PartialEvalResult, partial_eval_jaxpr_with_consts};
 use crate::{InterpreterError, eval_jaxpr, eval_jaxpr_with_consts};
@@ -30,6 +31,20 @@ pub struct StagedProgram {
 
     /// Pre-computed residual values consumed by the unknown sub-jaxpr.
     pub residuals: Vec<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct StagedProgramCacheEntry {
+    jaxpr: Jaxpr,
+    jaxpr_fingerprint: String,
+    const_values: Vec<Value>,
+    unknowns: Vec<bool>,
+    known_values: Vec<Value>,
+    staged: StagedProgram,
+}
+
+thread_local! {
+    static STAGED_PROGRAM_CACHE: RefCell<Option<StagedProgramCacheEntry>> = const { RefCell::new(None) };
 }
 
 /// Errors during staging.
@@ -123,6 +138,10 @@ pub fn stage_jaxpr_with_consts(
     unknowns: &[bool],
     known_values: &[Value],
 ) -> Result<StagedProgram, StagingError> {
+    if let Some(staged) = cached_staged_program(jaxpr, const_values, unknowns, known_values) {
+        return Ok(staged);
+    }
+
     let pe_result: PartialEvalResult =
         partial_eval_jaxpr_with_consts(jaxpr, const_values, unknowns)
             .map_err(StagingError::PartialEval)?;
@@ -154,14 +173,71 @@ pub fn stage_jaxpr_with_consts(
         (Vec::new(), Vec::new())
     };
 
-    Ok(StagedProgram {
+    let staged = StagedProgram {
         jaxpr_known: pe_result.jaxpr_known,
         known_consts: pe_result.known_consts,
         jaxpr_unknown: pe_result.jaxpr_unknown,
         out_unknowns: pe_result.out_unknowns,
         known_outputs,
         residuals,
+    };
+    remember_staged_program(jaxpr, const_values, unknowns, known_values, &staged);
+    Ok(staged)
+}
+
+fn cached_staged_program(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    unknowns: &[bool],
+    known_values: &[Value],
+) -> Option<StagedProgram> {
+    let fingerprint = jaxpr.canonical_fingerprint();
+    STAGED_PROGRAM_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        let entry = cache.as_ref()?;
+        if entry.jaxpr_fingerprint.as_str() == fingerprint
+            && entry.jaxpr.eq(jaxpr)
+            && entry.const_values.as_slice() == const_values
+            && entry.unknowns.as_slice() == unknowns
+            && entry.known_values.as_slice() == known_values
+        {
+            Some(entry.staged.clone())
+        } else {
+            None
+        }
     })
+}
+
+fn remember_staged_program(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    unknowns: &[bool],
+    known_values: &[Value],
+    staged: &StagedProgram,
+) {
+    if !jaxpr_is_effect_free(jaxpr) {
+        return;
+    }
+
+    let entry = StagedProgramCacheEntry {
+        jaxpr: jaxpr.clone(),
+        jaxpr_fingerprint: jaxpr.canonical_fingerprint().to_owned(),
+        const_values: const_values.to_vec(),
+        unknowns: unknowns.to_vec(),
+        known_values: known_values.to_vec(),
+        staged: staged.clone(),
+    };
+    STAGED_PROGRAM_CACHE.with(|cache| {
+        *cache.borrow_mut() = Some(entry);
+    });
+}
+
+fn jaxpr_is_effect_free(jaxpr: &Jaxpr) -> bool {
+    jaxpr.effects.is_empty()
+        && jaxpr
+            .equations
+            .iter()
+            .all(|eqn| eqn.effects.is_empty() && eqn.sub_jaxprs.iter().all(jaxpr_is_effect_free))
 }
 
 /// Execute a staged program with dynamic (unknown) inputs.
@@ -756,10 +832,22 @@ mod tests {
                     eval_jaxpr(&jaxpr, &[Value::scalar_i64(5), Value::scalar_i64(3)]).unwrap();
                 assert_eq!(result, full);
 
+                let cached_staged =
+                    stage_jaxpr(&jaxpr, &[false, true], &[Value::scalar_i64(5)]).unwrap();
+                assert_eq!(cached_staged.jaxpr_known, staged.jaxpr_known);
+                assert_eq!(cached_staged.known_consts, staged.known_consts);
+                assert_eq!(cached_staged.jaxpr_unknown, staged.jaxpr_unknown);
+                assert_eq!(cached_staged.out_unknowns, staged.out_unknowns);
+                assert_eq!(cached_staged.known_outputs, staged.known_outputs);
+                assert_eq!(cached_staged.residuals, staged.residuals);
+                let cached_result =
+                    execute_staged(&cached_staged, &[Value::scalar_i64(3)]).unwrap();
+                assert_eq!(cached_result, result);
+
                 let digest = fj_test_utils::fixture_id_from_json(&(
-                    staged.jaxpr_unknown,
-                    staged.residuals,
-                    result,
+                    &staged.jaxpr_unknown,
+                    &staged.residuals,
+                    &result,
                 ))
                 .expect("staging fast path digest");
                 eprintln!("single-unknown staged execution golden digest: {digest}");
