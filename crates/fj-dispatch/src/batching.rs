@@ -482,7 +482,9 @@ pub fn apply_batch_rule(
         // Fma(a,b,c)=a*b+c and Betainc(a,b,x) are elementwise but ternary;
         // batch_passthrough_leading evaluates each batch slice and stacks,
         // broadcasting any unbatched operand.
-        Primitive::Fma | Primitive::Betainc => batch_passthrough_leading(primitive, inputs, params),
+        Primitive::Fma | Primitive::Betainc => {
+            batch_ternary_elementwise(primitive, inputs, params)
+        }
 
         // ── Reduction ops ──────────────────────────────────────
         Primitive::ReduceSum
@@ -834,6 +836,28 @@ fn batch_clamp(
 ) -> Result<BatchTracer, BatchError> {
     let (min, operand, max, out_batch_dim) = harmonize_ternary(&inputs[0], &inputs[1], &inputs[2])?;
     let result = eval_primitive(Primitive::Clamp, &[min, operand, max], params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(BatchTracer {
+        value: result,
+        batch_dim: out_batch_dim,
+    })
+}
+
+/// vmap rule for the pure 3-input elementwise ops Fma (`a*b+c`) and Betainc
+/// (`I_x(a,b)`). Like `batch_clamp`/`batch_select`, harmonize the three operands
+/// to a common batch-front shape (`harmonize_ternary` moves/broadcasts each and
+/// aligns logical ranks) and eval ONCE — replacing the per-slice eval+stack of
+/// `batch_passthrough_leading`. The op is elementwise and deterministic, so the
+/// single call's per-element results equal the per-slice stack bit-for-bit; and
+/// the single call lets the eval's own threaded path run over the whole batch
+/// (Betainc's eval fans out at its work threshold; per-slice ran B serial slices).
+fn batch_ternary_elementwise(
+    primitive: Primitive,
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let (a, b, c, out_batch_dim) = harmonize_ternary(&inputs[0], &inputs[1], &inputs[2])?;
+    let result = eval_primitive(primitive, &[a, b, c], params)
         .map_err(|e| BatchError::EvalError(e.to_string()))?;
     Ok(BatchTracer {
         value: result,
@@ -14676,6 +14700,112 @@ mod tests {
         assert_eq!(l_slow, l_fast, "bench parity: output element count differs");
         println!(
             "BENCH vmap(tile) [{b},{n}] reps={rep}: per-slice={:.4}ms single-call={:.4}ms speedup={:.2}x",
+            t_slow * 1e3,
+            t_fast * 1e3,
+            t_slow / t_fast,
+        );
+    }
+
+    #[test]
+    fn batch_ternary_elementwise_matches_per_slice_fallback() {
+        // Single-call harmonize+eval must equal per-slice eval+stack for Fma and
+        // Betainc across operand batching combos (all batched / one shared scalar /
+        // non-front batch dim).
+        let summary = |t: &BatchTracer| -> (Option<usize>, Vec<u32>, Vec<u64>) {
+            let tensor = t.value.as_tensor().unwrap();
+            let bits: Vec<u64> = tensor
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0).to_bits())
+                .collect();
+            (t.batch_dim, tensor.shape.dims.clone(), bits)
+        };
+        let bt = |vals: &[f64], dims: Vec<u32>, bd: usize| -> BatchTracer {
+            BatchTracer::batched(
+                Value::Tensor(
+                    TensorValue::new(
+                        DType::F64,
+                        Shape { dims },
+                        vals.iter().copied().map(Literal::from_f64).collect(),
+                    )
+                    .unwrap(),
+                ),
+                bd,
+            )
+        };
+        // valid betainc domain: a,b>0, x in [0,1]; fma works on anything.
+        let a = [0.5, 1.0, 2.0, 3.0, 1.5, 2.5];
+        let b = [1.0, 2.0, 0.5, 1.5, 3.0, 2.0];
+        let x = [0.1, 0.5, 0.9, 0.3, 0.7, 0.25];
+        for prim in [Primitive::Fma, Primitive::Betainc] {
+            // (1) all three batched on axis 0, per-element [2]
+            let ins = vec![
+                bt(&a, vec![3, 2], 0),
+                bt(&b, vec![3, 2], 0),
+                bt(&x, vec![3, 2], 0),
+            ];
+            let fast = batch_ternary_elementwise(prim, &ins, &BTreeMap::new()).unwrap();
+            let slow = batch_passthrough_leading(prim, &ins, &BTreeMap::new()).unwrap();
+            assert_eq!(summary(&fast), summary(&slow), "{prim:?} all-batched");
+
+            // (2) third operand a shared unbatched scalar (broadcast)
+            let scal = BatchTracer::unbatched(Value::Scalar(Literal::from_f64(0.5)));
+            let ins2 = vec![bt(&a, vec![3, 2], 0), bt(&b, vec![3, 2], 0), scal];
+            let fast2 = batch_ternary_elementwise(prim, &ins2, &BTreeMap::new()).unwrap();
+            let slow2 = batch_passthrough_leading(prim, &ins2, &BTreeMap::new()).unwrap();
+            assert_eq!(summary(&fast2), summary(&slow2), "{prim:?} shared-scalar");
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_batch_betainc_single_call_vs_per_slice() {
+        use std::time::Instant;
+        // vmap(betainc) over a large batch of small per-element vectors. Betainc is
+        // compute-bound (continued fraction + lgamma per element) and its eval
+        // threads; the single call fans the whole batch out, while per-slice runs B
+        // serial slices plus B dispatches/allocs.
+        let (b, n) = (65536usize, 8usize);
+        let mk = |f: &dyn Fn(usize) -> f64| -> Vec<f64> { (0..b * n).map(f).collect() };
+        let av = mk(&|i| 0.5 + (i % 7) as f64);
+        let bv = mk(&|i| 0.5 + (i % 5) as f64);
+        let xv = mk(&|i| ((i % 100) as f64) / 100.0);
+        let make = || -> Vec<BatchTracer> {
+            let t = |v: &[f64]| {
+                BatchTracer::batched(
+                    Value::Tensor(
+                        TensorValue::new(
+                            DType::F64,
+                            Shape { dims: vec![b as u32, n as u32] },
+                            v.iter().copied().map(Literal::from_f64).collect(),
+                        )
+                        .unwrap(),
+                    ),
+                    0,
+                )
+            };
+            vec![t(&av), t(&bv), t(&xv)]
+        };
+        let best = |mut f: Box<dyn FnMut() -> usize>| {
+            let first = f();
+            let mut t = f64::MAX;
+            for _ in 0..3 {
+                let s = Instant::now();
+                let _ = std::hint::black_box(f());
+                t = t.min(s.elapsed().as_secs_f64());
+            }
+            (t, first)
+        };
+        let len = |r: BatchTracer| -> usize { r.value.as_tensor().unwrap().elements.len() };
+        let (t_slow, l_slow) = best(Box::new(move || {
+            len(batch_passthrough_leading(Primitive::Betainc, &make(), &BTreeMap::new()).unwrap())
+        }));
+        let (t_fast, l_fast) = best(Box::new(move || {
+            len(batch_ternary_elementwise(Primitive::Betainc, &make(), &BTreeMap::new()).unwrap())
+        }));
+        assert_eq!(l_slow, l_fast);
+        println!(
+            "BENCH vmap(betainc) [{b},{n}]: per-slice={:.4}ms single-call={:.4}ms speedup={:.2}x",
             t_slow * 1e3,
             t_fast * 1e3,
             t_slow / t_fast,
