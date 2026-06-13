@@ -2772,6 +2772,15 @@ enum ScalarF64BinaryOp {
     Trunc,
     Deg2Rad,
     Rad2Deg,
+    // Power ops. `Square` (jnp.square, no param) is `x*x` in fj-lax's float arm
+    // (eval_unary_int_or_float float_op `|x| x*x`). `IntegerPow(e)` (jnp `x**const`,
+    // the ubiquitous variance/norm squaring) carries its i32 exponent inline; fj-lax's
+    // eval_integer_pow float arm is `real_literal_from_f64(dtype, value.powi(e))`, so
+    // `lhs.powi(e)` here is bit-identical. Both float-only (kept out of the i64 plan:
+    // i64 Square uses plain `x*x` debug-overflow semantics and i64 IntegerPow uses
+    // wrapping_pow — neither modeled here).
+    Square,
+    IntegerPow(i32),
 }
 
 fn scalar_unary_op(primitive: Primitive) -> Option<ScalarF64BinaryOp> {
@@ -2806,8 +2815,28 @@ fn scalar_unary_op(primitive: Primitive) -> Option<ScalarF64BinaryOp> {
         Primitive::Trunc => Some(ScalarF64BinaryOp::Trunc),
         Primitive::Deg2Rad => Some(ScalarF64BinaryOp::Deg2Rad),
         Primitive::Rad2Deg => Some(ScalarF64BinaryOp::Rad2Deg),
+        Primitive::Square => Some(ScalarF64BinaryOp::Square),
         _ => None,
     }
+}
+
+/// Float-plan unary resolver that also admits the ONE param-carrying scalar op,
+/// `IntegerPow` (exponent param). All other unary ops must have empty params (the
+/// generic interpreter ignores none, so a stray param would mean a different op).
+/// Reads the SAME `exponent` key as fj-lax `eval_integer_pow`, so present→bit-identical,
+/// absent→bail to generic (which also needs it).
+fn scalar_f64_unary_op_with_params(
+    primitive: Primitive,
+    params: &std::collections::BTreeMap<String, String>,
+) -> Option<ScalarF64BinaryOp> {
+    if primitive == Primitive::IntegerPow {
+        let exponent: i32 = params.get("exponent")?.trim().parse().ok()?;
+        return Some(ScalarF64BinaryOp::IntegerPow(exponent));
+    }
+    if !params.is_empty() {
+        return None;
+    }
+    scalar_unary_op(primitive)
 }
 
 /// Integer-valid unary ops only. The transcendental/rounding variants of
@@ -2909,8 +2938,7 @@ fn build_scalar_f64_arith_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarF64P
 
     let mut steps = Vec::with_capacity(jaxpr.equations.len());
     for equation in &jaxpr.equations {
-        if !equation.params.is_empty()
-            || !equation.sub_jaxprs.is_empty()
+        if !equation.sub_jaxprs.is_empty()
             || !equation.effects.is_empty()
             || equation.outputs.len() != 1
         {
@@ -2920,16 +2948,26 @@ fn build_scalar_f64_arith_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarF64P
         if out_slot >= slots {
             return None;
         }
-        // 2-input binary op, or 1-input unary (Neg/Abs) with no rhs slot read.
+        // 2-input binary op (no params), or 1-input unary — `IntegerPow` carries an
+        // exponent param; every other unary requires empty params.
         let (op, lhs, rhs) = match equation.inputs.as_slice() {
-            [a, b] => (
-                scalar_f64_binary_op(equation.primitive)?,
-                scalar_f64_operand(a, slots)?,
-                Some(scalar_f64_operand(b, slots)?),
-            ),
+            [a, b] => {
+                if !equation.params.is_empty() {
+                    return None;
+                }
+                (
+                    scalar_f64_binary_op(equation.primitive)?,
+                    scalar_f64_operand(a, slots)?,
+                    Some(scalar_f64_operand(b, slots)?),
+                )
+            }
             [a] => {
                 let operand = scalar_f64_operand(a, slots)?;
-                (scalar_unary_op(equation.primitive)?, operand, None)
+                (
+                    scalar_f64_unary_op_with_params(equation.primitive, &equation.params)?,
+                    operand,
+                    None,
+                )
             }
             _ => return None,
         };
@@ -3027,6 +3065,8 @@ fn apply_scalar_f64_binary(op: ScalarF64BinaryOp, lhs: f64, rhs: f64) -> f64 {
         ScalarF64BinaryOp::Trunc => lhs.trunc(),
         ScalarF64BinaryOp::Deg2Rad => lhs.to_radians(),
         ScalarF64BinaryOp::Rad2Deg => lhs.to_degrees(),
+        ScalarF64BinaryOp::Square => lhs * lhs,
+        ScalarF64BinaryOp::IntegerPow(exp) => lhs.powi(exp),
     }
 }
 
@@ -3333,8 +3373,7 @@ fn build_scalar_f32_arith_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarF32P
     }
     let mut steps = Vec::with_capacity(jaxpr.equations.len());
     for equation in &jaxpr.equations {
-        if !equation.params.is_empty()
-            || !equation.sub_jaxprs.is_empty()
+        if !equation.sub_jaxprs.is_empty()
             || !equation.effects.is_empty()
             || equation.outputs.len() != 1
         {
@@ -3345,14 +3384,23 @@ fn build_scalar_f32_arith_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarF32P
             return None;
         }
         let (op, lhs, rhs) = match equation.inputs.as_slice() {
-            [a, b] => (
-                scalar_f64_binary_op(equation.primitive)?,
-                scalar_f32_operand(a, slots)?,
-                Some(scalar_f32_operand(b, slots)?),
-            ),
+            [a, b] => {
+                if !equation.params.is_empty() {
+                    return None;
+                }
+                (
+                    scalar_f64_binary_op(equation.primitive)?,
+                    scalar_f32_operand(a, slots)?,
+                    Some(scalar_f32_operand(b, slots)?),
+                )
+            }
             [a] => {
                 let operand = scalar_f32_operand(a, slots)?;
-                (scalar_unary_op(equation.primitive)?, operand, None)
+                (
+                    scalar_f64_unary_op_with_params(equation.primitive, &equation.params)?,
+                    operand,
+                    None,
+                )
             }
             _ => return None,
         };
@@ -3434,6 +3482,8 @@ fn apply_scalar_f32_binary(op: ScalarF64BinaryOp, lhs: f32, rhs: f32) -> f32 {
         ScalarF64BinaryOp::Trunc => lhs.trunc(),
         ScalarF64BinaryOp::Deg2Rad => lhs.to_radians(),
         ScalarF64BinaryOp::Rad2Deg => lhs.to_degrees(),
+        ScalarF64BinaryOp::Square => lhs * lhs,
+        ScalarF64BinaryOp::IntegerPow(exp) => lhs.powi(exp),
     };
     result as f32
 }
@@ -6440,6 +6490,7 @@ mod tests {
             Primitive::Trunc,
             Primitive::Deg2Rad,
             Primitive::Rad2Deg,
+            Primitive::Square,
         ];
         let xs = [
             -100.0_f64, -5.0, -1.5, -1.0, -0.5, -0.0, 0.0, 0.3, 0.5, 0.9999, 1.0, 1.5, 2.0, 3.7,
@@ -6549,6 +6600,69 @@ mod tests {
                     bits_f32(&co32[0]),
                     bits_f32(&go32[0]),
                     "{op:?}({xv}) f32 arena bits differ from generic"
+                );
+            }
+        }
+
+        // IntegerPow (param-carrying: `x ** const`). Exponent param must be parsed
+        // and applied as `lhs.powi(e)`, bit-identical to fj-lax eval_integer_pow's
+        // float arm. Covers negative (1/x^n), zero (->1), and positive exponents.
+        for exponent in [-3_i32, -1, 0, 1, 2, 3, 5] {
+            let (x, out) = (VarId(0), VarId(1));
+            let mut params = BTreeMap::new();
+            params.insert("exponent".to_owned(), exponent.to_string());
+            let body = Jaxpr::new(
+                vec![x],
+                vec![],
+                vec![out],
+                vec![Equation {
+                    primitive: Primitive::IntegerPow,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![out],
+                    params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                }],
+            );
+            let plan = super::build_dense_plan(&body).expect("dense plan");
+            assert!(
+                plan.scalar_f64_plan.is_some() && plan.scalar_f32_plan.is_some(),
+                "IntegerPow[{exponent}] not routed through the scalar arena"
+            );
+            for &xv in &xs {
+                let args = [Value::scalar_f64(xv)];
+                let mut genv: Vec<Option<Value>> = vec![None; plan.slots];
+                let mut gscr: Vec<Value> = Vec::new();
+                let mut gout: Vec<Value> = Vec::new();
+                super::run_dense_env_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut genv,
+                    &plan.last_use,
+                    &mut gscr,
+                    &mut gout,
+                )
+                .expect("generic integer_pow");
+                let mut cenv: Vec<Option<Value>> = vec![None; plan.slots];
+                let mut cscr: Vec<Value> = Vec::new();
+                let mut cout: Vec<Value> = Vec::new();
+                let mut bufs = super::ScalarPlanBuffers::default();
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut cenv,
+                    &plan,
+                    &mut cscr,
+                    &mut cout,
+                    &mut bufs,
+                )
+                .expect("compiled integer_pow");
+                assert_eq!(
+                    bits_f64(&cout[0]),
+                    bits_f64(&gout[0]),
+                    "IntegerPow[{exponent}]({xv}) f64 arena bits differ from generic"
                 );
             }
         }
@@ -6677,6 +6791,105 @@ mod tests {
                 "chained activation body bits differ at x={xv}"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_scalar_arena_power_body() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        let ipow = |x: VarId, e: i32, o: VarId| {
+            let mut params = BTreeMap::new();
+            params.insert("exponent".to_owned(), e.to_string());
+            Equation {
+                primitive: Primitive::IntegerPow,
+                inputs: smallvec![Atom::Var(x)],
+                outputs: smallvec![o],
+                params,
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }
+        };
+        let mk = |p: Primitive, ins: smallvec::SmallVec<[Atom; 4]>, o: VarId| Equation {
+            primitive: p,
+            inputs: ins,
+            outputs: smallvec![o],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        // Variance-style power body: out = x**2 + x**3 + square(x) (3 power ops + add).
+        let (x, p2, p3, sq, s1, out) = (VarId(0), VarId(1), VarId(2), VarId(3), VarId(4), VarId(5));
+        let body = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                ipow(x, 2, p2),
+                ipow(x, 3, p3),
+                mk(Primitive::Square, smallvec![Atom::Var(x)], sq),
+                mk(Primitive::Add, smallvec![Atom::Var(p2), Atom::Var(p3)], s1),
+                mk(Primitive::Add, smallvec![Atom::Var(s1), Atom::Var(sq)], out),
+            ],
+        );
+        let plan = super::build_dense_plan(&body).expect("dense plan");
+        assert!(plan.scalar_f64_plan.is_some());
+        let n: usize = 2_000_000;
+        let args = [Value::scalar_f64(1.0001)];
+        let run = |use_plan: bool| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut bufs = super::ScalarPlanBuffers::default();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                if use_plan {
+                    super::run_dense_plan_into(
+                        &body,
+                        &[],
+                        &args,
+                        &mut env,
+                        &plan,
+                        &mut scratch,
+                        &mut o,
+                        &mut bufs,
+                    )
+                    .expect("compiled");
+                } else {
+                    super::run_dense_env_into(
+                        &body,
+                        &[],
+                        &args,
+                        &mut env,
+                        &plan.last_use,
+                        &mut scratch,
+                        &mut o,
+                    )
+                    .expect("generic");
+                }
+                if let Value::Scalar(Literal::F64Bits(b)) = &o[0] {
+                    acc += f64::from_bits(*b);
+                }
+            }
+            std::hint::black_box(acc);
+        };
+        let t_generic = best_time(|| run(false));
+        let t_compiled = best_time(|| run(true));
+        println!(
+            "BENCH power-body dispatch {n} evals (x**2 + x**3 + square(x)): GENERIC {:.1}ns/eval -> COMPILED {:.1}ns/eval = {:.2}x",
+            t_generic * 1e9 / n as f64,
+            t_compiled * 1e9 / n as f64,
+            t_generic / t_compiled,
+        );
     }
 
     #[test]
