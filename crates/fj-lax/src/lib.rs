@@ -4419,7 +4419,10 @@ fn eval_reduce_window(
     if no_base_dilation
         && no_window_dilation
         && matches!(reduce_op, "max" | "min")
-        && matches!(output_dtype, fj_core::DType::F64 | fj_core::DType::F32)
+        && matches!(
+            output_dtype,
+            fj_core::DType::F64 | fj_core::DType::F32 | fj_core::DType::BF16 | fj_core::DType::F16
+        )
     {
         let win_total: usize = window_dims.iter().product();
         let win_sum: usize = window_dims.iter().sum();
@@ -4445,6 +4448,24 @@ fn eval_reduce_window(
                     let f32_values: Vec<f32> = values.iter().map(|&v| v as f32).collect();
                     Ok(Value::Tensor(
                         TensorValue::new_f32_values(shape, f32_values).map_err(EvalError::from)?,
+                    ))
+                }
+                // bf16/f16 max/min SELECT an exactly-widened input value (or the
+                // ∓∞/NaN init for all-pad/NaN windows), so rounding back via the
+                // SAME reduce_window_literal_from_f64 is exact — bit-identical to the
+                // generic half path. Window-independent (deque) vs the dense_float
+                // per-window O(∏window) path for large windows.
+                fj_core::DType::BF16 | fj_core::DType::F16 => {
+                    let bits: Vec<u16> = values
+                        .iter()
+                        .map(|&v| match reduce_window_literal_from_f64(output_dtype, v) {
+                            fj_core::Literal::BF16Bits(b) | fj_core::Literal::F16Bits(b) => b,
+                            _ => 0,
+                        })
+                        .collect();
+                    Ok(Value::Tensor(
+                        TensorValue::new_half_float_values(output_dtype, shape, bits)
+                            .map_err(EvalError::from)?,
                     ))
                 }
                 _ => Ok(Value::Tensor(
@@ -13619,6 +13640,79 @@ mod tests {
                 g*1e3, d*1e3, g/d,
             );
         }
+    }
+
+    #[test]
+    fn reduce_window_half_maxmin_separable_matches_generic() {
+        // Large-window bf16/f16 max/min uses the separable monotonic-deque path
+        // (dense HalfFloat storage); a boxed Literal tensor takes the generic
+        // per-window path. Half bits must match (max/min select an exactly-widened
+        // value, rounded back identically).
+        let (n, w) = (40usize, 15usize); // ∏window=225 > 2·∑window=60 ⇒ separable
+        for dt in [DType::BF16, DType::F16] {
+            let bits = |v: f64| -> u16 {
+                let l = if dt == DType::BF16 { Literal::from_bf16_f64(v) } else { Literal::from_f16_f64(v) };
+                match l { Literal::BF16Bits(b) | Literal::F16Bits(b) => b, _ => 0 }
+            };
+            let lit = |b: u16| if dt == DType::BF16 { Literal::BF16Bits(b) } else { Literal::F16Bits(b) };
+            let raw: Vec<u16> = (0..n*n).map(|i| bits(((i*7 % 53) as f64) * 0.1 - 2.5)).collect();
+            let dims = vec![n as u32, n as u32];
+            let dense = Value::Tensor(TensorValue::new_half_float_values(dt, Shape { dims: dims.clone() }, raw.clone()).unwrap());
+            let boxed = Value::Tensor(TensorValue::new(dt, Shape { dims: dims.clone() }, raw.iter().copied().map(lit).collect()).unwrap());
+            let half_bits = |v: &Value| -> Vec<u16> {
+                v.as_tensor().unwrap().elements.iter().map(|l| match l { Literal::BF16Bits(b)|Literal::F16Bits(b)=>*b, _=>0 }).collect()
+            };
+            for op in ["max", "min"] {
+                let params = rw_params_with_padding(op, &format!("{w},{w}"), "1,1", "VALID");
+                let d = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &params).unwrap();
+                let g = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &params).unwrap();
+                assert_eq!(half_bits(&d), half_bits(&g), "{dt:?} {op} separable != generic");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_reduce_window_half_maxmin_separable_vs_dense() {
+        use std::time::Instant;
+        let (n, w) = (512usize, 15usize);
+        let raw: Vec<u16> = (0..n*n).map(|i| {
+            match Literal::from_bf16_f64(((i % 251) as f64) * 0.05 - 6.0) { Literal::BF16Bits(b)=>b, _=>0 }
+        }).collect();
+        let tensor = Value::Tensor(TensorValue::new_half_float_values(DType::BF16, Shape { dims: vec![n as u32, n as u32] }, raw.clone()).unwrap());
+        let params = rw_params_with_padding("max", &format!("{w},{w}"), "1,1", "VALID");
+        let out_n = n - w + 1;
+        let best = |mut f: Box<dyn FnMut() -> u64>| {
+            f();
+            let mut b = f64::MAX; let mut dg = 0u64;
+            for _ in 0..5 { let t = Instant::now(); dg = std::hint::black_box(f()); b = b.min(t.elapsed().as_secs_f64()); }
+            (b, dg)
+        };
+        // Per-window dense reference (the dense_float path emulated): f64-accumulate jax_max over the window.
+        let raw_ref = raw.clone();
+        let (t_win, d_win) = best(Box::new(move || {
+            let wid = |u: u16| Literal::BF16Bits(u).as_f64().unwrap_or(0.0);
+            let mut sum = 0u64;
+            for or in 0..out_n { for oc in 0..out_n {
+                let mut m = f64::NEG_INFINITY;
+                for dr in 0..w { let base=(or+dr)*n+oc; for dc in 0..w { m = m.max(wid(raw_ref[base+dc])); } }
+                sum = sum.wrapping_add(m.to_bits());
+            }}
+            sum
+        }));
+        let t_ref = tensor.clone();
+        let (t_sep, d_sep) = best(Box::new(move || {
+            let out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t_ref), &params).unwrap();
+            out.as_tensor().unwrap().elements.iter().fold(0u64, |a, l| match l {
+                Literal::BF16Bits(b)|Literal::F16Bits(b) => a.wrapping_add(u64::from(*b)),
+                _=>a,
+            })
+        }));
+        let _ = (d_win, d_sep);
+        println!(
+            "BENCH reduce_window BF16 max([{n},{n}],win={w}x{w},s=1): per-window={:.4}ms separable={:.4}ms speedup={:.2}x",
+            t_win*1e3, t_sep*1e3, t_win/t_sep,
+        );
     }
 
     #[test]
