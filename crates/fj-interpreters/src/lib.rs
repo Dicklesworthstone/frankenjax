@@ -2718,9 +2718,11 @@ fn compute_dense_last_use(jaxpr: &Jaxpr, slots: usize) -> Vec<usize> {
     last_use
 }
 
-// Binary op tag shared by all three scalar-arith plans (f64/i64/f32). Max/Min use
-// JAX's NaN-propagating semantics for floats (canonical NaN if either operand is
-// NaN; see jax_max_f64 / jax_min_f64 in fj-lax) and plain Rust max/min for i64.
+// Op tag shared by all three scalar-arith plans (f64/i64/f32). Max/Min use JAX's
+// NaN-propagating semantics for floats (canonical NaN if either operand is NaN;
+// see jax_max_f64 / jax_min_f64 in fj-lax) and plain Rust max/min for i64. Neg/Abs
+// are UNARY: a unary equation is compiled to a step whose `rhs` is set equal to
+// `lhs` (a harmless duplicate read) and the apply ignores it.
 #[derive(Clone, Copy)]
 enum ScalarF64BinaryOp {
     Add,
@@ -2729,6 +2731,16 @@ enum ScalarF64BinaryOp {
     Div,
     Max,
     Min,
+    Neg,
+    Abs,
+}
+
+fn scalar_unary_op(primitive: Primitive) -> Option<ScalarF64BinaryOp> {
+    match primitive {
+        Primitive::Neg => Some(ScalarF64BinaryOp::Neg),
+        Primitive::Abs => Some(ScalarF64BinaryOp::Abs),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -2804,21 +2816,31 @@ fn build_scalar_f64_arith_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarF64P
         if !equation.params.is_empty()
             || !equation.sub_jaxprs.is_empty()
             || !equation.effects.is_empty()
-            || equation.inputs.len() != 2
             || equation.outputs.len() != 1
         {
             return None;
         }
-
-        let op = scalar_f64_binary_op(equation.primitive)?;
         let out_slot = equation.outputs[0].0 as usize;
         if out_slot >= slots {
             return None;
         }
+        // 2-input binary op, or 1-input unary (Neg/Abs) compiled with rhs = lhs.
+        let (op, lhs, rhs) = match equation.inputs.as_slice() {
+            [a, b] => (
+                scalar_f64_binary_op(equation.primitive)?,
+                scalar_f64_operand(a, slots)?,
+                scalar_f64_operand(b, slots)?,
+            ),
+            [a] => {
+                let operand = scalar_f64_operand(a, slots)?;
+                (scalar_unary_op(equation.primitive)?, operand, operand)
+            }
+            _ => return None,
+        };
         steps.push(ScalarF64Step {
             op,
-            lhs: scalar_f64_operand(&equation.inputs[0], slots)?,
-            rhs: scalar_f64_operand(&equation.inputs[1], slots)?,
+            lhs,
+            rhs,
             out_slot,
         });
     }
@@ -2877,6 +2899,8 @@ fn apply_scalar_f64_binary(op: ScalarF64BinaryOp, lhs: f64, rhs: f64) -> f64 {
         ScalarF64BinaryOp::Div => lhs / rhs,
         ScalarF64BinaryOp::Max => jax_max_f64(lhs, rhs),
         ScalarF64BinaryOp::Min => jax_min_f64(lhs, rhs),
+        ScalarF64BinaryOp::Neg => -lhs,
+        ScalarF64BinaryOp::Abs => lhs.abs(),
     }
 }
 
@@ -2994,20 +3018,30 @@ fn build_scalar_i64_arith_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarI64P
         if !equation.params.is_empty()
             || !equation.sub_jaxprs.is_empty()
             || !equation.effects.is_empty()
-            || equation.inputs.len() != 2
             || equation.outputs.len() != 1
         {
             return None;
         }
-        let op = scalar_f64_binary_op(equation.primitive)?;
         let out_slot = equation.outputs[0].0 as usize;
         if out_slot >= slots {
             return None;
         }
+        let (op, lhs, rhs) = match equation.inputs.as_slice() {
+            [a, b] => (
+                scalar_f64_binary_op(equation.primitive)?,
+                scalar_i64_operand(a, slots)?,
+                scalar_i64_operand(b, slots)?,
+            ),
+            [a] => {
+                let operand = scalar_i64_operand(a, slots)?;
+                (scalar_unary_op(equation.primitive)?, operand, operand)
+            }
+            _ => return None,
+        };
         steps.push(ScalarI64Step {
             op,
-            lhs: scalar_i64_operand(&equation.inputs[0], slots)?,
-            rhs: scalar_i64_operand(&equation.inputs[1], slots)?,
+            lhs,
+            rhs,
             out_slot,
         });
     }
@@ -3049,6 +3083,8 @@ fn apply_scalar_i64_binary(op: ScalarF64BinaryOp, lhs: i64, rhs: i64) -> i64 {
         ScalarF64BinaryOp::Div => lhs.checked_div(rhs).unwrap_or(0),
         ScalarF64BinaryOp::Max => lhs.max(rhs),
         ScalarF64BinaryOp::Min => lhs.min(rhs),
+        ScalarF64BinaryOp::Neg => lhs.wrapping_neg(),
+        ScalarF64BinaryOp::Abs => lhs.wrapping_abs(),
     }
 }
 
@@ -3164,20 +3200,30 @@ fn build_scalar_f32_arith_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarF32P
         if !equation.params.is_empty()
             || !equation.sub_jaxprs.is_empty()
             || !equation.effects.is_empty()
-            || equation.inputs.len() != 2
             || equation.outputs.len() != 1
         {
             return None;
         }
-        let op = scalar_f64_binary_op(equation.primitive)?;
         let out_slot = equation.outputs[0].0 as usize;
         if out_slot >= slots {
             return None;
         }
+        let (op, lhs, rhs) = match equation.inputs.as_slice() {
+            [a, b] => (
+                scalar_f64_binary_op(equation.primitive)?,
+                scalar_f32_operand(a, slots)?,
+                scalar_f32_operand(b, slots)?,
+            ),
+            [a] => {
+                let operand = scalar_f32_operand(a, slots)?;
+                (scalar_unary_op(equation.primitive)?, operand, operand)
+            }
+            _ => return None,
+        };
         steps.push(ScalarF32Step {
             op,
-            lhs: scalar_f32_operand(&equation.inputs[0], slots)?,
-            rhs: scalar_f32_operand(&equation.inputs[1], slots)?,
+            lhs,
+            rhs,
             out_slot,
         });
     }
@@ -3221,6 +3267,8 @@ fn apply_scalar_f32_binary(op: ScalarF64BinaryOp, lhs: f32, rhs: f32) -> f32 {
         ScalarF64BinaryOp::Div => lhs / rhs,
         ScalarF64BinaryOp::Max => jax_max_f64(lhs, rhs),
         ScalarF64BinaryOp::Min => jax_min_f64(lhs, rhs),
+        ScalarF64BinaryOp::Neg => -lhs,
+        ScalarF64BinaryOp::Abs => lhs.abs(),
     };
     result as f32
 }
@@ -5286,6 +5334,87 @@ mod tests {
         assert_eq!(planned, generic);
     }
 
+    // Body mixing unary + binary: `out = abs(neg(x) - y)` (Neg, Sub, Abs).
+    // Literal-free → builds all three plans; runtime dtype selects.
+    fn scalar_unary_body_jaxpr() -> Jaxpr {
+        let (x, y, n, d, out) = (VarId(0), VarId(1), VarId(2), VarId(3), VarId(4));
+        let mk =
+            |primitive: Primitive, inputs: smallvec::SmallVec<[Atom; 4]>, output: VarId| Equation {
+                primitive,
+                inputs,
+                outputs: smallvec![output],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            };
+        Jaxpr::new(
+            vec![x, y],
+            vec![],
+            vec![out],
+            vec![
+                mk(Primitive::Neg, smallvec![Atom::Var(x)], n),
+                mk(Primitive::Sub, smallvec![Atom::Var(n), Atom::Var(y)], d),
+                mk(Primitive::Abs, smallvec![Atom::Var(d)], out),
+            ],
+        )
+    }
+
+    #[test]
+    fn scalar_f64_unary_matches_generic_bits() {
+        let jaxpr = scalar_unary_body_jaxpr();
+        let cases = [
+            (1.5_f64, 0.5_f64),
+            (-0.0, 0.0),
+            (f64::INFINITY, 1.0),
+            (f64::NEG_INFINITY, 1.0),
+            (f64::NAN, 2.0),
+            (f64::from_bits(0x7ff8_0000_0000_1234), 2.0),
+        ];
+        for (x, y) in cases {
+            let args = [Value::scalar_f64(x), Value::scalar_f64(y)];
+            let planned = eval_jaxpr(&jaxpr, &args).expect("planned");
+            let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic");
+            assert_eq!(planned, generic, "x={x:?} y={y:?}");
+        }
+    }
+
+    #[test]
+    fn scalar_i64_unary_matches_generic() {
+        // wrapping_neg / wrapping_abs at i64::MIN must match eval_primitive.
+        let jaxpr = scalar_unary_body_jaxpr();
+        let cases = [
+            (5_i64, 3),
+            (-7, 2),
+            (i64::MIN, 0),
+            (i64::MIN, 1),
+            (3, i64::MIN),
+        ];
+        for (x, y) in cases {
+            let args = [Value::scalar_i64(x), Value::scalar_i64(y)];
+            let planned = eval_jaxpr(&jaxpr, &args).expect("planned");
+            let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic");
+            assert_eq!(planned, generic, "x={x} y={y}");
+        }
+    }
+
+    #[test]
+    fn scalar_f32_unary_matches_generic_bits() {
+        let jaxpr = scalar_unary_body_jaxpr();
+        let cases = [
+            (1.5_f32, 0.5_f32),
+            (-0.0, 0.0),
+            (f32::INFINITY, 1.0),
+            (f32::NAN, 2.0),
+            (f32::from_bits(0x7fc0_1234), 2.0),
+        ];
+        for (x, y) in cases {
+            let args = [Value::scalar_f32(x), Value::scalar_f32(y)];
+            let planned = eval_jaxpr(&jaxpr, &args).expect("planned");
+            let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &args).expect("generic");
+            assert_eq!(planned, generic, "x={x:?} y={y:?}");
+        }
+    }
+
     #[test]
     fn const_arity_mismatch_is_reported() {
         let jaxpr = Jaxpr::new(
@@ -5851,6 +5980,82 @@ mod tests {
             t_compiled * 1e9 / n as f64,
             t_generic / t_compiled,
             sha256,
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_scalar_unary_plan_overhead() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        // Unary+binary body `abs(neg(x) - y)` (Neg, Sub, Abs) over f64 scalars.
+        let body = scalar_unary_body_jaxpr();
+        let n: usize = 4_000_000;
+        let args = [Value::scalar_f64(2.5), Value::scalar_f64(-1.0)];
+        let plan = super::build_dense_plan(&body).expect("dense");
+
+        let t_generic = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_env_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan.last_use,
+                    &mut scratch,
+                    &mut o,
+                )
+                .expect("generic");
+                if let Value::Scalar(Literal::F64Bits(b)) = &o[0] {
+                    acc += f64::from_bits(*b);
+                }
+            }
+            std::hint::black_box(acc);
+        });
+
+        let t_compiled = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut bufs = super::ScalarPlanBuffers::default();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan,
+                    &mut scratch,
+                    &mut o,
+                    &mut bufs,
+                )
+                .expect("compiled");
+                if let Value::Scalar(Literal::F64Bits(b)) = &o[0] {
+                    acc += f64::from_bits(*b);
+                }
+            }
+            std::hint::black_box(acc);
+        });
+
+        println!(
+            "BENCH scalar-f64 abs(neg(x)-y) {n} evals (3-op unary+binary): GENERIC {:.1}ns/eval -> COMPILED {:.1}ns/eval = {:.2}x",
+            t_generic * 1e9 / n as f64,
+            t_compiled * 1e9 / n as f64,
+            t_generic / t_compiled,
         );
     }
 
