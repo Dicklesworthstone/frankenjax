@@ -558,7 +558,7 @@ pub fn apply_batch_rule(
         // axis. vmap = run the whole scan independently per batch slice; the
         // per-slice operand carries the original (unbatched) axis param, so
         // batch_passthrough_leading evaluates it correctly.
-        Primitive::AssociativeScan => batch_passthrough_leading(primitive, inputs, params),
+        Primitive::AssociativeScan => batch_associative_scan(inputs, params),
         Primitive::While => batch_while(inputs, params),
         Primitive::Switch => batch_switch(inputs, params),
 
@@ -5647,6 +5647,62 @@ fn batch_scan(
     // General fallback semantics match vmapped scan behavior: each batch
     // element runs an independent scan with its corresponding carry/xs.
     batch_control_flow_fallback(Primitive::Scan, inputs, params)
+}
+
+/// vmap rule for AssociativeScan (parallel prefix scan over the operand's leading
+/// axis; deterministic elementwise combine, no carry/body-jaxpr). Per-slice
+/// (`batch_passthrough_leading`) runs B independent scans + a stack. Instead, move
+/// the batch dim to front, swap it with the scan (leading) axis so time leads
+/// `[T, B, …]`, run ONE `associative_scan` (which prefix-combines the `[B, …]`
+/// slices elementwise — exactly the per-slice result for every batch lane), then
+/// swap back to `[B, T, …]`. The whole-batch call also engages the dense scan fast
+/// paths instead of B small per-slice scans.
+///
+/// PARITY: associative_scan has no axis param (it always scans axis 0), so the
+/// transpose is the only correct redirection; the combine is associative +
+/// deterministic and applied per `[B, …]` lane independently, so the result equals
+/// the per-slice stack. `body_op`/`reverse` pass through unchanged. The rank-0
+/// per-element case (batched scalar — scan is identity) defers to the per-slice
+/// path.
+fn batch_associative_scan(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let input = &inputs[0];
+    let batch_dim = match input.batch_dim {
+        None => {
+            let result =
+                eval_primitive(Primitive::AssociativeScan, std::slice::from_ref(&input.value), params)
+                    .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            return Ok(BatchTracer::unbatched(result));
+        }
+        Some(bd) => bd,
+    };
+
+    // [B, T, …] with the original scan (leading) axis now at position 1.
+    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let full_rank = match &value {
+        Value::Tensor(t) => t.rank(),
+        Value::Scalar(_) => 0,
+    };
+    // Need at least [B, T] (per-element rank ≥ 1) to have a distinct scan axis.
+    if full_rank < 2 {
+        return batch_passthrough_leading(Primitive::AssociativeScan, inputs, params);
+    }
+
+    // Swap axes 0 and 1: [B, T, rest…] <-> [T, B, rest…]. Self-inverse, so the
+    // same permutation transposes there and back.
+    let mut perm: Vec<usize> = (0..full_rank).collect();
+    perm.swap(0, 1);
+    let swap_params = BTreeMap::from([("permutation".to_owned(), format_csv(&perm))]);
+
+    let time_front = eval_primitive(Primitive::Transpose, &[value], &swap_params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    let scanned = eval_primitive(Primitive::AssociativeScan, &[time_front], params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    let batch_front = eval_primitive(Primitive::Transpose, &[scanned], &swap_params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(BatchTracer::batched(batch_front, 0))
 }
 
 #[derive(Clone, Copy)]
@@ -14986,6 +15042,114 @@ mod tests {
         assert_eq!(l_slow, l_fast);
         println!(
             "BENCH vmap(select_n) [{b},{n}] 3 cases: per-slice={:.4}ms single-call={:.4}ms speedup={:.2}x",
+            t_slow * 1e3,
+            t_fast * 1e3,
+            t_slow / t_fast,
+        );
+    }
+
+    #[test]
+    fn batch_associative_scan_matches_per_slice_fallback() {
+        let summary = |t: &BatchTracer| -> (Option<usize>, Vec<u32>, Vec<u64>) {
+            let tensor = t.value.as_tensor().unwrap();
+            let bits: Vec<u64> = tensor
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0).to_bits())
+                .collect();
+            (t.batch_dim, tensor.shape.dims.clone(), bits)
+        };
+        // [B=3, T=4] and [B=3, T=4, X=2]
+        let d2: Vec<f64> = (0..12).map(|i| (i % 5) as f64 - 1.5).collect();
+        let d3: Vec<f64> = (0..24).map(|i| (i % 7) as f64 - 2.0).collect();
+        let mk = |data: &[f64], dims: Vec<u32>, bd: usize| -> BatchTracer {
+            BatchTracer::batched(
+                Value::Tensor(
+                    TensorValue::new(
+                        DType::F64,
+                        Shape { dims },
+                        data.iter().copied().map(Literal::from_f64).collect(),
+                    )
+                    .unwrap(),
+                ),
+                bd,
+            )
+        };
+        // batch-middle physical layouts (batch_dim=1): [T,B] and [T,B,X] reordered.
+        let mid2 = || -> BatchTracer {
+            let (b, t) = (3usize, 4usize);
+            let mut out = vec![0.0; b * t];
+            for bi in 0..b {
+                for ti in 0..t {
+                    out[ti * b + bi] = d2[bi * t + ti];
+                }
+            }
+            mk(&out, vec![t as u32, b as u32], 1)
+        };
+        for (body_op, _) in [("add", 0), ("mul", 0), ("max", 0)] {
+            for reverse in ["false", "true"] {
+                let params = BTreeMap::from([
+                    ("body_op".to_owned(), body_op.to_owned()),
+                    ("reverse".to_owned(), reverse.to_owned()),
+                ]);
+                for ins in [
+                    vec![mk(&d2, vec![3, 4], 0)],
+                    vec![mk(&d3, vec![3, 4, 2], 0)],
+                    vec![mid2()],
+                ] {
+                    let fast = batch_associative_scan(&ins, &params).unwrap();
+                    let slow =
+                        batch_passthrough_leading(Primitive::AssociativeScan, &ins, &params).unwrap();
+                    assert_eq!(
+                        summary(&fast),
+                        summary(&slow),
+                        "assoc_scan body_op={body_op} reverse={reverse}: single-call != per-slice"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_batch_associative_scan_single_call_vs_per_slice() {
+        use std::time::Instant;
+        let (b, t) = (65536usize, 16usize);
+        let data: Vec<f64> = (0..b * t).map(|i| ((i % 101) as f64) * 0.01).collect();
+        let make = || -> Vec<BatchTracer> {
+            vec![BatchTracer::batched(
+                Value::Tensor(
+                    TensorValue::new(
+                        DType::F64,
+                        Shape { dims: vec![b as u32, t as u32] },
+                        data.iter().copied().map(Literal::from_f64).collect(),
+                    )
+                    .unwrap(),
+                ),
+                0,
+            )]
+        };
+        let params = BTreeMap::from([("body_op".to_owned(), "add".to_owned())]);
+        let best = |mut f: Box<dyn FnMut() -> usize>| {
+            let first = f();
+            let mut tm = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                let _ = std::hint::black_box(f());
+                tm = tm.min(s.elapsed().as_secs_f64());
+            }
+            (tm, first)
+        };
+        let len = |r: BatchTracer| -> usize { r.value.as_tensor().unwrap().elements.len() };
+        let (t_slow, l_slow) = best(Box::new(move || {
+            len(batch_passthrough_leading(Primitive::AssociativeScan, &make(), &params).unwrap())
+        }));
+        let params2 = BTreeMap::from([("body_op".to_owned(), "add".to_owned())]);
+        let (t_fast, l_fast) =
+            best(Box::new(move || len(batch_associative_scan(&make(), &params2).unwrap())));
+        assert_eq!(l_slow, l_fast);
+        println!(
+            "BENCH vmap(associative_scan) [{b},{t}]: per-slice={:.4}ms single-call={:.4}ms speedup={:.2}x",
             t_slow * 1e3,
             t_fast * 1e3,
             t_slow / t_fast,
