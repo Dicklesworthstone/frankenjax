@@ -31,6 +31,17 @@ pub(crate) fn work_scaled_threads(elems: usize) -> usize {
     (elems / ELEMS_PER_THREAD).clamp(1, cores)
 }
 
+fn dense_unary_threads(elems: usize) -> usize {
+    const ELEMS_PER_THREAD: usize = 1 << 20; // 1_048_576
+    if elems < ELEMS_PER_THREAD {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1);
+    (elems / ELEMS_PER_THREAD).max(2).min(cores)
+}
+
 #[inline]
 fn is_expensive_binary(primitive: Primitive) -> bool {
     matches!(
@@ -4636,13 +4647,8 @@ pub(crate) fn eval_unary_elementwise_parallel(
         && tensor.dtype == DType::F64
         && let Some(src) = tensor.elements.as_f64_slice()
     {
-        const PARALLEL_MIN_ELEMS: usize = 1 << 18; // 262_144 — enough work to amortize the thread fan-out even for the cheaper kept ops
         let n = src.len();
-        let threads = if n >= PARALLEL_MIN_ELEMS {
-            work_scaled_threads(n)
-        } else {
-            1
-        };
+        let threads = dense_unary_threads(n);
         if threads > 1 {
             let mut out = vec![0.0f64; n];
             let chunk = n.div_ceil(threads);
@@ -4682,13 +4688,8 @@ pub(crate) fn eval_unary_elementwise_parallel(
         && tensor.dtype == DType::F32
         && let Some(src) = tensor.elements.as_f32_slice()
     {
-        const PARALLEL_MIN_ELEMS: usize = 1 << 18; // 262_144 — match the f64 threshold
         let n = src.len();
-        let threads = if n >= PARALLEL_MIN_ELEMS {
-            work_scaled_threads(n)
-        } else {
-            1
-        };
+        let threads = dense_unary_threads(n);
         if threads > 1 {
             let mut out = vec![0.0f32; n];
             let chunk = n.div_ceil(threads);
@@ -4727,14 +4728,9 @@ pub(crate) fn eval_unary_elementwise_parallel(
         && matches!(tensor.dtype, DType::BF16 | DType::F16)
         && let Some(src) = tensor.elements.as_half_float_slice()
     {
-        const PARALLEL_MIN_ELEMS: usize = 1 << 18; // 262_144 — match the f64/f32 threshold
         let n = src.len();
         let dt = tensor.dtype;
-        let threads = if n >= PARALLEL_MIN_ELEMS {
-            work_scaled_threads(n)
-        } else {
-            1
-        };
+        let threads = dense_unary_threads(n);
         if threads > 1 {
             let mut out = vec![0u16; n];
             let chunk = n.div_ceil(threads);
@@ -15956,6 +15952,55 @@ mod tests {
         assert_eq!(
             fixture_id_from_json(&golden_bits).unwrap(),
             "05f74679299f58d4736eaa85fee8265afdc992a428f9cf4e260fd36b1297e2c7"
+        );
+    }
+
+    #[test]
+    fn dense_f64_exp_unary_grain_preserves_output_bits_and_golden() {
+        let n = (1usize << 20) + 17;
+        assert_eq!(dense_unary_threads((1usize << 20) - 1), 1);
+        if std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            > 1
+        {
+            assert_eq!(dense_unary_threads(n), 2);
+        }
+
+        let mut data: Vec<f64> = (0..n)
+            .map(|i| ((i % 16_383) as f64) * 1.0e-4 - 0.75)
+            .collect();
+        data[0] = -0.0;
+        data[1] = 0.0;
+        data[2] = f64::INFINITY;
+        data[3] = f64::NEG_INFINITY;
+        data[4] = f64::from_bits(0x7ff8_0000_0000_0042);
+
+        let shape = Shape {
+            dims: vec![n as u32],
+        };
+        let dense =
+            Value::Tensor(TensorValue::new_f64_values(shape.clone(), data.clone()).unwrap());
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                shape,
+                data.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        );
+
+        let dense_bits =
+            extract_f64_bits_vec(&eval_exp(Primitive::Exp, std::slice::from_ref(&dense)).unwrap());
+        let boxed_bits =
+            extract_f64_bits_vec(&eval_exp(Primitive::Exp, std::slice::from_ref(&boxed)).unwrap());
+
+        assert_eq!(dense_bits, boxed_bits);
+        let digest = fixture_id_from_json(&dense_bits).unwrap();
+        eprintln!("dense f64 exp unary-grain golden digest: {digest}");
+        assert_eq!(
+            digest,
+            "e35daabbc391dc11d594a4c87f3bad3c885ceaeb9bb9c1a06c12985f6b8c09f3"
         );
     }
 
