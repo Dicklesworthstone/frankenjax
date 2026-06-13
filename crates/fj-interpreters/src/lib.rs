@@ -2733,9 +2733,81 @@ enum ScalarF64BinaryOp {
     Min,
     Neg,
     Abs,
+    // Unary transcendental / rounding ops. For a REAL f64 scalar these all reduce
+    // to `Literal::from_f64(f64::FUNC(x))` in the generic interpreter
+    // (`eval_unary_elementwise` scalar arm, reached via `eval_exp`/`eval_log`/… →
+    // `eval_unary_elementwise_parallel` which is serial for scalars), so computing
+    // the same `f64::FUNC` here is BIT-IDENTICAL. This unlocks scalar activation
+    // bodies (sigmoid `exp(x)/(1+exp(x))`, softplus, tanh-gelu/silu, …) that
+    // otherwise fall back to the tree-walking interpreter.
+    Exp,
+    Log,
+    Log2,
+    Exp2,
+    Expm1,
+    Log1p,
+    Sqrt,
+    Rsqrt,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Sinh,
+    Cosh,
+    Tanh,
+    Asinh,
+    Acosh,
+    Atanh,
+    Floor,
+    Ceil,
+    Trunc,
+    Deg2Rad,
+    Rad2Deg,
 }
 
 fn scalar_unary_op(primitive: Primitive) -> Option<ScalarF64BinaryOp> {
+    match primitive {
+        Primitive::Neg => Some(ScalarF64BinaryOp::Neg),
+        Primitive::Abs => Some(ScalarF64BinaryOp::Abs),
+        // Bit-identical to the generic scalar path (plain `f64::FUNC`, no params,
+        // no complex — the arena is f64-only). Kept in lockstep with the
+        // `eval_unary_elementwise_parallel(.., f64::FUNC)` arms in fj-lax/src/lib.rs.
+        Primitive::Exp => Some(ScalarF64BinaryOp::Exp),
+        Primitive::Log => Some(ScalarF64BinaryOp::Log),
+        Primitive::Log2 => Some(ScalarF64BinaryOp::Log2),
+        Primitive::Exp2 => Some(ScalarF64BinaryOp::Exp2),
+        Primitive::Expm1 => Some(ScalarF64BinaryOp::Expm1),
+        Primitive::Log1p => Some(ScalarF64BinaryOp::Log1p),
+        Primitive::Sqrt => Some(ScalarF64BinaryOp::Sqrt),
+        Primitive::Rsqrt => Some(ScalarF64BinaryOp::Rsqrt),
+        Primitive::Sin => Some(ScalarF64BinaryOp::Sin),
+        Primitive::Cos => Some(ScalarF64BinaryOp::Cos),
+        Primitive::Tan => Some(ScalarF64BinaryOp::Tan),
+        Primitive::Asin => Some(ScalarF64BinaryOp::Asin),
+        Primitive::Acos => Some(ScalarF64BinaryOp::Acos),
+        Primitive::Atan => Some(ScalarF64BinaryOp::Atan),
+        Primitive::Sinh => Some(ScalarF64BinaryOp::Sinh),
+        Primitive::Cosh => Some(ScalarF64BinaryOp::Cosh),
+        Primitive::Tanh => Some(ScalarF64BinaryOp::Tanh),
+        Primitive::Asinh => Some(ScalarF64BinaryOp::Asinh),
+        Primitive::Acosh => Some(ScalarF64BinaryOp::Acosh),
+        Primitive::Atanh => Some(ScalarF64BinaryOp::Atanh),
+        Primitive::Floor => Some(ScalarF64BinaryOp::Floor),
+        Primitive::Ceil => Some(ScalarF64BinaryOp::Ceil),
+        Primitive::Trunc => Some(ScalarF64BinaryOp::Trunc),
+        Primitive::Deg2Rad => Some(ScalarF64BinaryOp::Deg2Rad),
+        Primitive::Rad2Deg => Some(ScalarF64BinaryOp::Rad2Deg),
+        _ => None,
+    }
+}
+
+/// Integer-valid unary ops only. The transcendental/rounding variants of
+/// `ScalarF64BinaryOp` are float-only (no integer JAX primitive produces them),
+/// so the i64 scalar plan must never admit them — keeping `apply_scalar_i64_binary`
+/// reachable only for the integer arms.
+fn scalar_int_unary_op(primitive: Primitive) -> Option<ScalarF64BinaryOp> {
     match primitive {
         Primitive::Neg => Some(ScalarF64BinaryOp::Neg),
         Primitive::Abs => Some(ScalarF64BinaryOp::Abs),
@@ -2901,6 +2973,34 @@ fn apply_scalar_f64_binary(op: ScalarF64BinaryOp, lhs: f64, rhs: f64) -> f64 {
         ScalarF64BinaryOp::Min => jax_min_f64(lhs, rhs),
         ScalarF64BinaryOp::Neg => -lhs,
         ScalarF64BinaryOp::Abs => lhs.abs(),
+        // Unary math: `rhs` is a copy of `lhs` (set by the runner for no-rhs steps)
+        // and ignored. Each matches the corresponding `f64::FUNC` the generic
+        // scalar interpreter applies, so the result bits are identical.
+        ScalarF64BinaryOp::Exp => lhs.exp(),
+        ScalarF64BinaryOp::Log => lhs.ln(),
+        ScalarF64BinaryOp::Log2 => lhs.log2(),
+        ScalarF64BinaryOp::Exp2 => lhs.exp2(),
+        ScalarF64BinaryOp::Expm1 => lhs.exp_m1(),
+        ScalarF64BinaryOp::Log1p => lhs.ln_1p(),
+        ScalarF64BinaryOp::Sqrt => lhs.sqrt(),
+        ScalarF64BinaryOp::Rsqrt => 1.0 / lhs.sqrt(),
+        ScalarF64BinaryOp::Sin => lhs.sin(),
+        ScalarF64BinaryOp::Cos => lhs.cos(),
+        ScalarF64BinaryOp::Tan => lhs.tan(),
+        ScalarF64BinaryOp::Asin => lhs.asin(),
+        ScalarF64BinaryOp::Acos => lhs.acos(),
+        ScalarF64BinaryOp::Atan => lhs.atan(),
+        ScalarF64BinaryOp::Sinh => lhs.sinh(),
+        ScalarF64BinaryOp::Cosh => lhs.cosh(),
+        ScalarF64BinaryOp::Tanh => lhs.tanh(),
+        ScalarF64BinaryOp::Asinh => lhs.asinh(),
+        ScalarF64BinaryOp::Acosh => lhs.acosh(),
+        ScalarF64BinaryOp::Atanh => lhs.atanh(),
+        ScalarF64BinaryOp::Floor => lhs.floor(),
+        ScalarF64BinaryOp::Ceil => lhs.ceil(),
+        ScalarF64BinaryOp::Trunc => lhs.trunc(),
+        ScalarF64BinaryOp::Deg2Rad => lhs.to_radians(),
+        ScalarF64BinaryOp::Rad2Deg => lhs.to_degrees(),
     }
 }
 
@@ -3037,7 +3137,7 @@ fn build_scalar_i64_arith_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarI64P
             ),
             [a] => {
                 let operand = scalar_i64_operand(a, slots)?;
-                (scalar_unary_op(equation.primitive)?, operand, None)
+                (scalar_int_unary_op(equation.primitive)?, operand, None)
             }
             _ => return None,
         };
@@ -3088,6 +3188,10 @@ fn apply_scalar_i64_binary(op: ScalarF64BinaryOp, lhs: i64, rhs: i64) -> i64 {
         ScalarF64BinaryOp::Min => lhs.min(rhs),
         ScalarF64BinaryOp::Neg => lhs.wrapping_neg(),
         ScalarF64BinaryOp::Abs => lhs.wrapping_abs(),
+        // Float-only transcendental/rounding ops never enter an i64 plan:
+        // `scalar_f64_binary_op` (binary) and `scalar_int_unary_op` (unary, the
+        // only mappers feeding `build_scalar_i64_arith_plan`) emit none of them.
+        _ => unreachable!("transcendental op in i64 scalar plan"),
     }
 }
 
@@ -3275,6 +3379,33 @@ fn apply_scalar_f32_binary(op: ScalarF64BinaryOp, lhs: f32, rhs: f32) -> f32 {
         ScalarF64BinaryOp::Min => jax_min_f64(lhs, rhs),
         ScalarF64BinaryOp::Neg => -lhs,
         ScalarF64BinaryOp::Abs => lhs.abs(),
+        // Widened operands run the f64 op, then `result as f32` narrows — exactly
+        // the generic f32 scalar contract `from_f32(f64::FUNC(f64::from(x)) as f32)`.
+        ScalarF64BinaryOp::Exp => lhs.exp(),
+        ScalarF64BinaryOp::Log => lhs.ln(),
+        ScalarF64BinaryOp::Log2 => lhs.log2(),
+        ScalarF64BinaryOp::Exp2 => lhs.exp2(),
+        ScalarF64BinaryOp::Expm1 => lhs.exp_m1(),
+        ScalarF64BinaryOp::Log1p => lhs.ln_1p(),
+        ScalarF64BinaryOp::Sqrt => lhs.sqrt(),
+        ScalarF64BinaryOp::Rsqrt => 1.0 / lhs.sqrt(),
+        ScalarF64BinaryOp::Sin => lhs.sin(),
+        ScalarF64BinaryOp::Cos => lhs.cos(),
+        ScalarF64BinaryOp::Tan => lhs.tan(),
+        ScalarF64BinaryOp::Asin => lhs.asin(),
+        ScalarF64BinaryOp::Acos => lhs.acos(),
+        ScalarF64BinaryOp::Atan => lhs.atan(),
+        ScalarF64BinaryOp::Sinh => lhs.sinh(),
+        ScalarF64BinaryOp::Cosh => lhs.cosh(),
+        ScalarF64BinaryOp::Tanh => lhs.tanh(),
+        ScalarF64BinaryOp::Asinh => lhs.asinh(),
+        ScalarF64BinaryOp::Acosh => lhs.acosh(),
+        ScalarF64BinaryOp::Atanh => lhs.atanh(),
+        ScalarF64BinaryOp::Floor => lhs.floor(),
+        ScalarF64BinaryOp::Ceil => lhs.ceil(),
+        ScalarF64BinaryOp::Trunc => lhs.trunc(),
+        ScalarF64BinaryOp::Deg2Rad => lhs.to_radians(),
+        ScalarF64BinaryOp::Rad2Deg => lhs.to_degrees(),
     };
     result as f32
 }
@@ -6234,6 +6365,346 @@ mod tests {
             t_old * 1e9 / n as f64,
             t_new * 1e9 / n as f64,
             t_old / t_new,
+        );
+    }
+
+    #[test]
+    fn scalar_arena_transcendentals_bit_identical_to_generic() {
+        // Proves the scalar-f64/f32 arena handles unary transcendental/rounding ops
+        // BIT-FOR-BIT identically to the generic tree-walking interpreter, and that
+        // the arena is ACTUALLY selected (non-vacuous): build_dense_plan must
+        // populate scalar_f64_plan/scalar_f32_plan for these bodies.
+        let mk = |p: Primitive, ins: smallvec::SmallVec<[Atom; 4]>, o: VarId| Equation {
+            primitive: p,
+            inputs: ins,
+            outputs: smallvec![o],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        // Every newly-arena'd unary op. Inputs span negatives, zero, sub/super-unit,
+        // and large magnitudes — including domain violations (e.g. Log/Sqrt/Acos of a
+        // negative -> NaN), which must yield IDENTICAL NaN bits since both paths call
+        // the same `f64::FUNC`. Bit comparison (not Value PartialEq) handles NaN.
+        let ops = [
+            Primitive::Exp,
+            Primitive::Log,
+            Primitive::Log2,
+            Primitive::Exp2,
+            Primitive::Expm1,
+            Primitive::Log1p,
+            Primitive::Sqrt,
+            Primitive::Rsqrt,
+            Primitive::Sin,
+            Primitive::Cos,
+            Primitive::Tan,
+            Primitive::Asin,
+            Primitive::Acos,
+            Primitive::Atan,
+            Primitive::Sinh,
+            Primitive::Cosh,
+            Primitive::Tanh,
+            Primitive::Asinh,
+            Primitive::Acosh,
+            Primitive::Atanh,
+            Primitive::Floor,
+            Primitive::Ceil,
+            Primitive::Trunc,
+            Primitive::Deg2Rad,
+            Primitive::Rad2Deg,
+        ];
+        let xs = [
+            -100.0_f64, -5.0, -1.5, -1.0, -0.5, -0.0, 0.0, 0.3, 0.5, 0.9999, 1.0, 1.5, 2.0, 3.7,
+            100.0,
+        ];
+
+        let bits_f64 = |v: &Value| -> u64 {
+            match v {
+                Value::Scalar(Literal::F64Bits(b)) => *b,
+                other => panic!("expected f64 scalar, got {other:?}"),
+            }
+        };
+        let bits_f32 = |v: &Value| -> u32 {
+            match v {
+                Value::Scalar(Literal::F32Bits(b)) => *b,
+                other => panic!("expected f32 scalar, got {other:?}"),
+            }
+        };
+
+        for op in ops {
+            let (x, out) = (VarId(0), VarId(1));
+            let body = Jaxpr::new(
+                vec![x],
+                vec![],
+                vec![out],
+                vec![mk(op, smallvec![Atom::Var(x)], out)],
+            );
+            let plan = super::build_dense_plan(&body).expect("dense plan");
+            assert!(
+                plan.scalar_f64_plan.is_some(),
+                "{op:?} not routed through the scalar f64 arena"
+            );
+            assert!(
+                plan.scalar_f32_plan.is_some(),
+                "{op:?} not routed through the scalar f32 arena"
+            );
+
+            for &xv in &xs {
+                // f64
+                let args = [Value::scalar_f64(xv)];
+                let mut genv: Vec<Option<Value>> = vec![None; plan.slots];
+                let mut gscr: Vec<Value> = Vec::new();
+                let mut gout: Vec<Value> = Vec::new();
+                super::run_dense_env_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut genv,
+                    &plan.last_use,
+                    &mut gscr,
+                    &mut gout,
+                )
+                .expect("generic f64");
+
+                let mut cenv: Vec<Option<Value>> = vec![None; plan.slots];
+                let mut cscr: Vec<Value> = Vec::new();
+                let mut cout: Vec<Value> = Vec::new();
+                let mut bufs = super::ScalarPlanBuffers::default();
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut cenv,
+                    &plan,
+                    &mut cscr,
+                    &mut cout,
+                    &mut bufs,
+                )
+                .expect("compiled f64");
+                assert_eq!(
+                    bits_f64(&cout[0]),
+                    bits_f64(&gout[0]),
+                    "{op:?}({xv}) f64 arena bits differ from generic"
+                );
+
+                // f32 (JAX default float): widen→f64→narrow contract.
+                let args32 = [Value::Scalar(Literal::from_f32(xv as f32))];
+                let mut g32: Vec<Option<Value>> = vec![None; plan.slots];
+                let mut gs32: Vec<Value> = Vec::new();
+                let mut go32: Vec<Value> = Vec::new();
+                super::run_dense_env_into(
+                    &body,
+                    &[],
+                    &args32,
+                    &mut g32,
+                    &plan.last_use,
+                    &mut gs32,
+                    &mut go32,
+                )
+                .expect("generic f32");
+                let mut c32: Vec<Option<Value>> = vec![None; plan.slots];
+                let mut cs32: Vec<Value> = Vec::new();
+                let mut co32: Vec<Value> = Vec::new();
+                let mut bufs32 = super::ScalarPlanBuffers::default();
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args32,
+                    &mut c32,
+                    &plan,
+                    &mut cs32,
+                    &mut co32,
+                    &mut bufs32,
+                )
+                .expect("compiled f32");
+                assert_eq!(
+                    bits_f32(&co32[0]),
+                    bits_f32(&go32[0]),
+                    "{op:?}({xv}) f32 arena bits differ from generic"
+                );
+            }
+        }
+
+        // Multi-op activation body (sigmoid·tanh blend) to prove chaining through the
+        // arena stays bit-identical: out = (exp(x)/(1+exp(x)))·tanh(x) + sqrt(1+exp(x)) − log(1+exp(x)).
+        let (x, e, d, s, t, q, lg, m, a8, out) = (
+            VarId(0),
+            VarId(1),
+            VarId(2),
+            VarId(3),
+            VarId(4),
+            VarId(5),
+            VarId(6),
+            VarId(7),
+            VarId(8),
+            VarId(9),
+        );
+        let one = Atom::Lit(Literal::from_f64(1.0));
+        let body = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                mk(Primitive::Exp, smallvec![Atom::Var(x)], e),
+                mk(Primitive::Add, smallvec![Atom::Var(e), one], d),
+                mk(Primitive::Div, smallvec![Atom::Var(e), Atom::Var(d)], s),
+                mk(Primitive::Tanh, smallvec![Atom::Var(x)], t),
+                mk(Primitive::Sqrt, smallvec![Atom::Var(d)], q),
+                mk(Primitive::Log, smallvec![Atom::Var(d)], lg),
+                mk(Primitive::Mul, smallvec![Atom::Var(s), Atom::Var(t)], m),
+                mk(Primitive::Add, smallvec![Atom::Var(m), Atom::Var(q)], a8),
+                mk(Primitive::Sub, smallvec![Atom::Var(a8), Atom::Var(lg)], out),
+            ],
+        );
+        let plan = super::build_dense_plan(&body).expect("dense plan");
+        assert!(plan.scalar_f64_plan.is_some(), "chained body not arena'd");
+        for &xv in &xs {
+            let args = [Value::scalar_f64(xv)];
+            let mut genv: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut gscr: Vec<Value> = Vec::new();
+            let mut gout: Vec<Value> = Vec::new();
+            super::run_dense_env_into(
+                &body,
+                &[],
+                &args,
+                &mut genv,
+                &plan.last_use,
+                &mut gscr,
+                &mut gout,
+            )
+            .expect("generic chain");
+            let mut cenv: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut cscr: Vec<Value> = Vec::new();
+            let mut cout: Vec<Value> = Vec::new();
+            let mut bufs = super::ScalarPlanBuffers::default();
+            super::run_dense_plan_into(
+                &body,
+                &[],
+                &args,
+                &mut cenv,
+                &plan,
+                &mut cscr,
+                &mut cout,
+                &mut bufs,
+            )
+            .expect("compiled chain");
+            assert_eq!(
+                bits_f64(&cout[0]),
+                bits_f64(&gout[0]),
+                "chained activation body bits differ at x={xv}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_scalar_arena_transcendental_body() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        let mk = |p: Primitive, ins: smallvec::SmallVec<[Atom; 4]>, o: VarId| Equation {
+            primitive: p,
+            inputs: ins,
+            outputs: smallvec![o],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        // sigmoid·tanh activation body (9 ops, 4 transcendental). GENERIC = prepared
+        // dense runner through the generic interpreter; COMPILED = scalar f64 arena.
+        let (x, e, d, s, t, q, lg, m, a8, out) = (
+            VarId(0),
+            VarId(1),
+            VarId(2),
+            VarId(3),
+            VarId(4),
+            VarId(5),
+            VarId(6),
+            VarId(7),
+            VarId(8),
+            VarId(9),
+        );
+        let one = Atom::Lit(Literal::from_f64(1.0));
+        let body = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                mk(Primitive::Exp, smallvec![Atom::Var(x)], e),
+                mk(Primitive::Add, smallvec![Atom::Var(e), one], d),
+                mk(Primitive::Div, smallvec![Atom::Var(e), Atom::Var(d)], s),
+                mk(Primitive::Tanh, smallvec![Atom::Var(x)], t),
+                mk(Primitive::Sqrt, smallvec![Atom::Var(d)], q),
+                mk(Primitive::Log, smallvec![Atom::Var(d)], lg),
+                mk(Primitive::Mul, smallvec![Atom::Var(s), Atom::Var(t)], m),
+                mk(Primitive::Add, smallvec![Atom::Var(m), Atom::Var(q)], a8),
+                mk(Primitive::Sub, smallvec![Atom::Var(a8), Atom::Var(lg)], out),
+            ],
+        );
+        let plan = super::build_dense_plan(&body).expect("dense plan");
+        assert!(plan.scalar_f64_plan.is_some());
+        let n: usize = 2_000_000;
+        let args = [Value::scalar_f64(0.7)];
+
+        let t_generic = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_env_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan.last_use,
+                    &mut scratch,
+                    &mut o,
+                )
+                .expect("generic");
+                if let Value::Scalar(Literal::F64Bits(b)) = &o[0] {
+                    acc += f64::from_bits(*b);
+                }
+            }
+            std::hint::black_box(acc);
+        });
+        let t_compiled = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut bufs = super::ScalarPlanBuffers::default();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan,
+                    &mut scratch,
+                    &mut o,
+                    &mut bufs,
+                )
+                .expect("compiled");
+                if let Value::Scalar(Literal::F64Bits(b)) = &o[0] {
+                    acc += f64::from_bits(*b);
+                }
+            }
+            std::hint::black_box(acc);
+        });
+        println!(
+            "BENCH activation-body dispatch {n} evals (9-op, 4 transcendental): GENERIC {:.1}ns/eval -> COMPILED {:.1}ns/eval = {:.2}x",
+            t_generic * 1e9 / n as f64,
+            t_compiled * 1e9 / n as f64,
+            t_generic / t_compiled,
         );
     }
 
