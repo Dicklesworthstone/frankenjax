@@ -984,6 +984,11 @@ enum LiteralBufferStorage {
         values: Arc<Vec<f64>>,
         literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
     },
+    F64OnePlusXPlusX {
+        base: Arc<Vec<f64>>,
+        values: Arc<OnceLock<Arc<Vec<f64>>>>,
+        literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
+    },
     /// Dense `f32` storage. f32 is JAX's DEFAULT float dtype, so a packed
     /// `&[f32]` slice (`as_f32_slice`) lets the hottest ML paths (f32 elementwise
     /// transcendentals, threaded activations) avoid per-element `Literal`
@@ -1060,6 +1065,17 @@ impl LiteralBuffer {
         Self {
             storage: LiteralBufferStorage::F64 {
                 values: Arc::new(values),
+                literals: Arc::new(OnceLock::new()),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn from_f64_one_plus_x_plus_x(base: Arc<Vec<f64>>) -> Self {
+        Self {
+            storage: LiteralBufferStorage::F64OnePlusXPlusX {
+                base,
+                values: Arc::new(OnceLock::new()),
                 literals: Arc::new(OnceLock::new()),
             },
         }
@@ -1213,6 +1229,19 @@ impl LiteralBuffer {
             LiteralBufferStorage::F64 { values, literals } => literals
                 .get_or_init(|| Arc::new(values.iter().copied().map(Literal::from_f64).collect()))
                 .as_slice(),
+            LiteralBufferStorage::F64OnePlusXPlusX {
+                base,
+                values,
+                literals,
+            } => {
+                let values =
+                    values.get_or_init(|| Arc::new(materialize_f64_one_plus_x_plus_x(base)));
+                literals
+                    .get_or_init(|| {
+                        Arc::new(values.iter().copied().map(Literal::from_f64).collect())
+                    })
+                    .as_slice()
+            }
             LiteralBufferStorage::F32 { values, literals } => literals
                 .get_or_init(|| Arc::new(values.iter().copied().map(Literal::from_f32).collect()))
                 .as_slice(),
@@ -1286,6 +1315,11 @@ impl LiteralBuffer {
         match &self.storage {
             LiteralBufferStorage::Literals(_) => None,
             LiteralBufferStorage::F64 { values, .. } => Some(values.as_slice()),
+            LiteralBufferStorage::F64OnePlusXPlusX { base, values, .. } => Some(
+                values
+                    .get_or_init(|| Arc::new(materialize_f64_one_plus_x_plus_x(base)))
+                    .as_slice(),
+            ),
             LiteralBufferStorage::F32 { .. } => None,
             LiteralBufferStorage::HalfFloat { .. } => None,
             LiteralBufferStorage::I64 { .. } => None,
@@ -1294,6 +1328,19 @@ impl LiteralBuffer {
             LiteralBufferStorage::Complex { .. } => None,
             LiteralBufferStorage::RepeatedPatches { .. } => None,
             LiteralBufferStorage::Concat { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn f64_values_arc(&self) -> Option<Arc<Vec<f64>>> {
+        match &self.storage {
+            LiteralBufferStorage::F64 { values, .. } => Some(Arc::clone(values)),
+            LiteralBufferStorage::F64OnePlusXPlusX { base, values, .. } => {
+                Some(Arc::clone(values.get_or_init(|| {
+                    Arc::new(materialize_f64_one_plus_x_plus_x(base))
+                })))
+            }
+            _ => None,
         }
     }
 
@@ -1357,6 +1404,7 @@ impl LiteralBuffer {
             LiteralBufferStorage::I64 { values, .. } => Some(values.as_slice()),
             LiteralBufferStorage::Literals(_)
             | LiteralBufferStorage::F64 { .. }
+            | LiteralBufferStorage::F64OnePlusXPlusX { .. }
             | LiteralBufferStorage::F32 { .. }
             | LiteralBufferStorage::HalfFloat { .. }
             | LiteralBufferStorage::Bool { .. }
@@ -1373,6 +1421,7 @@ impl LiteralBuffer {
             LiteralBufferStorage::Bool { values, .. } => Some(values.as_slice()),
             LiteralBufferStorage::Literals(_)
             | LiteralBufferStorage::F64 { .. }
+            | LiteralBufferStorage::F64OnePlusXPlusX { .. }
             | LiteralBufferStorage::F32 { .. }
             | LiteralBufferStorage::HalfFloat { .. }
             | LiteralBufferStorage::I64 { .. }
@@ -1396,6 +1445,7 @@ impl LiteralBuffer {
         match &self.storage {
             LiteralBufferStorage::Literals(elements) => elements.len(),
             LiteralBufferStorage::F64 { values, .. } => values.len(),
+            LiteralBufferStorage::F64OnePlusXPlusX { base, .. } => base.len(),
             LiteralBufferStorage::F32 { values, .. } => values.len(),
             LiteralBufferStorage::HalfFloat { values, .. } => values.len(),
             LiteralBufferStorage::I64 { values, .. } => values.len(),
@@ -1421,6 +1471,7 @@ impl LiteralBuffer {
         if matches!(
             self.storage,
             LiteralBufferStorage::F64 { .. }
+                | LiteralBufferStorage::F64OnePlusXPlusX { .. }
                 | LiteralBufferStorage::F32 { .. }
                 | LiteralBufferStorage::HalfFloat { .. }
                 | LiteralBufferStorage::I64 { .. }
@@ -1437,6 +1488,7 @@ impl LiteralBuffer {
         match &mut self.storage {
             LiteralBufferStorage::Literals(elements) => Arc::make_mut(elements),
             LiteralBufferStorage::F64 { .. }
+            | LiteralBufferStorage::F64OnePlusXPlusX { .. }
             | LiteralBufferStorage::F32 { .. }
             | LiteralBufferStorage::HalfFloat { .. }
             | LiteralBufferStorage::I64 { .. }
@@ -1482,6 +1534,17 @@ impl Clone for LiteralBuffer {
             },
             LiteralBufferStorage::F64 { values, literals } => Self {
                 storage: LiteralBufferStorage::F64 {
+                    values: Arc::clone(values),
+                    literals: Arc::clone(literals),
+                },
+            },
+            LiteralBufferStorage::F64OnePlusXPlusX {
+                base,
+                values,
+                literals,
+            } => Self {
+                storage: LiteralBufferStorage::F64OnePlusXPlusX {
+                    base: Arc::clone(base),
                     values: Arc::clone(values),
                     literals: Arc::clone(literals),
                 },
@@ -1649,6 +1712,25 @@ impl IntoIterator for LiteralBuffer {
                 }
 
                 values
+                    .iter()
+                    .copied()
+                    .map(Literal::from_f64)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            }
+            LiteralBufferStorage::F64OnePlusXPlusX {
+                base,
+                values,
+                literals,
+            } => {
+                if let Some(materialized) = literals.get() {
+                    return Arc::try_unwrap(Arc::clone(materialized))
+                        .unwrap_or_else(|elements| (*elements).clone())
+                        .into_iter();
+                }
+
+                values
+                    .get_or_init(|| Arc::new(materialize_f64_one_plus_x_plus_x(&base)))
                     .iter()
                     .copied()
                     .map(Literal::from_f64)
@@ -1846,6 +1928,17 @@ fn materialize_bool_words(words: &[u64], len: usize) -> Vec<Literal> {
         out.push(Literal::Bool(bit != 0));
     }
     out
+}
+
+fn materialize_f64_one_plus_x_plus_x(base: &[f64]) -> Vec<f64> {
+    let mut values = Vec::with_capacity(base.len());
+    for &x in base {
+        let mut value = 1.0_f64;
+        value += x;
+        value += x;
+        values.push(value);
+    }
+    values
 }
 
 fn materialize_repeated_patches(

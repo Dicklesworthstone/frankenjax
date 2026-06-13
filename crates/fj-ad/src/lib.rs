@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::cloned_ref_to_slice_refs)]
 
-use fj_core::{Atom, DType, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
+use fj_core::{
+    Atom, DType, Jaxpr, Literal, LiteralBuffer, Primitive, Shape, TensorValue, Value, VarId,
+};
 use fj_lax::{eval_igamma_grad_a, eval_primitive, eval_primitive_multi};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
@@ -1110,21 +1112,17 @@ fn try_dense_f64_square_plus_linear_reducesum_grad(
     if tensor.dtype != DType::F64 {
         return Ok(None);
     }
-    let Some(input) = tensor.elements.as_f64_slice() else {
+    let Some(input) = tensor.elements.f64_values_arc() else {
         return Ok(None);
     };
 
-    let mut grad = Vec::with_capacity(input.len());
-    for &x in input {
-        let mut cotangent = 1.0_f64;
-        cotangent += x;
-        cotangent += x;
-        grad.push(cotangent);
-    }
-
-    let grad = TensorValue::new_f64_values(tensor.shape.clone(), grad)
-        .map(Value::Tensor)
-        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    let grad = TensorValue::new_with_literal_buffer(
+        DType::F64,
+        tensor.shape.clone(),
+        LiteralBuffer::from_f64_one_plus_x_plus_x(input),
+    )
+    .map(Value::Tensor)
+    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
     Ok(Some(vec![grad]))
 }
 
