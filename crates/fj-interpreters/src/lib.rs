@@ -4211,6 +4211,273 @@ fn run_scalar_select_plan_into(
     Some(Ok(()))
 }
 
+// ── scalar mixed i64/bool SELECT arena (sibling of the f64 select arena) ─────
+// Integer-conditional scalar bodies — `select(cond, i+1, i)` masked carry updates,
+// integer clamps, index logic — that mix i64 arithmetic + an i64 comparison (→bool)
+// + a `select` with i64 branches. These appear in scan/while CARRY bodies (the
+// per-iteration regime where dispatch elimination pays the most). Reuses
+// `apply_scalar_i64_binary` (wrapping int ops) + `apply_int_compare` (the proven
+// bit-identical integer comparison, shared with the cond-predicate plans), and
+// `select = if cond { on_true } else { on_false }` — bit-identical to fj-lax
+// `eval_select`'s same-dtype I64 scalar arm. Built alongside the f64 select plan and
+// tried at runtime; a body whose runtime slots are not i64/bool bails to generic.
+
+#[derive(Clone, Copy)]
+enum MixedI64Slot {
+    Missing,
+    NonI64,
+    I64(i64),
+    Bool(bool),
+}
+
+enum ScalarSelectI64Step {
+    I64 {
+        op: ScalarF64BinaryOp,
+        lhs: ScalarI64Operand,
+        rhs: Option<ScalarI64Operand>,
+        out_slot: usize,
+    },
+    Compare {
+        op: Primitive,
+        lhs: ScalarI64Operand,
+        rhs: ScalarI64Operand,
+        out_slot: usize,
+    },
+    Select {
+        cond: BoolOperand,
+        on_true: ScalarI64Operand,
+        on_false: ScalarI64Operand,
+        out_slot: usize,
+    },
+}
+
+struct ScalarSelectI64Plan {
+    slots: usize,
+    const_slots: Vec<usize>,
+    input_slots: Vec<usize>,
+    out_slots: Vec<usize>,
+    steps: Vec<ScalarSelectI64Step>,
+}
+
+fn build_scalar_select_i64_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarSelectI64Plan> {
+    if jaxpr.equations.is_empty() || !jaxpr.effects.is_empty() {
+        return None;
+    }
+    if !jaxpr
+        .equations
+        .iter()
+        .any(|e| e.primitive == Primitive::Select)
+    {
+        return None;
+    }
+
+    let mut steps = Vec::with_capacity(jaxpr.equations.len());
+    for equation in &jaxpr.equations {
+        if !equation.sub_jaxprs.is_empty()
+            || !equation.effects.is_empty()
+            || equation.outputs.len() != 1
+        {
+            return None;
+        }
+        let out_slot = equation.outputs[0].0 as usize;
+        if out_slot >= slots {
+            return None;
+        }
+
+        if equation.primitive == Primitive::Select {
+            if !equation.params.is_empty() || equation.inputs.len() != 3 {
+                return None;
+            }
+            steps.push(ScalarSelectI64Step::Select {
+                cond: bool_operand(&equation.inputs[0], slots)?,
+                on_true: scalar_i64_operand(&equation.inputs[1], slots)?,
+                on_false: scalar_i64_operand(&equation.inputs[2], slots)?,
+                out_slot,
+            });
+            continue;
+        }
+
+        if let Some(op) = scalar_compare_primitive(equation.primitive) {
+            if !equation.params.is_empty() || equation.inputs.len() != 2 {
+                return None;
+            }
+            steps.push(ScalarSelectI64Step::Compare {
+                op,
+                lhs: scalar_i64_operand(&equation.inputs[0], slots)?,
+                rhs: scalar_i64_operand(&equation.inputs[1], slots)?,
+                out_slot,
+            });
+            continue;
+        }
+
+        // Integer arithmetic: binary (Add/Sub/Mul/Div/Max/Min) or unary (Neg/Abs),
+        // matching the i64-arith plan's resolvers and wrapping semantics. No params.
+        if !equation.params.is_empty() {
+            return None;
+        }
+        let (op, lhs, rhs) = match equation.inputs.as_slice() {
+            [a, b] => (
+                scalar_int_binary_op(equation.primitive)?,
+                scalar_i64_operand(a, slots)?,
+                Some(scalar_i64_operand(b, slots)?),
+            ),
+            [a] => (
+                scalar_int_unary_op(equation.primitive)?,
+                scalar_i64_operand(a, slots)?,
+                None,
+            ),
+            _ => return None,
+        };
+        steps.push(ScalarSelectI64Step::I64 {
+            op,
+            lhs,
+            rhs,
+            out_slot,
+        });
+    }
+
+    Some(ScalarSelectI64Plan {
+        slots,
+        const_slots: var_slots(&jaxpr.constvars, slots)?,
+        input_slots: var_slots(&jaxpr.invars, slots)?,
+        out_slots: var_slots(&jaxpr.outvars, slots)?,
+        steps,
+    })
+}
+
+fn mixed_i64_slot_from_value(value: &Value) -> MixedI64Slot {
+    match value {
+        Value::Scalar(Literal::I64(v)) => MixedI64Slot::I64(*v),
+        Value::Scalar(Literal::Bool(b)) => MixedI64Slot::Bool(*b),
+        Value::Scalar(_) | Value::Tensor(_) => MixedI64Slot::NonI64,
+    }
+}
+
+fn read_mixed_i64(
+    slots: &[MixedI64Slot],
+    operand: ScalarI64Operand,
+) -> Result<Option<i64>, InterpreterError> {
+    match operand {
+        ScalarI64Operand::Literal(value) => Ok(Some(value)),
+        ScalarI64Operand::Slot(slot) => match slots[slot] {
+            MixedI64Slot::I64(value) => Ok(Some(value)),
+            MixedI64Slot::Bool(_) | MixedI64Slot::NonI64 => Ok(None),
+            MixedI64Slot::Missing => Err(InterpreterError::MissingVariable(VarId(slot as u32))),
+        },
+    }
+}
+
+fn read_mixed_i64_bool(
+    slots: &[MixedI64Slot],
+    operand: BoolOperand,
+) -> Result<Option<bool>, InterpreterError> {
+    match operand {
+        BoolOperand::Lit(value) => Ok(Some(value)),
+        BoolOperand::Slot(slot) => match slots[slot] {
+            MixedI64Slot::Bool(value) => Ok(Some(value)),
+            MixedI64Slot::I64(_) | MixedI64Slot::NonI64 => Ok(None),
+            MixedI64Slot::Missing => Err(InterpreterError::MissingVariable(VarId(slot as u32))),
+        },
+    }
+}
+
+fn run_scalar_select_i64_plan_into(
+    plan: &ScalarSelectI64Plan,
+    const_values: &[Value],
+    args: &[Value],
+    out: &mut Vec<Value>,
+    slots: &mut Vec<MixedI64Slot>,
+) -> Option<Result<(), InterpreterError>> {
+    if const_values.len() != plan.const_slots.len() {
+        return Some(Err(InterpreterError::ConstArity {
+            expected: plan.const_slots.len(),
+            actual: const_values.len(),
+        }));
+    }
+    if args.len() != plan.input_slots.len() {
+        return Some(Err(InterpreterError::InputArity {
+            expected: plan.input_slots.len(),
+            actual: args.len(),
+        }));
+    }
+
+    slots.clear();
+    slots.resize(plan.slots, MixedI64Slot::Missing);
+    for (&slot, value) in plan.const_slots.iter().zip(const_values) {
+        slots[slot] = mixed_i64_slot_from_value(value);
+    }
+    for (&slot, value) in plan.input_slots.iter().zip(args) {
+        slots[slot] = mixed_i64_slot_from_value(value);
+    }
+
+    macro_rules! read_i64 {
+        ($op:expr) => {
+            match read_mixed_i64(slots, $op) {
+                Ok(Some(v)) => v,
+                Ok(None) => return None,
+                Err(e) => return Some(Err(e)),
+            }
+        };
+    }
+
+    for step in &plan.steps {
+        match step {
+            ScalarSelectI64Step::I64 {
+                op,
+                lhs,
+                rhs,
+                out_slot,
+            } => {
+                let l = read_i64!(*lhs);
+                let r = match rhs {
+                    Some(rhs) => read_i64!(*rhs),
+                    None => l,
+                };
+                slots[*out_slot] = MixedI64Slot::I64(apply_scalar_i64_binary(*op, l, r));
+            }
+            ScalarSelectI64Step::Compare {
+                op,
+                lhs,
+                rhs,
+                out_slot,
+            } => {
+                let l = read_i64!(*lhs);
+                let r = read_i64!(*rhs);
+                slots[*out_slot] = MixedI64Slot::Bool(apply_int_compare(*op, l, r));
+            }
+            ScalarSelectI64Step::Select {
+                cond,
+                on_true,
+                on_false,
+                out_slot,
+            } => {
+                let c = match read_mixed_i64_bool(slots, *cond) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => return None,
+                    Err(e) => return Some(Err(e)),
+                };
+                let t = read_i64!(*on_true);
+                let f = read_i64!(*on_false);
+                slots[*out_slot] = MixedI64Slot::I64(if c { t } else { f });
+            }
+        }
+    }
+
+    out.clear();
+    out.reserve(plan.out_slots.len());
+    for &slot in &plan.out_slots {
+        match slots[slot] {
+            MixedI64Slot::I64(value) => out.push(Value::scalar_i64(value)),
+            MixedI64Slot::Bool(value) => out.push(Value::scalar_bool(value)),
+            MixedI64Slot::NonI64 => return None,
+            MixedI64Slot::Missing => {
+                return Some(Err(InterpreterError::MissingVariable(VarId(slot as u32))));
+            }
+        }
+    }
+    Some(Ok(()))
+}
+
 /// Reusable scratch arenas for monomorphic scalar executors. A loop body builds
 /// only the plan(s) whose literals and boolean intermediates match its shape,
 /// and the runner tries them in order; each non-matching plan bails on the first
@@ -4222,6 +4489,7 @@ struct ScalarPlanBuffers {
     f32: Vec<ScalarF32Slot>,
     bools: Vec<Option<bool>>,
     mixed: Vec<MixedSlot>,
+    mixed_i64: Vec<MixedI64Slot>,
 }
 
 /// A reusable dense-evaluation plan for a jaxpr: the slot count and the
@@ -4238,6 +4506,7 @@ struct DenseEvalPlan {
     scalar_compare_plan: Option<ScalarComparePlan>,
     scalar_compound_compare_plan: Option<ScalarCompoundComparePlan>,
     scalar_select_plan: Option<ScalarSelectPlan>,
+    scalar_select_i64_plan: Option<ScalarSelectI64Plan>,
 }
 
 /// Build a [`DenseEvalPlan`] iff the jaxpr's variable ids are dense enough for the
@@ -4267,6 +4536,7 @@ fn build_dense_plan(jaxpr: &Jaxpr) -> Option<DenseEvalPlan> {
             scalar_compare_plan: build_scalar_compare_plan(jaxpr),
             scalar_compound_compare_plan: build_scalar_compound_compare_plan(jaxpr, slots),
             scalar_select_plan: build_scalar_select_plan(jaxpr, slots),
+            scalar_select_i64_plan: build_scalar_select_i64_plan(jaxpr, slots),
         })
     } else {
         None
@@ -4288,6 +4558,7 @@ fn eval_jaxpr_dense_env(
         scalar_compare_plan: build_scalar_compare_plan(jaxpr),
         scalar_compound_compare_plan: build_scalar_compound_compare_plan(jaxpr, slots),
         scalar_select_plan: build_scalar_select_plan(jaxpr, slots),
+        scalar_select_i64_plan: build_scalar_select_i64_plan(jaxpr, slots),
     };
     let mut env: Vec<Option<Value>> = vec![None; slots];
     run_dense_plan(jaxpr, const_values, args, &mut env, &plan)
@@ -4368,6 +4639,17 @@ fn run_dense_plan_into(
     if let Some(p) = &plan.scalar_select_plan
         && let Some(result) =
             run_scalar_select_plan_into(p, const_values, args, out, &mut scalar_buffers.mixed)
+    {
+        return result;
+    }
+    if let Some(p) = &plan.scalar_select_i64_plan
+        && let Some(result) = run_scalar_select_i64_plan_into(
+            p,
+            const_values,
+            args,
+            out,
+            &mut scalar_buffers.mixed_i64,
+        )
     {
         return result;
     }
