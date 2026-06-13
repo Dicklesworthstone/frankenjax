@@ -3933,6 +3933,156 @@ fn eval_reduce_window_dense_i64(
 ///
 /// The Bool-accumulator case of the generic loop, specialized for a dense `bool`
 /// source: the per-tap `Literal` gather + string-dispatched accumulate is
+/// Dense complex reduce_window (any rank, sum/max/min, Complex64/Complex128).
+///
+/// The Complex case of the generic loop, specialized for a dense `(re, im)`
+/// source: replaces the per-tap `Literal` gather + string-dispatched accumulate
+/// with a direct `(f64, f64)` read and a single op over the same row-major
+/// tap-offset stencil and interior/border split as `eval_reduce_window_dense_i64`.
+///
+/// BIT-FOR-BIT identical to the generic Complex accumulator: same window order
+/// (so the f64 component sums round identically), the SAME lexicographic
+/// `reduce_window_complex_ge` for max/min, the SAME init
+/// (`reduce_window_complex_initial`: max=(−∞,−∞), min=(+∞,+∞), sum=(0,0)) — and
+/// OOB/border taps contribute that init, a no-op for every op. Output preserves
+/// the input complex dtype.
+#[allow(clippy::too_many_arguments)]
+fn eval_reduce_window_dense_complex(
+    dtype: fj_core::DType,
+    reduce_op: &str,
+    src: &[(f64, f64)],
+    window_dims: &[usize],
+    strides: &[usize],
+    out_dims: &[u32],
+    pad_lows: &[usize],
+    input_dims: &[usize],
+    input_strides: &[usize],
+    total_output: usize,
+) -> Result<Value, EvalError> {
+    let rank = window_dims.len();
+    let win_total: usize = window_dims.iter().product();
+
+    let mut tap_coord = vec![0usize; rank];
+    let mut tap_offsets: Vec<usize> = Vec::with_capacity(win_total);
+    let mut tap_coords: Vec<Vec<usize>> = Vec::with_capacity(win_total);
+    for _ in 0..win_total {
+        let mut off = 0usize;
+        for d in 0..rank {
+            off += tap_coord[d] * input_strides[d];
+        }
+        tap_offsets.push(off);
+        tap_coords.push(tap_coord.clone());
+        let mut carry = true;
+        for d in (0..rank).rev() {
+            if carry {
+                tap_coord[d] += 1;
+                if tap_coord[d] >= window_dims[d] {
+                    tap_coord[d] = 0;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Op {
+        Sum,
+        Max,
+        Min,
+    }
+    let op = match reduce_op {
+        "max" => Op::Max,
+        "min" => Op::Min,
+        _ => Op::Sum,
+    };
+    let init = reduce_window_complex_initial(reduce_op);
+    let combine = |acc: (f64, f64), tap: (f64, f64)| -> (f64, f64) {
+        match op {
+            Op::Sum => (acc.0 + tap.0, acc.1 + tap.1),
+            Op::Max => {
+                if reduce_window_complex_ge(tap, acc) {
+                    tap
+                } else {
+                    acc
+                }
+            }
+            Op::Min => {
+                if !reduce_window_complex_ge(tap, acc) {
+                    tap
+                } else {
+                    acc
+                }
+            }
+        }
+    };
+
+    let out_dims_usize: Vec<usize> = out_dims.iter().map(|&d| d as usize).collect();
+    let mut out_idx = vec![0usize; rank];
+    let mut values: Vec<(f64, f64)> = Vec::with_capacity(total_output);
+
+    for _ in 0..total_output {
+        let mut interior = true;
+        let mut base: isize = 0;
+        for d in 0..rank {
+            let corner = out_idx[d] as isize * strides[d] as isize - pad_lows[d] as isize;
+            if corner < 0 || corner + (window_dims[d] as isize - 1) >= input_dims[d] as isize {
+                interior = false;
+                break;
+            }
+            base += corner * input_strides[d] as isize;
+        }
+
+        let mut acc = init;
+        if interior {
+            let base = base as usize;
+            for &off in &tap_offsets {
+                acc = combine(acc, src[base + off]);
+            }
+        } else {
+            for coords in &tap_coords {
+                let mut in_bounds = true;
+                let mut flat = 0usize;
+                for d in (0..rank).rev() {
+                    let padded = out_idx[d] * strides[d] + coords[d];
+                    if padded < pad_lows[d] {
+                        in_bounds = false;
+                        break;
+                    }
+                    let ip = padded - pad_lows[d];
+                    if ip >= input_dims[d] {
+                        in_bounds = false;
+                        break;
+                    }
+                    flat += ip * input_strides[d];
+                }
+                let tap = if in_bounds { src[flat] } else { init };
+                acc = combine(acc, tap);
+            }
+        }
+        values.push(acc);
+
+        let mut carry = true;
+        for d in (0..rank).rev() {
+            if carry {
+                out_idx[d] += 1;
+                if out_idx[d] >= out_dims_usize[d] {
+                    out_idx[d] = 0;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+    }
+
+    let shape = Shape {
+        dims: out_dims.to_vec(),
+    };
+    Ok(Value::Tensor(
+        TensorValue::new_complex_values(dtype, shape, values).map_err(EvalError::from)?,
+    ))
+}
+
 /// replaced by a direct `bool` read and a single op selected ONCE, over the same
 /// row-major tap-offset stencil with the same interior/border split as
 /// `eval_reduce_window_dense_i64`.
@@ -4696,6 +4846,41 @@ fn eval_reduce_window(
             })?;
         }
         return eval_reduce_window_dense_bool(
+            reduce_op,
+            src,
+            &window_dims,
+            &strides,
+            &out_dims,
+            &pad_lows,
+            &input_dims,
+            &input_strides,
+            total_output,
+        );
+    }
+
+    // Dense complex fast path (ANY rank, sum/max/min): complex windowed reductions
+    // (FFT-domain pooling/integration) ran the generic per-`Literal` gather. Dense
+    // Complex storage exposes a `(re, im)` slice; read it directly and run the
+    // hoisted op. Bit-identical to the generic Complex accumulator (same window
+    // order for the component sums, same lexicographic complex_ge for max/min,
+    // same ∓∞/(0,0) init — see eval_reduce_window_dense_complex).
+    if no_base_dilation
+        && no_window_dilation
+        && matches!(tensor.dtype, fj_core::DType::Complex64 | fj_core::DType::Complex128)
+        && matches!(reduce_op, "max" | "min" | "sum")
+        && let Some(src) = tensor.elements.as_complex_slice()
+    {
+        let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+        let mut input_strides = vec![1usize; rank];
+        let mut stride_mult = 1usize;
+        for d in (0..rank).rev() {
+            input_strides[d] = stride_mult;
+            stride_mult = stride_mult.checked_mul(input_dims[d]).ok_or_else(|| {
+                reduce_window_unsupported(primitive, "reduce_window stride multiplier overflow")
+            })?;
+        }
+        return eval_reduce_window_dense_complex(
+            tensor.dtype,
             reduce_op,
             src,
             &window_dims,
@@ -13640,6 +13825,74 @@ mod tests {
                 g*1e3, d*1e3, g/d,
             );
         }
+    }
+
+    #[test]
+    fn reduce_window_complex_dense_matches_generic() {
+        // Dense complex reduce_window (HalfFloat... Complex storage) must equal the
+        // generic per-Literal path (boxed Complex literals), for sum/max/min, across
+        // VALID/SAME padding and strides. complex max/min use lexicographic
+        // complex_ge; sum accumulates (re,im) in window order.
+        let (rows, cols) = (13usize, 11usize);
+        let raw: Vec<(f64, f64)> = (0..rows * cols)
+            .map(|i| {
+                let a = (i as f64) * 0.3 - 5.0;
+                let b = ((i * 7 % 23) as f64) - 9.0;
+                (a, b)
+            })
+            .collect();
+        let dims = vec![rows as u32, cols as u32];
+        let dense = Value::Tensor(
+            TensorValue::new_complex_values(DType::Complex128, Shape { dims: dims.clone() }, raw.clone())
+                .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape { dims: dims.clone() },
+                raw.iter().map(|&(re, im)| Literal::from_complex128(re, im)).collect(),
+            )
+            .unwrap(),
+        );
+        let bits = |v: &Value| -> Vec<(u64, u64)> {
+            v.as_tensor().unwrap().elements.iter().map(|l| match l {
+                Literal::Complex128Bits(re, im) => (*re, *im),
+                o => panic!("expected Complex128Bits, got {o:?}"),
+            }).collect()
+        };
+        for op in ["sum", "max", "min"] {
+            for (win, strd, pad) in [("3,3", "1,1", "VALID"), ("4,4", "2,2", "VALID"), ("3,3", "1,1", "SAME")] {
+                let params = rw_params_with_padding(op, win, strd, pad);
+                let d = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &params).unwrap();
+                let g = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &params).unwrap();
+                assert_eq!(bits(&d), bits(&g), "complex {op} win={win} pad={pad}: dense != generic");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_reduce_window_complex_dense_vs_generic() {
+        use std::time::Instant;
+        let (n, w) = (384usize, 3usize);
+        let raw: Vec<(f64, f64)> = (0..n * n).map(|i| ((i % 97) as f64 * 0.1, (i % 53) as f64 * 0.2)).collect();
+        let dims = vec![n as u32, n as u32];
+        let dense = Value::Tensor(TensorValue::new_complex_values(DType::Complex128, Shape { dims: dims.clone() }, raw.clone()).unwrap());
+        let boxed = Value::Tensor(TensorValue::new(DType::Complex128, Shape { dims: dims.clone() }, raw.iter().map(|&(re,im)| Literal::from_complex128(re,im)).collect()).unwrap());
+        let params = rw_params("sum", "3,3", "1,1");
+        let sumbits = |v: &Value| -> u64 {
+            v.as_tensor().unwrap().elements.iter().fold(0u64, |a, l| match l { Literal::Complex128Bits(re,_) => a.wrapping_add(*re), _=>a })
+        };
+        let time = |input: &Value| {
+            let _ = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(input), &params).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..8 { let t = Instant::now(); let _ = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(input), &params).unwrap(); best = best.min(t.elapsed().as_secs_f64()); }
+            best
+        };
+        assert_eq!(sumbits(&eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &params).unwrap()),
+                   sumbits(&eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &params).unwrap()), "parity");
+        let g = time(&boxed); let d = time(&dense);
+        println!("BENCH reduce_window Complex128 sum([{n},{n}],win=3x3): generic={:.4}ms dense={:.4}ms speedup={:.2}x", g*1e3, d*1e3, g/d);
     }
 
     #[test]
