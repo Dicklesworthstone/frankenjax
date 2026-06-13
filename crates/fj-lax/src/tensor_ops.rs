@@ -5029,8 +5029,23 @@ fn extremum_along_axis(
     if let Some(values) = tensor.elements.as_f64_slice() {
         for outer in 0..outer_count {
             let base = base_of(outer)?;
-            let best_idx =
-                arg_extreme_float(axis_dim, find_max, |i| values[base + i * axis_stride]);
+            let best_idx = if axis_stride == 1 {
+                let end = base
+                    .checked_add(axis_dim)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "argmin/argmax contiguous axis slice overflowed".to_owned(),
+                    })?;
+                let row = values.get(base..end).ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: format!(
+                        "argmin/argmax contiguous slice {base}..{end} out of bounds for {total} elements"
+                    ),
+                })?;
+                arg_extreme_f64_contiguous_simd(row, find_max)
+            } else {
+                arg_extreme_float(axis_dim, find_max, |i| values[base + i * axis_stride])
+            };
             result_elements.push(Literal::I64(best_idx as i64));
         }
     } else if let Some(values) = tensor.elements.as_i64_slice() {
@@ -5057,9 +5072,25 @@ fn extremum_along_axis(
         // -NaN/±0.0 tie behavior.
         for outer in 0..outer_count {
             let base = base_of(outer)?;
-            let best_idx = arg_extreme_float(axis_dim, find_max, |i| {
-                f64::from(values[base + i * axis_stride])
-            });
+            let best_idx = if axis_stride == 1 {
+                let end = base
+                    .checked_add(axis_dim)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "argmin/argmax contiguous axis slice overflowed".to_owned(),
+                    })?;
+                let row = values.get(base..end).ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: format!(
+                        "argmin/argmax contiguous slice {base}..{end} out of bounds for {total} elements"
+                    ),
+                })?;
+                arg_extreme_f32_contiguous_simd(row, find_max)
+            } else {
+                arg_extreme_float(axis_dim, find_max, |i| {
+                    f64::from(values[base + i * axis_stride])
+                })
+            };
             result_elements.push(Literal::I64(best_idx as i64));
         }
     } else if matches!(
@@ -5788,6 +5819,140 @@ fn arg_extreme_float<F: Fn(usize) -> f64>(n: usize, find_max: bool, get: F) -> u
         }
         i += 1;
     }
+    best_idx
+}
+
+fn arg_extreme_f64_contiguous_simd(values: &[f64], find_max: bool) -> usize {
+    use std::simd::cmp::SimdPartialOrd;
+    use std::simd::num::SimdFloat;
+    use std::simd::{Select, Simd};
+
+    const LANES: usize = 8;
+    debug_assert!(!values.is_empty());
+    if values.len() < LANES {
+        return arg_extreme_float(values.len(), find_max, |i| values[i]);
+    }
+
+    let (first, rest) = values.split_at(LANES);
+    let first_values = Simd::<f64, LANES>::from_slice(first);
+    if first_values.is_nan().any() {
+        return arg_extreme_float(values.len(), find_max, |i| values[i]);
+    }
+
+    let mut best_values = first_values;
+    let mut best_indices = Simd::<usize, LANES>::from_array(std::array::from_fn(|lane| lane));
+    let mut offset = LANES;
+    let mut chunks = rest.chunks_exact(LANES);
+
+    for chunk in chunks.by_ref() {
+        let row_values = Simd::<f64, LANES>::from_slice(chunk);
+        if row_values.is_nan().any() {
+            return arg_extreme_float(values.len(), find_max, |i| values[i]);
+        }
+        let row_indices =
+            Simd::<usize, LANES>::from_array(std::array::from_fn(|lane| offset + lane));
+        let better = if find_max {
+            row_values.simd_gt(best_values)
+        } else {
+            row_values.simd_lt(best_values)
+        };
+        best_values = better.select(row_values, best_values);
+        best_indices = better.select(row_indices, best_indices);
+        offset += LANES;
+    }
+
+    let best_values_array = best_values.to_array();
+    let best_indices_array = best_indices.to_array();
+    let mut best = best_values_array[0];
+    let mut best_idx = best_indices_array[0];
+    for lane in 1..LANES {
+        let value = best_values_array[lane];
+        let idx = best_indices_array[lane];
+        let better = if find_max { value > best } else { value < best };
+        if better || (value == best && idx < best_idx) {
+            best = value;
+            best_idx = idx;
+        }
+    }
+
+    for (tail_offset, &value) in chunks.remainder().iter().enumerate() {
+        if value.is_nan() {
+            return arg_extreme_float(values.len(), find_max, |i| values[i]);
+        }
+        let better = if find_max { value > best } else { value < best };
+        if better {
+            best = value;
+            best_idx = offset + tail_offset;
+        }
+    }
+
+    best_idx
+}
+
+fn arg_extreme_f32_contiguous_simd(values: &[f32], find_max: bool) -> usize {
+    use std::simd::cmp::SimdPartialOrd;
+    use std::simd::num::SimdFloat;
+    use std::simd::{Select, Simd};
+
+    const LANES: usize = 16;
+    debug_assert!(!values.is_empty());
+    if values.len() < LANES {
+        return arg_extreme_float(values.len(), find_max, |i| f64::from(values[i]));
+    }
+
+    let (first, rest) = values.split_at(LANES);
+    let first_values = Simd::<f32, LANES>::from_slice(first);
+    if first_values.is_nan().any() {
+        return arg_extreme_float(values.len(), find_max, |i| f64::from(values[i]));
+    }
+
+    let mut best_values = first_values;
+    let mut best_indices = Simd::<usize, LANES>::from_array(std::array::from_fn(|lane| lane));
+    let mut offset = LANES;
+    let mut chunks = rest.chunks_exact(LANES);
+
+    for chunk in chunks.by_ref() {
+        let row_values = Simd::<f32, LANES>::from_slice(chunk);
+        if row_values.is_nan().any() {
+            return arg_extreme_float(values.len(), find_max, |i| f64::from(values[i]));
+        }
+        let row_indices =
+            Simd::<usize, LANES>::from_array(std::array::from_fn(|lane| offset + lane));
+        let better = if find_max {
+            row_values.simd_gt(best_values)
+        } else {
+            row_values.simd_lt(best_values)
+        };
+        best_values = better.select(row_values, best_values);
+        best_indices = better.select(row_indices, best_indices);
+        offset += LANES;
+    }
+
+    let best_values_array = best_values.to_array();
+    let best_indices_array = best_indices.to_array();
+    let mut best = best_values_array[0];
+    let mut best_idx = best_indices_array[0];
+    for lane in 1..LANES {
+        let value = best_values_array[lane];
+        let idx = best_indices_array[lane];
+        let better = if find_max { value > best } else { value < best };
+        if better || (value == best && idx < best_idx) {
+            best = value;
+            best_idx = idx;
+        }
+    }
+
+    for (tail_offset, &value) in chunks.remainder().iter().enumerate() {
+        if value.is_nan() {
+            return arg_extreme_float(values.len(), find_max, |i| f64::from(values[i]));
+        }
+        let better = if find_max { value > best } else { value < best };
+        if better {
+            best = value;
+            best_idx = offset + tail_offset;
+        }
+    }
+
     best_idx
 }
 
@@ -14051,6 +14216,129 @@ mod tests {
             };
             assert_eq!(eval(&dense), eval(&boxed), "f32 {prim:?} dense vs generic");
         }
+    }
+
+    #[test]
+    fn argmax_argmin_contiguous_simd_float_matches_generic_and_golden()
+    -> Result<(), Box<dyn std::error::Error>> {
+        fn f32_case() -> (Value, Value) {
+            let rows = 5usize;
+            let cols = 73usize;
+            let mut data: Vec<f32> = (0..rows * cols)
+                .map(|i| ((i as f32) * 0.017).sin() * 31.0 - ((i % 19) as f32))
+                .collect();
+            data[3] = 250.0;
+            data[11] = 250.0;
+            data[cols + 7] = -250.0;
+            data[cols + 29] = -250.0;
+            for value in &mut data[2 * cols..3 * cols] {
+                *value = 0.0;
+            }
+            data[2 * cols] = -0.0;
+            data[2 * cols + 1] = 0.0;
+            data[3 * cols + 13] = f32::from_bits(0xffc0_0001);
+            data[3 * cols + 41] = 1_000.0;
+            data[3 * cols + 59] = f32::NAN;
+
+            let shape = Shape {
+                dims: vec![rows as u32, cols as u32],
+            };
+            let dense =
+                Value::Tensor(TensorValue::new_f32_values(shape.clone(), data.clone()).unwrap());
+            let boxed = Value::Tensor(
+                TensorValue::new(
+                    DType::F32,
+                    shape,
+                    data.into_iter().map(Literal::from_f32).collect(),
+                )
+                .unwrap(),
+            );
+            (dense, boxed)
+        }
+
+        fn f64_case() -> (Value, Value) {
+            let rows = 4usize;
+            let cols = 67usize;
+            let mut data: Vec<f64> = (0..rows * cols)
+                .map(|i| ((i as f64) * 0.023).cos() * 41.0 - ((i % 23) as f64))
+                .collect();
+            data[5] = 500.0;
+            data[17] = 500.0;
+            data[cols + 4] = -500.0;
+            data[cols + 33] = -500.0;
+            for value in &mut data[2 * cols..3 * cols] {
+                *value = 0.0;
+            }
+            data[2 * cols] = 0.0;
+            data[2 * cols + 1] = -0.0;
+            data[3 * cols + 12] = f64::from_bits(0xfff8_0000_0000_0001);
+            data[3 * cols + 30] = -1_000.0;
+            data[3 * cols + 52] = f64::NAN;
+
+            let shape = Shape {
+                dims: vec![rows as u32, cols as u32],
+            };
+            let dense =
+                Value::Tensor(TensorValue::new_f64_values(shape.clone(), data.clone()).unwrap());
+            let boxed = Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    shape,
+                    data.into_iter().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            );
+            (dense, boxed)
+        }
+
+        let p = params(&[("axis", "1")]);
+        let mut fixtures: Vec<(&str, Vec<i64>)> = Vec::new();
+        let (f32_dense, f32_boxed) = f32_case();
+        let (f64_dense, f64_boxed) = f64_case();
+        for (label, dense, boxed) in [("f32", f32_dense, f32_boxed), ("f64", f64_dense, f64_boxed)]
+        {
+            for prim in [Primitive::Argmax, Primitive::Argmin] {
+                let dense_out = if prim == Primitive::Argmax {
+                    eval_argmax(prim, std::slice::from_ref(&dense), &p).unwrap()
+                } else {
+                    eval_argmin(prim, std::slice::from_ref(&dense), &p).unwrap()
+                };
+                let boxed_out = if prim == Primitive::Argmax {
+                    eval_argmax(prim, std::slice::from_ref(&boxed), &p).unwrap()
+                } else {
+                    eval_argmin(prim, std::slice::from_ref(&boxed), &p).unwrap()
+                };
+                let dense_indices = extract_i64_vec(&dense_out);
+                assert_eq!(
+                    dense_indices,
+                    extract_i64_vec(&boxed_out),
+                    "{label} {prim:?} dense SIMD vs boxed generic"
+                );
+                fixtures.push((
+                    if prim == Primitive::Argmax {
+                        match label {
+                            "f32" => "f32_argmax",
+                            "f64" => "f64_argmax",
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        match label {
+                            "f32" => "f32_argmin",
+                            "f64" => "f64_argmin",
+                            _ => unreachable!(),
+                        }
+                    },
+                    dense_indices,
+                ));
+            }
+        }
+
+        let digest = fj_test_utils::fixture_id_from_json(&fixtures)?;
+        assert_eq!(
+            digest, "9d58e890fff3ceeba4962617ae365536954e31e42aab7ba4d05f5160e9698e2f",
+            "contiguous argmin/argmax digest changed"
+        );
+        Ok(())
     }
 
     #[test]
