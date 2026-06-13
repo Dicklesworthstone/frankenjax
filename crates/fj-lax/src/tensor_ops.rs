@@ -4658,6 +4658,80 @@ fn order_top_k_pairs(pairs: &mut Vec<(u64, u32)>, scratch: &mut Vec<(u64, u32)>,
     }
 }
 
+/// Process `n_slices` independent top-k slices — slice `s` writes its first `k`
+/// `(value,index)` results to `out_vals[s*k..(s+1)*k]` / `out_idx[s*k..(s+1)*k]`
+/// — by calling `per_slice(s, vals_chunk, idx_chunk, pairs, scratch)`. Each
+/// slice's partial selection is cache-resident and compute-bound, and output
+/// slice `s` depends only on input slice `s` (the `per_slice` reader closes over
+/// a shared `&[_]`), so large workloads fan out across threads with each thread
+/// owning disjoint `out_vals`/`out_idx` sub-slices plus its own pairs/scratch —
+/// BIT-IDENTICAL to the serial loop for ANY partition (proven by
+/// `threaded_top_k_matches_serial_reference_large_multislice`). Mirrors
+/// [`for_each_contiguous_sort_slice`]; gated on the same
+/// `SORT_PARALLEL_MIN_TOTAL_ELEMS` total-work threshold (`n_slices * stride`).
+/// Below it (or with one core, or `k == 0`) it runs the prior single-threaded
+/// loop with one shared scratch.
+fn for_each_top_k_slice<V, F>(
+    out_vals: &mut [V],
+    out_idx: &mut [i64],
+    k: usize,
+    stride: usize,
+    n_slices: usize,
+    per_slice: F,
+) where
+    V: Send,
+    F: Fn(usize, &mut [V], &mut [i64], &mut Vec<(u64, u32)>, &mut Vec<(u64, u32)>) + Sync,
+{
+    let total = n_slices.saturating_mul(stride);
+    let hardware = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    let threads = if k > 0 && total >= SORT_PARALLEL_MIN_TOTAL_ELEMS {
+        hardware.min(total / SORT_PARALLEL_MIN_TOTAL_ELEMS).max(1)
+    } else {
+        1
+    };
+
+    if threads <= 1 {
+        let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(stride);
+        let mut scratch: Vec<(u64, u32)> = Vec::new();
+        for (s, (vchunk, ichunk)) in out_vals
+            .chunks_mut(k.max(1))
+            .zip(out_idx.chunks_mut(k.max(1)))
+            .enumerate()
+        {
+            per_slice(s, vchunk, ichunk, &mut pairs, &mut scratch);
+        }
+        return;
+    }
+
+    let chunk_slices = n_slices.div_ceil(threads);
+    let per_slice = &per_slice;
+    std::thread::scope(|scope| {
+        let mut vrest: &mut [V] = out_vals;
+        let mut irest: &mut [i64] = out_idx;
+        let mut start_slice = 0usize;
+        while start_slice < n_slices {
+            let group = chunk_slices.min(n_slices - start_slice);
+            let (vblock, vtail) = vrest.split_at_mut(group * k);
+            let (iblock, itail) = irest.split_at_mut(group * k);
+            vrest = vtail;
+            irest = itail;
+            let base_slice = start_slice;
+            scope.spawn(move || {
+                let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(stride);
+                let mut scratch: Vec<(u64, u32)> = Vec::new();
+                for (j, (vchunk, ichunk)) in
+                    vblock.chunks_mut(k).zip(iblock.chunks_mut(k)).enumerate()
+                {
+                    per_slice(base_slice + j, vchunk, ichunk, &mut pairs, &mut scratch);
+                }
+            });
+            start_slice += group;
+        }
+    });
+}
+
 /// Dense i64/f64 TopK fast path over the last (contiguous) axis: for each slice,
 /// order `(complement key, in-slice index)` pairs and take the first `k`. The
 /// complement (`!total_order_key`) turns ascending order into
@@ -4677,24 +4751,28 @@ fn eval_top_k_dense(
     if stride < RADIX_SORT_MIN_AXIS {
         return Ok(None);
     }
-    let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(stride);
-    let mut scratch: Vec<(u64, u32)> = Vec::new();
-    let mut out_idx: Vec<i64> = Vec::with_capacity(n_slices * k);
-
     if let Some(values) = tensor.elements.as_i64_slice() {
-        let mut out_vals: Vec<i64> = Vec::with_capacity(n_slices * k);
-        for slice in 0..n_slices {
-            let base = slice * stride;
-            pairs.clear();
-            for (i, &v) in values[base..base + stride].iter().enumerate() {
-                pairs.push((!((v as u64) ^ (1_u64 << 63)), i as u32));
-            }
-            order_top_k_pairs(&mut pairs, &mut scratch, k);
-            for &(_, orig) in pairs.iter().take(k) {
-                out_vals.push(values[base + orig as usize]);
-                out_idx.push(i64::from(orig));
-            }
-        }
+        let mut out_vals = vec![0_i64; n_slices * k];
+        let mut out_idx = vec![0_i64; n_slices * k];
+        for_each_top_k_slice(
+            &mut out_vals,
+            &mut out_idx,
+            k,
+            stride,
+            n_slices,
+            |slice, vchunk, ichunk, pairs, scratch| {
+                let base = slice * stride;
+                pairs.clear();
+                for (i, &v) in values[base..base + stride].iter().enumerate() {
+                    pairs.push((!((v as u64) ^ (1_u64 << 63)), i as u32));
+                }
+                order_top_k_pairs(pairs, scratch, k);
+                for (dst, &(_, orig)) in pairs.iter().take(k).enumerate() {
+                    vchunk[dst] = values[base + orig as usize];
+                    ichunk[dst] = i64::from(orig);
+                }
+            },
+        );
         let values_t = TensorValue::new_i64_values(
             Shape {
                 dims: output_dims.to_vec(),
@@ -4716,19 +4794,27 @@ fn eval_top_k_dense(
     }
 
     if let Some(values) = tensor.elements.as_f64_slice() {
-        let mut out_vals: Vec<f64> = Vec::with_capacity(n_slices * k);
-        for slice in 0..n_slices {
-            let base = slice * stride;
-            pairs.clear();
-            for (i, &v) in values[base..base + stride].iter().enumerate() {
-                pairs.push((!f64_total_order_key(v), i as u32));
-            }
-            order_top_k_pairs(&mut pairs, &mut scratch, k);
-            for &(_, orig) in pairs.iter().take(k) {
-                out_vals.push(values[base + orig as usize]);
-                out_idx.push(i64::from(orig));
-            }
-        }
+        let mut out_vals = vec![0.0_f64; n_slices * k];
+        let mut out_idx = vec![0_i64; n_slices * k];
+        for_each_top_k_slice(
+            &mut out_vals,
+            &mut out_idx,
+            k,
+            stride,
+            n_slices,
+            |slice, vchunk, ichunk, pairs, scratch| {
+                let base = slice * stride;
+                pairs.clear();
+                for (i, &v) in values[base..base + stride].iter().enumerate() {
+                    pairs.push((!f64_total_order_key(v), i as u32));
+                }
+                order_top_k_pairs(pairs, scratch, k);
+                for (dst, &(_, orig)) in pairs.iter().take(k).enumerate() {
+                    vchunk[dst] = values[base + orig as usize];
+                    ichunk[dst] = i64::from(orig);
+                }
+            },
+        );
         let values_t = TensorValue::new_f64_values(
             Shape {
                 dims: output_dims.to_vec(),
@@ -4786,19 +4872,27 @@ fn eval_top_k_dense(
         comp.push(!key);
     }
 
-    let mut out_lit: Vec<Literal> = Vec::with_capacity(n_slices * k);
-    for slice in 0..n_slices {
-        let base = slice * stride;
-        pairs.clear();
-        for (i, &key) in comp[base..base + stride].iter().enumerate() {
-            pairs.push((key, i as u32));
-        }
-        order_top_k_pairs(&mut pairs, &mut scratch, k);
-        for &(_, orig) in pairs.iter().take(k) {
-            out_lit.push(elems[base + orig as usize]);
-            out_idx.push(i64::from(orig));
-        }
-    }
+    let mut out_lit = vec![elems[0]; n_slices * k];
+    let mut out_idx = vec![0_i64; n_slices * k];
+    for_each_top_k_slice(
+        &mut out_lit,
+        &mut out_idx,
+        k,
+        stride,
+        n_slices,
+        |slice, vchunk, ichunk, pairs, scratch| {
+            let base = slice * stride;
+            pairs.clear();
+            for (i, &key) in comp[base..base + stride].iter().enumerate() {
+                pairs.push((key, i as u32));
+            }
+            order_top_k_pairs(pairs, scratch, k);
+            for (dst, &(_, orig)) in pairs.iter().take(k).enumerate() {
+                vchunk[dst] = elems[base + orig as usize];
+                ichunk[dst] = i64::from(orig);
+            }
+        },
+    );
     let values_t = TensorValue::new(
         tensor.dtype,
         Shape {
@@ -13973,6 +14067,197 @@ mod tests {
                     };
                     assert_eq!(got_f32_bits[r * cols + pos], want, "f32 sort r{r}");
                 }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_threaded_vs_serial_top_k() {
+        use std::time::Instant;
+        // f64 top_k(x[R,C], k): threaded eval_top_k vs the identical single-threaded
+        // per-slice select loop (same order_top_k_pairs kernel). Both bit-identical;
+        // digested zero-copy so the fold doesn't bias timing.
+        let (rows, cols, k) = (4096usize, 1024usize, 128usize);
+        let total = rows * cols;
+        let vals: Vec<f64> = (0..total)
+            .map(|i| (((i as i64) * 2_654_435_761).wrapping_rem(1_000_003) - 500_000) as f64 * 0.5)
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                vals.clone(),
+            )
+            .unwrap(),
+        );
+        let p = params(&[("k", "128")]);
+        let best = |mut f: Box<dyn FnMut() -> u64>| {
+            f();
+            let mut b = f64::MAX;
+            let mut digest = 0u64;
+            for _ in 0..5 {
+                let t = Instant::now();
+                digest = std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            (b, digest)
+        };
+
+        let vs = vals.clone();
+        let (t_serial, d_serial) = best(Box::new(move || {
+            let mut out = vec![0.0_f64; rows * k];
+            let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(cols);
+            let mut scratch: Vec<(u64, u32)> = Vec::new();
+            for (s, ochunk) in out.chunks_mut(k).enumerate() {
+                let base = s * cols;
+                pairs.clear();
+                for (i, &v) in vs[base..base + cols].iter().enumerate() {
+                    pairs.push((!f64_total_order_key(v), i as u32));
+                }
+                order_top_k_pairs(&mut pairs, &mut scratch, k);
+                for (dst, &(_, orig)) in pairs.iter().take(k).enumerate() {
+                    ochunk[dst] = vs[base + orig as usize];
+                }
+            }
+            out.iter().fold(0u64, |a, &v| a ^ v.to_bits())
+        }));
+
+        let (t_threaded, d_threaded) = best(Box::new(move || {
+            let out = super::eval_top_k(std::slice::from_ref(&tensor), &p).unwrap();
+            out[0]
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .unwrap()
+                .iter()
+                .fold(0u64, |a, &v| a ^ v.to_bits())
+        }));
+
+        assert_eq!(
+            d_serial, d_threaded,
+            "threaded top_k digest must match serial"
+        );
+        println!(
+            "BENCH f64 top_k(x[{rows},{cols}],k={k}): serial={:.4}ms threaded={:.4}ms speedup={:.2}x digest={d_serial:016x}",
+            t_serial * 1e3,
+            t_threaded * 1e3,
+            t_serial / t_threaded,
+        );
+    }
+
+    #[test]
+    fn threaded_top_k_matches_serial_reference_large_multislice() {
+        // Multi-slice top-k over the contiguous last axis whose total element count
+        // exceeds SORT_PARALLEL_MIN_TOTAL_ELEMS (1<<18), so for_each_top_k_slice
+        // fans the slices across threads. Each output slice depends only on its
+        // input slice, so the threaded result must equal a per-slice stable
+        // reference (k largest by value, ties by ascending index) for EVERY
+        // partition — across the dense-i64, dense-f64, and literal (f32) paths.
+        let rows = 2048usize;
+        let cols = 256usize; // rows*cols = 524288 > 1<<18; cols >= RADIX_SORT_MIN_AXIS.
+        let k = 64usize;
+        let total = rows * cols;
+
+        // Finite values with frequent ties (to exercise ascending-index tie order),
+        // exactly representable in i32/f32 so the three dtype views agree on order.
+        let raw: Vec<i64> = (0..total)
+            .map(|i| (((i as i64) * 2_654_435_761).rem_euclid(193)) - 96)
+            .collect();
+        let p = params(&[("k", "64")]);
+
+        // Reference top-k indices for row r: k largest by value, ties by index asc.
+        let ref_idx = |r: usize| -> Vec<usize> {
+            let mut idx: Vec<usize> = (0..cols).collect();
+            idx.sort_by(|&a, &b| {
+                raw[r * cols + b]
+                    .cmp(&raw[r * cols + a]) // value descending
+                    .then(a.cmp(&b)) // tie: index ascending
+            });
+            idx.truncate(k);
+            idx
+        };
+
+        // ── dense i64 ──
+        let i64_t = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                raw.clone(),
+            )
+            .unwrap(),
+        );
+        let oi = super::eval_top_k(std::slice::from_ref(&i64_t), &p).unwrap();
+        let (vi, ii) = (extract_i64_vec(&oi[0]), extract_i64_vec(&oi[1]));
+        for r in 0..rows {
+            let refr = ref_idx(r);
+            for (pos, &orig) in refr.iter().enumerate() {
+                assert_eq!(vi[r * k + pos], raw[r * cols + orig], "i64 topk val r{r}");
+                assert_eq!(ii[r * k + pos], orig as i64, "i64 topk idx r{r}");
+            }
+        }
+
+        // ── dense f64 ──
+        let f64_raw: Vec<f64> = raw.iter().map(|&v| v as f64).collect();
+        let f64_t = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                f64_raw.clone(),
+            )
+            .unwrap(),
+        );
+        let of = super::eval_top_k(std::slice::from_ref(&f64_t), &p).unwrap();
+        let (vf, iff) = (extract_f64_vec(&of[0]), extract_i64_vec(&of[1]));
+        for r in 0..rows {
+            let refr = ref_idx(r);
+            for (pos, &orig) in refr.iter().enumerate() {
+                assert_eq!(
+                    vf[r * k + pos].to_bits(),
+                    f64_raw[r * cols + orig].to_bits(),
+                    "f64 topk val r{r}"
+                );
+                assert_eq!(iff[r * k + pos], orig as i64, "f64 topk idx r{r}");
+            }
+        }
+
+        // ── literal f32 ──
+        let f32_lits: Vec<Literal> = raw.iter().map(|&v| Literal::from_f32(v as f32)).collect();
+        let f32_t = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                f32_lits.clone(),
+            )
+            .unwrap(),
+        );
+        let o32 = super::eval_top_k(std::slice::from_ref(&f32_t), &p).unwrap();
+        let v32_bits: Vec<u32> = o32[0]
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::F32Bits(b) => *b,
+                other => panic!("expected f32, got {other:?}"),
+            })
+            .collect();
+        let i32idx = extract_i64_vec(&o32[1]);
+        for r in 0..rows {
+            let refr = ref_idx(r);
+            for (pos, &orig) in refr.iter().enumerate() {
+                let want = match f32_lits[r * cols + orig] {
+                    Literal::F32Bits(b) => b,
+                    _ => unreachable!(),
+                };
+                assert_eq!(v32_bits[r * k + pos], want, "f32 topk val r{r}");
+                assert_eq!(i32idx[r * k + pos], orig as i64, "f32 topk idx r{r}");
             }
         }
     }
