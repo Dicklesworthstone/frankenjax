@@ -7174,6 +7174,92 @@ fn eval_conv_1d(
 /// Below it the im2col buffer allocation + copy isn't worth it.
 const CONV_IM2COL_MIN_OPS: usize = 1 << 16;
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "conv2d im2col geometry is explicit for bounds/audit"
+)]
+fn fill_conv2d_im2col<T>(
+    col: &mut [T],
+    lhs_src: &[T],
+    batch: usize,
+    height: usize,
+    width: usize,
+    c_in: usize,
+    out_h: usize,
+    out_w: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    stride_h: usize,
+    stride_w: usize,
+    dil_h: usize,
+    dil_w: usize,
+    pad_top: usize,
+    pad_left: usize,
+    height_width_c_in: usize,
+    width_c_in: usize,
+    kdim: usize,
+    kw_c_in: usize,
+    threads: usize,
+) where
+    T: Copy + Send + Sync,
+{
+    let rows = batch * out_h * out_w;
+    debug_assert_eq!(col.len(), rows * kdim);
+    if rows == 0 || kdim == 0 {
+        return;
+    }
+
+    let fill_rows = |row_start: usize, block: &mut [T]| {
+        for (local_row, row_slice) in block.chunks_exact_mut(kdim).enumerate() {
+            let row = row_start + local_row;
+            let n = row / (out_h * out_w);
+            let spatial = row % (out_h * out_w);
+            let oh = spatial / out_w;
+            let ow = spatial % out_w;
+            let n_offset = n * height_width_c_in;
+            for kh in 0..kernel_h {
+                let in_h = (oh * stride_h + kh * dil_h) as isize - pad_top as isize;
+                if in_h < 0 || (in_h as usize) >= height {
+                    continue;
+                }
+                let h_offset = (in_h as usize) * width_c_in;
+                for kw in 0..kernel_w {
+                    let in_w = (ow * stride_w + kw * dil_w) as isize - pad_left as isize;
+                    if in_w < 0 || (in_w as usize) >= width {
+                        continue;
+                    }
+                    let src_base = n_offset + h_offset + (in_w as usize) * c_in;
+                    let col_base = kh * kw_c_in + kw * c_in;
+                    row_slice[col_base..col_base + c_in]
+                        .copy_from_slice(&lhs_src[src_base..src_base + c_in]);
+                }
+            }
+        }
+    };
+
+    let workers = threads.min(rows);
+    if workers <= 1 {
+        fill_rows(0, col);
+        return;
+    }
+
+    let rows_per = rows.div_ceil(workers);
+    std::thread::scope(|scope| {
+        let mut rest = col;
+        let mut row_start = 0usize;
+        while row_start < rows {
+            let chunk_rows = rows_per.min(rows - row_start);
+            let chunk_len = chunk_rows * kdim;
+            let (block, tail) = rest.split_at_mut(chunk_len);
+            rest = tail;
+            let start = row_start;
+            let fill = &fill_rows;
+            scope.spawn(move || fill(start, block));
+            row_start += chunk_rows;
+        }
+    });
+}
+
 /// Grouped/depthwise 2D conv (feature_group_count > 1). Each output channel `co`
 /// belongs to group `g = co / (Cout/G)` and convolves only that group's `Cin/G`
 /// input channels (`lhs` channels `[g*rhs_c_in .. (g+1)*rhs_c_in)`) with the kernel
@@ -7755,35 +7841,31 @@ fn eval_conv_2d(
         let conv_ops = total.saturating_mul(kdim);
         if conv_ops >= CONV_IM2COL_MIN_OPS && kdim > 0 {
             let kw_c_in = kernel_w * c_in;
-            let mut col = vec![0.0_f32; total / c_out * kdim];
-            for n in 0..batch {
-                let n_offset = n * height_width_c_in;
-                for oh in 0..out_h {
-                    for ow in 0..out_w {
-                        let row = (n * out_h + oh) * out_w + ow;
-                        let row_base = row * kdim;
-                        for kh in 0..kernel_h {
-                            let in_h = (oh * stride_h + kh * dil_h) as isize - pad_top as isize;
-                            if in_h < 0 || (in_h as usize) >= height {
-                                continue;
-                            }
-                            let h_offset = (in_h as usize) * width_c_in;
-                            for kw in 0..kernel_w {
-                                let in_w =
-                                    (ow * stride_w + kw * dil_w) as isize - pad_left as isize;
-                                if in_w < 0 || (in_w as usize) >= width {
-                                    continue;
-                                }
-                                let src_base = n_offset + h_offset + (in_w as usize) * c_in;
-                                let col_base = row_base + kh * kw_c_in + kw * c_in;
-                                col[col_base..col_base + c_in]
-                                    .copy_from_slice(&lhs_f32[src_base..src_base + c_in]);
-                            }
-                        }
-                    }
-                }
-            }
             let num_rows = total / c_out;
+            let mut col = vec![0.0_f32; num_rows * kdim];
+            fill_conv2d_im2col(
+                &mut col,
+                lhs_f32.as_ref(),
+                batch,
+                height,
+                width,
+                c_in,
+                out_h,
+                out_w,
+                kernel_h,
+                kernel_w,
+                stride_h,
+                stride_w,
+                dil_h,
+                dil_w,
+                pad_top,
+                pad_left,
+                height_width_c_in,
+                width_c_in,
+                kdim,
+                kw_c_in,
+                conv_morsel_threads(num_rows, conv_ops),
+            );
             let out = batched_matmul_2d_f32_in(&col, 1, num_rows, kdim, rhs_f32.as_ref(), c_out);
             return conv_f32_output_to_value(
                 out_dtype,
@@ -7877,35 +7959,31 @@ fn eval_conv_2d(
         let conv_ops = total.saturating_mul(kdim);
         if conv_ops >= CONV_IM2COL_MIN_OPS && kdim > 0 {
             let kw_c_in = kernel_w * c_in;
-            let mut col = vec![0.0_f64; total / c_out * kdim];
-            for n in 0..batch {
-                let n_offset = n * height_width_c_in;
-                for oh in 0..out_h {
-                    for ow in 0..out_w {
-                        let row = (n * out_h + oh) * out_w + ow;
-                        let row_base = row * kdim;
-                        for kh in 0..kernel_h {
-                            let in_h = (oh * stride_h + kh * dil_h) as isize - pad_top as isize;
-                            if in_h < 0 || (in_h as usize) >= height {
-                                continue;
-                            }
-                            let h_offset = (in_h as usize) * width_c_in;
-                            for kw in 0..kernel_w {
-                                let in_w =
-                                    (ow * stride_w + kw * dil_w) as isize - pad_left as isize;
-                                if in_w < 0 || (in_w as usize) >= width {
-                                    continue;
-                                }
-                                let src_base = n_offset + h_offset + (in_w as usize) * c_in;
-                                let col_base = row_base + kh * kw_c_in + kw * c_in;
-                                col[col_base..col_base + c_in]
-                                    .copy_from_slice(&lhs_src[src_base..src_base + c_in]);
-                            }
-                        }
-                    }
-                }
-            }
             let num_rows = total / c_out;
+            let mut col = vec![0.0_f64; num_rows * kdim];
+            fill_conv2d_im2col(
+                &mut col,
+                lhs_src.as_ref(),
+                batch,
+                height,
+                width,
+                c_in,
+                out_h,
+                out_w,
+                kernel_h,
+                kernel_w,
+                stride_h,
+                stride_w,
+                dil_h,
+                dil_w,
+                pad_top,
+                pad_left,
+                height_width_c_in,
+                width_c_in,
+                kdim,
+                kw_c_in,
+                conv_morsel_threads(num_rows, conv_ops),
+            );
             let out = matmul_2d(&col, num_rows, kdim, rhs_src.as_ref(), c_out);
             return conv_real_output_from_f64(
                 out_dtype,
