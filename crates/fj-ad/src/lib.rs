@@ -494,6 +494,98 @@ fn scalar_add_mul_fast_path_uses_builtin_jvp() -> bool {
     lookup_custom_jvp(Primitive::Add).is_none() && lookup_custom_jvp(Primitive::Mul).is_none()
 }
 
+fn scalar_f64_cubic_plus_square_plus_linear_input(jaxpr: &Jaxpr) -> Option<VarId> {
+    if !jaxpr.constvars.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 1
+        || jaxpr.outvars.len() != 1
+    {
+        return None;
+    }
+    let [x] = jaxpr.invars.as_slice() else {
+        return None;
+    };
+    let [output_var] = jaxpr.outvars.as_slice() else {
+        return None;
+    };
+    let [square_eqn, cube_eqn, sum_eqn, output_eqn] = jaxpr.equations.as_slice() else {
+        return None;
+    };
+    for eqn in [square_eqn, cube_eqn, sum_eqn, output_eqn] {
+        if !eqn.params.is_empty()
+            || !eqn.sub_jaxprs.is_empty()
+            || !eqn.effects.is_empty()
+            || eqn.outputs.len() != 1
+        {
+            return None;
+        }
+    }
+
+    let x = *x;
+    let output_var = *output_var;
+    let [Atom::Var(square_lhs), Atom::Var(square_rhs)] = square_eqn.inputs.as_slice() else {
+        return None;
+    };
+    if square_eqn.primitive != Primitive::Mul || *square_lhs != x || *square_rhs != x {
+        return None;
+    }
+    let [x2] = square_eqn.outputs.as_slice() else {
+        return None;
+    };
+    let x2 = *x2;
+
+    let [Atom::Var(cube_lhs), Atom::Var(cube_rhs)] = cube_eqn.inputs.as_slice() else {
+        return None;
+    };
+    if cube_eqn.primitive != Primitive::Mul || *cube_lhs != x2 || *cube_rhs != x {
+        return None;
+    }
+    let [x3] = cube_eqn.outputs.as_slice() else {
+        return None;
+    };
+    let x3 = *x3;
+
+    let [Atom::Var(sum_lhs), Atom::Var(sum_rhs)] = sum_eqn.inputs.as_slice() else {
+        return None;
+    };
+    if sum_eqn.primitive != Primitive::Add || *sum_lhs != x3 || *sum_rhs != x2 {
+        return None;
+    }
+    let [x3_plus_x2] = sum_eqn.outputs.as_slice() else {
+        return None;
+    };
+    let x3_plus_x2 = *x3_plus_x2;
+
+    let [Atom::Var(output_lhs), Atom::Var(output_rhs)] = output_eqn.inputs.as_slice() else {
+        return None;
+    };
+    let [actual_output_var] = output_eqn.outputs.as_slice() else {
+        return None;
+    };
+    if output_eqn.primitive != Primitive::Add
+        || *output_lhs != x3_plus_x2
+        || *output_rhs != x
+        || *actual_output_var != output_var
+    {
+        return None;
+    }
+
+    if x == x2
+        || x == x3
+        || x == x3_plus_x2
+        || x == output_var
+        || x2 == x3
+        || x2 == x3_plus_x2
+        || x2 == output_var
+        || x3 == x3_plus_x2
+        || x3 == output_var
+        || x3_plus_x2 == output_var
+    {
+        return None;
+    }
+    Some(x)
+}
+
 fn scalar_sin_cos_mul_fast_path_uses_builtin_jvp() -> bool {
     lookup_custom_jvp(Primitive::Sin).is_none()
         && lookup_custom_jvp(Primitive::Cos).is_none()
@@ -632,6 +724,49 @@ fn try_scalar_f64_add_mul_jvp(
         primals: out_primals,
         tangents: out_tangents,
     }))
+}
+
+fn try_scalar_f64_cubic_plus_square_plus_linear_value_and_grad(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    custom_vjp_rule_key: Option<&str>,
+) -> Result<Option<ValueAndGradInnerResult>, AdError> {
+    if custom_vjp_rule_key.is_some() || !scalar_add_mul_fast_path_uses_builtin_vjp(jaxpr) {
+        return Ok(None);
+    }
+    let Some(_input_var) = scalar_f64_cubic_plus_square_plus_linear_input(jaxpr) else {
+        return Ok(None);
+    };
+    if args.len() != 1 {
+        return Err(AdError::InputArity {
+            expected: 1,
+            actual: args.len(),
+        });
+    }
+    let Some(Value::Scalar(Literal::F64Bits(bits))) = args.first() else {
+        return Ok(None);
+    };
+
+    let x = f64::from_bits(*bits);
+    let x2 = x * x;
+    let x3 = x2 * x;
+    let x3_plus_x2 = x3 + x2;
+    let output = x3_plus_x2 + x;
+
+    let x3_adj = 1.0_f64;
+    let mut x2_adj = 1.0_f64;
+    let mut x_adj = 1.0_f64;
+    x2_adj += x3_adj * x;
+    x_adj += x3_adj * x2;
+    let cotangent = x2_adj * x;
+    x_adj += cotangent;
+    x_adj += cotangent;
+
+    Ok(Some((
+        vec![Value::Scalar(Literal::from_f64(output))],
+        vec![Value::Scalar(Literal::from_f64(x_adj))],
+        jaxpr.equations.len(),
+    )))
 }
 
 fn try_scalar_f64_add_mul_value_and_grad(
@@ -10841,6 +10976,13 @@ fn value_and_grad_jaxpr_inner_with_custom_vjp_key(
     args: &[Value],
     custom_vjp_rule_key: Option<&str>,
 ) -> Result<(Vec<Value>, Vec<Value>, usize), AdError> {
+    if let Some(result) = try_scalar_f64_cubic_plus_square_plus_linear_value_and_grad(
+        jaxpr,
+        args,
+        custom_vjp_rule_key,
+    )? {
+        return Ok(result);
+    }
     if let Some(result) = try_scalar_f64_add_mul_value_and_grad(jaxpr, args, custom_vjp_rule_key)? {
         return Ok(result);
     }
@@ -19915,6 +20057,119 @@ mod tests {
         assert_eq!(
             digest,
             "e5aecb887d2833d453dc40e5a4ddaa2dfe94ef3e045fcda9743f2d545eb0ca03"
+        );
+
+        clear_custom_derivative_rules();
+        Ok(())
+    }
+
+    #[test]
+    fn scalar_f64_polynomial_value_and_grad_matches_generic_bits() -> Result<(), String> {
+        use fj_core::{Jaxpr, VarId};
+        use smallvec::smallvec;
+
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(0)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(1)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let data = [
+            0.0,
+            -0.0,
+            1.0,
+            -2.5,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::from_bits(0x7ff8_0000_0000_0042),
+        ];
+        let mut bits_hex = Vec::new();
+
+        for x in data {
+            let args = [Value::scalar_f64(x)];
+            let (direct_outputs, direct_grads, direct_steps) =
+                try_scalar_f64_cubic_plus_square_plus_linear_value_and_grad(&jaxpr, &args, None)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "polynomial fast path did not match".to_string())?;
+            let (fast_outputs, fast_grads) =
+                value_and_grad_jaxpr(&jaxpr, &args).map_err(|e| e.to_string())?;
+            let (generic_outputs, generic_grads) =
+                value_and_grad_jaxpr_with_custom_vjp_key(&jaxpr, &args, "force-generic")
+                    .map_err(|e| e.to_string())?;
+
+            assert_eq!(direct_steps, jaxpr.equations.len());
+            assert_eq!(direct_outputs, fast_outputs);
+            assert_eq!(direct_grads, fast_grads);
+
+            let fast_output_bits = fast_outputs
+                .first()
+                .and_then(Value::as_f64_scalar)
+                .ok_or_else(|| "fast scalar output missing".to_string())?
+                .to_bits();
+            let generic_output_bits = generic_outputs
+                .first()
+                .and_then(Value::as_f64_scalar)
+                .ok_or_else(|| "generic scalar output missing".to_string())?
+                .to_bits();
+            assert_eq!(fast_output_bits, generic_output_bits, "output x={x:?}");
+
+            let fast_grad_bits = fast_grads
+                .first()
+                .and_then(Value::as_f64_scalar)
+                .ok_or_else(|| "fast scalar gradient missing".to_string())?
+                .to_bits();
+            let generic_grad_bits = generic_grads
+                .first()
+                .and_then(Value::as_f64_scalar)
+                .ok_or_else(|| "generic scalar gradient missing".to_string())?
+                .to_bits();
+            assert_eq!(fast_grad_bits, generic_grad_bits, "grad x={x:?}");
+
+            bits_hex.push(format!("{fast_output_bits:016x}"));
+            bits_hex.push(format!("{fast_grad_bits:016x}"));
+        }
+
+        let digest = fj_test_utils::fixture_id_from_json(&bits_hex).expect("sha256 digest");
+        assert_eq!(
+            digest,
+            "572f0ea8b946b740462423e02a21ec912bd896e5796d3ad4e38a14b916301afb"
         );
 
         clear_custom_derivative_rules();
