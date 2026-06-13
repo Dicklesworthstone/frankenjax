@@ -1946,34 +1946,40 @@ pub(crate) fn eval_reduce_axes(
                 // cell's k-order (bit-identical though +/* are non-associative). The
                 // decode is the win (native f64/f32 sum/prod is already autovectorized;
                 // the trailing-axis half sum is handled by the existing decode paths).
-                // Gated to ReduceSum: the column add vectorizes bit-identically (per-cell
-                // order preserved). ReduceProd is intentionally NOT routed here — float `*`
-                // exposed a divergence vs the scalar reference for some half inputs, and
-                // half middle-axis prod is niche; it keeps the existing scalar-decode path.
-                let simd_sumprod = if primitive == Primitive::ReduceSum {
-                    match (
-                        tensor.dtype,
-                        contiguous_reduce_block(&tensor.shape.dims, &axes_sorted),
-                    ) {
-                        (DType::BF16, Some((outer, reduce, inner))) if inner > 1 => {
-                            tensor.elements.as_half_float_slice().map(|v| {
-                                simd_sumprod_inner_axis_reduce_bf16(
-                                    v, true, outer, reduce, inner, float_init,
-                                )
-                            })
+                // BOTH ReduceSum and ReduceProd route here: the per-cell column fold keeps
+                // the exact k-order, the decode (`f16_widen8`/bf16 shift) is identical to
+                // the boxed `Literal::as_f64()` the generic path uses, and `float_init` is
+                // the primitive's identity (0.0 for sum, 1.0 for prod). So `out[c] OP= dec`
+                // is bit-for-bit the generic odometer for both `+` and `*` — pinned by
+                // dense_half_float_reduce_bit_identical_to_literal_path and the [5,4,17]
+                // inner>1 prod fuzz test. (An earlier note suspected a `*` divergence; it
+                // was a stale pre-`float_init`/pre-`needs_scalar` kernel — re-verified clean.)
+                let is_sum = primitive == Primitive::ReduceSum;
+                let simd_sumprod =
+                    if matches!(primitive, Primitive::ReduceSum | Primitive::ReduceProd) {
+                        match (
+                            tensor.dtype,
+                            contiguous_reduce_block(&tensor.shape.dims, &axes_sorted),
+                        ) {
+                            (DType::BF16, Some((outer, reduce, inner))) if inner > 1 => {
+                                tensor.elements.as_half_float_slice().map(|v| {
+                                    simd_sumprod_inner_axis_reduce_bf16(
+                                        v, is_sum, outer, reduce, inner, float_init,
+                                    )
+                                })
+                            }
+                            (DType::F16, Some((outer, reduce, inner))) if inner > 1 => {
+                                tensor.elements.as_half_float_slice().map(|v| {
+                                    simd_sumprod_inner_axis_reduce_f16(
+                                        v, is_sum, outer, reduce, inner, float_init,
+                                    )
+                                })
+                            }
+                            _ => None,
                         }
-                        (DType::F16, Some((outer, reduce, inner))) if inner > 1 => {
-                            tensor.elements.as_half_float_slice().map(|v| {
-                                simd_sumprod_inner_axis_reduce_f16(
-                                    v, true, outer, reduce, inner, float_init,
-                                )
-                            })
-                        }
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
+                    } else {
+                        None
+                    };
 
                 // Dense axis-reduce fast path, reading the native backing slice and
                 // widening F32->f64 INLINE (no buffer). The generic odometer loop
@@ -4030,6 +4036,117 @@ mod tests {
     }
 
     #[test]
+    fn simd_inner_axis_prod_half_bit_identical_to_generic_fuzz() {
+        // The [5,4,17] axis=1 inner>1 PROD case the SIMD sum/prod kernel was once
+        // (wrongly) suspected to diverge on. The column fold `out[c] *= decode(x[k,c])`
+        // keeps each cell's exact k-order, and the decode matches the boxed
+        // Literal::as_f64() — so the dense SIMD path must be bit-for-bit the generic
+        // odometer for BOTH sum and prod. Fuzz a spread of normal/subnormal/inf/NaN/±0
+        // half patterns across many seeds to make any `*` divergence visible.
+        let nan_canon = |dtype: DType, b: u16| -> u16 {
+            let v = if dtype == DType::BF16 {
+                Literal::BF16Bits(b).as_f64()
+            } else {
+                Literal::F16Bits(b).as_f64()
+            };
+            if v.is_some_and(|x| x.is_nan()) {
+                if dtype == DType::F16 { 0x7e00 } else { 0x7fc0 }
+            } else {
+                b
+            }
+        };
+        // A pool of "interesting" half bit patterns (dtype-agnostic raw u16): the SIMD
+        // kernels reinterpret raw bits per dtype, so the same pool exercises both.
+        let specials: [u16; 8] = [
+            0x0000, 0x8000, // +0, -0
+            0x7c00, 0xfc00, // f16 +/-inf (bf16 reads these as finite — also fine)
+            0x7e00, // f16 NaN
+            0x0001, // subnormal
+            0x3c00, 0xbc00, // +/-1.0 in f16
+        ];
+        for dtype in [DType::BF16, DType::F16] {
+            for shape in [vec![5u32, 4, 17], vec![3, 9, 8], vec![2, 7, 33]] {
+                let total: usize = shape.iter().map(|&d| d as usize).product();
+                for seed in 0u64..24 {
+                    // xorshift-style deterministic PRNG (no Instant/rand dependency).
+                    let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+                    let mut next = || {
+                        s ^= s << 13;
+                        s ^= s >> 7;
+                        s ^= s << 17;
+                        s
+                    };
+                    let raw: Vec<u16> = (0..total)
+                        .map(|_| {
+                            let r = next();
+                            if r & 0x7 == 0 {
+                                specials[(r >> 8) as usize % specials.len()]
+                            } else {
+                                // Keep magnitudes modest so products stay in range
+                                // (still hits inf/NaN occasionally via specials above).
+                                ((r >> 16) as u16) & 0x3fff
+                            }
+                        })
+                        .collect();
+                    let dense = Value::Tensor(
+                        TensorValue::new_half_float_values(
+                            dtype,
+                            Shape {
+                                dims: shape.clone(),
+                            },
+                            raw.clone(),
+                        )
+                        .unwrap(),
+                    );
+                    let boxed = Value::Tensor(
+                        TensorValue::new(
+                            dtype,
+                            Shape {
+                                dims: shape.clone(),
+                            },
+                            raw.iter()
+                                .copied()
+                                .map(|b| {
+                                    if dtype == DType::BF16 {
+                                        Literal::BF16Bits(b)
+                                    } else {
+                                        Literal::F16Bits(b)
+                                    }
+                                })
+                                .collect(),
+                        )
+                        .unwrap(),
+                    );
+                    let bits = |v: &Value| -> Vec<u16> {
+                        let t = v.as_tensor().unwrap();
+                        t.elements
+                            .iter()
+                            .map(|l| match l {
+                                Literal::BF16Bits(b) | Literal::F16Bits(b) => nan_canon(dtype, *b),
+                                o => panic!("expected half, got {o:?}"),
+                            })
+                            .collect()
+                    };
+                    for primitive in [Primitive::ReduceSum, Primitive::ReduceProd] {
+                        // axis=1 -> outer=shape[0], reduce=shape[1], inner=shape[2] (>1).
+                        let mut p = BTreeMap::new();
+                        p.insert("axes".to_owned(), "1".to_owned());
+                        let d = crate::eval_primitive(primitive, std::slice::from_ref(&dense), &p)
+                            .unwrap();
+                        let g = crate::eval_primitive(primitive, std::slice::from_ref(&boxed), &p)
+                            .unwrap();
+                        assert_eq!(
+                            bits(&d),
+                            bits(&g),
+                            "{dtype:?} {primitive:?} shape={shape:?} seed={seed} SIMD != generic"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn dense_f16_trailing_axis_reduce_simd_decode_matches_boxed_edge_rows() {
         // Axis=1 is the F16 trailing-axis SIMD decode path. Compare raw output
         // bits with the boxed Literal::F16Bits odometer path, without NaN
@@ -4187,6 +4304,85 @@ mod tests {
             t_simd * 1e3,
             t_scalar / t_simd,
         );
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_half_inner_axis_prod_simd_vs_scalar() {
+        use std::time::Instant;
+        // Half inner>1 PROD (prod(x[K,N], axis=0)): per-element decode + scalar `*`
+        // vs the SIMD decode + simd `*` (per-cell k-order preserved -> bit-identical;
+        // see simd_inner_axis_prod_half_bit_identical_to_generic_fuzz). Same kernel as
+        // the SUM bench; the half DECODE is the SIMD win (the `*` vectorizes too).
+        // Inputs kept very close to 1.0 so the column product stays finite over K=4096.
+        let (k, n) = (4096usize, 1024usize);
+        let best = |mut f: Box<dyn FnMut() -> f64>| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        for dtype in [DType::BF16, DType::F16] {
+            let values: Vec<u16> = (0..k * n)
+                .map(|i| {
+                    let x = 1.0 + (((i % 251) as f64) * 0.0008 - 0.1);
+                    match reduce_real_literal(dtype, x) {
+                        Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                        other => panic!("expected half, got {other:?}"),
+                    }
+                })
+                .collect();
+            let vs = values.clone();
+            let dt = dtype;
+            let t_scalar = best(Box::new(move || {
+                let mut res = vec![1.0f64; n];
+                for kk in 0..k {
+                    let row = &vs[kk * n..kk * n + n];
+                    for (slot, &v) in res.iter_mut().zip(row) {
+                        let d = if dt == DType::BF16 {
+                            Literal::BF16Bits(v).as_f64().unwrap_or(0.0)
+                        } else {
+                            Literal::F16Bits(v).as_f64().unwrap_or(0.0)
+                        };
+                        *slot *= d;
+                    }
+                }
+                res.iter().sum()
+            }));
+            let vv = values.clone();
+            let dt2 = dtype;
+            let t_simd = best(Box::new(move || {
+                if dt2 == DType::BF16 {
+                    simd_sumprod_inner_axis_reduce_bf16(&vv, false, 1, k, n, 1.0)
+                } else {
+                    simd_sumprod_inner_axis_reduce_f16(&vv, false, 1, k, n, 1.0)
+                }
+                .iter()
+                .sum()
+            }));
+            let golden = {
+                let g = if dtype == DType::BF16 {
+                    simd_sumprod_inner_axis_reduce_bf16(&values, false, 1, k, n, 1.0)
+                } else {
+                    simd_sumprod_inner_axis_reduce_f16(&values, false, 1, k, n, 1.0)
+                };
+                fj_test_utils::fixture_id_from_json(&(
+                    "inner-axis-prod-half",
+                    g.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                ))
+                .unwrap_or_default()
+            };
+            println!(
+                "BENCH {dtype:?} inner-axis prod(x[{k},{n}],axis=0): scalar={:.4}ms simd={:.4}ms speedup={:.2}x sha256={golden}",
+                t_scalar * 1e3,
+                t_simd * 1e3,
+                t_scalar / t_simd,
+            );
+        }
     }
 
     #[test]
