@@ -543,7 +543,7 @@ pub fn apply_batch_rule(
         // ── Sorting ────────────────────────────────────────────
         Primitive::Sort | Primitive::Argsort => batch_sort(primitive, inputs, params),
         Primitive::Argmin | Primitive::Argmax => {
-            batch_passthrough_leading(primitive, inputs, params)
+            batch_argmax_argmin(primitive, inputs, params)
         }
 
         // ── Convolution ────────────────────────────────────────
@@ -926,6 +926,73 @@ fn batch_reduce(
             .map_err(|e| BatchError::EvalError(e.to_string()))?;
         Ok(BatchTracer::batched(result, 0))
     }
+}
+
+/// vmap rule for Argmin/Argmax. These are single-axis reductions (eval reads the
+/// `"axis"` param, default = last axis `rank-1`, and always reduces exactly one
+/// axis — there is no full-flatten mode). vmap of an argmax over the original
+/// axis `a` is just an argmax over axis `a+1` of the batch-front tensor, in ONE
+/// `eval_primitive` call — replacing the per-slice eval+stack of
+/// `batch_passthrough_leading` (B dispatches + B stack allocs) with a single
+/// call whose eval already handles B contiguous slices (SIMD/threaded).
+///
+/// PARITY (see project_vmap_param_key_mismatch): eval reads `"axis"`, so we shift
+/// `"axis"` (NOT "dimension"); the original axis is normalized against the
+/// per-element rank EXACTLY as `parse_axis_param` does (negative → end-relative,
+/// absent → `rank-1`) BEFORE the `+1` shift, then re-emitted as a non-negative
+/// index. The shifted axis is always ≥ 1, so the batch dim (now at 0) is never
+/// reduced. The rank-0 per-element case (batched scalar) has no axis to shift and
+/// falls back to the per-slice path.
+fn batch_argmax_argmin(
+    primitive: Primitive,
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let input = &inputs[0];
+    let batch_dim = match input.batch_dim {
+        None => {
+            let result = eval_primitive(primitive, std::slice::from_ref(&input.value), params)
+                .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            return Ok(BatchTracer::unbatched(result));
+        }
+        Some(bd) => bd,
+    };
+
+    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let per_elem_rank = match &value {
+        Value::Scalar(_) => 0,
+        Value::Tensor(tensor) => tensor.rank().saturating_sub(1),
+    };
+
+    // Rank-0 per-element (batched scalar): argmax of a scalar is 0 with no axis to
+    // shift — defer to the per-slice path, which is correct and cheap here.
+    if per_elem_rank == 0 {
+        return batch_passthrough_leading(primitive, inputs, params);
+    }
+
+    // Resolve the original reduction axis against the PER-ELEMENT rank, matching
+    // eval's `parse_axis_param(primitive, "axis", params, rank, rank-1)`.
+    let axis: usize = match params.get("axis") {
+        None => per_elem_rank - 1,
+        Some(raw) => {
+            let ax: i64 = raw.trim().parse().map_err(|_| {
+                BatchError::EvalError(format!("argmin/argmax axis is not an integer: {raw:?}"))
+            })?;
+            let norm = if ax < 0 { per_elem_rank as i64 + ax } else { ax };
+            if norm < 0 || norm >= per_elem_rank as i64 {
+                return Err(BatchError::EvalError(format!(
+                    "argmin/argmax axis {ax} out of range for per-element rank {per_elem_rank}"
+                )));
+            }
+            norm as usize
+        }
+    };
+
+    let mut new_params = params.clone();
+    new_params.insert("axis".to_owned(), (axis + 1).to_string());
+    let result = eval_primitive(primitive, &[value], &new_params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(BatchTracer::batched(result, 0))
 }
 
 // ── Dot Product Batching ───────────────────────────────────────────
@@ -14306,6 +14373,160 @@ mod tests {
         assert_eq!(result.batch_dim, None);
         let vals = extract_f64_vec(&result.value);
         assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    // ── Argmax/Argmin single-call vmap parity ──────────────────
+
+    #[test]
+    fn batch_argmax_argmin_matches_per_slice_fallback() {
+        // The single-call axis-shift fast path must be element-identical to the
+        // prior per-slice eval+stack (`batch_passthrough_leading`) across axis
+        // forms (positive / negative / absent-default), rank 2 and 3, and a
+        // non-front batch dim. Output is the i64 index tensor + batch_dim.
+        let idx_vec = |t: &BatchTracer| -> (Option<usize>, Vec<u32>, Vec<i64>) {
+            let tensor = t.value.as_tensor().unwrap();
+            let dims = tensor.shape.dims.clone();
+            let vals: Vec<i64> = tensor
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::I64(v) => *v,
+                    other => panic!("argmax index must be I64, got {other:?}"),
+                })
+                .collect();
+            (t.batch_dim, dims, vals)
+        };
+
+        // [B=3, R=2, C=4] data with distinct per-window maxima/minima.
+        let data: Vec<f64> = vec![
+            1.0, 7.0, 3.0, 2.0, 9.0, 4.0, 5.0, 6.0, // batch 0
+            -1.0, -7.0, -3.0, -2.0, 8.0, 4.0, 5.0, 6.0, // batch 1
+            2.0, 2.0, 9.0, 1.0, 0.0, 5.0, 5.0, 3.0, // batch 2 (ties)
+        ];
+        // batch at front: [B=3, R=2, C=4].
+        let make_front = || -> BatchTracer {
+            let t = TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![3, 2, 4],
+                },
+                data.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap();
+            BatchTracer::batched(Value::Tensor(t), 0)
+        };
+        // batch in the middle: physical [R=2, B=3, C=4], batch_dim=1 — exercises
+        // the move-to-front path. Data reordered from [b,r,c] to [r,b,c].
+        let make_mid = || -> BatchTracer {
+            let (b, r, c) = (3usize, 2usize, 4usize);
+            let mut out = vec![0.0f64; b * r * c];
+            for bi in 0..b {
+                for ri in 0..r {
+                    for ci in 0..c {
+                        out[(ri * b + bi) * c + ci] = data[(bi * r + ri) * c + ci];
+                    }
+                }
+            }
+            let t = TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![r as u32, b as u32, c as u32],
+                },
+                out.into_iter().map(Literal::from_f64).collect(),
+            )
+            .unwrap();
+            BatchTracer::batched(Value::Tensor(t), 1)
+        };
+        let make_3d = |bd: usize| -> BatchTracer {
+            if bd == 0 { make_front() } else { make_mid() }
+        };
+
+        let axis_params: Vec<Option<&str>> = vec![Some("0"), Some("1"), Some("-1"), Some("-2"), None];
+        for prim in [Primitive::Argmax, Primitive::Argmin] {
+            for bd in [0usize, 1usize] {
+                for ax in &axis_params {
+                    let mut params = BTreeMap::new();
+                    if let Some(a) = ax {
+                        params.insert("axis".to_owned(), (*a).to_owned());
+                    }
+                    let fast = batch_argmax_argmin(prim, &[make_3d(bd)], &params).unwrap();
+                    let slow = batch_passthrough_leading(prim, &[make_3d(bd)], &params).unwrap();
+                    assert_eq!(
+                        idx_vec(&fast),
+                        idx_vec(&slow),
+                        "{prim:?} bd={bd} axis={ax:?}: single-call != per-slice"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_batch_argmax_single_call_vs_per_slice() {
+        use std::time::Instant;
+        // vmap(argmax over last axis) on a [B, N] batch: the single-call axis-shift
+        // rule vs the prior per-slice eval+stack. Both produce identical indices.
+        // Small N (classification over a class dim) is the realistic hot shape:
+        // per-slice pays B dispatches + B result/stack allocs over tiny work,
+        // while the single call does B contiguous slices in one (SIMD/threaded) eval.
+        let (b, n) = (524288usize, 8usize);
+        let data: Vec<f64> = (0..b * n)
+            .map(|i| (((i.wrapping_mul(2_654_435_761)) >> 11) & 0xffff) as f64)
+            .collect();
+        let make = || -> BatchTracer {
+            BatchTracer::batched(
+                Value::Tensor(
+                    TensorValue::new(
+                        DType::F64,
+                        Shape {
+                            dims: vec![b as u32, n as u32],
+                        },
+                        data.iter().copied().map(Literal::from_f64).collect(),
+                    )
+                    .unwrap(),
+                ),
+                0,
+            )
+        };
+        let params = BTreeMap::from([("axis".to_owned(), "-1".to_owned())]);
+        let best = |mut f: Box<dyn FnMut() -> Vec<i64>>| {
+            let first = f();
+            let mut t = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                let _ = std::hint::black_box(f());
+                t = t.min(s.elapsed().as_secs_f64());
+            }
+            (t, first)
+        };
+        let extract = |r: BatchTracer| -> Vec<i64> {
+            r.value
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::I64(v) => *v,
+                    _ => 0,
+                })
+                .collect()
+        };
+        let (t_slow, d_slow) = best(Box::new(move || {
+            extract(batch_passthrough_leading(Primitive::Argmax, &[make()], &params).unwrap())
+        }));
+        let params2 = BTreeMap::from([("axis".to_owned(), "-1".to_owned())]);
+        let (t_fast, d_fast) =
+            best(Box::new(move || {
+                extract(batch_argmax_argmin(Primitive::Argmax, &[make()], &params2).unwrap())
+            }));
+        assert_eq!(d_slow, d_fast, "bench parity: single-call != per-slice");
+        println!(
+            "BENCH vmap(argmax) [{b},{n}] axis=-1: per-slice={:.4}ms single-call={:.4}ms speedup={:.2}x",
+            t_slow * 1e3,
+            t_fast * 1e3,
+            t_slow / t_fast,
+        );
     }
 
     // ── Bitwise Tests ──────────────────────────────────────────
