@@ -2451,8 +2451,9 @@ enum ScatterCombine {
 /// the same `binary_literal_op` the elementwise ops use, so dtype dispatch,
 /// integer wrapping, and float NaN semantics (via `jax_min_f64`/`jax_max_f64`,
 /// matching `lax.min`/`lax.max`) are identical to `Add`/`Mul`/`Min`/`Max`
-/// elementwise. (Complex min/max/mul fall through to `binary_literal_op`'s numeric
-/// path and error there, exactly as complex scatter-add already does.)
+/// elementwise. (Complex operands never reach this Literal path: they always have
+/// dense `(re, im)` storage, so `eval_scatter_dense` handles every complex combiner
+/// — overwrite/add/mul/min/max — before this fallback is consulted.)
 #[inline]
 fn scatter_combine_literal(
     combine: ScatterCombine,
@@ -2490,6 +2491,15 @@ fn scatter_combine_literal(
             &crate::jax_max_f64,
         ),
     }
+}
+
+/// Lexicographic `lhs >= rhs` on complex `(re, im)` pairs. Mirrors
+/// `arithmetic::complex_lex_ge` (private there) so complex scatter min/max fold
+/// bit-identically to elementwise complex `lax.max`/`lax.min`: real part first,
+/// imaginary as the tie-breaker, raw IEEE `>`/`>=` (NOT `total_cmp`).
+#[inline]
+fn complex_lex_ge_scatter(lhs: (f64, f64), rhs: (f64, f64)) -> bool {
+    lhs.0 > rhs.0 || (lhs.0 == rhs.0 && lhs.1 >= rhs.1)
 }
 
 #[allow(clippy::type_complexity)]
@@ -2702,8 +2712,12 @@ fn eval_scatter_dense(
             ScatterCombine::Overwrite => |_, b| b, // unused (is_overwrite copies)
             ScatterCombine::Add => |a, b| (a.0 + b.0, a.1 + b.1),
             ScatterCombine::Mul => |a, b| (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0),
-            // complex min/max in scatter stays unsupported → generic (errors).
-            ScatterCombine::Min | ScatterCombine::Max => return Ok(None),
+            // Complex min/max fold lexicographically on (re, im), bit-identically
+            // to elementwise complex `lax.max`/`lax.min` (arithmetic::apply_complex_binary,
+            // which selects via `complex_lex_ge`: `a >= b ? a : b` for Max, `b` for Min).
+            // `current` is `a`, `update` is `b` — matching `binary_literal_op(current, update)`.
+            ScatterCombine::Max => |a, b| if complex_lex_ge_scatter(a, b) { a } else { b },
+            ScatterCombine::Min => |a, b| if complex_lex_ge_scatter(a, b) { b } else { a },
         };
         scatter_typed!(op, upd, |shape, out| TensorValue::new_complex_values(dt, shape, out), cf);
     }
@@ -16932,6 +16946,80 @@ mod tests {
                 }
             }
             let expect: Vec<(u64, u64)> = r.iter().map(|&(re, im)| (re.to_bits(), im.to_bits())).collect();
+            assert_eq!(got, expect, "complex scatter {mode} mismatch");
+        }
+    }
+
+    #[test]
+    fn complex_scatter_min_max_lexicographic() {
+        // Complex scatter min/max previously ERRORED (dense path bailed to the
+        // Literal path, which has no complex arm). Now folded lexicographically on
+        // (re, im) — bit-identically to elementwise complex lax.max/lax.min
+        // (`complex_lex_ge`: a >= b ? a : b for Max, b for Min). Includes a real-part
+        // TIE (idx 3 update re == base re) to exercise the imaginary tie-breaker, a
+        // repeated index, and an OOB drop.
+        let (rows, cols) = (8usize, 4usize);
+        let dims = vec![rows as u32, cols as u32];
+        let idxs = [0_i64, 3, 7, 99, 1, 3]; // 99 OOB (dropped), 3 repeated (folds twice)
+        let n = idxs.len();
+        let idx = Value::vector_i64(&idxs).unwrap();
+        let base: Vec<(f64, f64)> =
+            (0..rows * cols).map(|i| (i as f64 * 0.5, (i % 5) as f64 - 2.0)).collect();
+        // Make some updates tie the base real part (i*0.5) so the imaginary tie-break fires.
+        let upd: Vec<(f64, f64)> = (0..n * cols)
+            .map(|i| {
+                if i % 4 == 0 {
+                    // tie a plausible base real value, vary imaginary
+                    ((i % rows * cols) as f64 * 0.5, (i % 7) as f64 - 3.0)
+                } else {
+                    ((i % 9) as f64 - 4.0, (i % 3) as f64 - 1.0)
+                }
+            })
+            .collect();
+        let mk = |v: &[(f64, f64)], d: &[u32]| {
+            Value::Tensor(
+                TensorValue::new_complex_values(DType::Complex128, Shape { dims: d.to_vec() }, v.to_vec())
+                    .unwrap(),
+            )
+        };
+        let opv = mk(&base, &dims);
+        let updv = mk(&upd, &[n as u32, cols as u32]);
+        let getc = |v: &Value| -> Vec<(u64, u64)> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::Complex128Bits(re, im) => (*re, *im),
+                    o => panic!("{o:?}"),
+                })
+                .collect()
+        };
+        let lex_ge = |a: (f64, f64), b: (f64, f64)| a.0 > b.0 || (a.0 == b.0 && a.1 >= b.1);
+        for mode in ["min", "max"] {
+            let p = params(&[("mode", mode), ("index_mode", "fill_or_drop")]);
+            let got = getc(&super::eval_scatter(&[opv.clone(), idx.clone(), updv.clone()], &p).unwrap());
+            let mut r = base.clone();
+            for (i, &raw) in idxs.iter().enumerate() {
+                if raw < 0 || raw as usize >= rows {
+                    continue;
+                }
+                let bi = raw as usize * cols;
+                let ui = i * cols;
+                for j in 0..cols {
+                    let a = r[bi + j];
+                    let b = upd[ui + j];
+                    r[bi + j] = if mode == "max" {
+                        if lex_ge(a, b) { a } else { b }
+                    } else if lex_ge(a, b) {
+                        b
+                    } else {
+                        a
+                    };
+                }
+            }
+            let expect: Vec<(u64, u64)> =
+                r.iter().map(|&(re, im)| (re.to_bits(), im.to_bits())).collect();
             assert_eq!(got, expect, "complex scatter {mode} mismatch");
         }
     }
