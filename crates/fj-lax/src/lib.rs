@@ -3530,6 +3530,85 @@ fn eval_reduce_window_dense_float(
 /// `max(_, i64::MIN)`, `min(_, i64::MAX)` are all no-ops). Output is `Literal::I64`,
 /// matching `reduce_window_accumulator_literal` for the I64 dtype.
 #[allow(clippy::too_many_arguments)]
+/// Summed-area-table (integral image) i64 sum reduce_window for rank 2.
+///
+/// Replaces the per-window O(out·∏window) tap sum with an O(input + out)
+/// window-INDEPENDENT computation: build the integral image once, then each
+/// output window sum is a 4-corner inclusion-exclusion. Integer addition is
+/// associative AND commutative (i64 `wrapping_add` is exact in the ring mod
+/// 2^64), so the rectangle sum equals the per-window ascending tap sum
+/// bit-for-bit regardless of accumulation order — OOB/padding taps contribute 0
+/// in BOTH (the clamped in-bounds rectangle is exactly the set of non-pad taps).
+/// `wrapping_sub` inverts `wrapping_add` in the same ring, so the corner formula
+/// is exact even under i64 overflow. Output is `Literal::I64`, matching the
+/// dense/generic i64 path. Wins for large windows (small 2×2/3×3 stay on the
+/// per-window dense path, which has no integral-image build cost).
+fn eval_reduce_window_rank2_i64_sum_sat(
+    src: &[i64],
+    window_dims: &[usize],
+    strides: &[usize],
+    out_dims: &[u32],
+    pad_lows: &[usize],
+    input_dims: &[usize],
+    total_output: usize,
+) -> Result<Value, EvalError> {
+    let input_rows = input_dims[0];
+    let input_cols = input_dims[1];
+    let out_rows = out_dims[0] as usize;
+    let out_cols = out_dims[1] as usize;
+    let (win_r, win_c) = (window_dims[0], window_dims[1]);
+    let (stride_r, stride_c) = (strides[0], strides[1]);
+    let (pad_r, pad_c) = (pad_lows[0], pad_lows[1]);
+
+    // Integral image `sat` of shape (input_rows+1) x (input_cols+1), with a zero
+    // first row/col so a sub-rectangle sum is sat[r1][c1] - sat[r0][c1]
+    // - sat[r1][c0] + sat[r0][c0]. All ops wrap in the i64 ring.
+    let stride = input_cols + 1;
+    let mut sat = vec![0i64; (input_rows + 1) * stride];
+    for r in 0..input_rows {
+        let in_row = r * input_cols;
+        let sat_row = (r + 1) * stride;
+        let sat_prev = r * stride;
+        let mut row_run = 0i64;
+        for c in 0..input_cols {
+            row_run = row_run.wrapping_add(src[in_row + c]);
+            sat[sat_row + c + 1] = row_run.wrapping_add(sat[sat_prev + c + 1]);
+        }
+    }
+
+    let mut values: Vec<i64> = Vec::with_capacity(total_output);
+    for or in 0..out_rows {
+        // Padded window rows [base_r, base_r+win_r); in-bounds input rows are
+        // those minus pad_r, clamped to [0, input_rows).
+        let base_r = or * stride_r;
+        let lo_r = base_r as isize - pad_r as isize;
+        let r0 = lo_r.max(0) as usize;
+        let r1 = (lo_r + win_r as isize).clamp(0, input_rows as isize) as usize;
+        for oc in 0..out_cols {
+            let base_c = oc * stride_c;
+            let lo_c = base_c as isize - pad_c as isize;
+            let c0 = lo_c.max(0) as usize;
+            let c1 = (lo_c + win_c as isize).clamp(0, input_cols as isize) as usize;
+            let sum = if r0 >= r1 || c0 >= c1 {
+                0
+            } else {
+                sat[r1 * stride + c1]
+                    .wrapping_sub(sat[r0 * stride + c1])
+                    .wrapping_sub(sat[r1 * stride + c0])
+                    .wrapping_add(sat[r0 * stride + c0])
+            };
+            values.push(sum);
+        }
+    }
+
+    let shape = Shape {
+        dims: out_dims.to_vec(),
+    };
+    Ok(Value::Tensor(
+        TensorValue::new_i64_values(shape, values).map_err(EvalError::from)?,
+    ))
+}
+
 fn eval_reduce_window_dense_i64(
     reduce_op: &str,
     src: &[i64],
@@ -4177,6 +4256,33 @@ fn eval_reduce_window(
             &pad_lows,
             &input_dims,
             &input_strides,
+            total_output,
+        );
+    }
+
+    // Summed-area-table (integral image) i64 SUM fast path for rank-2 pooling.
+    // O(input + output) and WINDOW-INDEPENDENT vs the per-window O(output·∏window)
+    // tap sum — a big win for large windows. Integer add is associative+commutative
+    // so the 4-corner rectangle sum is bit-identical to the per-window wrapping
+    // tap sum (see eval_reduce_window_rank2_i64_sum_sat). Gated to windows large
+    // enough (∏window ≥ 16) that the integral-image build pays; small 2×2/3×3
+    // windows stay on the per-window dense path below.
+    if no_base_dilation
+        && no_window_dilation
+        && rank == 2
+        && tensor.dtype == fj_core::DType::I64
+        && reduce_window_sum_like(reduce_op)
+        && window_dims.iter().product::<usize>() >= 16
+        && let Some(src) = tensor.elements.as_i64_slice()
+    {
+        let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+        return eval_reduce_window_rank2_i64_sum_sat(
+            src,
+            &window_dims,
+            &strides,
+            &out_dims,
+            &pad_lows,
+            &input_dims,
             total_output,
         );
     }
@@ -12722,6 +12828,168 @@ mod tests {
             t_gen * 1e3,
             t_dense * 1e3,
             t_gen / t_dense,
+        );
+    }
+
+    #[test]
+    fn reduce_window_i64_sum_sat_matches_per_window() {
+        // Large-window i64 sum reduce_window (SAT path) must equal an independent
+        // per-window in-bounds wrapping-sum reference, across VALID/SAME padding
+        // and strides. Exercises the integral-image + 4-corner inclusion-exclusion
+        // including boundary clamping.
+        let (rows, cols) = (23usize, 19usize);
+        let raw: Vec<i64> = (0..rows * cols)
+            .map(|i| (i as i64).wrapping_mul(2_654_435_761) ^ 0x5a5a)
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape { dims: vec![rows as u32, cols as u32] },
+                raw.clone(),
+            )
+            .unwrap(),
+        );
+        // (win_r, win_c, stride_r, stride_c, padding) — all with ∏window ≥ 16 to hit SAT.
+        let cases = [
+            (4usize, 4usize, 1usize, 1usize, "VALID"),
+            (5, 5, 2, 2, "VALID"),
+            (5, 5, 1, 1, "SAME"),
+            (7, 3, 2, 1, "SAME"),
+            (4, 5, 3, 2, "VALID"),
+        ];
+        for (wr, wc, sr, sc, pad) in cases {
+            let params = rw_params_with_padding(
+                "sum",
+                &format!("{wr},{wc}"),
+                &format!("{sr},{sc}"),
+                pad,
+            );
+            let out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor), &params)
+                .unwrap();
+            let out_t = out.as_tensor().unwrap();
+            let (out_rows, out_cols) = (out_t.shape.dims[0] as usize, out_t.shape.dims[1] as usize);
+            // SAME pad_low = floor(((out-1)*stride + win - in)/2); VALID = 0.
+            let pad_r = if pad == "SAME" {
+                (((out_rows - 1) * sr + wr).saturating_sub(rows)) / 2
+            } else {
+                0
+            };
+            let pad_c = if pad == "SAME" {
+                (((out_cols - 1) * sc + wc).saturating_sub(cols)) / 2
+            } else {
+                0
+            };
+            let got: Vec<i64> = out_t
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::I64(v) => *v,
+                    o => panic!("expected I64, got {o:?}"),
+                })
+                .collect();
+            // Independent per-window in-bounds wrapping-sum reference.
+            let mut expect = Vec::with_capacity(out_rows * out_cols);
+            for or in 0..out_rows {
+                for oc in 0..out_cols {
+                    let mut acc = 0i64;
+                    for dr in 0..wr {
+                        let pr = or * sr + dr;
+                        if pr < pad_r {
+                            continue;
+                        }
+                        let ir = pr - pad_r;
+                        if ir >= rows {
+                            continue;
+                        }
+                        for dc in 0..wc {
+                            let pc = oc * sc + dc;
+                            if pc < pad_c {
+                                continue;
+                            }
+                            let ic = pc - pad_c;
+                            if ic >= cols {
+                                continue;
+                            }
+                            acc = acc.wrapping_add(raw[ir * cols + ic]);
+                        }
+                    }
+                    expect.push(acc);
+                }
+            }
+            assert_eq!(
+                got, expect,
+                "SAT i64 sum win={wr}x{wc} stride={sr}x{sc} pad={pad} != per-window reference"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_reduce_window_i64_sum_sat_vs_dense() {
+        use std::time::Instant;
+        // Large-window i64 sum-pool: SAT (window-independent) vs the per-window
+        // dense tap sum. Same primitive output; A/B by toggling the SAT gate via a
+        // direct call to each path through eval_primitive is not possible, so we
+        // compare the SAT path (production, window≥16) against a replicated dense
+        // per-window reference of the same shape.
+        let (rows, cols) = (512usize, 512usize);
+        let (win, stride) = (15usize, 1usize);
+        let raw: Vec<i64> = (0..rows * cols)
+            .map(|i| (i as i64).wrapping_mul(40_503) ^ 0x33)
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_i64_values(Shape { dims: vec![rows as u32, cols as u32] }, raw.clone())
+                .unwrap(),
+        );
+        let params = rw_params_with_padding("sum", &format!("{win},{win}"), &format!("{stride},{stride}"), "VALID");
+        let out_n = (rows - win) / stride + 1;
+        let best = |mut f: Box<dyn FnMut() -> i64>| {
+            f();
+            let mut b = f64::MAX;
+            let mut dg = 0i64;
+            for _ in 0..5 {
+                let t = Instant::now();
+                dg = std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            (b, dg)
+        };
+        // Per-window dense reference (the prior algorithm: O(out·win²)).
+        let raw_ref = raw.clone();
+        let (t_win, d_win) = best(Box::new(move || {
+            let mut sum = 0i64;
+            for or in 0..out_n {
+                for oc in 0..out_n {
+                    let mut acc = 0i64;
+                    for dr in 0..win {
+                        let base = (or * stride + dr) * cols + oc * stride;
+                        for dc in 0..win {
+                            acc = acc.wrapping_add(raw_ref[base + dc]);
+                        }
+                    }
+                    sum = sum.wrapping_add(acc);
+                }
+            }
+            sum
+        }));
+        let t_ref = tensor.clone();
+        let (t_sat, d_sat) = best(Box::new(move || {
+            let out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t_ref), &params)
+                .unwrap();
+            out.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0i64, |a, l| match l {
+                    Literal::I64(v) => a.wrapping_add(*v),
+                    _ => a,
+                })
+        }));
+        assert_eq!(d_win, d_sat, "SAT checksum must match per-window reference");
+        println!(
+            "BENCH reduce_window i64 sum([{rows},{cols}],win={win}x{win},s={stride}): per-window={:.4}ms SAT={:.4}ms speedup={:.2}x",
+            t_win * 1e3,
+            t_sat * 1e3,
+            t_win / t_sat,
         );
     }
 
