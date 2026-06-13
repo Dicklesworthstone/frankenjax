@@ -4725,6 +4725,7 @@ fn run_scalar_select_i64_plan_into(
 #[derive(Clone, Copy)]
 enum PolyVal {
     F64(f64),
+    F32(f32),
     I64(i64),
     Bool(bool),
 }
@@ -4745,6 +4746,7 @@ enum PolyOperand {
 #[derive(Clone, Copy)]
 enum PolyConvTarget {
     F64,
+    F32,
     I64,
     Bool,
 }
@@ -4790,6 +4792,7 @@ fn poly_operand(atom: &Atom, slots: usize) -> Option<PolyOperand> {
             (slot < slots).then_some(PolyOperand::Slot(slot))
         }
         Atom::Lit(Literal::F64Bits(b)) => Some(PolyOperand::Lit(PolyVal::F64(f64::from_bits(*b)))),
+        Atom::Lit(Literal::F32Bits(b)) => Some(PolyOperand::Lit(PolyVal::F32(f32::from_bits(*b)))),
         Atom::Lit(Literal::I64(v)) => Some(PolyOperand::Lit(PolyVal::I64(*v))),
         Atom::Lit(Literal::Bool(b)) => Some(PolyOperand::Lit(PolyVal::Bool(*b))),
         Atom::Lit(_) => None,
@@ -4851,6 +4854,7 @@ fn build_scalar_poly_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarPolyPlan>
                 .as_str()
             {
                 "f64" | "float64" => PolyConvTarget::F64,
+                "f32" | "float32" => PolyConvTarget::F32,
                 "i64" => PolyConvTarget::I64,
                 "bool" => PolyConvTarget::Bool,
                 _ => return None,
@@ -4927,6 +4931,7 @@ fn build_scalar_poly_plan(jaxpr: &Jaxpr, slots: usize) -> Option<ScalarPolyPlan>
 fn poly_slot_from_value(value: &Value) -> PolySlot {
     match value {
         Value::Scalar(Literal::F64Bits(b)) => PolySlot::Val(PolyVal::F64(f64::from_bits(*b))),
+        Value::Scalar(Literal::F32Bits(b)) => PolySlot::Val(PolyVal::F32(f32::from_bits(*b))),
         Value::Scalar(Literal::I64(v)) => PolySlot::Val(PolyVal::I64(*v)),
         Value::Scalar(Literal::Bool(b)) => PolySlot::Val(PolyVal::Bool(*b)),
         Value::Scalar(_) | Value::Tensor(_) => PolySlot::NonScalar,
@@ -4950,10 +4955,14 @@ fn read_poly(
 // Rust `as`-cast convert, matching fj-lax `convert_literal`'s documented scalar
 // semantics for f64/i64/bool (verified bit-for-bit by the parity test).
 fn poly_convert(src: PolyVal, to: PolyConvTarget) -> PolyVal {
-    match to {
-        PolyConvTarget::F64 => PolyVal::F64(match src {
-            PolyVal::F64(v) => v,
-            PolyVal::I64(v) => v as f64,
+    // `convert_literal` routes float TARGETS through `f64_val()` (so a source widens to
+    // f64 first, then `as f32` for F32), but the I64 target casts an F32 source DIRECTLY
+    // (`f32 as i64`) and Bool compares it directly (`f32 != 0.0`). Mirrored exactly here.
+    let f64_of = |v: PolyVal| -> f64 {
+        match v {
+            PolyVal::F64(x) => x,
+            PolyVal::F32(x) => f64::from(x),
+            PolyVal::I64(x) => x as f64,
             PolyVal::Bool(b) => {
                 if b {
                     1.0
@@ -4961,14 +4970,20 @@ fn poly_convert(src: PolyVal, to: PolyConvTarget) -> PolyVal {
                     0.0
                 }
             }
-        }),
+        }
+    };
+    match to {
+        PolyConvTarget::F64 => PolyVal::F64(f64_of(src)),
+        PolyConvTarget::F32 => PolyVal::F32(f64_of(src) as f32),
         PolyConvTarget::I64 => PolyVal::I64(match src {
             PolyVal::F64(v) => v as i64,
+            PolyVal::F32(v) => v as i64,
             PolyVal::I64(v) => v,
             PolyVal::Bool(b) => i64::from(b),
         }),
         PolyConvTarget::Bool => PolyVal::Bool(match src {
             PolyVal::F64(v) => v != 0.0,
+            PolyVal::F32(v) => v != 0.0,
             PolyVal::I64(v) => v != 0,
             PolyVal::Bool(b) => b,
         }),
@@ -5031,6 +5046,9 @@ fn run_scalar_poly_plan_into(
                     (PolyVal::F64(a), PolyVal::F64(b)) => {
                         PolyVal::F64(apply_scalar_f64_binary(*op, a, b))
                     }
+                    (PolyVal::F32(a), PolyVal::F32(b)) => {
+                        PolyVal::F32(apply_scalar_f32_binary(*op, a, b))
+                    }
                     (PolyVal::I64(a), PolyVal::I64(b)) if poly_op_is_int_valid(*op) => {
                         PolyVal::I64(apply_scalar_i64_binary(*op, a, b))
                     }
@@ -5049,6 +5067,11 @@ fn run_scalar_poly_plan_into(
                 let result = match (l, r) {
                     (PolyVal::I64(a), PolyVal::I64(b)) => apply_int_compare(*op, a, b),
                     (PolyVal::F64(a), PolyVal::F64(b)) => apply_float_compare(*op, a, b),
+                    // f32 compares widen to f64 (order-preserving) — bit-identical bool,
+                    // matching the generic f32 scalar comparison.
+                    (PolyVal::F32(a), PolyVal::F32(b)) => {
+                        apply_float_compare(*op, f64::from(a), f64::from(b))
+                    }
                     _ => return None,
                 };
                 slots[*out_slot] = PolySlot::Val(PolyVal::Bool(result));
@@ -5079,6 +5102,7 @@ fn run_scalar_poly_plan_into(
     for &slot in &plan.out_slots {
         match slots[slot] {
             PolySlot::Val(PolyVal::F64(v)) => out.push(Value::scalar_f64(v)),
+            PolySlot::Val(PolyVal::F32(v)) => out.push(Value::scalar_f32(v)),
             PolySlot::Val(PolyVal::I64(v)) => out.push(Value::scalar_i64(v)),
             PolySlot::Val(PolyVal::Bool(v)) => out.push(Value::scalar_bool(v)),
             PolySlot::NonScalar => return None,
@@ -8046,6 +8070,9 @@ mod tests {
             (Value::Scalar(Literal::F64Bits(x)), Value::Scalar(Literal::F64Bits(y))) => {
                 assert_eq!(x, y, "{ctx} f64 bits")
             }
+            (Value::Scalar(Literal::F32Bits(x)), Value::Scalar(Literal::F32Bits(y))) => {
+                assert_eq!(x, y, "{ctx} f32 bits")
+            }
             (Value::Scalar(Literal::I64(x)), Value::Scalar(Literal::I64(y))) => {
                 assert_eq!(x, y, "{ctx} i64")
             }
@@ -8197,6 +8224,146 @@ mod tests {
         }
         for &iv in &i64_inputs {
             run_both(&to_float, Value::scalar_i64(iv), &format!("to_float({iv})"));
+            // i64 -> f32 goes VIA f64 in convert_literal; verify the round matches.
+            let to_f32 = Jaxpr::new(
+                vec![VarId(0)],
+                vec![],
+                vec![VarId(1)],
+                vec![mk(
+                    Primitive::ConvertElementType,
+                    smallvec![Atom::Var(VarId(0))],
+                    conv("f32"),
+                    VarId(1),
+                )],
+            );
+            run_both(&to_f32, Value::scalar_i64(iv), &format!("i64->f32({iv})"));
+        }
+
+        // f32 source bodies (mixed-precision — the hot ML cast path).
+        let f32lit = |v: f32| Atom::Lit(Literal::F32Bits(v.to_bits()));
+        // f32 -> i64 (DIRECT f32 cast in convert_literal, not via f64).
+        let f32_to_i64 = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(1)],
+            vec![mk(
+                Primitive::ConvertElementType,
+                smallvec![Atom::Var(VarId(0))],
+                conv("i64"),
+                VarId(1),
+            )],
+        );
+        // mixed-precision: x_f32 -> f64; y = x*pi + 1; -> f32  (widen, f64 math, narrow).
+        let (xf, xd, m, s, of) = (VarId(0), VarId(1), VarId(2), VarId(3), VarId(4));
+        let mixed_prec = Jaxpr::new(
+            vec![xf],
+            vec![],
+            vec![of],
+            vec![
+                mk(
+                    Primitive::ConvertElementType,
+                    smallvec![Atom::Var(xf)],
+                    conv("f64"),
+                    xd,
+                ),
+                mk(
+                    Primitive::Mul,
+                    smallvec![Atom::Var(xd), f64lit(std::f64::consts::PI)],
+                    np(),
+                    m,
+                ),
+                mk(
+                    Primitive::Add,
+                    smallvec![Atom::Var(m), f64lit(1.0)],
+                    np(),
+                    s,
+                ),
+                mk(
+                    Primitive::ConvertElementType,
+                    smallvec![Atom::Var(s)],
+                    conv("f32"),
+                    of,
+                ),
+            ],
+        );
+        // f32 arith + f32 select gated behind a convert so the poly plan owns it:
+        //   x_f32 -> f64 (forces poly) -> back f32 ignored; out = select(x>0, x*2, -x) in f32.
+        let (xs, _xd2, gtb, dbl, neg, sel) =
+            (VarId(0), VarId(1), VarId(2), VarId(3), VarId(4), VarId(5));
+        let f32_cond = Jaxpr::new(
+            vec![xs],
+            vec![],
+            vec![sel],
+            vec![
+                mk(
+                    Primitive::ConvertElementType,
+                    smallvec![Atom::Var(xs)],
+                    conv("f32"),
+                    _xd2,
+                ),
+                mk(
+                    Primitive::Gt,
+                    smallvec![Atom::Var(_xd2), f32lit(0.0)],
+                    np(),
+                    gtb,
+                ),
+                mk(
+                    Primitive::Mul,
+                    smallvec![Atom::Var(_xd2), f32lit(2.0)],
+                    np(),
+                    dbl,
+                ),
+                mk(Primitive::Neg, smallvec![Atom::Var(_xd2)], np(), neg),
+                mk(
+                    Primitive::Select,
+                    smallvec![Atom::Var(gtb), Atom::Var(dbl), Atom::Var(neg)],
+                    np(),
+                    sel,
+                ),
+            ],
+        );
+        let f32_to_bool = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(1)],
+            vec![mk(
+                Primitive::ConvertElementType,
+                smallvec![Atom::Var(VarId(0))],
+                conv("bool"),
+                VarId(1),
+            )],
+        );
+        let f32_inputs: [f32; 12] = [
+            f32::NEG_INFINITY,
+            -1e18,
+            -3.7,
+            -1.0,
+            -0.0,
+            0.0,
+            0.5,
+            1.0,
+            3.7,
+            1e18,
+            f32::INFINITY,
+            f32::NAN,
+        ];
+        for &xv in &f32_inputs {
+            run_both(
+                &f32_to_i64,
+                Value::scalar_f32(xv),
+                &format!("f32->i64({xv})"),
+            );
+            run_both(
+                &f32_to_bool,
+                Value::scalar_f32(xv),
+                &format!("f32->bool({xv})"),
+            );
+            run_both(
+                &mixed_prec,
+                Value::scalar_f32(xv),
+                &format!("mixed_prec({xv})"),
+            );
+            run_both(&f32_cond, Value::scalar_f32(xv), &format!("f32_cond({xv})"));
         }
     }
 
@@ -8718,6 +8885,121 @@ mod tests {
                 "chained activation body bits differ at x={xv}"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_scalar_poly_f32_mixed_precision() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        let mk = |p: Primitive,
+                  ins: smallvec::SmallVec<[Atom; 4]>,
+                  params: BTreeMap<String, String>,
+                  o: VarId| Equation {
+            primitive: p,
+            inputs: ins,
+            outputs: smallvec![o],
+            params,
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        let conv = |to: &str| {
+            let mut p = BTreeMap::new();
+            p.insert("new_dtype".to_owned(), to.to_owned());
+            p
+        };
+        let f64lit = |v: f64| Atom::Lit(Literal::from_f64(v));
+        // Mixed-precision body: x_f32 -> f64; y = x*pi + 1; -> f32 (4 ops, 2 converts).
+        let (xf, xd, m, s, of) = (VarId(0), VarId(1), VarId(2), VarId(3), VarId(4));
+        let body = Jaxpr::new(
+            vec![xf],
+            vec![],
+            vec![of],
+            vec![
+                mk(
+                    Primitive::ConvertElementType,
+                    smallvec![Atom::Var(xf)],
+                    conv("f64"),
+                    xd,
+                ),
+                mk(
+                    Primitive::Mul,
+                    smallvec![Atom::Var(xd), f64lit(std::f64::consts::PI)],
+                    BTreeMap::new(),
+                    m,
+                ),
+                mk(
+                    Primitive::Add,
+                    smallvec![Atom::Var(m), f64lit(1.0)],
+                    BTreeMap::new(),
+                    s,
+                ),
+                mk(
+                    Primitive::ConvertElementType,
+                    smallvec![Atom::Var(s)],
+                    conv("f32"),
+                    of,
+                ),
+            ],
+        );
+        let plan = super::build_dense_plan(&body).expect("dense plan");
+        assert!(plan.scalar_poly_plan.is_some());
+        let n: usize = 2_000_000;
+        let args = [Value::scalar_f32(1.5)];
+        let run = |use_plan: bool| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut bufs = super::ScalarPlanBuffers::default();
+            let mut acc = 0.0f32;
+            for _ in 0..n {
+                if use_plan {
+                    super::run_dense_plan_into(
+                        &body,
+                        &[],
+                        &args,
+                        &mut env,
+                        &plan,
+                        &mut scratch,
+                        &mut o,
+                        &mut bufs,
+                    )
+                    .expect("compiled");
+                } else {
+                    super::run_dense_env_into(
+                        &body,
+                        &[],
+                        &args,
+                        &mut env,
+                        &plan.last_use,
+                        &mut scratch,
+                        &mut o,
+                    )
+                    .expect("generic");
+                }
+                if let Value::Scalar(Literal::F32Bits(b)) = &o[0] {
+                    acc += f32::from_bits(*b);
+                }
+            }
+            std::hint::black_box(acc);
+        };
+        let t_generic = best_time(|| run(false));
+        let t_compiled = best_time(|| run(true));
+        println!(
+            "BENCH poly-f32 mixed-precision {n} evals (f32->f64; *pi+1; ->f32): GENERIC {:.1}ns/eval -> COMPILED {:.1}ns/eval = {:.2}x",
+            t_generic * 1e9 / n as f64,
+            t_compiled * 1e9 / n as f64,
+            t_generic / t_compiled,
+        );
     }
 
     #[test]
