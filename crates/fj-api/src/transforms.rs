@@ -23,6 +23,10 @@ pub struct JitWrapped {
     jaxpr: Jaxpr,
     backend: BackendName,
     mode: CompatibilityMode,
+    /// Lazily-computed, args-independent dispatch metadata shared across
+    /// repeated `call`s. Excluded from equality/Debug so cached proof/key state
+    /// does not change the wrapper's observable identity.
+    meta_cache: DispatchMetaCache,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -170,6 +174,7 @@ pub fn jit(jaxpr: Jaxpr) -> JitWrapped {
         jaxpr,
         backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
+        meta_cache: DispatchMetaCache::default(),
     }
 }
 
@@ -703,22 +708,51 @@ impl JitWrapped {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
         self.backend = Cow::Owned(backend.to_owned());
+        // Backend feeds the cache key — invalidate any memoized metadata.
+        self.meta_cache = DispatchMetaCache::default();
         self
     }
 
     #[must_use]
     pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
         self.mode = mode;
+        // Mode feeds the cache key — invalidate any memoized metadata.
+        self.meta_cache = DispatchMetaCache::default();
         self
     }
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        dispatch_with(
+        let transforms = [Transform::Jit];
+        let evidence = transform_evidence(&transforms);
+        let compile_options = BTreeMap::new();
+        // Memoize the args-independent composition proof + cache key so repeated
+        // jit calls skip re-hashing the canonical Jaxpr fingerprint.
+        let prepared = self
+            .meta_cache
+            .0
+            .get_or_init(|| {
+                prepare_dispatch_meta(
+                    self.mode,
+                    &self.jaxpr,
+                    &transforms,
+                    &evidence,
+                    self.backend.as_ref(),
+                    &compile_options,
+                    None,
+                    &[],
+                )
+                .ok()
+            })
+            .as_ref();
+        dispatch_with_options_prepared(
             &self.jaxpr,
-            &[Transform::Jit],
+            &transforms,
+            &evidence,
             args,
             self.backend.as_ref(),
             self.mode,
+            compile_options,
+            prepared,
         )
     }
 

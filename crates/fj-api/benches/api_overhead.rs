@@ -54,6 +54,15 @@ fn bench_api_jit_scalar(c: &mut Criterion) {
         });
     });
 
+    let repeated_jit = jit(build_program(ProgramSpec::Add2));
+    group.bench_function("jit/scalar_add_repeated_call", |b| {
+        b.iter(|| {
+            repeated_jit
+                .call(vec![Value::scalar_i64(3), Value::scalar_i64(4)])
+                .expect("jit should succeed");
+        });
+    });
+
     group.bench_function("grad/scalar_square", |b| {
         b.iter(|| {
             let jaxpr = build_program(ProgramSpec::Square);
