@@ -107,3 +107,7 @@ artifacts/
 .skill-loop-progress-*.md
 *.mcp.json
 .fj_conflict_backup/
+
+# Nested per-crate cargo build output (e.g. crates/fj-api/target/ holding
+# criterion benchmark reports); only the workspace-root /target was ignored.
+crates/*/target/
