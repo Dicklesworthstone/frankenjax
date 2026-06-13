@@ -2192,6 +2192,52 @@ pub(crate) fn eval_gather(
                 out,
             )?));
         }
+        // Dense complex gather (contiguous): copy `(re, im)` runs straight from the
+        // dense complex backing. Bit-identical to the generic per-`Literal` copy; OOB
+        // fill = the (re, im) of `gather_fill_literal` ((NaN, 0)). `new_complex_values`
+        // re-rounds Complex64 to f32 exactly as the literal storage does.
+        if matches!(operand.dtype, DType::Complex64 | DType::Complex128)
+            && let Some(src) = operand.elements.as_complex_slice()
+        {
+            let fill: (f64, f64) = match gather_fill_literal(operand.dtype) {
+                Literal::Complex64Bits(re, im) => {
+                    (f64::from(f32::from_bits(re)), f64::from(f32::from_bits(im)))
+                }
+                Literal::Complex128Bits(re, im) => (f64::from_bits(re), f64::from_bits(im)),
+                _ => (0.0, 0.0),
+            };
+            let mut out: Vec<(f64, f64)> = Vec::with_capacity(total);
+            for &resolved_idx in &resolved {
+                let Some(idx) = resolved_idx else {
+                    out.extend(std::iter::repeat_n(fill, slice_elems));
+                    continue;
+                };
+                let base_offset =
+                    idx.checked_mul(slice_elems)
+                        .ok_or_else(|| EvalError::Unsupported {
+                            primitive,
+                            detail: "gather base offset overflows usize".to_owned(),
+                        })?;
+                let end = base_offset.checked_add(slice_elems).ok_or_else(|| {
+                    EvalError::Unsupported {
+                        primitive,
+                        detail: "gather contiguous slice end overflows usize".to_owned(),
+                    }
+                })?;
+                if end > src.len() {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: "gather contiguous slice exceeds operand element count".to_owned(),
+                    });
+                }
+                out.extend_from_slice(&src[base_offset..end]);
+            }
+            return Ok(Value::Tensor(TensorValue::new_complex_values(
+                operand.dtype,
+                Shape { dims: out_dims },
+                out,
+            )?));
+        }
 
         for &resolved_idx in &resolved {
             let Some(idx) = resolved_idx else {
@@ -2305,6 +2351,17 @@ pub(crate) fn eval_gather(
             _ => 0,
         };
         dense_strided_gather!(s, fill, |sh, o| TensorValue::new_half_float_values(dt, sh, o));
+    }
+    if let Some(s) = operand.elements.as_complex_slice() {
+        let dt = operand.dtype;
+        let fill: (f64, f64) = match gather_fill_literal(dt) {
+            Literal::Complex64Bits(re, im) => {
+                (f64::from(f32::from_bits(re)), f64::from(f32::from_bits(im)))
+            }
+            Literal::Complex128Bits(re, im) => (f64::from_bits(re), f64::from_bits(im)),
+            _ => (0.0, 0.0),
+        };
+        dense_strided_gather!(s, fill, |sh, o| TensorValue::new_complex_values(dt, sh, o));
     }
 
     for &resolved_idx in &resolved {
@@ -17020,6 +17077,63 @@ mod tests {
             assert_eq!(geth(&super::eval_gather(&[dh.clone(), idx.clone()], &p).unwrap()),
                        geth(&super::eval_gather(&[bh.clone(), idx.clone()], &p).unwrap()), "bf16 strided gather imode={imode}");
         }
+    }
+
+    #[test]
+    fn dense_complex_gather_matches_literal_path() {
+        // Complex gather (contiguous full-row AND strided partial-row) dense path
+        // vs boxed-Literal generic. Bit-identical (same indices/order/OOB fill).
+        let (rows, cols) = (24usize, 16usize);
+        let dims = vec![rows as u32, cols as u32];
+        let idx = Value::vector_i64(&[0, 5, 23, 999, 1, 23, 0]).unwrap();
+        let cplx: Vec<(f64, f64)> = (0..rows * cols)
+            .map(|i| ((i as f64) * 0.5 - 7.0, ((i * 3 % 11) as f64) - 5.0))
+            .collect();
+        let dense = Value::Tensor(TensorValue::new_complex_values(DType::Complex128, Shape { dims: dims.clone() }, cplx.clone()).unwrap());
+        let boxed = Value::Tensor(TensorValue::new(DType::Complex128, Shape { dims: dims.clone() }, cplx.iter().map(|&(re,im)| Literal::from_complex128(re,im)).collect()).unwrap());
+        let bits = |v: &Value| -> Vec<(u64, u64)> {
+            v.as_tensor().unwrap().elements.iter().map(|l| match l {
+                Literal::Complex128Bits(re, im) => (*re, *im),
+                o => panic!("expected Complex128Bits, got {o:?}"),
+            }).collect()
+        };
+        for (ss, label) in [("1,16", "contiguous"), ("1,9", "strided")] {
+            for imode in ["clip", "fill_or_drop"] {
+                let p = params(&[("slice_sizes", ss), ("index_mode", imode)]);
+                assert_eq!(
+                    bits(&super::eval_gather(&[dense.clone(), idx.clone()], &p).unwrap()),
+                    bits(&super::eval_gather(&[boxed.clone(), idx.clone()], &p).unwrap()),
+                    "complex {label} gather imode={imode}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_complex_gather_dense_vs_generic() {
+        use std::time::Instant;
+        let (vocab, dim) = (50000usize, 128usize);
+        let batch = 8192usize;
+        let cplx: Vec<(f64, f64)> = (0..vocab * dim).map(|i| ((i % 1009) as f64 * 0.001, (i % 503) as f64 * 0.002)).collect();
+        let dims = vec![vocab as u32, dim as u32];
+        let dense = Value::Tensor(TensorValue::new_complex_values(DType::Complex128, Shape { dims: dims.clone() }, cplx.clone()).unwrap());
+        let boxed = Value::Tensor(TensorValue::new(DType::Complex128, Shape { dims: dims.clone() }, cplx.iter().map(|&(re,im)| Literal::from_complex128(re,im)).collect()).unwrap());
+        let idx: Vec<i64> = (0..batch as i64).map(|i| (i * 7919) % vocab as i64).collect();
+        let idx_v = Value::vector_i64(&idx).unwrap();
+        let pc = 48usize; // partial trailing slice ⇒ strided path (per-element get/push)
+        let p = params(&[("slice_sizes", &format!("1,{pc}")), ("index_mode", "clip")]);
+        let csum = |v: Value| -> u64 { v.as_tensor().unwrap().elements.iter().fold(0u64, |a, l| match l { Literal::Complex128Bits(re,_)=>a.wrapping_add(*re), _=>a }) };
+        let time = |op: &Value| {
+            let _ = super::eval_gather(&[op.clone(), idx_v.clone()], &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..10 { let t = Instant::now(); let _ = super::eval_gather(&[op.clone(), idx_v.clone()], &p).unwrap(); best = best.min(t.elapsed().as_secs_f64()); }
+            best
+        };
+        assert_eq!(csum(super::eval_gather(&[dense.clone(), idx_v.clone()], &p).unwrap()),
+                   csum(super::eval_gather(&[boxed.clone(), idx_v.clone()], &p).unwrap()), "parity");
+        let g = time(&boxed); let d = time(&dense);
+        println!("BENCH complex128 strided gather [{vocab},{dim}]->[{batch},{pc}]: generic={:.4}ms dense={:.4}ms speedup={:.2}x", g*1e3, d*1e3, g/d);
     }
 
     #[test]
