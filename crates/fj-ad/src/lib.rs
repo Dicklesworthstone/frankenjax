@@ -5974,15 +5974,22 @@ fn vjp_reduce_window(
     let rank = input_tensor.shape.rank();
 
     // window_dilation (atrous pooling) gradient is supported below (dilated tap
-    // mapping in compute_flat_index). base_dilation (input dilation) is unsupported in
-    // the forward too — reject it defensively rather than risk a wrong gradient.
-    if params
-        .get("base_dilation")
-        .is_some_and(|v| v.split(',').any(|p| !matches!(p.trim(), "" | "1")))
-    {
-        return Err(AdError::EvalFailed(
-            "reduce_window gradient (VJP) does not support base_dilation".to_owned(),
-        ));
+    // mapping in compute_flat_index). base_dilation (operand dilation) IS supported in
+    // the forward (it spaces operand elements `db` apart, filling holes with the
+    // reduction init), so its VJP is the adjoint of that dilation: dilate the operand
+    // with init-value holes, run the plain (db==1) reduce_window VJP, then de-dilate the
+    // operand gradient (strided-slice the real positions). The holes are constants — the
+    // init value — so they carry zero gradient, exactly matching the dilated forward.
+    let base_dilation = parse_reduce_window_base_dilation(params, rank);
+    if base_dilation.iter().any(|&d| d > 1) {
+        let reduce_op_str = params.get("reduce_op").map(|s| s.as_str()).unwrap_or("sum");
+        let fill = reduce_window_grad_init_lit(reduce_op_str, input_tensor.dtype);
+        let dilated = dilate_with_fill(input_tensor, &base_dilation, fill)?;
+        let mut inner = params.clone();
+        inner.remove("base_dilation");
+        let grads = vjp_reduce_window(&[Value::Tensor(dilated)], g, &inner)?;
+        let grad_input = deflate_spatial_slice(&grads[0], &base_dilation)?;
+        return Ok(vec![grad_input]);
     }
 
     // Parse window parameters (same parsing as forward pass in fj-lax)
@@ -6295,6 +6302,23 @@ fn jvp_reduce_window_select(
 /// (SAME_LOWER). VALID (and any other) padding gives all-zero offsets.
 /// Parse `window_dilation` for a reduce_window gradient as `rank` per-dim factors
 /// (absent => all 1s; a single value broadcasts). Matches the fj-lax forward parse.
+fn parse_reduce_window_base_dilation(params: &BTreeMap<String, String>, rank: usize) -> Vec<usize> {
+    let parsed: Vec<usize> = params
+        .get("base_dilation")
+        .map(|s| {
+            s.split(',')
+                .filter_map(|x| x.trim().parse::<usize>().ok())
+                .filter(|&v| v >= 1)
+                .collect()
+        })
+        .unwrap_or_default();
+    match parsed.len() {
+        0 => vec![1; rank],
+        1 => vec![parsed[0]; rank],
+        _ => parsed,
+    }
+}
+
 fn parse_reduce_window_grad_dilation(params: &BTreeMap<String, String>, rank: usize) -> Vec<usize> {
     let parsed: Vec<usize> = params
         .get("window_dilation")
@@ -7628,6 +7652,70 @@ fn dilate_spatial(tensor: &TensorValue, factors: &[usize]) -> Result<TensorValue
     }
     TensorValue::new(tensor.dtype, Shape { dims: new_dims }, out)
         .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Like [`dilate_spatial`] but fills the inserted (hole) positions with `fill`
+/// instead of zero. Used by the reduce_window base_dilation VJP, where the operand
+/// holes carry the reduction init value (−∞ for max, +∞ for min, 0 for sum) so the
+/// recomputed argmax/contribution routing matches the dilated forward exactly.
+fn dilate_with_fill(
+    tensor: &TensorValue,
+    factors: &[usize],
+    fill: Literal,
+) -> Result<TensorValue, AdError> {
+    let dims = &tensor.shape.dims;
+    let rank = dims.len();
+    let mut new_dims = dims.clone();
+    for ax in 0..rank {
+        if factors[ax] > 1 {
+            let n = dims[ax] as usize;
+            let eff = if n == 0 { 0 } else { (n - 1) * factors[ax] + 1 };
+            new_dims[ax] = u32::try_from(eff)
+                .map_err(|_| AdError::EvalFailed("reduce_window VJP dilate dim overflow".to_owned()))?;
+        }
+    }
+    let new_total = new_dims
+        .iter()
+        .try_fold(1usize, |a, &d| a.checked_mul(d as usize))
+        .ok_or_else(|| AdError::EvalFailed("reduce_window VJP dilate size overflow".to_owned()))?;
+    let mut out = vec![fill; new_total];
+    let mut out_strides = vec![1usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        out_strides[i] = out_strides[i + 1] * new_dims[i + 1] as usize;
+    }
+    let mut coord = vec![0usize; rank];
+    for lit in tensor.elements.iter() {
+        let mut out_flat = 0usize;
+        for ax in 0..rank {
+            out_flat += coord[ax] * factors[ax] * out_strides[ax];
+        }
+        out[out_flat] = *lit;
+        for ax in (0..rank).rev() {
+            coord[ax] += 1;
+            if coord[ax] < dims[ax] as usize {
+                break;
+            }
+            coord[ax] = 0;
+        }
+    }
+    TensorValue::new(tensor.dtype, Shape { dims: new_dims }, out)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Reduction init literal (the value reduce_window dilation-holes carry), typed to
+/// `dtype`: −∞ for max, +∞ for min, 0 for sum.
+fn reduce_window_grad_init_lit(reduce_op: &str, dtype: DType) -> Literal {
+    let v = match reduce_op {
+        "max" => f64::NEG_INFINITY,
+        "min" => f64::INFINITY,
+        _ => 0.0,
+    };
+    match dtype {
+        DType::F32 => Literal::from_f32(v as f32),
+        DType::BF16 => Literal::from_bf16_f64(v),
+        DType::F16 => Literal::from_f16_f64(v),
+        _ => Literal::from_f64(v),
+    }
 }
 
 /// Inverse of [`dilate_spatial`] on a gradient: strided-slice every `factors[ax]`-th
@@ -18464,7 +18552,7 @@ mod tests {
         // Atrous pooling gradient: window tap t reads input out*stride + t*dilation
         // (minus SAME pad_low). Verify sum- and max-pool window_dilation grads match
         // central finite differences of L = sum(pool . g), VALID and SAME. base_dilation
-        // grad stays fail-closed.
+        // grad is checked separately (test_reduce_window_vjp_base_dilation_finite_diff).
         let mk = |d: &[f64]| {
             Value::Tensor(
                 TensorValue::new_f64_values(
@@ -18517,17 +18605,23 @@ mod tests {
                 }
             }
         }
-        // base_dilation grad stays fail-closed (forward rejects it too).
+        // base_dilation grad is now supported (FD-checked in
+        // test_reduce_window_vjp_base_dilation_finite_diff); here confirm it runs and
+        // returns an input-shaped gradient.
         let bparams = BTreeMap::from([
             ("window_dimensions".to_owned(), "2".to_owned()),
             ("window_strides".to_owned(), "1".to_owned()),
             ("reduce_op".to_owned(), "sum".to_owned()),
             ("base_dilation".to_owned(), "2".to_owned()),
         ]);
-        let gb = mk(&[1.0; 9]);
-        assert!(
-            vjp_single(Primitive::ReduceWindow, &[mk(&x0)], &gb, &bparams).is_err(),
-            "base_dilation grad must fail-closed"
+        let bout = eval_primitive(Primitive::ReduceWindow, &[mk(&x0)], &bparams).unwrap();
+        let blen = bout.as_tensor().unwrap().elements.len();
+        let gb = mk(&vec![1.0; blen]);
+        let bgrads = vjp_single(Primitive::ReduceWindow, &[mk(&x0)], &gb, &bparams).unwrap();
+        assert_eq!(
+            bgrads[0].as_tensor().unwrap().elements.len(),
+            x0.len(),
+            "base_dilation grad shape == input shape"
         );
     }
 
@@ -18821,6 +18915,56 @@ mod tests {
                 analytical_vals[i],
                 numerical
             );
+        }
+    }
+
+    #[test]
+    fn test_reduce_window_vjp_base_dilation_finite_diff() {
+        // base_dilation (operand dilation) VJP vs central finite differences, for sum and
+        // max pooling. The forward spaces operand elements 2 apart (holes = reduction
+        // init); the VJP dilates with init-value holes, runs the plain (db==1) VJP, and
+        // de-dilates. Checks L = sum(reduce_window(x) · g), arbitrary g, distinct x.
+        let eps = 1e-6;
+        let x0 = vec![2.0, 5.0, 1.0, 4.0];
+        let mk = |v: &[f64]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: vec![v.len() as u32] },
+                    v.iter().map(|&a| Literal::from_f64(a)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        for reduce_op in ["sum", "max"] {
+            let params = BTreeMap::from([
+                ("window_dimensions".to_owned(), "2".to_owned()),
+                ("window_strides".to_owned(), "1".to_owned()),
+                ("base_dilation".to_owned(), "2".to_owned()),
+                ("reduce_op".to_owned(), reduce_op.to_owned()),
+            ]);
+            let fwd = eval_primitive(Primitive::ReduceWindow, &[mk(&x0)], &params).unwrap();
+            let out_len = fwd.as_tensor().unwrap().elements.len();
+            let gv: Vec<f64> = (0..out_len).map(|i| 0.5 + 0.3 * i as f64).collect();
+            let g = mk(&gv);
+            let loss = |xv: &[f64]| -> f64 {
+                let out = eval_primitive(Primitive::ReduceWindow, &[mk(xv)], &params).unwrap();
+                tensor_f64_values(&out).iter().zip(&gv).map(|(o, gg)| o * gg).sum()
+            };
+            let grads = vjp_single(Primitive::ReduceWindow, &[mk(&x0)], &g, &params).unwrap();
+            let glhs = tensor_f64_values(&grads[0]);
+            assert_eq!(glhs.len(), x0.len(), "{reduce_op}: grad shape == input shape");
+            for i in 0..x0.len() {
+                let (mut up, mut dn) = (x0.clone(), x0.clone());
+                up[i] += eps;
+                dn[i] -= eps;
+                let fd = (loss(&up) - loss(&dn)) / (2.0 * eps);
+                assert!(
+                    (glhs[i] - fd).abs() < 1e-4,
+                    "{reduce_op} base_dilation grad[{i}]={} fd={fd}",
+                    glhs[i]
+                );
+            }
         }
     }
 
