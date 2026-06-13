@@ -1818,19 +1818,25 @@ pub(crate) fn eval_reduce_axes(
                     // semantics stay identical to the generic path.
                     if inner == 1 {
                         match primitive {
-                            Primitive::ReduceSum => {
-                                for o in 0..outer {
-                                    let base = o * reduce;
+                            // ReduceSum float_op is component-wise addition; inlining
+                            // `+` is bit-identical (proven by the trailing-axis test)
+                            // and keeps the row-fold `Sync`, so sum threads too.
+                            Primitive::ReduceSum => complex_inner1_reduce_rows(
+                                &mut result_re,
+                                &mut result_im,
+                                values,
+                                outer,
+                                reduce,
+                                |row| {
                                     let mut acc_re = init_re;
                                     let mut acc_im = init_im;
-                                    for &(re, im) in &values[base..base + reduce] {
-                                        acc_re = float_op(acc_re, re);
-                                        acc_im = float_op(acc_im, im);
+                                    for &(re, im) in row {
+                                        acc_re += re;
+                                        acc_im += im;
                                     }
-                                    result_re[o] = acc_re;
-                                    result_im[o] = acc_im;
-                                }
-                            }
+                                    (acc_re, acc_im)
+                                },
+                            ),
                             // Prod/Max/Min are per-row complex-multiply /
                             // lexicographic-compare dependency chains (no `float_op`):
                             // thread the independent rows (bit-identical, latency-bound).
@@ -1887,10 +1893,21 @@ pub(crate) fn eval_reduce_axes(
                             ),
                         }
                     } else {
-                        // inner>1 (leading/middle-axis). Prod/Max/Min are per-cell
-                        // dependency chains with no `float_op` -> thread the rows.
-                        // ReduceSum keeps the serial accumulate (uses `float_op`).
+                        // inner>1 (leading/middle-axis). All four route through the
+                        // threaded row driver: prod/max/min are per-cell chains;
+                        // ReduceSum's float_op is component-wise `+`, inlined here
+                        // (bit-identical, keeps the step `Sync`).
                         match primitive {
+                            Primitive::ReduceSum => complex_inner_axis_reduce_rows(
+                                &mut result_re,
+                                &mut result_im,
+                                values,
+                                outer,
+                                reduce,
+                                inner,
+                                (init_re, init_im),
+                                |acc, v| (acc.0 + v.0, acc.1 + v.1),
+                            ),
                             Primitive::ReduceProd => complex_inner_axis_reduce_rows(
                                 &mut result_re,
                                 &mut result_im,
@@ -6026,6 +6043,90 @@ mod tests {
         );
         println!(
             "BENCH complex128 prod(x[{outer},{reduce}],axis=-1): serial={:.4}ms threaded={:.4}ms speedup={:.2}x",
+            t_serial * 1e3,
+            t_threaded * 1e3,
+            t_serial / t_threaded,
+        );
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_threaded_complex_trailing_axis_sum() {
+        use std::time::Instant;
+        // Complex128 SUM over the trailing axis (the lightest reducer: 2 adds/elem,
+        // 16 bytes/elem) — checks whether threading the independent rows still pays
+        // off or whether sum is memory-bandwidth-bound.
+        let (outer, reduce) = (16384usize, 256usize);
+        let n = outer * reduce;
+        let cplx: Vec<(f64, f64)> = (0..n)
+            .map(|i| {
+                let a = (((i * 2_654_435_761) % 997) as f64 - 498.0) * 1e-3;
+                let b = (((i * 40_503) % 991) as f64 - 495.0) * 1e-3;
+                (a, b)
+            })
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![outer as u32, reduce as u32],
+                },
+                cplx.clone(),
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "1".to_owned());
+        let best = |mut f: Box<dyn FnMut() -> u64>| {
+            f();
+            let mut b = f64::MAX;
+            let mut d = 0u64;
+            for _ in 0..5 {
+                let t = Instant::now();
+                d = std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            (b, d)
+        };
+        let cs = cplx.clone();
+        let (t_serial, d_serial) = best(Box::new(move || {
+            let mut acc = 0u64;
+            for o in 0..outer {
+                let row = &cs[o * reduce..(o + 1) * reduce];
+                let mut a = (0.0_f64, 0.0_f64);
+                for &(re, im) in row {
+                    a = (a.0 + re, a.1 + im);
+                }
+                acc ^= a.0.to_bits() ^ a.1.to_bits();
+            }
+            acc
+        }));
+        let (t_threaded, d_threaded) = best(Box::new(move || {
+            let out = eval_reduce_axes(
+                Primitive::ReduceSum,
+                std::slice::from_ref(&tensor),
+                &params,
+                0,
+                0.0,
+                |a, _| a,
+                |a, b| a + b,
+            )
+            .unwrap();
+            out.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0u64, |acc, l| match l {
+                    Literal::Complex128Bits(rb, ib) => acc ^ rb ^ ib,
+                    _ => acc,
+                })
+        }));
+        assert_eq!(
+            d_serial, d_threaded,
+            "threaded complex sum digest must match serial"
+        );
+        println!(
+            "BENCH complex128 sum(x[{outer},{reduce}],axis=-1): serial={:.4}ms threaded={:.4}ms speedup={:.2}x",
             t_serial * 1e3,
             t_threaded * 1e3,
             t_serial / t_threaded,
