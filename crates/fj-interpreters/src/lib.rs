@@ -3368,10 +3368,13 @@ fn compare_atom_operand(atom: &Atom, jaxpr: &Jaxpr) -> Option<CompareOperand> {
         Atom::Var(var) => {
             if let Some(i) = jaxpr.constvars.iter().position(|c| c == var) {
                 Some(CompareOperand::Const(i))
-            } else if let Some(i) = jaxpr.invars.iter().position(|iv| iv == var) {
-                Some(CompareOperand::Input(i))
             } else {
-                None // an equation-produced intermediate — impossible for a 1-op cond
+                jaxpr
+                    .invars
+                    .iter()
+                    .position(|iv| iv == var)
+                    .map(CompareOperand::Input)
+                // None means an equation-produced intermediate, impossible for a 1-op cond.
             }
         }
         Atom::Lit(lit) => Some(CompareOperand::Lit(*lit)),
