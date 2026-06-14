@@ -2909,7 +2909,12 @@ fn eval_cumulative_dense(
         )?)));
     }
 
-    if tensor.dtype == DType::I64 {
+    // I64 AND I32 (JAX's default int) share the dense i64 backing. i32 is sign-extended,
+    // so `int_op` (wrapping) over i64 is correct; cumsum/cumprod prefixes may exceed i32
+    // range but the I32-tagged output is wrapped mod 2^32 by the eval_primitive chokepoint
+    // (homomorphism: wrap-of-i64-prefix == per-step i32 wrap), and cummax/cummin select an
+    // in-range input so no wrap occurs. i32 otherwise ran the generic per-Literal scan.
+    if matches!(tensor.dtype, DType::I64 | DType::I32) {
         let Some(src) = tensor.elements.as_i64_slice() else {
             return Ok(None);
         };
@@ -2940,10 +2945,13 @@ fn eval_cumulative_dense(
             }
             out
         };
-        return Ok(Some(Value::Tensor(TensorValue::new_i64_values(
-            tensor.shape.clone(),
-            out,
-        )?)));
+        let shape = tensor.shape.clone();
+        let tv = if tensor.dtype == DType::I32 {
+            TensorValue::new_i32_values(shape, out)
+        } else {
+            TensorValue::new_i64_values(shape, out)
+        };
+        return Ok(Some(Value::Tensor(tv?)));
     }
 
     if matches!(tensor.dtype, DType::BF16 | DType::F16) {
@@ -6784,6 +6792,115 @@ mod tests {
                 assert_eq!(ints(&di), ints(&li), "i64 {prim:?} axis={axis} rev={rev}");
             }
         }
+    }
+
+    #[test]
+    fn dense_i32_cumulative_matches_generic_and_preserves_dtype() {
+        // i32 (JAX's default int) cumsum/cumprod/cummax/cummin now use the dense i64 scan
+        // (were on the generic per-Literal scan). i32 shares the i64 backing and
+        // sign-extends; cumsum/cumprod prefixes wrap mod 2^32 via the eval_primitive
+        // chokepoint (ring homomorphism), cummax/cummin select an in-range input. Dense
+        // (densified) must match the boxed generic path AND stay I32.
+        let n = 600usize;
+        let data: Vec<i64> = (0..n)
+            .map(|i| i64::from((((i as i64) * 715_827_883) - 1_000_000_000) as i32))
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new(
+                DType::I32,
+                Shape { dims: vec![n as u32] },
+                data.iter().map(|&v| Literal::I64(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::I32,
+                Shape { dims: vec![n as u32] },
+                fj_core::LiteralBuffer::new(data.iter().map(|&v| Literal::I64(v)).collect()),
+            )
+            .unwrap(),
+        );
+        assert!(dense.as_tensor().unwrap().elements.as_i64_slice().is_some());
+        assert!(boxed.as_tensor().unwrap().elements.as_i64_slice().is_none());
+        let geti = |v: &Value| -> Vec<i64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::I64(x) => *x,
+                    o => panic!("expected I64-backed i32, got {o:?}"),
+                })
+                .collect()
+        };
+        for prim in [
+            Primitive::Cumsum,
+            Primitive::Cumprod,
+            Primitive::Cummax,
+            Primitive::Cummin,
+        ] {
+            for rev in ["false", "true"] {
+                let p = BTreeMap::from([
+                    ("axis".to_owned(), "0".to_owned()),
+                    ("reverse".to_owned(), rev.to_owned()),
+                ]);
+                let d = crate::eval_primitive(prim, std::slice::from_ref(&dense), &p).unwrap();
+                let b = crate::eval_primitive(prim, std::slice::from_ref(&boxed), &p).unwrap();
+                assert_eq!(
+                    d.as_tensor().unwrap().dtype,
+                    DType::I32,
+                    "{prim:?} rev={rev}: dtype must stay I32"
+                );
+                assert_eq!(geti(&d), geti(&b), "{prim:?} rev={rev}: dense != generic");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_i32_cumsum_dense_vs_generic() {
+        use std::time::Instant;
+        let (rows, cols) = (512usize, 2048usize);
+        let data: Vec<i64> = (0..rows * cols)
+            .map(|i| i64::from(((i as i64).wrapping_mul(2_654_435_761) ^ 0x1234) as i32))
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new(
+                DType::I32,
+                Shape { dims: vec![rows as u32, cols as u32] },
+                data.iter().map(|&v| Literal::I64(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::I32,
+                Shape { dims: vec![rows as u32, cols as u32] },
+                fj_core::LiteralBuffer::new(data.iter().map(|&v| Literal::I64(v)).collect()),
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([("axis".to_owned(), "1".to_owned())]);
+        let best = |v: &Value| {
+            let _ = crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(v), &p).unwrap();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                let o = crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(v), &p).unwrap();
+                std::hint::black_box(o.as_tensor().unwrap().elements.len());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let generic = best(&boxed);
+        let dense_t = best(&dense);
+        println!(
+            "BENCH i32 cumsum [{rows}x{cols}] axis1: generic={:.2}ms dense={:.2}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
+        );
     }
 
     #[test]
