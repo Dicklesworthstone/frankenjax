@@ -3281,6 +3281,23 @@ fn broadcast_binary_tensors(
         return Ok(value);
     }
 
+    // U32⊗U32 / U64⊗U64 dense broadcast fast path (unsigned sibling of the i64
+    // path; mixed U32⊗U64 falls through to the generic loop which promotes to U64).
+    if matches!(lhs.dtype, DType::U32 | DType::U64)
+        && lhs.dtype == rhs.dtype
+        && let Some(value) = broadcast_binary_unsigned(
+            primitive,
+            lhs,
+            rhs,
+            &out_shape,
+            out_count,
+            &lhs_strides,
+            &rhs_strides,
+        )?
+    {
+        return Ok(value);
+    }
+
     let mut multi = Vec::with_capacity(out_strides.len());
     let mut elements = Vec::with_capacity(out_count);
     for flat_idx in 0..out_count {
@@ -3396,6 +3413,147 @@ fn broadcast_binary_i64(
         out_shape.clone(),
         values,
     )?)))
+}
+
+/// Broadcast-gather fold over two contiguous typed slices, producing output in
+/// row-major flat order using the SAME traversal as [`broadcast_binary_i64`]
+/// (outer odometer over leading dims + contiguous-inner run branched on the inner
+/// strides, with a generic [`BroadcastOdometer`] fallback for rank 0 / empty).
+/// The `(lhs_idx, rhs_idx)` sequence is therefore bit-for-bit identical to the
+/// generic broadcast loop; `op` carries the per-element semantics.
+#[inline]
+fn broadcast_fold_contiguous_inner<T: Copy>(
+    lhs_values: &[T],
+    rhs_values: &[T],
+    out_shape: &Shape,
+    out_count: usize,
+    lhs_strides: &[usize],
+    rhs_strides: &[usize],
+    op: impl Fn(T, T) -> T,
+) -> Vec<T> {
+    let rank = out_shape.dims.len();
+    let mut values = Vec::with_capacity(out_count);
+    if rank >= 1 && out_count > 0 {
+        let inner = out_shape.dims[rank - 1] as usize;
+        let inner_ls = lhs_strides[rank - 1];
+        let inner_rs = rhs_strides[rank - 1];
+        let outer = out_count / inner;
+        let mut coord = vec![0usize; rank.saturating_sub(1)];
+        let mut lb = 0usize;
+        let mut rb = 0usize;
+        for _ in 0..outer {
+            match (inner_ls, inner_rs) {
+                (1, 1) => {
+                    let l = &lhs_values[lb..lb + inner];
+                    let r = &rhs_values[rb..rb + inner];
+                    for k in 0..inner {
+                        values.push(op(l[k], r[k]));
+                    }
+                }
+                (1, 0) => {
+                    let l = &lhs_values[lb..lb + inner];
+                    let rv = rhs_values[rb];
+                    for &lv in l {
+                        values.push(op(lv, rv));
+                    }
+                }
+                (0, 1) => {
+                    let lv = lhs_values[lb];
+                    let r = &rhs_values[rb..rb + inner];
+                    for &rv in r {
+                        values.push(op(lv, rv));
+                    }
+                }
+                _ => {
+                    for k in 0..inner {
+                        values.push(op(
+                            lhs_values[lb + k * inner_ls],
+                            rhs_values[rb + k * inner_rs],
+                        ));
+                    }
+                }
+            }
+            if rank >= 2 {
+                let mut ax = rank - 2;
+                loop {
+                    coord[ax] += 1;
+                    lb += lhs_strides[ax];
+                    rb += rhs_strides[ax];
+                    if coord[ax] < out_shape.dims[ax] as usize {
+                        break;
+                    }
+                    coord[ax] = 0;
+                    lb -= lhs_strides[ax] * out_shape.dims[ax] as usize;
+                    rb -= rhs_strides[ax] * out_shape.dims[ax] as usize;
+                    if ax == 0 {
+                        break;
+                    }
+                    ax -= 1;
+                }
+            }
+        }
+    } else {
+        let mut odometer = BroadcastOdometer::new(&out_shape.dims, lhs_strides, rhs_strides);
+        for _ in 0..out_count {
+            let (lhs_idx, rhs_idx) = odometer.next();
+            values.push(op(lhs_values[lhs_idx], rhs_values[rhs_idx]));
+        }
+    }
+    values
+}
+
+/// Unsigned (`u32`/`u64`) dense broadcast binary fast path — the unsigned sibling of
+/// [`broadcast_binary_i64`], folding the contiguous `as_u32_slice`/`as_u64_slice`
+/// backings via [`broadcast_fold_contiguous_inner`] and [`unsigned_binop_for`].
+/// Bit-for-bit identical to the generic broadcast loop for `U32⊗U32` / `U64⊗U64`
+/// (same gather order, same per-primitive unsigned op, U32 truncated `as u32`
+/// exactly as `binary_literal_op` does). Returns `Ok(None)` for non-fast-path
+/// primitives or mixed/boxed backings, so the caller falls through to the generic
+/// loop (which promotes mixed `U32⊗U64 → U64`).
+#[inline]
+fn broadcast_binary_unsigned(
+    primitive: Primitive,
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    out_shape: &Shape,
+    out_count: usize,
+    lhs_strides: &[usize],
+    rhs_strides: &[usize],
+) -> Result<Option<Value>, EvalError> {
+    let Some(u_op) = unsigned_binop_for(primitive) else {
+        return Ok(None);
+    };
+    if let (Some(l), Some(r)) = (lhs.elements.as_u32_slice(), rhs.elements.as_u32_slice()) {
+        let values = broadcast_fold_contiguous_inner(
+            l,
+            r,
+            out_shape,
+            out_count,
+            lhs_strides,
+            rhs_strides,
+            |a, b| u_op(u64::from(a), u64::from(b)) as u32,
+        );
+        return Ok(Some(Value::Tensor(TensorValue::new_u32_values(
+            out_shape.clone(),
+            values,
+        )?)));
+    }
+    if let (Some(l), Some(r)) = (lhs.elements.as_u64_slice(), rhs.elements.as_u64_slice()) {
+        let values = broadcast_fold_contiguous_inner(
+            l,
+            r,
+            out_shape,
+            out_count,
+            lhs_strides,
+            rhs_strides,
+            |a, b| u_op(a, b),
+        );
+        return Ok(Some(Value::Tensor(TensorValue::new_u64_values(
+            out_shape.clone(),
+            values,
+        )?)));
+    }
+    Ok(None)
 }
 
 /// F64 broadcast binary fast path. Produces output elements in the same
@@ -19120,6 +19278,188 @@ mod tests {
         let dn = best(&dense);
         println!(
             "BENCH u32 Mul [{n}]: boxed={:.2}ms dense={:.2}ms speedup={:.2}x",
+            bx * 1e3,
+            dn * 1e3,
+            bx / dn
+        );
+    }
+
+    fn u32_dense_sh(dims: &[u32], d: &[u32]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::U32,
+                Shape { dims: dims.to_vec() },
+                d.iter().map(|&v| Literal::U32(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn u32_boxed_sh(dims: &[u32], d: &[u32]) -> Value {
+        Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U32,
+                Shape { dims: dims.to_vec() },
+                fj_core::LiteralBuffer::new(d.iter().map(|&v| Literal::U32(v)).collect()),
+            )
+            .unwrap(),
+        )
+    }
+    fn u64_dense_sh(dims: &[u32], d: &[u64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::U64,
+                Shape { dims: dims.to_vec() },
+                d.iter().map(|&v| Literal::U64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn u64_boxed_sh(dims: &[u32], d: &[u64]) -> Value {
+        Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U64,
+                Shape { dims: dims.to_vec() },
+                fj_core::LiteralBuffer::new(d.iter().map(|&v| Literal::U64(v)).collect()),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn u32_u64_broadcast_dense_matches_generic() {
+        // Dense U32/U64 broadcast (row [1,3], col [2,1], rank-1 [3]) must be
+        // bit-identical to the boxed generic broadcast loop across all fast-path
+        // primitives, in BOTH operand orders, incl >i32::MAX values, /0 and %0 → 0,
+        // and wrapping overflow.
+        let p = std::collections::BTreeMap::new();
+        let prims = [
+            Primitive::Add,
+            Primitive::Sub,
+            Primitive::Mul,
+            Primitive::Div,
+            Primitive::Rem,
+            Primitive::Max,
+            Primitive::Min,
+            Primitive::Pow,
+        ];
+
+        let m32 = [0u32, 1, u32::MAX, 3_000_000_000, 0, 7];
+        let row32 = [2u32, 0, 5];
+        let col32 = [3u32, 0];
+        let v32 = [4u32, u32::MAX, 0];
+        for &prim in &prims {
+            for (rd, rdims) in [
+                (&row32[..], vec![1u32, 3]),
+                (&col32[..], vec![2, 1]),
+                (&v32[..], vec![3]),
+            ] {
+                let dense = crate::eval_primitive(
+                    prim,
+                    &[u32_dense_sh(&[2, 3], &m32), u32_dense_sh(&rdims, rd)],
+                    &p,
+                )
+                .unwrap();
+                let boxed = crate::eval_primitive(
+                    prim,
+                    &[u32_boxed_sh(&[2, 3], &m32), u32_boxed_sh(&rdims, rd)],
+                    &p,
+                )
+                .unwrap();
+                assert_eq!(
+                    unsigned_out_bits(&dense),
+                    unsigned_out_bits(&boxed),
+                    "{prim:?} u32 bcast rhs {rdims:?}"
+                );
+                assert_eq!(dense.as_tensor().unwrap().dtype, DType::U32);
+                let dense2 = crate::eval_primitive(
+                    prim,
+                    &[u32_dense_sh(&rdims, rd), u32_dense_sh(&[2, 3], &m32)],
+                    &p,
+                )
+                .unwrap();
+                let boxed2 = crate::eval_primitive(
+                    prim,
+                    &[u32_boxed_sh(&rdims, rd), u32_boxed_sh(&[2, 3], &m32)],
+                    &p,
+                )
+                .unwrap();
+                assert_eq!(
+                    unsigned_out_bits(&dense2),
+                    unsigned_out_bits(&boxed2),
+                    "{prim:?} u32 bcast lhs {rdims:?}"
+                );
+            }
+        }
+
+        let m64 = [0u64, 1, u64::MAX, 1 << 50, 0, 7];
+        let row64 = [2u64, 0, 5];
+        let col64 = [3u64, 0];
+        let v64 = [4u64, u64::MAX, 0];
+        for &prim in &prims {
+            for (rd, rdims) in [
+                (&row64[..], vec![1u32, 3]),
+                (&col64[..], vec![2, 1]),
+                (&v64[..], vec![3]),
+            ] {
+                let dense = crate::eval_primitive(
+                    prim,
+                    &[u64_dense_sh(&[2, 3], &m64), u64_dense_sh(&rdims, rd)],
+                    &p,
+                )
+                .unwrap();
+                let boxed = crate::eval_primitive(
+                    prim,
+                    &[u64_boxed_sh(&[2, 3], &m64), u64_boxed_sh(&rdims, rd)],
+                    &p,
+                )
+                .unwrap();
+                assert_eq!(
+                    unsigned_out_bits(&dense),
+                    unsigned_out_bits(&boxed),
+                    "{prim:?} u64 bcast {rdims:?}"
+                );
+                assert_eq!(dense.as_tensor().unwrap().dtype, DType::U64);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_u32_broadcast_dense_vs_boxed() {
+        use std::time::Instant;
+        let (rows, cols) = (1000usize, 1000usize);
+        let n = rows * cols;
+        let m: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+        let row: Vec<u32> = (0..cols)
+            .map(|i| (i as u32).wrapping_mul(40_503).wrapping_add(7))
+            .collect();
+        let mat_dims = vec![rows as u32, cols as u32];
+        let row_dims = vec![1u32, cols as u32];
+        let dense = [
+            Value::Tensor(
+                TensorValue::new_u32_values(Shape { dims: mat_dims.clone() }, m.clone()).unwrap(),
+            ),
+            Value::Tensor(
+                TensorValue::new_u32_values(Shape { dims: row_dims.clone() }, row.clone()).unwrap(),
+            ),
+        ];
+        let boxed = [u32_boxed_sh(&mat_dims, &m), u32_boxed_sh(&row_dims, &row)];
+        let p = std::collections::BTreeMap::new();
+        let best = |inputs: &[Value]| {
+            let _ = crate::eval_primitive(Primitive::Mul, inputs, &p).unwrap();
+            let mut t = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                let o = crate::eval_primitive(Primitive::Mul, inputs, &p).unwrap();
+                std::hint::black_box(o.as_tensor().unwrap().elements.len());
+                t = t.min(s.elapsed().as_secs_f64());
+            }
+            t
+        };
+        let bx = best(&boxed);
+        let dn = best(&dense);
+        println!(
+            "BENCH u32 broadcast Mul [{rows}x{cols} ⊗ 1x{cols}]: boxed={:.2}ms dense={:.2}ms speedup={:.2}x",
             bx * 1e3,
             dn * 1e3,
             bx / dn
