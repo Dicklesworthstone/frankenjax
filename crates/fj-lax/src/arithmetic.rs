@@ -376,6 +376,12 @@ pub(crate) fn eval_binary_elementwise(
                 {
                     return Ok(value);
                 }
+                if matches!(lhs.dtype, DType::U32 | DType::U64)
+                    && lhs.dtype == rhs.dtype
+                    && let Some(value) = eval_same_shape_unsigned_binop(primitive, lhs, rhs)?
+                {
+                    return Ok(value);
+                }
 
                 let mut elements = Vec::with_capacity(lhs.elements.len());
                 for (left, right) in lhs
@@ -424,6 +430,9 @@ pub(crate) fn eval_binary_elementwise(
             if let Some(value) = eval_i64_scalar_broadcast_binop(*lhs, rhs, true, &int_op)? {
                 return Ok(value);
             }
+            if let Some(value) = eval_unsigned_scalar_broadcast_binop(primitive, *lhs, rhs, true)? {
+                return Ok(value);
+            }
 
             let mut elements = Vec::with_capacity(rhs.elements.len());
             for right in rhs.elements.iter().copied() {
@@ -463,6 +472,9 @@ pub(crate) fn eval_binary_elementwise(
                 return Ok(value);
             }
             if let Some(value) = eval_i64_scalar_broadcast_binop(*rhs, lhs, false, &int_op)? {
+                return Ok(value);
+            }
+            if let Some(value) = eval_unsigned_scalar_broadcast_binop(primitive, *rhs, lhs, false)? {
                 return Ok(value);
             }
 
@@ -669,8 +681,8 @@ fn round_to_odd_f64x8(x: std::simd::Simd<f64, BF16_SIMD_L>) -> std::simd::Simd<f
 /// — i.e. NOT (normal | ±0). Used to gate the SIMD f16 widen, which only handles normal/±0.
 #[inline]
 pub(crate) fn f16_input_needs_scalar(h: std::simd::Simd<u16, BF16_SIMD_L>) -> bool {
-    use std::simd::cmp::SimdPartialEq;
     use std::simd::Simd;
+    use std::simd::cmp::SimdPartialEq;
     type U16s = Simd<u16, BF16_SIMD_L>;
     let he = h & U16s::splat(0x7C00);
     let man = h & U16s::splat(0x03FF);
@@ -681,7 +693,9 @@ pub(crate) fn f16_input_needs_scalar(h: std::simd::Simd<u16, BF16_SIMD_L>) -> bo
 
 /// SIMD widen 8 F16 bit patterns (NORMAL or ±0 only — caller filters the rest) to exact f64.
 #[inline]
-pub(crate) fn f16_widen8(h: std::simd::Simd<u16, BF16_SIMD_L>) -> std::simd::Simd<f64, BF16_SIMD_L> {
+pub(crate) fn f16_widen8(
+    h: std::simd::Simd<u16, BF16_SIMD_L>,
+) -> std::simd::Simd<f64, BF16_SIMD_L> {
     use std::simd::cmp::SimdPartialEq;
     use std::simd::num::{SimdFloat, SimdUint};
     use std::simd::{Select, Simd};
@@ -701,9 +715,9 @@ pub(crate) fn f16_widen8(h: std::simd::Simd<u16, BF16_SIMD_L>) -> std::simd::Sim
 /// in SIMD. F16 max normal = 65504, min normal = 2^-14 ≈ 6.10352e-5.
 #[inline]
 fn f16_result_needs_scalar(f: std::simd::Simd<f32, BF16_SIMD_L>) -> bool {
+    use std::simd::Simd;
     use std::simd::cmp::SimdPartialOrd;
     use std::simd::num::SimdFloat;
-    use std::simd::Simd;
     type F32s = Simd<f32, BF16_SIMD_L>;
     let af = f.abs();
     let overflow = af.simd_ge(F32s::splat(65504.0));
@@ -730,9 +744,9 @@ fn f16_rne_from_f32x8(f: std::simd::Simd<f32, BF16_SIMD_L>) -> std::simd::Simd<u
     let he = half_exp << U32s::splat(10);
     let half_man = man >> U32s::splat(13);
     let round_bit = U32s::splat(0x1000);
-    let round_up =
-        ((man & round_bit).simd_ne(U32s::splat(0)) & (man & U32s::splat(0x2FFF)).simd_ne(U32s::splat(0)))
-            .select(U32s::splat(1), U32s::splat(0));
+    let round_up = ((man & round_bit).simd_ne(U32s::splat(0))
+        & (man & U32s::splat(0x2FFF)).simd_ne(U32s::splat(0)))
+    .select(U32s::splat(1), U32s::splat(0));
     let normal_res = (sign | he | half_man) + round_up;
     let is_zero = (bits & U32s::splat(0x7FFF_FFFF)).simd_eq(U32s::splat(0));
     is_zero.select(sign, normal_res).cast::<u16>()
@@ -856,7 +870,11 @@ fn f16_minmax_scalar_into(
             }
         } else {
             let x = f16_widen8(xu);
-            let m = if is_max { x.simd_max(svec) } else { x.simd_min(svec) };
+            let m = if is_max {
+                x.simd_max(svec)
+            } else {
+                x.simd_min(svec)
+            };
             let res = f16_rne_from_f32x8(round_to_odd_f64x8(m));
             let (lb, rb) = if scalar_on_left {
                 (svec_bits, xu)
@@ -873,7 +891,11 @@ fn f16_minmax_scalar_into(
 }
 
 #[inline]
-fn bf16_op_f64(op: Bf16Op, a: std::simd::Simd<f64, BF16_SIMD_L>, b: std::simd::Simd<f64, BF16_SIMD_L>) -> std::simd::Simd<f64, BF16_SIMD_L> {
+fn bf16_op_f64(
+    op: Bf16Op,
+    a: std::simd::Simd<f64, BF16_SIMD_L>,
+    b: std::simd::Simd<f64, BF16_SIMD_L>,
+) -> std::simd::Simd<f64, BF16_SIMD_L> {
     match op {
         Bf16Op::Add => a + b,
         Bf16Op::Sub => a - b,
@@ -1086,7 +1108,11 @@ fn bf16_minmax_scalar_into(
                 out[i + t] = scalar_apply(values[i + t]);
             }
         } else {
-            let m = if is_max { x.simd_max(svec) } else { x.simd_min(svec) };
+            let m = if is_max {
+                x.simd_max(svec)
+            } else {
+                x.simd_min(svec)
+            };
             let res = bf16_round8(m);
             // ±0 fixup needs the jax-argument order (right operand wins a both-zero tie).
             let (lb, rb) = if scalar_on_left {
@@ -1506,6 +1532,120 @@ fn eval_i64_scalar_broadcast_binop(
     )?)))
 }
 
+/// Per-primitive unsigned (`u32`/`u64`) binary op matching the `U32 | U64` arm of
+/// `binary_literal_op` (type_promotion.rs): both operands are widened to `u64`, the
+/// op is computed in `u64` (wrapping add/sub/mul, `checked_div`/`checked_rem` with
+/// `/0 → 0`, `max`/`min`, `wrapping_pow`), and the caller truncates U32 results
+/// `as u32`. The truncation is bit-identical to the generic path because both
+/// operands are `< 2^32`, so the low 32 bits of the `u64` computation equal the
+/// `u32` wrapping result (and `binary_literal_op` itself does `out as u32`).
+/// Returns `None` for any primitive whose U32/U64 result routes through the float
+/// fallback arm (so the caller falls back to the generic per-`Literal` loop).
+#[inline]
+fn unsigned_binop_for(primitive: Primitive) -> Option<fn(u64, u64) -> u64> {
+    Some(match primitive {
+        Primitive::Add => |l, r| l.wrapping_add(r),
+        Primitive::Sub => |l, r| l.wrapping_sub(r),
+        Primitive::Mul => |l, r| l.wrapping_mul(r),
+        Primitive::Div => |l, r| l.checked_div(r).unwrap_or(0),
+        Primitive::Rem => |l, r| l.checked_rem(r).unwrap_or(0),
+        Primitive::Max => |l, r| l.max(r),
+        Primitive::Min => |l, r| l.min(r),
+        Primitive::Pow => |l, r| l.wrapping_pow(u32::try_from(r).unwrap_or(u32::MAX)),
+        _ => return None,
+    })
+}
+
+/// Same-shape `U32⊗U32`/`U64⊗U64` elementwise fast path. Folds the contiguous
+/// `as_u32_slice`/`as_u64_slice` backing directly via [`unsigned_binop_for`],
+/// emitting dense `u32`/`u64` output — bit-for-bit identical to the generic
+/// `binary_literal_op` loop (same per-primitive unsigned semantics, same element
+/// order, same `as u32` truncation) but skipping the 24-byte boxed `Literal`
+/// stride. Returns `Ok(None)` for non-fast-path primitives or mixed/boxed backing
+/// (so the caller falls through to the generic loop, which correctly promotes
+/// mixed `U32⊗U64 → U64`).
+#[inline]
+fn eval_same_shape_unsigned_binop(
+    primitive: Primitive,
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+) -> Result<Option<Value>, EvalError> {
+    let Some(u_op) = unsigned_binop_for(primitive) else {
+        return Ok(None);
+    };
+    if let (Some(left), Some(right)) = (lhs.elements.as_u32_slice(), rhs.elements.as_u32_slice()) {
+        let values: Vec<u32> = left
+            .iter()
+            .zip(right)
+            .map(|(&l, &r)| u_op(u64::from(l), u64::from(r)) as u32)
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_u32_values(
+            lhs.shape.clone(),
+            values,
+        )?)));
+    }
+    if let (Some(left), Some(right)) = (lhs.elements.as_u64_slice(), rhs.elements.as_u64_slice()) {
+        let values: Vec<u64> = left.iter().zip(right).map(|(&l, &r)| u_op(l, r)).collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_u64_values(
+            lhs.shape.clone(),
+            values,
+        )?)));
+    }
+    Ok(None)
+}
+
+/// Unsigned (`u32`/`u64`) scalar⊗tensor broadcast fast path. Mirror of
+/// [`eval_i64_scalar_broadcast_binop`] for unsigned dense storage; `scalar_on_left`
+/// preserves operand order for the non-commutative `Sub`/`Div`/`Rem`/`Pow` cases.
+/// Bit-for-bit identical to the generic `binary_literal_op` path. Returns `Ok(None)`
+/// unless the scalar and tensor share the same unsigned dtype/dense backing.
+#[inline]
+fn eval_unsigned_scalar_broadcast_binop(
+    primitive: Primitive,
+    scalar: Literal,
+    tensor: &TensorValue,
+    scalar_on_left: bool,
+) -> Result<Option<Value>, EvalError> {
+    let Some(u_op) = unsigned_binop_for(primitive) else {
+        return Ok(None);
+    };
+    if let (Literal::U32(scalar), Some(values)) = (scalar, tensor.elements.as_u32_slice()) {
+        let scalar = u64::from(scalar);
+        let out: Vec<u32> = values
+            .iter()
+            .map(|&v| {
+                let value = u64::from(v);
+                (if scalar_on_left {
+                    u_op(scalar, value)
+                } else {
+                    u_op(value, scalar)
+                }) as u32
+            })
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_u32_values(
+            tensor.shape.clone(),
+            out,
+        )?)));
+    }
+    if let (Literal::U64(scalar), Some(values)) = (scalar, tensor.elements.as_u64_slice()) {
+        let out: Vec<u64> = values
+            .iter()
+            .map(|&v| {
+                if scalar_on_left {
+                    u_op(scalar, v)
+                } else {
+                    u_op(v, scalar)
+                }
+            })
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_u64_values(
+            tensor.shape.clone(),
+            out,
+        )?)));
+    }
+    Ok(None)
+}
+
 /// F64 scalar/tensor broadcast fast path for the arithmetic binops whose
 /// per-lane operation is plain IEEE-754 f64 arithmetic (`+`, `-`, `*`, `/`).
 ///
@@ -1735,7 +1875,12 @@ fn eval_half_float_scalar_broadcast_binop(
     // to the scalar map below). Max/Min covers relu (`max(x,0)`) / clamp. F16 stays scalar.
     if dt == DType::BF16 {
         let out = if let Some(bf_op) = bf16_op_of(primitive) {
-            Some(bf16_scalar_broadcast_simd(values, scalar_bits, scalar_on_left, bf_op))
+            Some(bf16_scalar_broadcast_simd(
+                values,
+                scalar_bits,
+                scalar_on_left,
+                bf_op,
+            ))
         } else if matches!(primitive, Primitive::Max | Primitive::Min) {
             let mut out = vec![0u16; values.len()];
             bf16_minmax_scalar_into(
@@ -3655,9 +3800,12 @@ fn broadcast_binary_half_float(
         for _ in 0..outer {
             let dst = &mut values[w..w + inner];
             match (inner_ls, inner_rs) {
-                (1, 1) => {
-                    bf16_binary_into(&lhs_values[lb..lb + inner], &rhs_values[rb..rb + inner], bop, dst)
-                }
+                (1, 1) => bf16_binary_into(
+                    &lhs_values[lb..lb + inner],
+                    &rhs_values[rb..rb + inner],
+                    bop,
+                    dst,
+                ),
                 (1, 0) => bf16_scalar_broadcast_into(
                     &lhs_values[lb..lb + inner],
                     rhs_values[rb],
@@ -14772,9 +14920,8 @@ mod tests {
     #[test]
     fn bf16_binary_simd_bit_identical_to_scalar() {
         let pats: [u16; 22] = [
-            0x0000, 0x8000, 0x0001, 0x007F, 0x0080, 0x7F7F, 0x3F80, 0xBF80, 0x4049, 0x40C9,
-            0x7F80, 0xFF80, 0x7FC0, 0x7F81, 0x3F81, 0x4100, 0xC100, 0x0040, 0x7E00, 0x7F00,
-            0x3FAB, 0xBFAB,
+            0x0000, 0x8000, 0x0001, 0x007F, 0x0080, 0x7F7F, 0x3F80, 0xBF80, 0x4049, 0x40C9, 0x7F80,
+            0xFF80, 0x7FC0, 0x7F81, 0x3F81, 0x4100, 0xC100, 0x0040, 0x7E00, 0x7F00, 0x3FAB, 0xBFAB,
         ];
         let mut lhs = Vec::new();
         let mut rhs = Vec::new();
@@ -14811,9 +14958,9 @@ mod tests {
     #[test]
     fn f16_reduce_sum_simd_bit_identical_to_scalar() {
         let pats: [u16; 24] = [
-            0x0000, 0x8000, 0x0001, 0x03FF, 0x0400, 0x7BFF, 0x3C00, 0xBC00, 0x3800, 0x4000,
-            0x6400, 0xEC00, 0x7C00, 0xFC00, 0x7E00, 0x7D00, 0x3555, 0xB555, 0x0200, 0x7800,
-            0x4900, 0xC900, 0x5640, 0x1234,
+            0x0000, 0x8000, 0x0001, 0x03FF, 0x0400, 0x7BFF, 0x3C00, 0xBC00, 0x3800, 0x4000, 0x6400,
+            0xEC00, 0x7C00, 0xFC00, 0x7E00, 0x7D00, 0x3555, 0xB555, 0x0200, 0x7800, 0x4900, 0xC900,
+            0x5640, 0x1234,
         ];
         // Several arrangements crossing the 8-lane boundary + tail, incl. all-normal,
         // edges-only, and mixed (so the edge-chunk fallback AND SIMD chunk both run).
@@ -14829,7 +14976,11 @@ mod tests {
         cases.push(tiled);
         let mut mixed = Vec::new();
         for i in 0..40 {
-            mixed.push(if i % 9 == 0 { pats[i % pats.len()] } else { normals[i % normals.len()] });
+            mixed.push(if i % 9 == 0 {
+                pats[i % pats.len()]
+            } else {
+                normals[i % normals.len()]
+            });
         }
         cases.push(mixed);
         for v in &cases {
@@ -14852,9 +15003,9 @@ mod tests {
         use fj_core::{Shape, TensorValue};
         // Mixed bf16/f16-shaped patterns (interpreted per dtype); both share sign 0x8000.
         let pats: [u16; 26] = [
-            0x0000, 0x8000, 0x0001, 0x8001, 0x007F, 0x3F80, 0xBF80, 0x7F80, 0xFF80, 0x7FC0,
-            0x7F81, 0xFFC1, 0x4049, 0xC049, 0x0080, 0x7C00, 0xFC00, 0x7E00, 0x03FF, 0x7BFF,
-            0x3C00, 0x0040, 0x1234, 0x9234, 0x5640, 0x4900,
+            0x0000, 0x8000, 0x0001, 0x8001, 0x007F, 0x3F80, 0xBF80, 0x7F80, 0xFF80, 0x7FC0, 0x7F81,
+            0xFFC1, 0x4049, 0xC049, 0x0080, 0x7C00, 0xFC00, 0x7E00, 0x03FF, 0x7BFF, 0x3C00, 0x0040,
+            0x1234, 0x9234, 0x5640, 0x4900,
         ];
         let mut bits: Vec<u16> = Vec::new();
         for _ in 0..3 {
@@ -14873,11 +15024,7 @@ mod tests {
                 let Some(Value::Tensor(out)) = half_neg_abs_simd(&tensor, is_abs) else {
                     panic!("expected half neg/abs SIMD path");
                 };
-                let got: Vec<u16> = out
-                    .elements
-                    .as_half_float_slice()
-                    .unwrap()
-                    .to_vec();
+                let got: Vec<u16> = out.elements.as_half_float_slice().unwrap().to_vec();
                 for (k, &v) in bits.iter().enumerate() {
                     let want = half_unary_apply(dt, v, &op_f64);
                     assert_eq!(
@@ -14896,9 +15043,9 @@ mod tests {
     #[test]
     fn f16_minmax_simd_bit_identical_to_scalar() {
         let pats: [u16; 24] = [
-            0x0000, 0x8000, 0x0001, 0x03FF, 0x0400, 0x7BFF, 0x3C00, 0xBC00, 0x3800, 0x4000,
-            0x6400, 0xEC00, 0x7C00, 0xFC00, 0x7E00, 0x7D00, 0x3555, 0xB555, 0x0200, 0x7800,
-            0x4900, 0xC900, 0x5640, 0x1234,
+            0x0000, 0x8000, 0x0001, 0x03FF, 0x0400, 0x7BFF, 0x3C00, 0xBC00, 0x3800, 0x4000, 0x6400,
+            0xEC00, 0x7C00, 0xFC00, 0x7E00, 0x7D00, 0x3555, 0xB555, 0x0200, 0x7800, 0x4900, 0xC900,
+            0x5640, 0x1234,
         ];
         let mut lhs = Vec::new();
         let mut rhs = Vec::new();
@@ -14920,7 +15067,11 @@ mod tests {
             f16_minmax_into(&lhs, &rhs, is_max, &mut got);
             for (k, (&a, &b)) in lhs.iter().zip(&rhs).enumerate() {
                 let want = half_binary_apply(DType::F16, a, b, &scalar_op);
-                assert_eq!(got[k], want, "f16 minmax same-shape is_max={is_max} a={a:#06x} b={b:#06x}: got {:#06x} want {:#06x}", got[k], want);
+                assert_eq!(
+                    got[k], want,
+                    "f16 minmax same-shape is_max={is_max} a={a:#06x} b={b:#06x}: got {:#06x} want {:#06x}",
+                    got[k], want
+                );
             }
             for &scalar in &[0x0000u16, 0x3C00, 0x7C00, 0x7E00, 0x0200, 0x8000] {
                 for &on_left in &[false, true] {
@@ -14929,7 +15080,11 @@ mod tests {
                     for (k, &v) in lhs.iter().enumerate() {
                         let (l, r) = if on_left { (scalar, v) } else { (v, scalar) };
                         let want = half_binary_apply(DType::F16, l, r, &scalar_op);
-                        assert_eq!(g[k], want, "f16 minmax scalar is_max={is_max} on_left={on_left} s={scalar:#06x} v={v:#06x}: got {:#06x} want {:#06x}", g[k], want);
+                        assert_eq!(
+                            g[k], want,
+                            "f16 minmax scalar is_max={is_max} on_left={on_left} s={scalar:#06x} v={v:#06x}: got {:#06x} want {:#06x}",
+                            g[k], want
+                        );
                     }
                 }
             }
@@ -14946,9 +15101,9 @@ mod tests {
         // f16 bit patterns: ±0, min/max subnormal, min/max normal, ±1, 0.5, 2, 1024,
         // 60000 (near max), ±inf, qNaN, sNaN.
         let pats: [u16; 24] = [
-            0x0000, 0x8000, 0x0001, 0x03FF, 0x0400, 0x7BFF, 0x3C00, 0xBC00, 0x3800, 0x4000,
-            0x6400, 0xEC00, 0x7C00, 0xFC00, 0x7E00, 0x7D00, 0x3555, 0xB555, 0x0200, 0x7800,
-            0x4900, 0xC900, 0x5640, 0x1234,
+            0x0000, 0x8000, 0x0001, 0x03FF, 0x0400, 0x7BFF, 0x3C00, 0xBC00, 0x3800, 0x4000, 0x6400,
+            0xEC00, 0x7C00, 0xFC00, 0x7E00, 0x7D00, 0x3555, 0xB555, 0x0200, 0x7800, 0x4900, 0xC900,
+            0x5640, 0x1234,
         ];
         let mut lhs = Vec::new();
         let mut rhs = Vec::new();
@@ -14985,9 +15140,8 @@ mod tests {
     #[test]
     fn bf16_minmax_simd_bit_identical_to_scalar() {
         let pats: [u16; 22] = [
-            0x0000, 0x8000, 0x0001, 0x007F, 0x0080, 0x7F7F, 0x3F80, 0xBF80, 0x4049, 0x40C9,
-            0x7F80, 0xFF80, 0x7FC0, 0x7F81, 0x3F81, 0x4100, 0xC100, 0x0040, 0x7E00, 0x7F00,
-            0x3FAB, 0xBFAB,
+            0x0000, 0x8000, 0x0001, 0x007F, 0x0080, 0x7F7F, 0x3F80, 0xBF80, 0x4049, 0x40C9, 0x7F80,
+            0xFF80, 0x7FC0, 0x7F81, 0x3F81, 0x4100, 0xC100, 0x0040, 0x7E00, 0x7F00, 0x3FAB, 0xBFAB,
         ];
         let mut lhs = Vec::new();
         let mut rhs = Vec::new();
@@ -15042,16 +15196,14 @@ mod tests {
     fn bf16_general_broadcast_column_bit_identical() {
         use fj_core::{DType, Shape, TensorValue};
         let pats: [u16; 22] = [
-            0x0000, 0x8000, 0x0001, 0x007F, 0x0080, 0x7F7F, 0x3F80, 0xBF80, 0x4049, 0x40C9,
-            0x7F80, 0xFF80, 0x7FC0, 0x7F81, 0x3F81, 0x4100, 0xC100, 0x0040, 0x7E00, 0x7F00,
-            0x3FAB, 0xBFAB,
+            0x0000, 0x8000, 0x0001, 0x007F, 0x0080, 0x7F7F, 0x3F80, 0xBF80, 0x4049, 0x40C9, 0x7F80,
+            0xFF80, 0x7FC0, 0x7F81, 0x3F81, 0x4100, 0xC100, 0x0040, 0x7E00, 0x7F00, 0x3FAB, 0xBFAB,
         ];
         let (rows, cols) = (4usize, pats.len()); // cols=22 crosses 8-lane + remainder
         let mat: Vec<u16> = (0..rows).flat_map(|_| pats.iter().copied()).collect();
         let col: Vec<u16> = (0..rows).map(|r| pats[(r * 7) % pats.len()]).collect();
-        let lits = |bits: &[u16]| -> Vec<Literal> {
-            bits.iter().map(|&b| Literal::BF16Bits(b)).collect()
-        };
+        let lits =
+            |bits: &[u16]| -> Vec<Literal> { bits.iter().map(|&b| Literal::BF16Bits(b)).collect() };
         let out_bits = |v: &Value| -> Vec<u16> {
             v.as_tensor()
                 .unwrap()
@@ -15063,20 +15215,43 @@ mod tests {
                 })
                 .collect()
         };
-        let mat_shape = Shape { dims: vec![rows as u32, cols as u32] };
-        let col_shape = Shape { dims: vec![rows as u32, 1] };
-        let mat_d = Value::Tensor(TensorValue::new_half_float_values(DType::BF16, mat_shape.clone(), mat.clone()).unwrap());
-        let col_d = Value::Tensor(TensorValue::new_half_float_values(DType::BF16, col_shape.clone(), col.clone()).unwrap());
+        let mat_shape = Shape {
+            dims: vec![rows as u32, cols as u32],
+        };
+        let col_shape = Shape {
+            dims: vec![rows as u32, 1],
+        };
+        let mat_d = Value::Tensor(
+            TensorValue::new_half_float_values(DType::BF16, mat_shape.clone(), mat.clone())
+                .unwrap(),
+        );
+        let col_d = Value::Tensor(
+            TensorValue::new_half_float_values(DType::BF16, col_shape.clone(), col.clone())
+                .unwrap(),
+        );
         let mat_b = Value::Tensor(TensorValue::new(DType::BF16, mat_shape, lits(&mat)).unwrap());
         let col_b = Value::Tensor(TensorValue::new(DType::BF16, col_shape, lits(&col)).unwrap());
-        for prim in [Primitive::Add, Primitive::Sub, Primitive::Mul, Primitive::Div] {
+        for prim in [
+            Primitive::Add,
+            Primitive::Sub,
+            Primitive::Mul,
+            Primitive::Div,
+        ] {
             for (l_d, r_d, l_b, r_b) in [
                 (&mat_d, &col_d, &mat_b, &col_b),
                 (&col_d, &mat_d, &col_b, &mat_b),
             ] {
-                let dense = crate::eval_primitive(prim, &[l_d.clone(), r_d.clone()], &BTreeMap::new()).unwrap();
-                let boxed = crate::eval_primitive(prim, &[l_b.clone(), r_b.clone()], &BTreeMap::new()).unwrap();
-                assert_eq!(out_bits(&dense), out_bits(&boxed), "{prim:?} column-broadcast dense != boxed");
+                let dense =
+                    crate::eval_primitive(prim, &[l_d.clone(), r_d.clone()], &BTreeMap::new())
+                        .unwrap();
+                let boxed =
+                    crate::eval_primitive(prim, &[l_b.clone(), r_b.clone()], &BTreeMap::new())
+                        .unwrap();
+                assert_eq!(
+                    out_bits(&dense),
+                    out_bits(&boxed),
+                    "{prim:?} column-broadcast dense != boxed"
+                );
             }
         }
     }
@@ -15087,9 +15262,8 @@ mod tests {
     #[test]
     fn bf16_scalar_broadcast_simd_bit_identical_to_scalar() {
         let pats: [u16; 22] = [
-            0x0000, 0x8000, 0x0001, 0x007F, 0x0080, 0x7F7F, 0x3F80, 0xBF80, 0x4049, 0x40C9,
-            0x7F80, 0xFF80, 0x7FC0, 0x7F81, 0x3F81, 0x4100, 0xC100, 0x0040, 0x7E00, 0x7F00,
-            0x3FAB, 0xBFAB,
+            0x0000, 0x8000, 0x0001, 0x007F, 0x0080, 0x7F7F, 0x3F80, 0xBF80, 0x4049, 0x40C9, 0x7F80,
+            0xFF80, 0x7FC0, 0x7F81, 0x3F81, 0x4100, 0xC100, 0x0040, 0x7E00, 0x7F00, 0x3FAB, 0xBFAB,
         ];
         // tensor = all patterns repeated to overrun a multiple of 8 (exercise remainder).
         let mut tensor: Vec<u16> = Vec::new();
@@ -18788,6 +18962,167 @@ mod tests {
         assert!(
             (extract_f64(&pos) + extract_f64(&neg)).abs() < 1e-10,
             "I1e(-x) = -I1e(x)"
+        );
+    }
+
+    // ---- dense u32/u64 elementwise arithmetic (frankenjax-crrx7) ----
+
+    fn u32_dense(d: &[u32]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::U32,
+                Shape::vector(d.len() as u32),
+                d.iter().map(|&v| Literal::U32(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn u32_boxed(d: &[u32]) -> Value {
+        Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U32,
+                Shape::vector(d.len() as u32),
+                fj_core::LiteralBuffer::new(d.iter().map(|&v| Literal::U32(v)).collect()),
+            )
+            .unwrap(),
+        )
+    }
+    fn u64_dense(d: &[u64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::U64,
+                Shape::vector(d.len() as u32),
+                d.iter().map(|&v| Literal::U64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn u64_boxed(d: &[u64]) -> Value {
+        Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U64,
+                Shape::vector(d.len() as u32),
+                fj_core::LiteralBuffer::new(d.iter().map(|&v| Literal::U64(v)).collect()),
+            )
+            .unwrap(),
+        )
+    }
+    fn unsigned_out_bits(v: &Value) -> Vec<u64> {
+        v.as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::U32(x) => u64::from(*x),
+                Literal::U64(x) => *x,
+                o => panic!("expected unsigned literal, got {o:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn u32_u64_arithmetic_dense_matches_generic() {
+        // Same-shape AND scalar-broadcast U32/U64 arithmetic now take the dense
+        // unsigned fast path (eval_same_shape_unsigned_binop /
+        // eval_unsigned_scalar_broadcast_binop) instead of the generic per-Literal
+        // binary_literal_op loop. Dense MUST be bit-identical to the boxed generic
+        // path across every fast-path primitive + both scalar orders, including
+        // values above i32::MAX / i64::MAX (unsigned wrap/order), /0 and %0 → 0,
+        // and wrapping add/sub/mul/pow overflow.
+        let p = std::collections::BTreeMap::new();
+        let prims = [
+            Primitive::Add,
+            Primitive::Sub,
+            Primitive::Mul,
+            Primitive::Div,
+            Primitive::Rem,
+            Primitive::Max,
+            Primitive::Min,
+            Primitive::Pow,
+        ];
+
+        let lu32 = [0u32, 1, 7, u32::MAX, 3_000_000_000, 100, u32::MAX - 1, 0];
+        let ru32 = [2u32, 1, 0, u32::MAX - 1, 3, 0, u32::MAX, 5];
+        for &prim in &prims {
+            let dense =
+                crate::eval_primitive(prim, &[u32_dense(&lu32), u32_dense(&ru32)], &p).unwrap();
+            let boxed =
+                crate::eval_primitive(prim, &[u32_boxed(&lu32), u32_boxed(&ru32)], &p).unwrap();
+            assert_eq!(
+                unsigned_out_bits(&dense),
+                unsigned_out_bits(&boxed),
+                "{prim:?} u32 same-shape dense != boxed"
+            );
+            assert_eq!(dense.as_tensor().unwrap().dtype, DType::U32, "{prim:?} u32 dtype");
+            let s = Value::Scalar(Literal::U32(3));
+            let dl = crate::eval_primitive(prim, &[s.clone(), u32_dense(&lu32)], &p).unwrap();
+            let bl = crate::eval_primitive(prim, &[s.clone(), u32_boxed(&lu32)], &p).unwrap();
+            assert_eq!(unsigned_out_bits(&dl), unsigned_out_bits(&bl), "{prim:?} u32 scalar-left");
+            let dr = crate::eval_primitive(prim, &[u32_dense(&lu32), s.clone()], &p).unwrap();
+            let br = crate::eval_primitive(prim, &[u32_boxed(&lu32), s.clone()], &p).unwrap();
+            assert_eq!(unsigned_out_bits(&dr), unsigned_out_bits(&br), "{prim:?} u32 scalar-right");
+        }
+
+        let lu64 = [0u64, 1, 7, u64::MAX, 1 << 40, 100, u64::MAX - 1, 0];
+        let ru64 = [2u64, 1, 0, u64::MAX - 1, 3, 0, u64::MAX, 5];
+        for &prim in &prims {
+            let dense =
+                crate::eval_primitive(prim, &[u64_dense(&lu64), u64_dense(&ru64)], &p).unwrap();
+            let boxed =
+                crate::eval_primitive(prim, &[u64_boxed(&lu64), u64_boxed(&ru64)], &p).unwrap();
+            assert_eq!(
+                unsigned_out_bits(&dense),
+                unsigned_out_bits(&boxed),
+                "{prim:?} u64 same-shape dense != boxed"
+            );
+            assert_eq!(dense.as_tensor().unwrap().dtype, DType::U64, "{prim:?} u64 dtype");
+            let s = Value::Scalar(Literal::U64(3));
+            let dl = crate::eval_primitive(prim, &[s.clone(), u64_dense(&lu64)], &p).unwrap();
+            let bl = crate::eval_primitive(prim, &[s.clone(), u64_boxed(&lu64)], &p).unwrap();
+            assert_eq!(unsigned_out_bits(&dl), unsigned_out_bits(&bl), "{prim:?} u64 scalar-left");
+            let dr = crate::eval_primitive(prim, &[u64_dense(&lu64), s.clone()], &p).unwrap();
+            let br = crate::eval_primitive(prim, &[u64_boxed(&lu64), s.clone()], &p).unwrap();
+            assert_eq!(unsigned_out_bits(&dr), unsigned_out_bits(&br), "{prim:?} u64 scalar-right");
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_u32_arithmetic_dense_vs_boxed() {
+        use std::time::Instant;
+        let n = 1_000_000usize;
+        let a: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+        let b: Vec<u32> = (0..n)
+            .map(|i| (i as u32).wrapping_mul(40_503).wrapping_add(7))
+            .collect();
+        let dense = [
+            Value::Tensor(
+                TensorValue::new_u32_values(Shape::vector(n as u32), a.clone()).unwrap(),
+            ),
+            Value::Tensor(
+                TensorValue::new_u32_values(Shape::vector(n as u32), b.clone()).unwrap(),
+            ),
+        ];
+        let boxed = [u32_boxed(&a), u32_boxed(&b)];
+        let p = std::collections::BTreeMap::new();
+        let best = |inputs: &[Value]| {
+            let _ = crate::eval_primitive(Primitive::Mul, inputs, &p).unwrap();
+            let mut t = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                let o = crate::eval_primitive(Primitive::Mul, inputs, &p).unwrap();
+                std::hint::black_box(o.as_tensor().unwrap().elements.len());
+                t = t.min(s.elapsed().as_secs_f64());
+            }
+            t
+        };
+        let bx = best(&boxed);
+        let dn = best(&dense);
+        println!(
+            "BENCH u32 Mul [{n}]: boxed={:.2}ms dense={:.2}ms speedup={:.2}x",
+            bx * 1e3,
+            dn * 1e3,
+            bx / dn
         );
     }
 }
