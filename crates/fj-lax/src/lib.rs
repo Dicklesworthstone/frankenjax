@@ -3794,6 +3794,7 @@ fn eval_reduce_window_in_sum_sat(
 
 #[allow(clippy::too_many_arguments)]
 fn eval_reduce_window_dense_i64(
+    out_dtype: fj_core::DType,
     reduce_op: &str,
     src: &[i64],
     window_dims: &[usize],
@@ -3937,6 +3938,21 @@ fn eval_reduce_window_dense_i64(
     let shape = Shape {
         dims: out_dims.to_vec(),
     };
+    // Preserve the input integer dtype. I32 (JAX's default int) shares the dense i64
+    // backing (`as_i64_slice`), so it reuses this exact stencil; the output is tagged
+    // I32 and the eval_primitive chokepoint (`narrow_i32_tensor_result`) wraps it
+    // mod 2^32 — identical to the generic path, which also flows through that chokepoint
+    // (sum: wrap-once == per-step wrap since + is a ring homomorphism; max/min select an
+    // in-range input so no wrap occurs).
+    if out_dtype == fj_core::DType::I32 {
+        // Wrap mod 2^32 to the i32 range here (sum can overflow; max/min are already in
+        // range) via the direct dense i32 constructor, so the result is canonical and the
+        // narrow chokepoint no-ops instead of rescanning + rebuilding.
+        let wrapped: Vec<i64> = values.into_iter().map(|v| i64::from(v as i32)).collect();
+        return Ok(Value::Tensor(
+            TensorValue::new_i32_values(shape, wrapped).map_err(EvalError::from)?,
+        ));
+    }
     Ok(Value::Tensor(
         TensorValue::new_i64_values(shape, values).map_err(EvalError::from)?,
     ))
@@ -4821,8 +4837,12 @@ fn eval_reduce_window(
     // eval_reduce_window_dense_i64). I32 stays on the generic path (i32 is stored
     // boxed → no i64 slice view) and is narrowed mod-2^32 by the eval_primitive
     // chokepoint regardless.
+    // I64 AND I32: both share the dense i64 backing (`as_i64_slice`). I32 is JAX's
+    // default integer dtype (so integer pooling is common) but was excluded here and
+    // fell to the generic per-`Literal` loop; route it through the same stencil and let
+    // the eval_primitive chokepoint wrap the I32 output mod 2^32.
     if no_base_dilation
-        && tensor.dtype == fj_core::DType::I64
+        && matches!(tensor.dtype, fj_core::DType::I64 | fj_core::DType::I32)
         && (matches!(reduce_op, "max" | "min") || reduce_window_sum_like(reduce_op))
         && let Some(src) = tensor.elements.as_i64_slice()
     {
@@ -4836,6 +4856,7 @@ fn eval_reduce_window(
             })?;
         }
         return eval_reduce_window_dense_i64(
+            output_dtype,
             reduce_op,
             src,
             &window_dims,
@@ -13447,6 +13468,176 @@ mod tests {
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
+    }
+
+    #[test]
+    fn dense_reduce_window_i32_matches_reference() {
+        // i32 (JAX's default int) now routes through the dense i64 stencil (was the
+        // generic per-`Literal` path). i32 densifies (`as_i64_slice` is Some) so it can't
+        // be forced onto the generic path by boxing — verify against a hand-computed i32
+        // reference instead. Values straddle i32::MAX so the SUM overflows and must wrap
+        // mod 2^32 (via the eval_primitive narrow chokepoint); max/min stay in range.
+        let (rows, cols) = (8usize, 10usize);
+        let datai: Vec<i64> = (0..rows * cols)
+            .map(|i| {
+                // large magnitudes near i32::MAX with sign variation → 9-tap sums overflow
+                let v = (i as i64 * 521_000_003 - 1_900_000_000) % (i64::from(i32::MAX) + 1);
+                i64::from(v as i32)
+            })
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new(
+                DType::I32,
+                Shape { dims: vec![rows as u32, cols as u32] },
+                datai.iter().copied().map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(dense.as_tensor().unwrap().dtype, DType::I32);
+        assert!(dense.as_tensor().unwrap().elements.as_i64_slice().is_some());
+
+        for (win, dil, pad) in [
+            ("3,3", "1,1", "VALID"),
+            ("3,3", "2,2", "VALID"),
+            ("2,2", "1,1", "SAME"),
+        ] {
+            let (wr, wc): (usize, usize) = {
+                let mut it = win.split(',').map(|s| s.parse().unwrap());
+                (it.next().unwrap(), it.next().unwrap())
+            };
+            let (dr, dc): (usize, usize) = {
+                let mut it = dil.split(',').map(|s| s.parse().unwrap());
+                (it.next().unwrap(), it.next().unwrap())
+            };
+            for op in ["sum", "max", "min"] {
+                let mut p = rw_params_with_padding(op, win, "1,1", pad);
+                p.insert("window_dilation".to_owned(), dil.to_owned());
+                let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &p)
+                    .unwrap();
+                let gt = got.as_tensor().unwrap();
+                assert_eq!(gt.dtype, DType::I32, "{op} {win} {dil} {pad}: dtype preserved");
+                let got_vals: Vec<i32> = gt
+                    .elements
+                    .iter()
+                    .map(|l| if let Literal::I64(x) = l { *x as i32 } else { panic!() })
+                    .collect();
+
+                // Hand reference (SAME pad_low from the shared geometry helper).
+                let eff_r = (wr - 1) * dr + 1;
+                let eff_c = (wc - 1) * dc + 1;
+                let (out_r, plr) = match pad {
+                    "VALID" => ((rows - eff_r) / 1 + 1, 0usize),
+                    _ => reduce_window_same_geometry(Primitive::ReduceWindow, rows, eff_r, 1, false)
+                        .unwrap(),
+                };
+                let (out_c, plc) = match pad {
+                    "VALID" => ((cols - eff_c) / 1 + 1, 0usize),
+                    _ => reduce_window_same_geometry(Primitive::ReduceWindow, cols, eff_c, 1, false)
+                        .unwrap(),
+                };
+                let mut want = Vec::with_capacity(out_r * out_c);
+                for orow in 0..out_r {
+                    for ocol in 0..out_c {
+                        let mut acc: i32 = match op {
+                            "max" => i32::MIN,
+                            "min" => i32::MAX,
+                            _ => 0,
+                        };
+                        for tr in 0..wr {
+                            for tc in 0..wc {
+                                let pr = orow * 1 + tr * dr;
+                                let pc = ocol * 1 + tc * dc;
+                                if pr < plr || pc < plc {
+                                    continue;
+                                }
+                                let (ir, ic) = (pr - plr, pc - plc);
+                                if ir >= rows || ic >= cols {
+                                    continue;
+                                }
+                                let v = datai[ir * cols + ic] as i32;
+                                acc = match op {
+                                    "max" => acc.max(v),
+                                    "min" => acc.min(v),
+                                    _ => acc.wrapping_add(v),
+                                };
+                            }
+                        }
+                        want.push(acc);
+                    }
+                }
+                assert_eq!(got_vals, want, "i32 {op} win={win} dil={dil} {pad} vs reference");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_reduce_window_i32_dense_vs_generic() {
+        use std::time::Instant;
+        // i32 sum-pool [512,512] window 5x5 stride 1 VALID. Dense i64 stencil (production,
+        // now reached for I32) vs the generic per-`Literal` gather + accumulate loop.
+        let (n, w) = (512usize, 5usize);
+        let raw: Vec<i64> = (0..n * n)
+            .map(|i| i64::from(((i as i64).wrapping_mul(2_654_435_761) ^ 0x5555) as i32))
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new(
+                DType::I32,
+                Shape { dims: vec![n as u32, n as u32] },
+                raw.iter().copied().map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        let params = rw_params("sum", "5,5", "1,1");
+        let out_n = n - w + 1;
+        let best = |mut f: Box<dyn FnMut() -> u64>| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let t_ref = dense.clone();
+        let generic = best(Box::new(move || {
+            let t = t_ref.as_tensor().unwrap();
+            let mut out: Vec<Literal> = Vec::with_capacity(out_n * out_n);
+            for oy in 0..out_n {
+                for ox in 0..out_n {
+                    let mut accum = reduce_window_initial_accumulator(DType::I32, "sum");
+                    for wy in 0..w {
+                        for wx in 0..w {
+                            reduce_window_accumulate_literal(
+                                Primitive::ReduceWindow,
+                                "sum",
+                                &mut accum,
+                                t.elements[(oy + wy) * n + (ox + wx)],
+                            )
+                            .unwrap();
+                        }
+                    }
+                    out.push(
+                        reduce_window_accumulator_literal(Primitive::ReduceWindow, DType::I32, accum)
+                            .unwrap(),
+                    );
+                }
+            }
+            out.len() as u64
+        }));
+        let t_dense = dense.clone();
+        let dense_t = best(Box::new(move || {
+            let o = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t_dense), &params)
+                .unwrap();
+            o.as_tensor().unwrap().elements.len() as u64
+        }));
+        println!(
+            "BENCH reduce_window i32 sum [512x512] win5x5: generic={:.2}ms dense={:.2}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
+        );
     }
 
     #[test]
