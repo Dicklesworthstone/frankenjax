@@ -246,6 +246,13 @@ pub(crate) fn eval_comparison(
                 {
                     return Ok(value);
                 }
+                // Unsigned u32/u64 dense same-shape compare. Generic compare_literals
+                // maps U32/U64 through literal_to_i128 (always non-negative), so
+                // `int_cmp(i128::from(left), i128::from(right))` on the packed slices is
+                // bit-for-bit identical with no signed/unsigned ambiguity.
+                if let Some(value) = eval_same_shape_unsigned_compare(lhs, rhs, &int_cmp)? {
+                    return Ok(value);
+                }
                 if lhs.dtype == DType::F64
                     && rhs.dtype == DType::F64
                     && let Some(value) =
@@ -298,6 +305,34 @@ pub(crate) fn eval_comparison(
             // (int_cmp on i128::from). Bool output (no dense Bool storage).
             if let (Some(left), Some(right)) =
                 (lhs.elements.as_i64_slice(), rhs.elements.as_i64_slice())
+            {
+                let mut out = Vec::with_capacity(out_count);
+                crate::arithmetic::broadcast_visit_row_major(
+                    &out_shape.dims,
+                    &lhs_strides,
+                    &rhs_strides,
+                    |li, ri| {
+                        out.push(int_cmp(i128::from(left[li]), i128::from(right[ri])));
+                    },
+                );
+                return Ok(Value::Tensor(TensorValue::new_bool_values(out_shape, out)?));
+            }
+            if let (Some(left), Some(right)) =
+                (lhs.elements.as_u32_slice(), rhs.elements.as_u32_slice())
+            {
+                let mut out = Vec::with_capacity(out_count);
+                crate::arithmetic::broadcast_visit_row_major(
+                    &out_shape.dims,
+                    &lhs_strides,
+                    &rhs_strides,
+                    |li, ri| {
+                        out.push(int_cmp(i128::from(left[li]), i128::from(right[ri])));
+                    },
+                );
+                return Ok(Value::Tensor(TensorValue::new_bool_values(out_shape, out)?));
+            }
+            if let (Some(left), Some(right)) =
+                (lhs.elements.as_u64_slice(), rhs.elements.as_u64_slice())
             {
                 let mut out = Vec::with_capacity(out_count);
                 crate::arithmetic::broadcast_visit_row_major(
@@ -373,6 +408,9 @@ pub(crate) fn eval_comparison(
             if let Some(value) = eval_i64_scalar_compare(*lhs, rhs, true, &int_cmp)? {
                 return Ok(value);
             }
+            if let Some(value) = eval_unsigned_scalar_compare(*lhs, rhs, true, &int_cmp)? {
+                return Ok(value);
+            }
 
             let mut elements = Vec::with_capacity(rhs.elements.len());
             for rhs in rhs.elements.iter().copied() {
@@ -394,6 +432,9 @@ pub(crate) fn eval_comparison(
                 return Ok(value);
             }
             if let Some(value) = eval_i64_scalar_compare(*rhs, lhs, false, &int_cmp)? {
+                return Ok(value);
+            }
+            if let Some(value) = eval_unsigned_scalar_compare(*rhs, lhs, false, &int_cmp)? {
                 return Ok(value);
             }
 
@@ -572,6 +613,95 @@ fn eval_i64_scalar_compare(
         tensor.shape.clone(),
         out,
     )?)))
+}
+
+/// Dense same-shape comparison for unsigned (`u32`/`u64`) operands. Reads the
+/// packed `as_u32_slice`/`as_u64_slice` backing directly. Bit-for-bit identical
+/// to the generic `compare_literals` path: that path routes `U32`/`U64` through
+/// `literal_to_i128` (always non-negative for unsigned), so the comparison is
+/// `int_cmp(i128::from(left), i128::from(right))` in the same element order with
+/// no signed/unsigned ambiguity. Returns `Ok(None)` unless both operands share
+/// the same unsigned dense backing.
+#[inline]
+fn eval_same_shape_unsigned_compare(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    int_cmp: &impl Fn(i128, i128) -> bool,
+) -> Result<Option<Value>, EvalError> {
+    if let (Some(left), Some(right)) = (lhs.elements.as_u32_slice(), rhs.elements.as_u32_slice()) {
+        let out: Vec<bool> = left
+            .iter()
+            .zip(right)
+            .map(|(&l, &r)| int_cmp(i128::from(l), i128::from(r)))
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+            lhs.shape.clone(),
+            out,
+        )?)));
+    }
+    if let (Some(left), Some(right)) = (lhs.elements.as_u64_slice(), rhs.elements.as_u64_slice()) {
+        let out: Vec<bool> = left
+            .iter()
+            .zip(right)
+            .map(|(&l, &r)| int_cmp(i128::from(l), i128::from(r)))
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+            lhs.shape.clone(),
+            out,
+        )?)));
+    }
+    Ok(None)
+}
+
+/// Unsigned (`u32`/`u64`) scalar⊗tensor broadcast comparison fast path. Mirror of
+/// [`eval_i64_scalar_compare`] for unsigned dense storage; `scalar_on_left`
+/// preserves operand order. Bit-for-bit identical to the generic path
+/// (`int_cmp(i128::from(..))`, unsigned values always non-negative). Returns
+/// `Ok(None)` unless the scalar and tensor share the same unsigned dtype/backing.
+#[inline]
+fn eval_unsigned_scalar_compare(
+    scalar: Literal,
+    tensor: &TensorValue,
+    scalar_on_left: bool,
+    int_cmp: &impl Fn(i128, i128) -> bool,
+) -> Result<Option<Value>, EvalError> {
+    if let (Literal::U32(scalar), Some(values)) = (scalar, tensor.elements.as_u32_slice()) {
+        let scalar = i128::from(scalar);
+        let out: Vec<bool> = values
+            .iter()
+            .map(|&v| {
+                let value = i128::from(v);
+                if scalar_on_left {
+                    int_cmp(scalar, value)
+                } else {
+                    int_cmp(value, scalar)
+                }
+            })
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+            tensor.shape.clone(),
+            out,
+        )?)));
+    }
+    if let (Literal::U64(scalar), Some(values)) = (scalar, tensor.elements.as_u64_slice()) {
+        let scalar = i128::from(scalar);
+        let out: Vec<bool> = values
+            .iter()
+            .map(|&v| {
+                let value = i128::from(v);
+                if scalar_on_left {
+                    int_cmp(scalar, value)
+                } else {
+                    int_cmp(value, scalar)
+                }
+            })
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+            tensor.shape.clone(),
+            out,
+        )?)));
+    }
+    Ok(None)
 }
 
 /// F64 scalar/tensor broadcast comparison fast path producing a `DType::Bool`
@@ -845,6 +975,148 @@ mod tests {
         }));
         println!(
             "BENCH i32 same-shape Lt [1e6]: generic={:.2}ms dense={:.2}ms speedup={:.2}x",
+            generic * 1e3,
+            dense * 1e3,
+            generic / dense
+        );
+    }
+
+    // u32 (densified) tensor: as_u32_slice is Some → dense unsigned compare path.
+    fn v_u32_dense(data: &[u32]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::U32,
+                Shape::vector(data.len() as u32),
+                data.iter().map(|&v| Literal::U32(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    // Boxed u32 tensor (as_u32_slice None) → generic per-Literal path, for A/B + iso.
+    fn v_u32_boxed(data: &[u32]) -> Value {
+        Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U32,
+                Shape::vector(data.len() as u32),
+                fj_core::LiteralBuffer::new(data.iter().map(|&v| Literal::U32(v)).collect()),
+            )
+            .unwrap(),
+        )
+    }
+    fn v_u64_dense(data: &[u64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::U64,
+                Shape::vector(data.len() as u32),
+                data.iter().map(|&v| Literal::U64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn v_u64_boxed(data: &[u64]) -> Value {
+        Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U64,
+                Shape::vector(data.len() as u32),
+                fj_core::LiteralBuffer::new(data.iter().map(|&v| Literal::U64(v)).collect()),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn u32_u64_compare_dense_matches_generic() {
+        // u32/u64 same-shape AND scalar compares now take the dense unsigned path
+        // (were on the generic per-Literal path). Dense must be bit-identical to the
+        // boxed generic path across all six comparisons + both scalar orders, incl
+        // high-bit-set values (>i32::MAX / >i64::MAX) to prove UNSIGNED ordering.
+        let params = BTreeMap::new();
+
+        // u32: include values above i32::MAX to catch any sign-extension bug.
+        let lu32 = [0u32, 1, 7, u32::MAX, 3_000_000_000, 100, u32::MAX - 1, 42];
+        let ru32 = [2u32, 1, 4, u32::MAX - 1, 3_000_000_000, 99, u32::MAX, 41];
+        let (ld, lb) = (v_u32_dense(&lu32), v_u32_boxed(&lu32));
+        let (rd, rb) = (v_u32_dense(&ru32), v_u32_boxed(&ru32));
+        assert!(ld.as_tensor().unwrap().elements.as_u32_slice().is_some());
+        assert!(lb.as_tensor().unwrap().elements.as_u32_slice().is_none());
+        let s32 = Value::Scalar(Literal::U32(3_000_000_000));
+
+        // u64: include values above i64::MAX.
+        let lu64 = [0u64, 1, u64::MAX, u32::MAX as u64 + 1, 1 << 63, 7, u64::MAX - 1, 5];
+        let ru64 = [2u64, 1, u64::MAX - 1, u32::MAX as u64 + 2, 1 << 63, 6, u64::MAX, 5];
+        let (ld64, lb64) = (v_u64_dense(&lu64), v_u64_boxed(&lu64));
+        let (rd64, rb64) = (v_u64_dense(&ru64), v_u64_boxed(&ru64));
+        assert!(ld64.as_tensor().unwrap().elements.as_u64_slice().is_some());
+        let s64 = Value::Scalar(Literal::U64(1 << 63));
+
+        for p in [
+            Primitive::Eq,
+            Primitive::Ne,
+            Primitive::Lt,
+            Primitive::Le,
+            Primitive::Gt,
+            Primitive::Ge,
+        ] {
+            for (ld, lb, rd, rb, s) in [
+                (&ld, &lb, &rd, &rb, &s32),
+                (&ld64, &lb64, &rd64, &rb64, &s64),
+            ] {
+                let d = extract_bools(&crate::eval_primitive(p, &[ld.clone(), rd.clone()], &params).unwrap());
+                let g = extract_bools(&crate::eval_primitive(p, &[lb.clone(), rb.clone()], &params).unwrap());
+                assert_eq!(d, g, "{p:?} same-shape unsigned dense!=generic");
+
+                let d = extract_bools(&crate::eval_primitive(p, &[ld.clone(), s.clone()], &params).unwrap());
+                let g = extract_bools(&crate::eval_primitive(p, &[lb.clone(), s.clone()], &params).unwrap());
+                assert_eq!(d, g, "{p:?} tensor⊗scalar unsigned dense!=generic");
+
+                let d = extract_bools(&crate::eval_primitive(p, &[s.clone(), rd.clone()], &params).unwrap());
+                let g = extract_bools(&crate::eval_primitive(p, &[s.clone(), rb.clone()], &params).unwrap());
+                assert_eq!(d, g, "{p:?} scalar⊗tensor unsigned dense!=generic");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_u32_compare_dense_vs_generic() {
+        use std::time::Instant;
+        let n = 1_000_000usize;
+        let lhs: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+        let rhs: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(40_503)).collect();
+        let (ld, lb) = (v_u32_dense(&lhs), v_u32_boxed(&lhs));
+        let (rd, rb) = (v_u32_dense(&rhs), v_u32_boxed(&rhs));
+        let params = BTreeMap::new();
+        let best = |mut f: Box<dyn FnMut() -> usize>| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..7 {
+                let t = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let (lbc, rbc) = (lb.clone(), rb.clone());
+        let generic = best(Box::new(move || {
+            crate::eval_primitive(Primitive::Lt, &[lbc.clone(), rbc.clone()], &params)
+                .unwrap()
+                .as_tensor()
+                .unwrap()
+                .elements
+                .len()
+        }));
+        let params2 = BTreeMap::new();
+        let (ldc, rdc) = (ld.clone(), rd.clone());
+        let dense = best(Box::new(move || {
+            crate::eval_primitive(Primitive::Lt, &[ldc.clone(), rdc.clone()], &params2)
+                .unwrap()
+                .as_tensor()
+                .unwrap()
+                .elements
+                .len()
+        }));
+        println!(
+            "BENCH u32 same-shape Lt [1e6]: generic={:.2}ms dense={:.2}ms speedup={:.2}x",
             generic * 1e3,
             dense * 1e3,
             generic / dense
