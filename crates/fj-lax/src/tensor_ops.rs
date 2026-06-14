@@ -3935,6 +3935,21 @@ pub(crate) fn eval_convert_element_type(
                         shape.clone(),
                         values.to_vec(),
                     )),
+                    // complex->int/bool reads the real part (im dropped), matching
+                    // convert_literal (i64_val/bool reads re; bool ORs im). I32 lets the
+                    // narrow chokepoint wrap; Bool keeps the JAX `re!=0 || im!=0` rule.
+                    DType::I64 => Some(TensorValue::new_i64_values(
+                        shape.clone(),
+                        values.iter().map(|&(re, _)| re as i64).collect(),
+                    )),
+                    DType::I32 => Some(TensorValue::new_i32_values(
+                        shape.clone(),
+                        values.iter().map(|&(re, _)| re as i64).collect(),
+                    )),
+                    DType::Bool => Some(TensorValue::new_bool_values(
+                        shape.clone(),
+                        values.iter().map(|&(re, im)| re != 0.0 || im != 0.0).collect(),
+                    )),
                     _ => None,
                 };
                 if let Some(t) = dense {
@@ -16655,7 +16670,7 @@ mod tests {
             let c_boxed = Value::Tensor(TensorValue::new_with_literal_buffer(src_dt, Shape::vector(cd.len() as u32), fj_core::LiteralBuffer::new(cd.iter().map(|&(re, im)| if src_dt == DType::Complex64 { Literal::from_complex64(re as f32, im as f32) } else { Literal::from_complex128(re, im) }).collect())).unwrap());
             assert!(c_dense.as_tensor().unwrap().elements.as_complex_slice().is_some());
             assert!(c_boxed.as_tensor().unwrap().elements.as_complex_slice().is_none());
-            for t in ["f64", "f32", "complex64", "complex128"] {
+            for t in ["f64", "f32", "complex64", "complex128", "i64", "i32", "bool"] {
                 let p = params(&[("new_dtype", t)]);
                 assert_eq!(lits(&eval_convert_element_type(std::slice::from_ref(&c_dense), &p).unwrap()), lits(&eval_convert_element_type(std::slice::from_ref(&c_boxed), &p).unwrap()), "{src_dt:?} -> {t}");
             }
