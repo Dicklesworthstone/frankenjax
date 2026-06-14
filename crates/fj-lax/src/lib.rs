@@ -2730,6 +2730,26 @@ fn eval_bitwise_unary(primitive: Primitive, inputs: &[Value]) -> Result<Value, E
             Ok(Value::Scalar(out))
         }
         Value::Tensor(t) => {
+            // SWAR Bool BitwiseNot on a bit-packed BoolWords mask (e.g. `~(a<b)` on an
+            // f64-comparison mask): flip 64 bools per u64 word. Bit-identical — `!word`
+            // also flips the unused tail bits, but from_bool_words re-canonicalizes them
+            // to 0. Otherwise a BoolWords `~mask` falls to the per-Literal loop below.
+            if primitive == Primitive::BitwiseNot
+                && t.dtype == fj_core::DType::Bool
+                && let Some((words, len)) = t.elements.as_bool_words()
+            {
+                let flipped: Vec<u64> = words.iter().map(|&w| !w).collect();
+                let buf = fj_core::LiteralBuffer::from_bool_words(flipped, len).ok_or(
+                    EvalError::TypeMismatch {
+                        primitive,
+                        detail: "bool word mask length mismatch",
+                    },
+                )?;
+                return Ok(Value::Tensor(
+                    TensorValue::new_with_literal_buffer(fj_core::DType::Bool, t.shape.clone(), buf)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
+            }
             // Dense Bool BitwiseNot (= logical_not / `~mask`): read the contiguous
             // bool backing and emit a dense Bool result, avoiding 24-byte Literals.
             if primitive == Primitive::BitwiseNot
@@ -12290,6 +12310,16 @@ mod tests {
             let perelem = eval_primitive(prim, &[ref_mk(&m1b), ref_mk(&m2b)], &p).unwrap();
             assert_eq!(bits(&swar), bits(&perelem), "{prim:?} SWAR != Bool-storage path");
         }
+        // Unary NOT on a BoolWords mask (SWAR word-flip) must match per-element !.
+        let not_swar = eval_primitive(Primitive::BitwiseNot, &[m1.clone()], &p).unwrap();
+        assert_eq!(not_swar.as_tensor().unwrap().dtype, DType::Bool, "NOT dtype");
+        let not_want: Vec<bool> = m1b.iter().map(|&x| !x).collect();
+        assert_eq!(bits(&not_swar), not_want, "NOT SWAR != per-element reference");
+        assert_eq!(
+            bits(&not_swar),
+            bits(&eval_primitive(Primitive::BitwiseNot, &[ref_mk(&m1b)], &p).unwrap()),
+            "NOT SWAR != Bool-storage path"
+        );
     }
 
     #[test]
