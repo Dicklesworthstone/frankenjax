@@ -236,8 +236,12 @@ pub(crate) fn eval_comparison(
         }
         (Value::Tensor(lhs), Value::Tensor(rhs)) => {
             if lhs.shape == rhs.shape {
-                if lhs.dtype == DType::I64
-                    && rhs.dtype == DType::I64
+                // I64 AND I32 share the dense i64 backing; an i32 value is sign-extended
+                // in its i64 slot, so `int_cmp(i128::from(..))` is identical for both (the
+                // bool output needs no width-narrowing). I32 is JAX's default int, so this
+                // is the common integer-compare case that otherwise hit the generic loop.
+                if matches!(lhs.dtype, DType::I64 | DType::I32)
+                    && matches!(rhs.dtype, DType::I64 | DType::I32)
                     && let Some(value) = eval_same_shape_i64_compare(lhs, rhs, &int_cmp)?
                 {
                     return Ok(value);
@@ -544,7 +548,9 @@ fn eval_i64_scalar_compare(
     let Literal::I64(scalar) = scalar else {
         return Ok(None);
     };
-    if tensor.dtype != DType::I64 {
+    // I64 and I32 both store sign-extended i64 values, so `int_cmp(i128::from(..))` is
+    // identical; the bool output needs no narrowing. I32 is JAX's default int.
+    if !matches!(tensor.dtype, DType::I64 | DType::I32) {
         return Ok(None);
     }
     let Some(values) = tensor.elements.as_i64_slice() else {
@@ -735,6 +741,114 @@ mod tests {
             let want: Vec<bool> = lhs.iter().map(|&a| fcmp(a, scalar)).collect();
             assert_eq!(got, want, "{p:?} scalar-right mismatch");
         }
+    }
+
+    // i32 (densified) tensor: as_i64_slice is Some → dense compare path.
+    fn v_i32_dense(data: &[i64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::I32,
+                Shape::vector(data.len() as u32),
+                data.iter().map(|&v| Literal::I64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    // Boxed i32 tensor (as_i64_slice None) → generic per-Literal path, for A/B + iso.
+    fn v_i32_boxed(data: &[i64]) -> Value {
+        Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::I32,
+                Shape::vector(data.len() as u32),
+                fj_core::LiteralBuffer::new(data.iter().map(|&v| Literal::I64(v)).collect()),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn i32_compare_dense_matches_generic() {
+        // i32 same-shape AND scalar compares now take the dense i64 stencil (were on the
+        // generic per-Literal path). Dense (densified I32, as_i64_slice Some) must be
+        // bit-identical to the generic boxed path, across all six comparisons, both
+        // scalar-broadcast orders, incl i32::MIN/MAX boundary values. Bool output.
+        let lhs = [1i64, -5, i64::from(i32::MAX), i64::from(i32::MIN), 7, 0, -3, 42];
+        let rhs = [2i64, -5, 4, i64::from(i32::MIN), 7, -1, -3, 100];
+        let (ld, lb) = (v_i32_dense(&lhs), v_i32_boxed(&lhs));
+        let (rd, rb) = (v_i32_dense(&rhs), v_i32_boxed(&rhs));
+        assert!(ld.as_tensor().unwrap().elements.as_i64_slice().is_some());
+        assert!(lb.as_tensor().unwrap().elements.as_i64_slice().is_none());
+        let params = BTreeMap::new();
+        let s = Value::Scalar(Literal::I64(0));
+        for p in [
+            Primitive::Eq,
+            Primitive::Ne,
+            Primitive::Lt,
+            Primitive::Le,
+            Primitive::Gt,
+            Primitive::Ge,
+        ] {
+            let d = extract_bools(&crate::eval_primitive(p, &[ld.clone(), rd.clone()], &params).unwrap());
+            let g = extract_bools(&crate::eval_primitive(p, &[lb.clone(), rb.clone()], &params).unwrap());
+            assert_eq!(d, g, "{p:?} same-shape i32 dense!=generic");
+
+            let d = extract_bools(&crate::eval_primitive(p, &[ld.clone(), s.clone()], &params).unwrap());
+            let g = extract_bools(&crate::eval_primitive(p, &[lb.clone(), s.clone()], &params).unwrap());
+            assert_eq!(d, g, "{p:?} tensor⊗scalar i32 dense!=generic");
+
+            let d = extract_bools(&crate::eval_primitive(p, &[s.clone(), rd.clone()], &params).unwrap());
+            let g = extract_bools(&crate::eval_primitive(p, &[s.clone(), rb.clone()], &params).unwrap());
+            assert_eq!(d, g, "{p:?} scalar⊗tensor i32 dense!=generic");
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_i32_compare_dense_vs_generic() {
+        use std::time::Instant;
+        let n = 1_000_000usize;
+        let lhs: Vec<i64> = (0..n)
+            .map(|i| i64::from((i as i32).wrapping_mul(2_654_435_761u32 as i32)))
+            .collect();
+        let rhs: Vec<i64> = (0..n).map(|i| i64::from((i as i32).wrapping_mul(40_503))).collect();
+        let (ld, lb) = (v_i32_dense(&lhs), v_i32_boxed(&lhs));
+        let (rd, rb) = (v_i32_dense(&rhs), v_i32_boxed(&rhs));
+        let params = BTreeMap::new();
+        let best = |mut f: Box<dyn FnMut() -> usize>| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..7 {
+                let t = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let (lbc, rbc) = (lb.clone(), rb.clone());
+        let generic = best(Box::new(move || {
+            crate::eval_primitive(Primitive::Lt, &[lbc.clone(), rbc.clone()], &params)
+                .unwrap()
+                .as_tensor()
+                .unwrap()
+                .elements
+                .len()
+        }));
+        let params2 = BTreeMap::new();
+        let (ldc, rdc) = (ld.clone(), rd.clone());
+        let dense = best(Box::new(move || {
+            crate::eval_primitive(Primitive::Lt, &[ldc.clone(), rdc.clone()], &params2)
+                .unwrap()
+                .as_tensor()
+                .unwrap()
+                .elements
+                .len()
+        }));
+        println!(
+            "BENCH i32 same-shape Lt [1e6]: generic={:.2}ms dense={:.2}ms speedup={:.2}x",
+            generic * 1e3,
+            dense * 1e3,
+            generic / dense
+        );
     }
 
     #[test]
