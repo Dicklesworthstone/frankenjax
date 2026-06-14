@@ -3588,6 +3588,25 @@ fn eval_reduce_window_dense_float(
 /// is exact even under i64 overflow. Output is `Literal::I64`, matching the
 /// dense/generic i64 path. Wins for large windows (small 2×2/3×3 stay on the
 /// per-window dense path, which has no integral-image build cost).
+/// Re-tag an i64 summed-area-table result to I32 for an i32 input. The SAT emits the
+/// (i64-ring) windowed sums; tagging them I32 lets the eval_primitive chokepoint wrap
+/// each mod 2^32 — congruent to the per-window i32 sum since the 4-corner difference is
+/// computed in the same ring (mod 2^32 is a +/− homomorphism). Identity for I64.
+fn reduce_window_sat_retag_i32(
+    result: Value,
+    dtype: fj_core::DType,
+) -> Result<Value, EvalError> {
+    if dtype == fj_core::DType::I32
+        && let Value::Tensor(t) = &result
+        && let Some(v) = t.elements.as_i64_slice()
+    {
+        return Ok(Value::Tensor(
+            TensorValue::new_i32_values(t.shape.clone(), v.to_vec()).map_err(EvalError::from)?,
+        ));
+    }
+    Ok(result)
+}
+
 fn eval_reduce_window_rank2_i64_sum_sat(
     src: &[i64],
     window_dims: &[usize],
@@ -4792,13 +4811,13 @@ fn eval_reduce_window(
     if no_base_dilation
         && no_window_dilation
         && rank == 2
-        && tensor.dtype == fj_core::DType::I64
+        && matches!(tensor.dtype, fj_core::DType::I64 | fj_core::DType::I32)
         && reduce_window_sum_like(reduce_op)
         && window_dims.iter().product::<usize>() >= 16
         && let Some(src) = tensor.elements.as_i64_slice()
     {
         let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
-        return eval_reduce_window_rank2_i64_sum_sat(
+        let result = eval_reduce_window_rank2_i64_sum_sat(
             src,
             &window_dims,
             &strides,
@@ -4806,7 +4825,8 @@ fn eval_reduce_window(
             &pad_lows,
             &input_dims,
             total_output,
-        );
+        )?;
+        return reduce_window_sat_retag_i32(result, tensor.dtype);
     }
 
     // General-rank summed-area-table i64 SUM fast path (rank 1 and 3..=6; rank 2
@@ -4818,13 +4838,13 @@ fn eval_reduce_window(
     if no_base_dilation
         && no_window_dilation
         && (rank == 1 || (3..=6).contains(&rank))
-        && tensor.dtype == fj_core::DType::I64
+        && matches!(tensor.dtype, fj_core::DType::I64 | fj_core::DType::I32)
         && reduce_window_sum_like(reduce_op)
         && window_dims.iter().product::<usize>() >= 16
         && let Some(src) = tensor.elements.as_i64_slice()
     {
         let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
-        return eval_reduce_window_in_sum_sat(
+        let result = eval_reduce_window_in_sum_sat(
             src,
             &window_dims,
             &strides,
@@ -4832,7 +4852,8 @@ fn eval_reduce_window(
             &pad_lows,
             &input_dims,
             total_output,
-        );
+        )?;
+        return reduce_window_sat_retag_i32(result, tensor.dtype);
     }
 
     // Dense i64 fast path (ANY rank, sum/max/min): integer pooling/windowed
@@ -13565,6 +13586,86 @@ mod tests {
             dense_t * 1e3,
             deque_t * 1e3,
             dense_t / deque_t
+        );
+    }
+
+    #[test]
+    fn dense_i32_sum_sat_matches_generic() {
+        // Large-window i32 SUM reduce_window now uses the window-independent SAT (was the
+        // O(window) general dense). The i64-ring SAT sums are re-tagged I32 and wrapped
+        // mod 2^32 by the chokepoint. Dense (densified → SAT) must match boxed-generic,
+        // rank-2 AND rank-1, with overflowing values, dtype preserved.
+        let geti = |v: &Value| -> Vec<i64> {
+            v.as_tensor().unwrap().elements.iter().map(|l| match l {
+                Literal::I64(x) => *x,
+                o => panic!("expected I64-backed i32, got {o:?}"),
+            }).collect()
+        };
+        let mk_d = |dims: Vec<u32>, d: &[i64]| {
+            Value::Tensor(TensorValue::new(DType::I32, Shape { dims }, d.iter().map(|&v| Literal::I64(v)).collect()).unwrap())
+        };
+        let mk_b = |dims: Vec<u32>, d: &[i64]| {
+            Value::Tensor(TensorValue::new_with_literal_buffer(DType::I32, Shape { dims }, fj_core::LiteralBuffer::new(d.iter().map(|&v| Literal::I64(v)).collect())).unwrap())
+        };
+        // rank-2: 40x40, window 8x8 (∏=64 ≥ 16 ⇒ SAT). Big magnitudes ⇒ sums overflow i32.
+        let (rows, cols) = (40usize, 40usize);
+        let d2: Vec<i64> = (0..rows * cols).map(|i| i64::from((i as i32).wrapping_mul(5_000_003))).collect();
+        let p2 = rw_params_with_padding("sum", "8,8", "1,1", "VALID");
+        let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&mk_d(vec![rows as u32, cols as u32], &d2)), &p2).unwrap();
+        let exp = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&mk_b(vec![rows as u32, cols as u32], &d2)), &p2).unwrap();
+        assert_eq!(got.as_tensor().unwrap().dtype, DType::I32, "rank2 SAT dtype I32");
+        assert_eq!(geti(&got), geti(&exp), "rank2 i32 SAT != generic");
+        // rank-1: 4000, window 32 (≥16 ⇒ in_sum_sat).
+        let n = 4000usize;
+        let d1: Vec<i64> = (0..n).map(|i| i64::from((i as i32).wrapping_mul(6_000_011))).collect();
+        let p1 = rw_params_with_padding("sum", "32", "1", "VALID");
+        let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&mk_d(vec![n as u32], &d1)), &p1).unwrap();
+        let exp = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&mk_b(vec![n as u32], &d1)), &p1).unwrap();
+        assert_eq!(got.as_tensor().unwrap().dtype, DType::I32, "rank1 SAT dtype I32");
+        assert_eq!(geti(&got), geti(&exp), "rank1 i32 SAT != generic");
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_i32_sum_sat_vs_dense() {
+        use std::time::Instant;
+        // Honest SAT-vs-general-dense A/B for large-window i32 sum pooling (both kernels
+        // called directly on identical i32 data), isolating the window-independence win.
+        let (rows, cols, win) = (512usize, 512usize, 17usize);
+        let src: Vec<i64> = (0..rows * cols).map(|i| i64::from((i as i64).wrapping_mul(2_654_435_761) as i32)).collect();
+        let in_dims = vec![rows, cols];
+        let in_strides = vec![cols, 1usize];
+        let wdims = vec![win, win];
+        let strides = vec![1usize, 1];
+        let out = vec![(rows - win + 1) as u32, (cols - win + 1) as u32];
+        let pad = vec![0usize, 0];
+        let total = (rows - win + 1) * (cols - win + 1);
+        let best = |mut f: Box<dyn FnMut() -> usize>| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let (s1, w1, st1, o1, p1, i1, is1) = (src.clone(), wdims.clone(), strides.clone(), out.clone(), pad.clone(), in_dims.clone(), in_strides.clone());
+        let od = vec![1usize, 1];
+        let dense_t = best(Box::new(move || {
+            super::eval_reduce_window_dense_i64(fj_core::DType::I32, "sum", &s1, &w1, &st1, &od, &o1, &p1, &i1, &is1, total).unwrap();
+            total
+        }));
+        let (s2, w2, st2, o2, p2b, i2) = (src.clone(), wdims.clone(), strides.clone(), out.clone(), pad.clone(), in_dims.clone());
+        let sat_t = best(Box::new(move || {
+            super::eval_reduce_window_rank2_i64_sum_sat(&s2, &w2, &st2, &o2, &p2b, &i2, total).unwrap();
+            total
+        }));
+        println!(
+            "BENCH i32 reduce_window sum [{rows}x{cols}] win{win}x{win}: dense={:.2}ms sat={:.2}ms speedup={:.2}x",
+            dense_t * 1e3,
+            sat_t * 1e3,
+            dense_t / sat_t
         );
     }
 
