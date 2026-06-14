@@ -2180,6 +2180,18 @@ pub(crate) fn eval_gather(
         {
             dense_contiguous_gather!(src, i64::from(i32::MIN), TensorValue::new_i32_values);
         }
+        // Dense u32/u64 gather (structural copy, no wrap). OOB fill = u32::MAX/u64::MAX
+        // == gather_fill_literal(U32/U64). Bit-identical to the generic per-Literal copy.
+        if operand.dtype == DType::U32
+            && let Some(src) = operand.elements.as_u32_slice()
+        {
+            dense_contiguous_gather!(src, u32::MAX, TensorValue::new_u32_values);
+        }
+        if operand.dtype == DType::U64
+            && let Some(src) = operand.elements.as_u64_slice()
+        {
+            dense_contiguous_gather!(src, u64::MAX, TensorValue::new_u64_values);
+        }
         // Dense BF16/F16 gather (half-precision embedding lookup — bf16 is the
         // dominant training dtype). Pure contiguous u16-bit copy, bit-identical to
         // the generic per-`Literal` copy. The `new_half_float_values` ctor takes a
@@ -2387,6 +2399,16 @@ pub(crate) fn eval_gather(
         && let Some(s) = operand.elements.as_i64_slice()
     {
         dense_strided_gather!(s, i64::from(i32::MIN), TensorValue::new_i32_values);
+    }
+    if operand.dtype == DType::U32
+        && let Some(s) = operand.elements.as_u32_slice()
+    {
+        dense_strided_gather!(s, u32::MAX, TensorValue::new_u32_values);
+    }
+    if operand.dtype == DType::U64
+        && let Some(s) = operand.elements.as_u64_slice()
+    {
+        dense_strided_gather!(s, u64::MAX, TensorValue::new_u64_values);
     }
     if let Some(s) = operand.elements.as_half_float_slice() {
         let dt = operand.dtype;
@@ -18247,6 +18269,137 @@ mod tests {
                 assert_eq!(geti(&d), geti(&b), "i32 {label} gather imode={imode}");
             }
         }
+    }
+
+    #[test]
+    fn dense_u32_u64_gather_matches_generic_and_preserves_dtype() {
+        // u32/u64 gather (contiguous + strided) used to fall to the generic per-Literal
+        // path (materializing the whole dense buffer). The new dense as_u32/u64_slice
+        // paths must be bit-identical to the boxed generic path AND keep the uint dtype,
+        // including the u32::MAX/u64::MAX OOB fill under fill_or_drop. Includes values
+        // above i32::MAX / i64::MAX to prove no signed reinterpretation.
+        let (rows, cols) = (20usize, 24usize);
+        let dims = vec![rows as u32, cols as u32];
+        let idx = Value::vector_i64(&[0, 5, 19, 999, 1, 7, 19, 0]).unwrap(); // 999 is OOB
+
+        // u32
+        let u32data: Vec<u32> = (0..rows * cols)
+            .map(|i| (i as u32).wrapping_mul(2_654_435_761) ^ 0x8000_0001)
+            .collect();
+        let u32_dense = Value::Tensor(
+            TensorValue::new(
+                DType::U32,
+                Shape { dims: dims.clone() },
+                u32data.iter().map(|&v| Literal::U32(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let u32_boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U32,
+                Shape { dims: dims.clone() },
+                fj_core::LiteralBuffer::new(u32data.iter().map(|&v| Literal::U32(v)).collect()),
+            )
+            .unwrap(),
+        );
+        assert!(u32_dense.as_tensor().unwrap().elements.as_u32_slice().is_some());
+        assert!(u32_boxed.as_tensor().unwrap().elements.as_u32_slice().is_none());
+        let getu32 = |v: &Value| -> Vec<u32> {
+            v.as_tensor().unwrap().elements.iter().map(|l| match l {
+                Literal::U32(x) => *x,
+                o => panic!("expected U32, got {o:?}"),
+            }).collect()
+        };
+
+        // u64 (values above i64::MAX)
+        let u64data: Vec<u64> = (0..rows * cols)
+            .map(|i| (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (1u64 << 63))
+            .collect();
+        let u64_dense = Value::Tensor(
+            TensorValue::new(
+                DType::U64,
+                Shape { dims: dims.clone() },
+                u64data.iter().map(|&v| Literal::U64(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let u64_boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U64,
+                Shape { dims: dims.clone() },
+                fj_core::LiteralBuffer::new(u64data.iter().map(|&v| Literal::U64(v)).collect()),
+            )
+            .unwrap(),
+        );
+        assert!(u64_dense.as_tensor().unwrap().elements.as_u64_slice().is_some());
+        let getu64 = |v: &Value| -> Vec<u64> {
+            v.as_tensor().unwrap().elements.iter().map(|l| match l {
+                Literal::U64(x) => *x,
+                o => panic!("expected U64, got {o:?}"),
+            }).collect()
+        };
+
+        for (ss, label) in [(format!("1,{cols}"), "contiguous"), ("1,13".to_owned(), "strided")] {
+            for imode in ["clip", "fill_or_drop"] {
+                let p = params(&[("slice_sizes", &ss), ("index_mode", imode)]);
+                let d = super::eval_gather(&[u32_dense.clone(), idx.clone()], &p).unwrap();
+                let b = super::eval_gather(&[u32_boxed.clone(), idx.clone()], &p).unwrap();
+                assert_eq!(d.as_tensor().unwrap().dtype, DType::U32, "u32 {label} stays U32 ({imode})");
+                assert_eq!(getu32(&d), getu32(&b), "u32 {label} gather imode={imode}");
+
+                let d = super::eval_gather(&[u64_dense.clone(), idx.clone()], &p).unwrap();
+                let b = super::eval_gather(&[u64_boxed.clone(), idx.clone()], &p).unwrap();
+                assert_eq!(d.as_tensor().unwrap().dtype, DType::U64, "u64 {label} stays U64 ({imode})");
+                assert_eq!(getu64(&d), getu64(&b), "u64 {label} gather imode={imode}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_u32_embedding_gather_dense_vs_generic() {
+        use std::time::Instant;
+        let (rows, cols) = (50000usize, 256usize); // contiguous full-row embedding lookup
+        let dims = vec![rows as u32, cols as u32];
+        let idxs: Vec<i64> = (0..8192).map(|i| ((i * 7919) % rows) as i64).collect();
+        let idx = Value::vector_i64(&idxs).unwrap();
+        let data: Vec<u32> = (0..rows * cols).map(|i| i as u32).collect();
+        let dense = Value::Tensor(
+            TensorValue::new(
+                DType::U32,
+                Shape { dims: dims.clone() },
+                data.iter().map(|&v| Literal::U32(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U32,
+                Shape { dims: dims.clone() },
+                fj_core::LiteralBuffer::new(data.iter().map(|&v| Literal::U32(v)).collect()),
+            )
+            .unwrap(),
+        );
+        let p = params(&[("slice_sizes", &format!("1,{cols}")), ("index_mode", "clip")]);
+        let best = |v: &Value| {
+            let _ = super::eval_gather(&[v.clone(), idx.clone()], &p).unwrap();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                let o = super::eval_gather(&[v.clone(), idx.clone()], &p).unwrap();
+                std::hint::black_box(o.as_tensor().unwrap().elements.len());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let generic = best(&boxed);
+        let dense_t = best(&dense);
+        println!(
+            "BENCH u32 embedding gather [{rows},{cols}]->[8192,{cols}]: generic={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
+        );
     }
 
     #[test]
