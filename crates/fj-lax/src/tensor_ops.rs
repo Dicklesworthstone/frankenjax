@@ -3955,6 +3955,108 @@ pub(crate) fn eval_convert_element_type(
                 if let Some(t) = dense {
                     return Ok(Value::Tensor(t.map_err(EvalError::InvalidTensor)?));
                 }
+            } else if let Some(values) = tensor.elements.as_u32_slice() {
+                // u32 source (threefry RNG output -> float is the hot path). Mirrors
+                // convert_literal exactly: f64_val = v as f64, i64_val = i64::from(v),
+                // u64_val = u64::from(v), bool = v != 0. F32 uses (v as f64) as f32.
+                let dense = match target_dtype {
+                    DType::F64 => Some(TensorValue::new_f64_values(
+                        shape.clone(),
+                        values.iter().map(|&v| v as f64).collect(),
+                    )),
+                    DType::F32 => Some(TensorValue::new_f32_values(
+                        shape.clone(),
+                        values.iter().map(|&v| (v as f64) as f32).collect(),
+                    )),
+                    DType::F16 => Some(TensorValue::new_half_float_values(
+                        DType::F16,
+                        shape.clone(),
+                        values.iter().map(|&v| convert_f16_bits(v as f64)).collect(),
+                    )),
+                    DType::BF16 => Some(TensorValue::new_half_float_values(
+                        DType::BF16,
+                        shape.clone(),
+                        values.iter().map(|&v| convert_bf16_bits(v as f64)).collect(),
+                    )),
+                    DType::I64 => Some(TensorValue::new_i64_values(
+                        shape.clone(),
+                        values.iter().map(|&v| i64::from(v)).collect(),
+                    )),
+                    // u32->i32: raw i64::from(v) into I32 tensor; chokepoint wraps mod 2^32,
+                    // matching convert_literal (Literal::I64(i64_val) tagged I32).
+                    DType::I32 => Some(TensorValue::new_i32_values(
+                        shape.clone(),
+                        values.iter().map(|&v| i64::from(v)).collect(),
+                    )),
+                    DType::U64 => Some(TensorValue::new_u64_values(
+                        shape.clone(),
+                        values.iter().map(|&v| u64::from(v)).collect(),
+                    )),
+                    // u32->u32 identity (u64::from(v) as u32 == v).
+                    DType::U32 => Some(TensorValue::new_u32_values(shape.clone(), values.to_vec())),
+                    DType::Bool => Some(TensorValue::new_bool_values(
+                        shape.clone(),
+                        values.iter().map(|&v| v != 0).collect(),
+                    )),
+                    DType::Complex128 | DType::Complex64 => Some(TensorValue::new_complex_values(
+                        target_dtype,
+                        shape.clone(),
+                        values.iter().map(|&v| (v as f64, 0.0)).collect(),
+                    )),
+                };
+                if let Some(t) = dense {
+                    return Ok(Value::Tensor(t.map_err(EvalError::InvalidTensor)?));
+                }
+            } else if let Some(values) = tensor.elements.as_u64_slice() {
+                // u64 source. convert_literal: f64_val = v as f64; i64_val =
+                // i64::try_from(v).ok() (>i64::MAX -> None -> 0); u64_val = v;
+                // U32 target = v as u32; bool = v != 0.
+                let dense = match target_dtype {
+                    DType::F64 => Some(TensorValue::new_f64_values(
+                        shape.clone(),
+                        values.iter().map(|&v| v as f64).collect(),
+                    )),
+                    DType::F32 => Some(TensorValue::new_f32_values(
+                        shape.clone(),
+                        values.iter().map(|&v| (v as f64) as f32).collect(),
+                    )),
+                    DType::F16 => Some(TensorValue::new_half_float_values(
+                        DType::F16,
+                        shape.clone(),
+                        values.iter().map(|&v| convert_f16_bits(v as f64)).collect(),
+                    )),
+                    DType::BF16 => Some(TensorValue::new_half_float_values(
+                        DType::BF16,
+                        shape.clone(),
+                        values.iter().map(|&v| convert_bf16_bits(v as f64)).collect(),
+                    )),
+                    // i64_val for U64 saturates to 0 above i64::MAX (matches .ok().unwrap_or(0)).
+                    DType::I64 => Some(TensorValue::new_i64_values(
+                        shape.clone(),
+                        values.iter().map(|&v| i64::try_from(v).unwrap_or(0)).collect(),
+                    )),
+                    DType::I32 => Some(TensorValue::new_i32_values(
+                        shape.clone(),
+                        values.iter().map(|&v| i64::try_from(v).unwrap_or(0)).collect(),
+                    )),
+                    DType::U64 => Some(TensorValue::new_u64_values(shape.clone(), values.to_vec())),
+                    DType::U32 => Some(TensorValue::new_u32_values(
+                        shape.clone(),
+                        values.iter().map(|&v| v as u32).collect(),
+                    )),
+                    DType::Bool => Some(TensorValue::new_bool_values(
+                        shape.clone(),
+                        values.iter().map(|&v| v != 0).collect(),
+                    )),
+                    DType::Complex128 | DType::Complex64 => Some(TensorValue::new_complex_values(
+                        target_dtype,
+                        shape.clone(),
+                        values.iter().map(|&v| (v as f64, 0.0)).collect(),
+                    )),
+                };
+                if let Some(t) = dense {
+                    return Ok(Value::Tensor(t.map_err(EvalError::InvalidTensor)?));
+                }
             }
 
             let mut out = Vec::with_capacity(tensor.elements.len());
@@ -16562,6 +16664,53 @@ mod tests {
             }
         }
 
+        // u32 source (threefry RNG bits) incl values above i32::MAX (sign edge).
+        let u32data = [0u32, 1, 7, u32::MAX, 3_000_000_000, 1 << 31, 42, u32::MAX - 1];
+        let u32_dense = Value::Tensor(
+            TensorValue::new_u32_values(Shape::vector(u32data.len() as u32), u32data.to_vec())
+                .unwrap(),
+        );
+        let u32_lit = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U32,
+                Shape::vector(u32data.len() as u32),
+                fj_core::LiteralBuffer::new(u32data.iter().copied().map(Literal::U32).collect()),
+            )
+            .unwrap(),
+        );
+        assert!(u32_dense.as_tensor().unwrap().elements.as_u32_slice().is_some());
+        assert!(u32_lit.as_tensor().unwrap().elements.as_u32_slice().is_none());
+
+        // u64 source incl values above i64::MAX (i64 target saturates to 0).
+        let u64data = [0u64, 1, u64::MAX, 1 << 63, u32::MAX as u64 + 1, 7, u64::MAX - 1, 42];
+        let u64_dense = Value::Tensor(
+            TensorValue::new_u64_values(Shape::vector(u64data.len() as u32), u64data.to_vec())
+                .unwrap(),
+        );
+        let u64_lit = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U64,
+                Shape::vector(u64data.len() as u32),
+                fj_core::LiteralBuffer::new(u64data.iter().copied().map(Literal::U64).collect()),
+            )
+            .unwrap(),
+        );
+        assert!(u64_dense.as_tensor().unwrap().elements.as_u64_slice().is_some());
+
+        for t in targets {
+            let p = params(&[("new_dtype", t)]);
+            assert_eq!(
+                lits(&eval_convert_element_type(std::slice::from_ref(&u32_dense), &p).unwrap()),
+                lits(&eval_convert_element_type(std::slice::from_ref(&u32_lit), &p).unwrap()),
+                "u32 -> {t} dense vs generic"
+            );
+            assert_eq!(
+                lits(&eval_convert_element_type(std::slice::from_ref(&u64_dense), &p).unwrap()),
+                lits(&eval_convert_element_type(std::slice::from_ref(&u64_lit), &p).unwrap()),
+                "u64 -> {t} dense vs generic"
+            );
+        }
+
         // The hot mixed-precision casts must keep DENSE output storage (no boxing).
         let is_dense = |v: &Value| -> bool {
             let e = &v.as_tensor().unwrap().elements;
@@ -16701,6 +16850,43 @@ mod tests {
         let dense_t = best(&dense);
         println!(
             "BENCH convert f64->complex128 [{n}]: generic={:.2}ms dense={:.2}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_convert_u32_to_f32_dense_vs_generic() {
+        use std::time::Instant;
+        let n = 1_000_000usize;
+        let data: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+        let dense = Value::Tensor(TensorValue::new_u32_values(Shape::vector(n as u32), data.clone()).unwrap());
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::U32,
+                Shape::vector(n as u32),
+                fj_core::LiteralBuffer::new(data.iter().map(|&v| Literal::U32(v)).collect()),
+            )
+            .unwrap(),
+        );
+        let p = params(&[("new_dtype", "f32")]);
+        let best = |v: &Value| {
+            let _ = eval_convert_element_type(std::slice::from_ref(v), &p).unwrap();
+            let mut b = f64::MAX;
+            for _ in 0..7 {
+                let t = Instant::now();
+                let o = eval_convert_element_type(std::slice::from_ref(v), &p).unwrap();
+                std::hint::black_box(o.as_tensor().unwrap().elements.len());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let generic = best(&boxed);
+        let dense_t = best(&dense);
+        println!(
+            "BENCH convert u32->f32 [{n}]: generic={:.2}ms dense={:.2}ms speedup={:.2}x",
             generic * 1e3,
             dense_t * 1e3,
             generic / dense_t
