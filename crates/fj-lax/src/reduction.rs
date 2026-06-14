@@ -1684,37 +1684,67 @@ pub(crate) fn eval_reduce_axes(
         });
     }
 
-    // u32 reductions: JAX keeps the uint32 dtype and wraps sum/prod mod 2^32, but
-    // the integral dense path below gates on I64|I32 — so u32 used to fall to the
-    // FLOAT arm (f64 accumulation, F64 output): wrong dtype, no wrap, precision loss
-    // above 2^53. Fix by widening u32→i64 EXACTLY (always non-negative), reusing the
-    // fully-tested i64 reduce machinery, then retagging the I64 result back to U32.
-    // This is bit-exact vs JAX: signed i64 max/min on non-negative values == unsigned
-    // max/min; sum/prod fold mod 2^64 then `as u32` == mod 2^32 (ring homomorphism,
-    // since 2^64 ≡ 0 (mod 2^32)). Only sum/prod/max/min reach here (and/or/xor route
-    // through eval_reduce_bitwise_axes). u64 is NOT handled (signed i64 max/min would
-    // be wrong for values > i64::MAX) — see bead frankenjax-2iotb.
+    // Unsigned (u32/u64) reductions: JAX keeps the uint dtype and wraps sum/prod mod
+    // 2^N with UNSIGNED max/min, but the integral dense path below gates on I64|I32 —
+    // so u32/u64 used to fall to the FLOAT arm (f64 accumulation, F64 output): wrong
+    // dtype, no wrap, precision loss above 2^53. Fix by mapping the unsigned values to
+    // i64 with an ORDER- and RING-faithful transform, reusing the fully-tested i64
+    // reduce machinery (full + partial), then mapping the i64 result back. Only
+    // sum/prod/max/min reach here (and/or/xor route through eval_reduce_bitwise_axes).
+    //
+    // Transforms (each provably bit-exact vs JAX):
+    //   u32 (all ops):   fwd v→i64::from(v) (exact, non-negative ⇒ signed cmp == unsigned);
+    //                    inv i64→`v as u32` (sum/prod: mod 2^64 then mod 2^32 == mod 2^32).
+    //   u64 sum/prod:    fwd `v as i64` (bit reinterpret); i64 wrapping fold is mod 2^64
+    //                    == u64 wrapping; inv `i64 as u64`.
+    //   u64 max/min:     fwd `(v ^ 2^63) as i64` — the order-preserving sign-flip maps the
+    //                    unsigned order bijectively onto the signed i64 order (so signed
+    //                    max/min == unsigned, incl values > i64::MAX, and the i64::MIN/MAX
+    //                    empty-init sentinels invert to the correct 0 / u64::MAX identity);
+    //                    inv `(i64 as u64) ^ 2^63`.
     if let Value::Tensor(t) = &inputs[0]
-        && t.dtype == DType::U32
+        && matches!(t.dtype, DType::U32 | DType::U64)
         && matches!(
             primitive,
             Primitive::ReduceSum | Primitive::ReduceProd | Primitive::ReduceMax | Primitive::ReduceMin
         )
     {
+        const FLIP: u64 = 1u64 << 63;
+        let is_u32 = t.dtype == DType::U32;
+        let is_minmax = matches!(primitive, Primitive::ReduceMax | Primitive::ReduceMin);
+        let fwd = |v: u64| -> i64 {
+            if is_u32 {
+                v as i64 // u32 value (low 32 bits set) -> non-negative i64
+            } else if is_minmax {
+                (v ^ FLIP) as i64
+            } else {
+                v as i64
+            }
+        };
+        let inv = |v: i64| -> u64 {
+            if is_u32 {
+                u64::from(v as u32)
+            } else if is_minmax {
+                (v as u64) ^ FLIP
+            } else {
+                v as u64
+            }
+        };
         let widened: Vec<i64> = match t.elements.as_u32_slice() {
-            Some(s) => s.iter().map(|&v| i64::from(v)).collect(),
-            None => t
-                .elements
-                .iter()
-                .map(|l| {
-                    l.as_u64()
-                        .map(|v| v as i64)
-                        .ok_or(EvalError::TypeMismatch {
+            Some(s) => s.iter().map(|&v| fwd(u64::from(v))).collect(),
+            None => match t.elements.as_u64_slice() {
+                Some(s) => s.iter().map(|&v| fwd(v)).collect(),
+                None => t
+                    .elements
+                    .iter()
+                    .map(|l| {
+                        l.as_u64().map(fwd).ok_or(EvalError::TypeMismatch {
                             primitive,
-                            detail: "expected u32 tensor",
+                            detail: "expected unsigned tensor",
                         })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
         };
         let widened_input = vec![Value::Tensor(TensorValue::new_i64_values(
             t.shape.clone(),
@@ -1723,24 +1753,29 @@ pub(crate) fn eval_reduce_axes(
         let result = eval_reduce_axes(
             primitive, &widened_input, params, int_init, float_init, int_op, float_op,
         )?;
-        // sum/prod wrap mod 2^32; max/min are already in u32 range. Retag I64 -> U32.
-        let wrap = matches!(primitive, Primitive::ReduceSum | Primitive::ReduceProd);
+        let build = |shape: Shape, vals: Vec<u64>| -> Result<Value, EvalError> {
+            Ok(Value::Tensor(if is_u32 {
+                TensorValue::new_u32_values(shape, vals.iter().map(|&v| v as u32).collect())?
+            } else {
+                TensorValue::new_u64_values(shape, vals)?
+            }))
+        };
         return Ok(match result {
-            Value::Scalar(Literal::I64(v)) => Value::Scalar(Literal::U32(v as u32)),
+            Value::Scalar(Literal::I64(v)) => {
+                let u = inv(v);
+                if is_u32 {
+                    Value::Scalar(Literal::U32(u as u32))
+                } else {
+                    Value::Scalar(Literal::U64(u))
+                }
+            }
             Value::Scalar(other) => Value::Scalar(other),
             Value::Tensor(rt) => {
-                let vals: Vec<u32> = rt
-                    .elements
-                    .as_i64_slice()
-                    .map(|s| s.iter().map(|&v| v as u32).collect())
-                    .unwrap_or_else(|| {
-                        rt.elements
-                            .iter()
-                            .map(|l| l.as_i64().unwrap_or(0) as u32)
-                            .collect()
-                    });
-                let _ = wrap; // max/min: v already in range so `as u32` is a no-op too
-                Value::Tensor(TensorValue::new_u32_values(rt.shape.clone(), vals)?)
+                let vals: Vec<u64> = match rt.elements.as_i64_slice() {
+                    Some(s) => s.iter().map(|&v| inv(v)).collect(),
+                    None => rt.elements.iter().map(|l| inv(l.as_i64().unwrap_or(0))).collect(),
+                };
+                build(rt.shape.clone(), vals)?
             }
         });
     }
@@ -6544,6 +6579,65 @@ mod tests {
             o => panic!("expected U32, got {o:?}"),
         }).collect();
         assert_eq!(vals, vec![0, 3], "partial u32 sum wraps mod 2^32 per-cell");
+    }
+
+    #[test]
+    fn u64_reductions_keep_dtype_and_wrap_unsigned() {
+        // u64 half of bead 2iotb: sum/prod wrap mod 2^64; max/min UNSIGNED (values
+        // above i64::MAX must compare as the larger). Reuses the i64 machinery via
+        // bit-reinterpret (sum/prod) and the order-preserving sign-flip (max/min).
+        let mk = |dims: Vec<u32>, data: &[u64]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::U64,
+                    Shape { dims },
+                    data.iter().map(|&v| Literal::U64(v)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let two63 = 1u64 << 63; // 9223372036854775808 > i64::MAX
+        let p = BTreeMap::new();
+
+        // Full sum: 2^63 + 2^63 + 1 = 2^64 + 1 ≡ 1 (mod 2^64).
+        let r = crate::eval_primitive(Primitive::ReduceSum, &[mk(vec![3], &[two63, two63, 1])], &p)
+            .unwrap();
+        assert_eq!(r, Value::Scalar(Literal::U64(1)), "u64 sum wraps mod 2^64");
+
+        // Full prod: 2^32 * 2^32 = 2^64 ≡ 0 (mod 2^64).
+        let r = crate::eval_primitive(
+            Primitive::ReduceProd,
+            &[mk(vec![2], &[1u64 << 32, 1u64 << 32])],
+            &p,
+        )
+        .unwrap();
+        assert_eq!(r, Value::Scalar(Literal::U64(0)), "u64 prod wraps mod 2^64");
+
+        // Unsigned max/min: 2^63+100 and u64::MAX exceed i64::MAX, must compare largest.
+        let big = two63 + 100;
+        let r = crate::eval_primitive(Primitive::ReduceMax, &[mk(vec![4], &[5, big, u64::MAX, 7])], &p)
+            .unwrap();
+        assert_eq!(r, Value::Scalar(Literal::U64(u64::MAX)), "u64 max unsigned");
+        let r = crate::eval_primitive(Primitive::ReduceMin, &[mk(vec![4], &[big, 5, u64::MAX, 7])], &p)
+            .unwrap();
+        assert_eq!(r, Value::Scalar(Literal::U64(5)), "u64 min unsigned");
+
+        // Partial axis-0 max of [[5, u64::MAX],[big, 7]] → [big, u64::MAX], stays U64.
+        let mut pa = BTreeMap::new();
+        pa.insert("axes".to_owned(), "0".to_owned());
+        let r = crate::eval_primitive(
+            Primitive::ReduceMax,
+            &[mk(vec![2, 2], &[5, u64::MAX, big, 7])],
+            &pa,
+        )
+        .unwrap();
+        let Value::Tensor(t) = &r else { panic!("expected tensor, got {r:?}") };
+        assert_eq!(t.dtype, DType::U64, "partial u64 max stays u64");
+        let vals: Vec<u64> = t.elements.iter().map(|l| match l {
+            Literal::U64(v) => *v,
+            o => panic!("expected U64, got {o:?}"),
+        }).collect();
+        assert_eq!(vals, vec![big, u64::MAX], "partial u64 max unsigned per-cell");
     }
 
     #[test]
