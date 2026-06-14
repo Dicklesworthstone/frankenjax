@@ -5581,6 +5581,78 @@ fn select_half_same_shape_fast_path(
     )?)))
 }
 
+/// Dense unsigned (`u32`/`u64`) same-shape `select` fast path — the unsigned
+/// sibling of [`select_i64_same_shape_fast_path`]. Reads both branches from their
+/// contiguous `as_u32_slice`/`as_u64_slice` backings and picks per the bool `cond`
+/// into dense output. `select` is a pure copy and `select_literal_as_dtype` is the
+/// identity for a U32/U64 value at its own dtype (`promote_dtype(U32,U32)==U32`),
+/// so the dense buffer stores exactly the bits the generic path would. Both
+/// branches sharing the same unsigned dense backing implies the same dtype.
+/// Returns `Ok(None)` otherwise (caller falls back to the generic loop).
+fn select_unsigned_same_shape_fast_path(
+    cond: &TensorValue,
+    on_true: &TensorValue,
+    on_false: &TensorValue,
+) -> Result<Option<Value>, EvalError> {
+    if let (Some(t), Some(f)) = (
+        on_true.elements.as_u32_slice(),
+        on_false.elements.as_u32_slice(),
+    ) {
+        if let Some(conds) = cond.elements.as_bool_slice() {
+            let out: Vec<u32> = conds
+                .iter()
+                .zip(t)
+                .zip(f)
+                .map(|((&c, &tv), &fv)| if c { tv } else { fv })
+                .collect();
+            return Ok(Some(Value::Tensor(TensorValue::new_u32_values(
+                cond.shape.clone(),
+                out,
+            )?)));
+        }
+        let mut out = Vec::with_capacity(t.len());
+        for (i, c) in cond.elements.iter().enumerate() {
+            let Literal::Bool(flag) = *c else {
+                return Ok(None);
+            };
+            out.push(if flag { t[i] } else { f[i] });
+        }
+        return Ok(Some(Value::Tensor(TensorValue::new_u32_values(
+            cond.shape.clone(),
+            out,
+        )?)));
+    }
+    if let (Some(t), Some(f)) = (
+        on_true.elements.as_u64_slice(),
+        on_false.elements.as_u64_slice(),
+    ) {
+        if let Some(conds) = cond.elements.as_bool_slice() {
+            let out: Vec<u64> = conds
+                .iter()
+                .zip(t)
+                .zip(f)
+                .map(|((&c, &tv), &fv)| if c { tv } else { fv })
+                .collect();
+            return Ok(Some(Value::Tensor(TensorValue::new_u64_values(
+                cond.shape.clone(),
+                out,
+            )?)));
+        }
+        let mut out = Vec::with_capacity(t.len());
+        for (i, c) in cond.elements.iter().enumerate() {
+            let Literal::Bool(flag) = *c else {
+                return Ok(None);
+            };
+            out.push(if flag { t[i] } else { f[i] });
+        }
+        return Ok(Some(Value::Tensor(TensorValue::new_u64_values(
+            cond.shape.clone(),
+            out,
+        )?)));
+    }
+    Ok(None)
+}
+
 /// Dense fast path for `select(tensor_cond, scalar_true, scalar_false)` — the
 /// `jnp.where(mask, a, b)` masking idiom with scalar branches. Reads the dense
 /// Bool cond slice and writes the chosen scalar straight into a dense f64/i64
@@ -5702,6 +5774,14 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                 && matches!(on_true.dtype, DType::BF16 | DType::F16)
                 && on_true.dtype == on_false.dtype
                 && let Some(value) = select_half_same_shape_fast_path(cond, on_true, on_false)?
+            {
+                return Ok(value);
+            }
+            if cond.dtype == DType::Bool
+                && matches!(on_true.dtype, DType::U32 | DType::U64)
+                && on_true.dtype == on_false.dtype
+                && let Some(value) =
+                    select_unsigned_same_shape_fast_path(cond, on_true, on_false)?
             {
                 return Ok(value);
             }
@@ -19460,6 +19540,100 @@ mod tests {
         let dn = best(&dense);
         println!(
             "BENCH u32 broadcast Mul [{rows}x{cols} ⊗ 1x{cols}]: boxed={:.2}ms dense={:.2}ms speedup={:.2}x",
+            bx * 1e3,
+            dn * 1e3,
+            bx / dn
+        );
+    }
+
+    fn bool_tensor(dims: &[u32], d: &[bool]) -> Value {
+        Value::Tensor(
+            TensorValue::new_bool_values(Shape { dims: dims.to_vec() }, d.to_vec()).unwrap(),
+        )
+    }
+
+    #[test]
+    fn u32_u64_select_dense_matches_generic() {
+        // Dense U32/U64 select(cond, on_true, on_false) (jnp.where masking) must be
+        // bit-identical to the boxed generic select loop — a pure per-element copy
+        // of the chosen branch, incl >i32::MAX/>i64::MAX values.
+        let p = std::collections::BTreeMap::new();
+        let dims = [2u32, 3];
+        let c = [true, false, true, false, true, false];
+
+        let t32 = [10u32, 20, u32::MAX, 0, 3_000_000_000, 7];
+        let f32v = [99u32, 0, 1, u32::MAX, 5, 3_000_000_001];
+        let dense = crate::eval_primitive(
+            Primitive::Select,
+            &[bool_tensor(&dims, &c), u32_dense_sh(&dims, &t32), u32_dense_sh(&dims, &f32v)],
+            &p,
+        )
+        .unwrap();
+        let boxed = crate::eval_primitive(
+            Primitive::Select,
+            &[bool_tensor(&dims, &c), u32_boxed_sh(&dims, &t32), u32_boxed_sh(&dims, &f32v)],
+            &p,
+        )
+        .unwrap();
+        assert_eq!(unsigned_out_bits(&dense), unsigned_out_bits(&boxed), "u32 select");
+        assert_eq!(dense.as_tensor().unwrap().dtype, DType::U32);
+
+        let t64 = [10u64, 20, u64::MAX, 0, 1 << 50, 7];
+        let f64v = [99u64, 0, 1, u64::MAX, 5, (1 << 50) + 1];
+        let dense = crate::eval_primitive(
+            Primitive::Select,
+            &[bool_tensor(&dims, &c), u64_dense_sh(&dims, &t64), u64_dense_sh(&dims, &f64v)],
+            &p,
+        )
+        .unwrap();
+        let boxed = crate::eval_primitive(
+            Primitive::Select,
+            &[bool_tensor(&dims, &c), u64_boxed_sh(&dims, &t64), u64_boxed_sh(&dims, &f64v)],
+            &p,
+        )
+        .unwrap();
+        assert_eq!(unsigned_out_bits(&dense), unsigned_out_bits(&boxed), "u64 select");
+        assert_eq!(dense.as_tensor().unwrap().dtype, DType::U64);
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_u32_select_dense_vs_boxed() {
+        use std::time::Instant;
+        let n = 1_000_000usize;
+        let dims = vec![1000u32, 1000];
+        let c: Vec<bool> = (0..n).map(|i| i % 3 == 0).collect();
+        let t: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+        let f: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(40_503)).collect();
+        let cond = Value::Tensor(
+            TensorValue::new_bool_values(Shape { dims: dims.clone() }, c.clone()).unwrap(),
+        );
+        let dense = [
+            cond.clone(),
+            Value::Tensor(
+                TensorValue::new_u32_values(Shape { dims: dims.clone() }, t.clone()).unwrap(),
+            ),
+            Value::Tensor(
+                TensorValue::new_u32_values(Shape { dims: dims.clone() }, f.clone()).unwrap(),
+            ),
+        ];
+        let boxed = [cond, u32_boxed_sh(&dims, &t), u32_boxed_sh(&dims, &f)];
+        let p = std::collections::BTreeMap::new();
+        let best = |inputs: &[Value]| {
+            let _ = crate::eval_primitive(Primitive::Select, inputs, &p).unwrap();
+            let mut tm = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                let o = crate::eval_primitive(Primitive::Select, inputs, &p).unwrap();
+                std::hint::black_box(o.as_tensor().unwrap().elements.len());
+                tm = tm.min(s.elapsed().as_secs_f64());
+            }
+            tm
+        };
+        let bx = best(&boxed);
+        let dn = best(&dense);
+        println!(
+            "BENCH u32 select [{n}]: boxed={:.2}ms dense={:.2}ms speedup={:.2}x",
             bx * 1e3,
             dn * 1e3,
             bx / dn
