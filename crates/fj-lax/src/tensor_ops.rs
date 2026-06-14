@@ -686,8 +686,16 @@ pub(crate) fn eval_transpose(
                             tensor.dtype, Shape { dims: new_dims.clone() }, $kernel(s, $($arg)*))?));
                     }
                     if let Some(s) = tensor.elements.as_i64_slice() {
-                        return Ok(Value::Tensor(TensorValue::new_i64_values(
-                            Shape { dims: new_dims.clone() }, $kernel(s, $($arg)*))?));
+                        // I64 backing also holds I32-dtype tensors; preserve the input
+                        // integer width (i32 transpose must stay I32, not widen to I64).
+                        let out = $kernel(s, $($arg)*);
+                        let shape = Shape { dims: new_dims.clone() };
+                        let tv = if tensor.dtype == DType::I32 {
+                            TensorValue::new_i32_values(shape, out)
+                        } else {
+                            TensorValue::new_i64_values(shape, out)
+                        };
+                        return Ok(Value::Tensor(tv?));
                     }
                     // Complex (Complex64/Complex128) transpose over the dense
                     // (f64,f64) backing — FFT / complex-linalg transposes otherwise
@@ -952,10 +960,14 @@ pub(crate) fn eval_broadcast_in_dim(
                     &in_strides,
                     src,
                 );
-                return Ok(Value::Tensor(TensorValue::new_i64_values(
-                    Shape { dims: target_dims },
-                    out,
-                )?));
+                // Preserve the input integer width (i32 broadcast must stay I32).
+                let shape = Shape { dims: target_dims };
+                let tv = if tensor.dtype == DType::I32 {
+                    TensorValue::new_i32_values(shape, out)
+                } else {
+                    TensorValue::new_i64_values(shape, out)
+                };
+                return Ok(Value::Tensor(tv?));
             }
             if let Some(src) = tensor.elements.as_bool_slice() {
                 let out = broadcast_replicate(
@@ -1459,10 +1471,14 @@ pub(crate) fn eval_pad(
                 &out_strides,
             )
         };
-        return Ok(Value::Tensor(TensorValue::new_i64_values(
-            Shape { dims: out_dims },
-            out,
-        )?));
+        // Preserve the input integer width (i32 pad must stay I32).
+        let shape = Shape { dims: out_dims };
+        let tv = if operand.dtype == DType::I32 {
+            TensorValue::new_i32_values(shape, out)
+        } else {
+            TensorValue::new_i64_values(shape, out)
+        };
+        return Ok(Value::Tensor(tv?));
     }
     // f32 (JAX's default dtype) and BF16/F16 reuse the same generic
     // `pad_copy_rows<T>`/`pad_fill_place<T>` kernels over their typed backings —
@@ -1814,10 +1830,14 @@ pub(crate) fn eval_slice(
                     )?));
                 }
                 if let Some(src) = tensor.elements.as_i64_slice() {
-                    return Ok(Value::Tensor(TensorValue::new_i64_values(
-                        shape,
-                        src[start_offset..end_offset].to_vec(),
-                    )?));
+                    // Preserve the input integer width (i32 slice must stay I32).
+                    let vals = src[start_offset..end_offset].to_vec();
+                    let tv = if tensor.dtype == DType::I32 {
+                        TensorValue::new_i32_values(shape, vals)
+                    } else {
+                        TensorValue::new_i64_values(shape, vals)
+                    };
+                    return Ok(Value::Tensor(tv?));
                 }
                 return Ok(Value::Tensor(TensorValue::new(
                     tensor.dtype,
@@ -1858,7 +1878,11 @@ pub(crate) fn eval_slice(
                 dense_strided_slice!(s, |sh, out| TensorValue::new_half_float_values(dt, sh, out));
             }
             if let Some(s) = tensor.elements.as_i64_slice() {
-                dense_strided_slice!(s, TensorValue::new_i64_values);
+                dense_strided_slice!(s, |sh, o| if tensor.dtype == DType::I32 {
+                    TensorValue::new_i32_values(sh, o)
+                } else {
+                    TensorValue::new_i64_values(sh, o)
+                });
             }
 
             // Literal fallback (boxed/other dtypes): the same gather over Literals.
@@ -3247,7 +3271,11 @@ pub(crate) fn eval_dynamic_slice(
         dense_ds!(s, |sh, o| TensorValue::new_half_float_values(dt, sh, o));
     }
     if let Some(s) = tensor.elements.as_i64_slice() {
-        dense_ds!(s, TensorValue::new_i64_values);
+        dense_ds!(s, |sh, o| if tensor.dtype == DType::I32 {
+            TensorValue::new_i32_values(sh, o)
+        } else {
+            TensorValue::new_i64_values(sh, o)
+        });
     }
 
     // Literal fallback (boxed/other dtypes): the same gather over Literals.
@@ -3532,7 +3560,11 @@ pub(crate) fn eval_dynamic_update_slice(
         operand.elements.as_i64_slice(),
         update.elements.as_i64_slice(),
     ) {
-        dense_dus!(o, u, TensorValue::new_i64_values);
+        dense_dus!(o, u, |sh, out| if operand.dtype == DType::I32 {
+            TensorValue::new_i32_values(sh, out)
+        } else {
+            TensorValue::new_i64_values(sh, out)
+        });
     }
 
     // Literal fallback (boxed/other dtypes): the same copy over Literals.
@@ -9191,10 +9223,13 @@ pub(crate) fn eval_rev(
             }
             if let Some(src) = tensor.elements.as_i64_slice() {
                 let out = rev_gather(src, dims, &strides, &reversed, total);
-                return Ok(Value::Tensor(
+                // Preserve the input integer width (i32 reverse must stay I32).
+                let tv = if tensor.dtype == DType::I32 {
+                    TensorValue::new_i32_values(tensor.shape.clone(), out)
+                } else {
                     TensorValue::new_i64_values(tensor.shape.clone(), out)
-                        .map_err(EvalError::InvalidTensor)?,
-                ));
+                };
+                return Ok(Value::Tensor(tv.map_err(EvalError::InvalidTensor)?));
             }
             if let Some(src) = tensor.elements.as_bool_slice() {
                 let out = rev_gather(src, dims, &strides, &reversed, total);
@@ -9829,7 +9864,11 @@ pub(crate) fn eval_tile(
                 dense_tile!(s, |sh, o| TensorValue::new_half_float_values(dt, sh, o));
             }
             if let Some(s) = tensor.elements.as_i64_slice() {
-                dense_tile!(s, TensorValue::new_i64_values);
+                dense_tile!(s, |sh, o| if tensor.dtype == DType::I32 {
+                    TensorValue::new_i32_values(sh, o)
+                } else {
+                    TensorValue::new_i64_values(sh, o)
+                });
             }
 
             let mut result = Vec::with_capacity(new_count as usize);
@@ -12828,6 +12867,89 @@ mod tests {
             err.contains("reshape known dimension product overflows usize"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn i32_structural_ops_preserve_dtype_not_widen_to_i64() {
+        // i32 densifies into the i64 backing, so the dense structural paths gated on
+        // `as_i64_slice()` (transpose / slice contiguous+strided / reverse / tile /
+        // broadcast_in_dim / pad) silently emitted an I64 result — a widening parity bug
+        // (these ops must preserve dtype). Each dense (densified i32) result must keep
+        // I32 AND match the boxed generic path (forced via new_with_literal_buffer).
+        let mk_d = |dims: &[u32], d: &[i64]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::I32,
+                    Shape { dims: dims.to_vec() },
+                    d.iter().map(|&v| Literal::I64(v)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let mk_b = |dims: &[u32], d: &[i64]| {
+            Value::Tensor(
+                TensorValue::new_with_literal_buffer(
+                    DType::I32,
+                    Shape { dims: dims.to_vec() },
+                    fj_core::LiteralBuffer::new(d.iter().map(|&v| Literal::I64(v)).collect()),
+                )
+                .unwrap(),
+            )
+        };
+        let geti = |v: &Value| -> (DType, Vec<i64>) {
+            let t = v.as_tensor().unwrap();
+            (
+                t.dtype,
+                t.elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::I64(x) => *x,
+                        o => panic!("expected I64-backed i32, got {o:?}"),
+                    })
+                    .collect(),
+            )
+        };
+        let data: Vec<i64> = (0..24).map(|i| i64::from((i as i32).wrapping_mul(7) - 11)).collect();
+
+        // Single-operand structural ops over a [4,6] i32 tensor.
+        let single: &[(fn(&[Value], &BTreeMap<String, String>) -> Result<Value, EvalError>, BTreeMap<String, String>, &str)] = &[
+            (eval_transpose, params(&[("permutation", "1,0")]), "transpose"),
+            (eval_slice, params(&[("start_indices", "0,0"), ("limit_indices", "4,6")]), "slice-contig"),
+            (eval_slice, params(&[("start_indices", "0,0"), ("limit_indices", "4,6"), ("strides", "2,2")]), "slice-strided"),
+            (eval_rev, params(&[("axes", "0,1")]), "reverse"),
+            (eval_tile, params(&[("reps", "2,1")]), "tile"),
+        ];
+        for (f, p, label) in single {
+            let d = f(std::slice::from_ref(&mk_d(&[4, 6], &data)), p).unwrap();
+            let b = f(std::slice::from_ref(&mk_b(&[4, 6], &data)), p).unwrap();
+            let (dt_d, v_d) = geti(&d);
+            let (dt_b, v_b) = geti(&b);
+            assert_eq!(dt_d, DType::I32, "{label}: dense must stay I32 (was widening to I64)");
+            assert_eq!(dt_b, DType::I32, "{label}: generic dtype");
+            assert_eq!(v_d, v_b, "{label}: dense values != generic");
+        }
+
+        // broadcast_in_dim: [3] -> [4,3] (broadcast_dimensions=1).
+        let bd = data[..3].to_vec();
+        let pbc = params(&[("shape", "4,3"), ("broadcast_dimensions", "1")]);
+        let d = eval_broadcast_in_dim(std::slice::from_ref(&mk_d(&[3], &bd)), &pbc).unwrap();
+        let b = eval_broadcast_in_dim(std::slice::from_ref(&mk_b(&[3], &bd)), &pbc).unwrap();
+        assert_eq!(geti(&d).0, DType::I32, "broadcast: dense must stay I32");
+        assert_eq!(geti(&d), geti(&b), "broadcast: dense != generic");
+
+        // pad: operand [4,6] + 0-d I32 pad value (must match operand dtype), interior 1.
+        let padv = Value::Tensor(
+            TensorValue::new(DType::I32, Shape { dims: vec![] }, vec![Literal::I64(-99)]).unwrap(),
+        );
+        let pp = params(&[
+            ("padding_low", "1,1"),
+            ("padding_high", "1,1"),
+            ("padding_interior", "1,0"),
+        ]);
+        let d = eval_pad(&[mk_d(&[4, 6], &data), padv.clone()], &pp).unwrap();
+        let b = eval_pad(&[mk_b(&[4, 6], &data), padv.clone()], &pp).unwrap();
+        assert_eq!(geti(&d).0, DType::I32, "pad: dense must stay I32");
+        assert_eq!(geti(&d), geti(&b), "pad: dense != generic");
     }
 
     // ── Transpose ──
