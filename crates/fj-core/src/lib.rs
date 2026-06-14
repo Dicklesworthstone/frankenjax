@@ -1033,6 +1033,21 @@ enum LiteralBufferStorage {
         dtype: DType,
         literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
     },
+    /// Dense unsigned 32-bit storage. `u32` is JAX's RNG word type (threefry
+    /// output) and a common bit-manipulation / index dtype, so a packed `&[u32]`
+    /// slice (`as_u32_slice`) lets those paths avoid per-element `Literal`
+    /// materialization. The stored `u32` IS the logical value, so materializing
+    /// back via `Literal::U32(v)` is bit-identical.
+    U32 {
+        values: Arc<Vec<u32>>,
+        literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
+    },
+    /// Dense unsigned 64-bit storage. Mirror of [`Self::U32`] for `u64`
+    /// (`as_u64_slice`); materializing back via `Literal::U64(v)` is bit-identical.
+    U64 {
+        values: Arc<Vec<u64>>,
+        literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
+    },
     RepeatedPatches {
         base: Arc<Vec<Literal>>,
         repeats: usize,
@@ -1095,6 +1110,26 @@ impl LiteralBuffer {
     pub fn from_i64_values(values: Vec<i64>) -> Self {
         Self {
             storage: LiteralBufferStorage::I64 {
+                values: Arc::new(values),
+                literals: Arc::new(OnceLock::new()),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn from_u32_values(values: Vec<u32>) -> Self {
+        Self {
+            storage: LiteralBufferStorage::U32 {
+                values: Arc::new(values),
+                literals: Arc::new(OnceLock::new()),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn from_u64_values(values: Vec<u64>) -> Self {
+        Self {
+            storage: LiteralBufferStorage::U64 {
                 values: Arc::new(values),
                 literals: Arc::new(OnceLock::new()),
             },
@@ -1251,6 +1286,12 @@ impl LiteralBuffer {
             LiteralBufferStorage::Bool { values, literals } => literals
                 .get_or_init(|| Arc::new(values.iter().copied().map(Literal::Bool).collect()))
                 .as_slice(),
+            LiteralBufferStorage::U32 { values, literals } => literals
+                .get_or_init(|| Arc::new(values.iter().copied().map(Literal::U32).collect()))
+                .as_slice(),
+            LiteralBufferStorage::U64 { values, literals } => literals
+                .get_or_init(|| Arc::new(values.iter().copied().map(Literal::U64).collect()))
+                .as_slice(),
             LiteralBufferStorage::BoolWords {
                 words,
                 len,
@@ -1326,8 +1367,30 @@ impl LiteralBuffer {
             LiteralBufferStorage::Bool { .. } => None,
             LiteralBufferStorage::BoolWords { .. } => None,
             LiteralBufferStorage::Complex { .. } => None,
+            LiteralBufferStorage::U32 { .. } => None,
+            LiteralBufferStorage::U64 { .. } => None,
             LiteralBufferStorage::RepeatedPatches { .. } => None,
             LiteralBufferStorage::Concat { .. } => None,
+        }
+    }
+
+    /// Borrow the dense unsigned-32 storage as a packed `&[u32]` slice, if this
+    /// buffer is `u32`-backed. Returns `None` otherwise.
+    #[must_use]
+    pub fn as_u32_slice(&self) -> Option<&[u32]> {
+        match &self.storage {
+            LiteralBufferStorage::U32 { values, .. } => Some(values.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// Borrow the dense unsigned-64 storage as a packed `&[u64]` slice, if this
+    /// buffer is `u64`-backed. Returns `None` otherwise.
+    #[must_use]
+    pub fn as_u64_slice(&self) -> Option<&[u64]> {
+        match &self.storage {
+            LiteralBufferStorage::U64 { values, .. } => Some(values.as_slice()),
+            _ => None,
         }
     }
 
@@ -1410,6 +1473,8 @@ impl LiteralBuffer {
             | LiteralBufferStorage::Bool { .. }
             | LiteralBufferStorage::BoolWords { .. }
             | LiteralBufferStorage::Complex { .. }
+            | LiteralBufferStorage::U32 { .. }
+            | LiteralBufferStorage::U64 { .. }
             | LiteralBufferStorage::RepeatedPatches { .. }
             | LiteralBufferStorage::Concat { .. } => None,
         }
@@ -1427,6 +1492,8 @@ impl LiteralBuffer {
             | LiteralBufferStorage::I64 { .. }
             | LiteralBufferStorage::BoolWords { .. }
             | LiteralBufferStorage::Complex { .. }
+            | LiteralBufferStorage::U32 { .. }
+            | LiteralBufferStorage::U64 { .. }
             | LiteralBufferStorage::RepeatedPatches { .. }
             | LiteralBufferStorage::Concat { .. } => None,
         }
@@ -1452,6 +1519,8 @@ impl LiteralBuffer {
             LiteralBufferStorage::Bool { values, .. } => values.len(),
             LiteralBufferStorage::BoolWords { len, .. } => *len,
             LiteralBufferStorage::Complex { values, .. } => values.len(),
+            LiteralBufferStorage::U32 { values, .. } => values.len(),
+            LiteralBufferStorage::U64 { values, .. } => values.len(),
             LiteralBufferStorage::RepeatedPatches { base, repeats, .. } => base.len() * repeats,
             LiteralBufferStorage::Concat { len, .. } => *len,
         }
@@ -1478,6 +1547,8 @@ impl LiteralBuffer {
                 | LiteralBufferStorage::Bool { .. }
                 | LiteralBufferStorage::BoolWords { .. }
                 | LiteralBufferStorage::Complex { .. }
+                | LiteralBufferStorage::U32 { .. }
+                | LiteralBufferStorage::U64 { .. }
                 | LiteralBufferStorage::RepeatedPatches { .. }
                 | LiteralBufferStorage::Concat { .. }
         ) {
@@ -1495,6 +1566,8 @@ impl LiteralBuffer {
             | LiteralBufferStorage::Bool { .. }
             | LiteralBufferStorage::BoolWords { .. }
             | LiteralBufferStorage::Complex { .. }
+            | LiteralBufferStorage::U32 { .. }
+            | LiteralBufferStorage::U64 { .. }
             | LiteralBufferStorage::RepeatedPatches { .. }
             | LiteralBufferStorage::Concat { .. } => unreachable!("lazy buffer was materialized"),
         }
@@ -1597,6 +1670,18 @@ impl Clone for LiteralBuffer {
                 storage: LiteralBufferStorage::HalfFloat {
                     values: Arc::clone(values),
                     dtype: *dtype,
+                    literals: Arc::clone(literals),
+                },
+            },
+            LiteralBufferStorage::U32 { values, literals } => Self {
+                storage: LiteralBufferStorage::U32 {
+                    values: Arc::clone(values),
+                    literals: Arc::clone(literals),
+                },
+            },
+            LiteralBufferStorage::U64 { values, literals } => Self {
+                storage: LiteralBufferStorage::U64 {
+                    values: Arc::clone(values),
                     literals: Arc::clone(literals),
                 },
             },
@@ -1826,6 +1911,34 @@ impl IntoIterator for LiteralBuffer {
                     .collect::<Vec<_>>()
                     .into_iter()
             }
+            LiteralBufferStorage::U32 { values, literals } => {
+                if let Some(materialized) = literals.get() {
+                    return Arc::try_unwrap(Arc::clone(materialized))
+                        .unwrap_or_else(|elements| (*elements).clone())
+                        .into_iter();
+                }
+
+                values
+                    .iter()
+                    .copied()
+                    .map(Literal::U32)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            }
+            LiteralBufferStorage::U64 { values, literals } => {
+                if let Some(materialized) = literals.get() {
+                    return Arc::try_unwrap(Arc::clone(materialized))
+                        .unwrap_or_else(|elements| (*elements).clone())
+                        .into_iter();
+                }
+
+                values
+                    .iter()
+                    .copied()
+                    .map(Literal::U64)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            }
             LiteralBufferStorage::RepeatedPatches {
                 base,
                 repeats,
@@ -2001,6 +2114,32 @@ impl TensorValue {
                 })
                 .collect();
             LiteralBuffer::from_i64_values(values)
+        } else if dtype == DType::U32
+            && elements
+                .iter()
+                .all(|literal| matches!(literal, Literal::U32(_)))
+        {
+            let values = elements
+                .into_iter()
+                .map(|literal| match literal {
+                    Literal::U32(value) => value,
+                    _ => unreachable!("all elements were checked as u32"),
+                })
+                .collect();
+            LiteralBuffer::from_u32_values(values)
+        } else if dtype == DType::U64
+            && elements
+                .iter()
+                .all(|literal| matches!(literal, Literal::U64(_)))
+        {
+            let values = elements
+                .into_iter()
+                .map(|literal| match literal {
+                    Literal::U64(value) => value,
+                    _ => unreachable!("all elements were checked as u64"),
+                })
+                .collect();
+            LiteralBuffer::from_u64_values(values)
         } else {
             elements.into()
         };
@@ -2144,6 +2283,52 @@ impl TensorValue {
             dtype: DType::I32,
             shape,
             elements: LiteralBuffer::from_i64_values(values),
+        })
+    }
+
+    /// Build a `u32` tensor from dense `u32` values, backed by the packed
+    /// [`LiteralBuffer::from_u32_values`] storage (no per-element `Literal`
+    /// materialization). Lets `u32`-typed ops (RNG output, bit manipulation)
+    /// borrow a `&[u32]` slice (`as_u32_slice`) and emit dense outputs.
+    pub fn new_u32_values(shape: Shape, values: Vec<u32>) -> Result<Self, ValueError> {
+        let expected_count = shape.element_count().ok_or(ValueError::ShapeOverflow {
+            shape: shape.clone(),
+        })?;
+
+        if expected_count != values.len() as u64 {
+            return Err(ValueError::ElementCountMismatch {
+                shape,
+                expected_count,
+                actual_count: values.len(),
+            });
+        }
+
+        Ok(Self {
+            dtype: DType::U32,
+            shape,
+            elements: LiteralBuffer::from_u32_values(values),
+        })
+    }
+
+    /// Build a `u64` tensor from dense `u64` values, backed by the packed
+    /// [`LiteralBuffer::from_u64_values`] storage. Mirror of [`Self::new_u32_values`].
+    pub fn new_u64_values(shape: Shape, values: Vec<u64>) -> Result<Self, ValueError> {
+        let expected_count = shape.element_count().ok_or(ValueError::ShapeOverflow {
+            shape: shape.clone(),
+        })?;
+
+        if expected_count != values.len() as u64 {
+            return Err(ValueError::ElementCountMismatch {
+                shape,
+                expected_count,
+                actual_count: values.len(),
+            });
+        }
+
+        Ok(Self {
+            dtype: DType::U64,
+            shape,
+            elements: LiteralBuffer::from_u64_values(values),
         })
     }
 
@@ -6711,6 +6896,86 @@ mod tests {
             buffer.as_i64_slice().is_none(),
             "mutating dense storage should materialize to literal storage"
         );
+    }
+
+    #[test]
+    fn dense_u32_buffer_round_trips_bit_identically_to_literals() {
+        let values: Vec<u32> = vec![0, 1, 7, 3_000_000_000, u32::MAX, u32::MAX - 1];
+        let expected: Vec<Literal> = values.iter().copied().map(Literal::U32).collect();
+
+        let mut buffer = LiteralBuffer::from_u32_values(values.clone());
+        assert_eq!(buffer.len(), expected.len());
+        assert_eq!(buffer.as_u32_slice(), Some(values.as_slice()));
+        // Dense u32 must NOT masquerade as i64/bool (would re-introduce the widening bug class).
+        assert!(buffer.as_i64_slice().is_none());
+        assert!(buffer.as_bool_slice().is_none());
+        // Materialization, indexing, serialization, and consuming-iter all match the
+        // boxed `Literal::U32` representation bit-for-bit.
+        assert_eq!(buffer.as_slice(), expected.as_slice());
+        assert_eq!(buffer.to_vec(), expected);
+        assert_eq!(buffer[4], Literal::U32(u32::MAX));
+        assert_eq!(
+            serde_json::to_string(&buffer).expect("serialize dense u32"),
+            serde_json::to_string(&expected).expect("serialize literal u32")
+        );
+        assert_eq!(buffer.clone().into_iter().collect::<Vec<_>>(), expected);
+        assert_eq!(buffer, expected);
+
+        // Mutating materializes back to literal storage (clone stays dense + unchanged).
+        let original = buffer.clone();
+        buffer[0] = Literal::U32(42);
+        assert_eq!(original.as_u32_slice(), Some(values.as_slice()));
+        assert_eq!(buffer[0], Literal::U32(42));
+        assert!(buffer.as_u32_slice().is_none());
+
+        // TensorValue::new densifies a U32 dtype + all-U32 literals.
+        let tv = TensorValue::new(
+            DType::U32,
+            Shape { dims: vec![6] },
+            expected.clone(),
+        )
+        .expect("build u32 tensor");
+        assert_eq!(tv.elements.as_u32_slice(), Some(values.as_slice()));
+        let tv2 = TensorValue::new_u32_values(Shape { dims: vec![6] }, values.clone())
+            .expect("build dense u32 tensor");
+        assert_eq!(tv2.elements.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn dense_u64_buffer_round_trips_bit_identically_to_literals() {
+        let values: Vec<u64> = vec![0, 1, 7, u32::MAX as u64 + 1, u64::MAX, u64::MAX - 1];
+        let expected: Vec<Literal> = values.iter().copied().map(Literal::U64).collect();
+
+        let mut buffer = LiteralBuffer::from_u64_values(values.clone());
+        assert_eq!(buffer.len(), expected.len());
+        assert_eq!(buffer.as_u64_slice(), Some(values.as_slice()));
+        assert!(buffer.as_i64_slice().is_none());
+        assert!(buffer.as_u32_slice().is_none());
+        assert_eq!(buffer.as_slice(), expected.as_slice());
+        assert_eq!(buffer.to_vec(), expected);
+        assert_eq!(buffer[4], Literal::U64(u64::MAX));
+        assert_eq!(
+            serde_json::to_string(&buffer).expect("serialize dense u64"),
+            serde_json::to_string(&expected).expect("serialize literal u64")
+        );
+        assert_eq!(buffer.clone().into_iter().collect::<Vec<_>>(), expected);
+        assert_eq!(buffer, expected);
+
+        let original = buffer.clone();
+        buffer[0] = Literal::U64(42);
+        assert_eq!(original.as_u64_slice(), Some(values.as_slice()));
+        assert!(buffer.as_u64_slice().is_none());
+
+        let tv = TensorValue::new(
+            DType::U64,
+            Shape { dims: vec![6] },
+            expected.clone(),
+        )
+        .expect("build u64 tensor");
+        assert_eq!(tv.elements.as_u64_slice(), Some(values.as_slice()));
+        let tv2 = TensorValue::new_u64_values(Shape { dims: vec![6] }, values.clone())
+            .expect("build dense u64 tensor");
+        assert_eq!(tv2.elements.as_slice(), expected.as_slice());
     }
 
     #[test]
