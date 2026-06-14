@@ -4670,9 +4670,12 @@ fn eval_reduce_window(
     // integer max/min pooling otherwise ran the per-window O(output·∏window) dense
     // path; the monotonic-deque per-axis pass is window-independent and bit-identical
     // (i64 max/min is a unique total order). Same ∏window > 2·∑window gate.
+    // I64 AND I32 (JAX's default int) share the i64 backing. max/min select an input
+    // value (valid i32, no mod-2^32 wrap), so i32 reuses the deque and just preserves the
+    // I32 dtype — a window-INDEPENDENT win over the O(output·∏window) general dense path.
     if no_base_dilation
         && no_window_dilation
-        && tensor.dtype == fj_core::DType::I64
+        && matches!(tensor.dtype, fj_core::DType::I64 | fj_core::DType::I32)
         && matches!(reduce_op, "max" | "min")
     {
         let win_total: usize = window_dims.iter().product();
@@ -4694,9 +4697,12 @@ fn eval_reduce_window(
             let shape = Shape {
                 dims: out_dims.clone(),
             };
-            return Ok(Value::Tensor(
-                TensorValue::new_i64_values(shape, values).map_err(EvalError::from)?,
-            ));
+            let tv = if tensor.dtype == fj_core::DType::I32 {
+                TensorValue::new_i32_values(shape, values)
+            } else {
+                TensorValue::new_i64_values(shape, values)
+            };
+            return Ok(Value::Tensor(tv.map_err(EvalError::from)?));
         }
     }
 
@@ -13468,6 +13474,98 @@ mod tests {
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
+    }
+
+    #[test]
+    fn dense_i32_separable_maxmin_matches_generic() {
+        // Large-window i32 max/min reduce_window now uses the window-independent deque
+        // (was the O(output·∏window) general dense). max/min select an input value →
+        // valid i32, no wrap; dtype must stay I32 and match the boxed generic path.
+        let (rows, cols) = (40usize, 48usize);
+        let data: Vec<i64> = (0..rows * cols)
+            .map(|i| i64::from((i as i32).wrapping_mul(2_654_435).wrapping_sub(7)))
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new(
+                DType::I32,
+                Shape { dims: vec![rows as u32, cols as u32] },
+                data.iter().map(|&v| Literal::I64(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::I32,
+                Shape { dims: vec![rows as u32, cols as u32] },
+                fj_core::LiteralBuffer::new(data.iter().map(|&v| Literal::I64(v)).collect()),
+            )
+            .unwrap(),
+        );
+        let geti = |v: &Value| -> Vec<i64> {
+            v.as_tensor().unwrap().elements.iter().map(|l| match l {
+                Literal::I64(x) => *x,
+                o => panic!("expected I64-backed i32, got {o:?}"),
+            }).collect()
+        };
+        for op in ["max", "min"] {
+            // window 9x9 (∏=81 > 2·∑=36) ⇒ deque path.
+            let p = rw_params_with_padding(op, "9,9", "1,1", "VALID");
+            let d = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &p).unwrap();
+            let b = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &p).unwrap();
+            assert_eq!(d.as_tensor().unwrap().dtype, DType::I32, "i32 {op} deque dtype");
+            assert_eq!(geti(&d), geti(&b), "i32 {op} deque != generic");
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_i32_reduce_window_deque_vs_dense() {
+        use std::time::Instant;
+        // Honest deque-vs-general-dense A/B for large-window i32 max pooling, calling
+        // both internal kernels directly on identical i32 data (the dispatch picks the
+        // deque, so this isolates the window-independence win over the O(window) dense).
+        let (rows, cols, win) = (512usize, 512usize, 17usize);
+        let src: Vec<i64> = (0..rows * cols)
+            .map(|i| i64::from((i as i64).wrapping_mul(2_654_435_761) as i32))
+            .collect();
+        let in_dims = vec![rows, cols];
+        let in_strides = vec![cols, 1usize];
+        let wdims = vec![win, win];
+        let strides = vec![1usize, 1];
+        let out = vec![(rows - win + 1) as u32, (cols - win + 1) as u32];
+        let pad = vec![0usize, 0];
+        let total = (rows - win + 1) * (cols - win + 1);
+        let best = |mut f: Box<dyn FnMut() -> usize>| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let (s1, w1, st1, o1, p1, i1, is1) = (src.clone(), wdims.clone(), strides.clone(), out.clone(), pad.clone(), in_dims.clone(), in_strides.clone());
+        let od = vec![1usize, 1];
+        let dense_t = best(Box::new(move || {
+            super::eval_reduce_window_dense_i64(
+                fj_core::DType::I32, "max", &s1, &w1, &st1, &od, &o1, &p1, &i1, &is1, total,
+            )
+            .unwrap();
+            total
+        }));
+        let (s2, i2, w2, st2, p2) = (src.clone(), in_dims.clone(), wdims.clone(), strides.clone(), pad.clone());
+        let ou = vec![(rows - win + 1), (cols - win + 1)];
+        let deque_t = best(Box::new(move || {
+            let _ = super::reduce_window_separable_maxmin_i64(&s2, &i2, &w2, &st2, &p2, &ou, true);
+            total
+        }));
+        println!(
+            "BENCH i32 reduce_window max [{rows}x{cols}] win{win}x{win}: dense={:.2}ms deque={:.2}ms speedup={:.2}x",
+            dense_t * 1e3,
+            deque_t * 1e3,
+            dense_t / deque_t
+        );
     }
 
     #[test]
