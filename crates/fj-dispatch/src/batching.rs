@@ -2287,6 +2287,16 @@ fn batch_gather_batched_operand_direct(
         None => indices.value.clone(),
     };
 
+    if let Some(result) = batch_gather_batched_operand_rank2_i64_direct(
+        operand_tensor,
+        &indices_value,
+        indices.batch_dim,
+        batch_size,
+        mode,
+    )? {
+        return Ok(Some(result));
+    }
+
     let prepared_indices = prepare_gather_indices(&indices_value, indices.batch_dim, batch_size)?;
     let trailing_slice_dims: Vec<u32> = slice_sizes
         .iter()
@@ -2363,6 +2373,100 @@ fn batch_gather_batched_operand_direct(
     }
 
     let tensor = TensorValue::new(operand_tensor.dtype, Shape { dims: out_dims }, elements)
+        .map_err(|e| BatchError::TensorError(e.to_string()))?;
+    Ok(Some(BatchTracer::batched(Value::Tensor(tensor), 0)))
+}
+
+fn batch_gather_batched_operand_rank2_i64_direct(
+    operand_tensor: &TensorValue,
+    indices_value: &Value,
+    indices_batch_dim: Option<usize>,
+    batch_size: usize,
+    mode: GatherIndexMode,
+) -> Result<Option<BatchTracer>, BatchError> {
+    if operand_tensor.dtype != DType::I64 || operand_tensor.rank() != 2 || batch_size == 0 {
+        return Ok(None);
+    }
+    let gather_dim = operand_tensor.shape.dims[1] as usize;
+    if gather_dim == 0 {
+        return Ok(None);
+    }
+
+    let Some(operand_values) = operand_tensor.elements.as_i64_slice() else {
+        return Ok(None);
+    };
+    let (per_batch_shape, per_batch_len, index_values, shared_indices) =
+        match (indices_batch_dim, indices_value) {
+            (None, Value::Tensor(tensor)) => {
+                let Some(values) = tensor.elements.as_i64_slice() else {
+                    return Ok(None);
+                };
+                (
+                    tensor.shape.dims.clone(),
+                    tensor.elements.len(),
+                    values,
+                    true,
+                )
+            }
+            (Some(_), Value::Tensor(tensor)) => {
+                if tensor.leading_dim() != Some(batch_size as u32) {
+                    return Ok(None);
+                }
+                let per_batch_shape = tensor.shape.dims[1..].to_vec();
+                let per_batch_len = checked_product_usize(&per_batch_shape, "gather indices")?;
+                if per_batch_len
+                    .checked_mul(batch_size)
+                    .is_none_or(|len| len != tensor.elements.len())
+                {
+                    return Ok(None);
+                }
+                let Some(values) = tensor.elements.as_i64_slice() else {
+                    return Ok(None);
+                };
+                (per_batch_shape, per_batch_len, values, false)
+            }
+            _ => return Ok(None),
+        };
+
+    let mut out_dims = Vec::with_capacity(1 + per_batch_shape.len());
+    out_dims.push(operand_tensor.shape.dims[0]);
+    out_dims.extend_from_slice(&per_batch_shape);
+    let output_elems = checked_product_usize(&out_dims, "gather output")?;
+    let mut elements = Vec::with_capacity(output_elems);
+
+    for batch_index in 0..batch_size {
+        let row_start = batch_index
+            .checked_mul(gather_dim)
+            .ok_or_else(|| BatchError::EvalError("gather row offset overflow".to_owned()))?;
+        let row_end = row_start
+            .checked_add(gather_dim)
+            .ok_or_else(|| BatchError::EvalError("gather row end overflow".to_owned()))?;
+        let row = operand_values.get(row_start..row_end).ok_or_else(|| {
+            BatchError::EvalError("gather row exceeds operand element count".to_owned())
+        })?;
+        let batch_indices = if shared_indices {
+            index_values
+        } else {
+            let start = batch_index
+                .checked_mul(per_batch_len)
+                .ok_or_else(|| BatchError::EvalError("gather index offset overflow".to_owned()))?;
+            let end = start
+                .checked_add(per_batch_len)
+                .ok_or_else(|| BatchError::EvalError("gather index end overflow".to_owned()))?;
+            &index_values[start..end]
+        };
+        for &index in batch_indices {
+            if index < 0 {
+                return Err(BatchError::EvalError(format!("negative index {index}")));
+            }
+            match resolve_gather_index(index as usize, gather_dim, mode) {
+                Some(resolved_index) => elements.push(row[resolved_index]),
+                None => elements.push(i64::MIN),
+            }
+        }
+    }
+
+    let tensor = TensorValue::new_i64_values(Shape { dims: out_dims }, elements)
         .map_err(|e| BatchError::TensorError(e.to_string()))?;
     Ok(Some(BatchTracer::batched(Value::Tensor(tensor), 0)))
 }
@@ -13278,6 +13382,31 @@ mod tests {
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 2]);
         assert_eq!(extract_i64_vec(&result.value), vec![10, 30, 80, 60]);
+    }
+
+    #[test]
+    fn test_batch_trace_gather_batched_operand_i64_dense_golden_sha256() {
+        let operand =
+            BatchTracer::batched(make_i64_matrix(2, 4, &[10, 20, 30, 40, 50, 60, 70, 80]), 0);
+        let indices = BatchTracer::batched(make_i64_matrix(2, 2, &[0, 2, 3, 1]), 0);
+        let params = BTreeMap::from([("slice_sizes".to_owned(), "1".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Gather, &[operand, indices], &params).unwrap();
+        let tensor = result.value.as_tensor().unwrap();
+        assert!(
+            tensor.elements.as_i64_slice().is_some(),
+            "batched i64 gather should preserve dense i64 storage"
+        );
+        let actual = extract_i64_vec(&result.value);
+        let digest =
+            fj_test_utils::fixture_id_from_json(&(tensor.shape.dims.clone(), actual.clone()))
+                .unwrap();
+
+        assert_eq!(actual, vec![10, 30, 80, 60]);
+        assert_eq!(
+            digest,
+            "f72901b3b772939e862aa47330a10fb8b89a5b732d9840e262cd22c5509d65be"
+        );
     }
 
     #[test]
