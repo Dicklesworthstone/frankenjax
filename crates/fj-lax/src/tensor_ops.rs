@@ -5536,6 +5536,55 @@ fn eval_top_k_dense(
         ]));
     }
 
+    // Dense f32 fast path. f32 is JAX's DEFAULT float dtype, so top_k over f32
+    // logits (top-k sampling, beam search, attention) is hot. `f32->f64`
+    // promotion is order-preserving and injective, so keying via
+    // `f64_total_order_key(f64::from(v))` induces the SAME ordering (and tie
+    // structure) as the generic literal path's `f64_total_order_key(lit.as_f64())`
+    // — bit-identical results — while borrowing the packed `&[f32]` slice and
+    // emitting dense f32 output instead of materializing a `Vec<Literal>`.
+    if let Some(values) = tensor.elements.as_f32_slice() {
+        let mut out_vals = vec![0.0_f32; n_slices * k];
+        let mut out_idx = vec![0_i64; n_slices * k];
+        for_each_top_k_slice(
+            &mut out_vals,
+            &mut out_idx,
+            k,
+            stride,
+            n_slices,
+            |slice, vchunk, ichunk, pairs, scratch| {
+                let base = slice * stride;
+                pairs.clear();
+                for (i, &v) in values[base..base + stride].iter().enumerate() {
+                    pairs.push((!f64_total_order_key(f64::from(v)), i as u32));
+                }
+                order_top_k_pairs(pairs, scratch, k);
+                for (dst, &(_, orig)) in pairs.iter().take(k).enumerate() {
+                    vchunk[dst] = values[base + orig as usize];
+                    ichunk[dst] = i64::from(orig);
+                }
+            },
+        );
+        let values_t = TensorValue::new_f32_values(
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            out_vals,
+        )
+        .map_err(EvalError::InvalidTensor)?;
+        let indices_t = TensorValue::new_i64_values(
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            out_idx,
+        )
+        .map_err(EvalError::InvalidTensor)?;
+        return Ok(Some(vec![
+            Value::Tensor(values_t),
+            Value::Tensor(indices_t),
+        ]));
+    }
+
     // Literal-backed numeric dtypes with no dense storage (F32/F16/BF16, U32/U64,
     // I32): same complement-key radix as i64/f64, keyed per dtype family to match
     // the generic `compare_sort_keys` order — Float via f64_total_order_key(as_f64),
@@ -16262,6 +16311,85 @@ mod tests {
 
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
+    fn bench_top_k_f32_dense_vs_literal() {
+        use std::time::Instant;
+        // f32 top_k(x[R,C], k): NEW dense `as_f32_slice` path vs the generic
+        // Literal-backed path (same data, same eval_top_k entry, only storage
+        // differs). The dense arm borrows a packed &[f32] and emits dense f32
+        // output; the literal arm materializes a Vec<Literal> and matches every
+        // element. Same-invocation A/B; digested so the fold doesn't bias timing.
+        let (rows, cols, k) = (4096usize, 1024usize, 128usize);
+        let total = rows * cols;
+        let vals: Vec<f32> = (0..total)
+            .map(|i| (((i as i64) * 2_654_435_761).wrapping_rem(1_000_003) - 500_000) as f32 * 0.5)
+            .collect();
+        let dims = vec![rows as u32, cols as u32];
+        let dense = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: dims.clone() }, vals.clone()).unwrap(),
+        );
+        let literal = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: dims.clone() },
+                vals.iter()
+                    .map(|&v| Literal::F32Bits(v.to_bits()))
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let p = params(&[("k", "128")]);
+        let best = |mut f: Box<dyn FnMut() -> u64>| {
+            f();
+            let mut b = f64::MAX;
+            let mut digest = 0u64;
+            for _ in 0..5 {
+                let t = Instant::now();
+                digest = std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            (b, digest)
+        };
+
+        let pl = p.clone();
+        let (t_literal, d_literal) = best(Box::new(move || {
+            let out = super::eval_top_k(std::slice::from_ref(&literal), &pl).unwrap();
+            out[0]
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0u64, |a, l| match l {
+                    Literal::F32Bits(b) => a ^ u64::from(*b),
+                    _ => a,
+                })
+        }));
+
+        let (t_dense, d_dense) = best(Box::new(move || {
+            let out = super::eval_top_k(std::slice::from_ref(&dense), &p).unwrap();
+            out[0]
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f32_slice()
+                .unwrap()
+                .iter()
+                .fold(0u64, |a, &v| a ^ u64::from(v.to_bits()))
+        }));
+
+        assert_eq!(
+            d_literal, d_dense,
+            "dense f32 top_k digest must match literal"
+        );
+        println!(
+            "BENCH f32 top_k(x[{rows},{cols}],k={k}): literal={:.4}ms dense={:.4}ms speedup={:.2}x digest={d_literal:016x}",
+            t_literal * 1e3,
+            t_dense * 1e3,
+            t_literal / t_dense,
+        );
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
     fn bench_threaded_vs_serial_top_k() {
         use std::time::Instant;
         // f64 top_k(x[R,C], k): threaded eval_top_k vs the identical single-threaded
@@ -20828,6 +20956,101 @@ mod tests {
                 extract_i64_vec(&outputs[1]),
                 expected_idx,
                 "top_k f32 indices, k={k}"
+            );
+        }
+    }
+
+    #[test]
+    fn top_k_f32_dense_matches_literal() {
+        // Proves the dense `as_f32_slice` top_k fast path is a bit-for-bit
+        // drop-in for the generic Literal-backed path: same values (incl
+        // NaN / +-inf / +-0 / NaN-payload / dups) built once as a DENSE f32
+        // tensor (`new_f32_values` -> `as_f32_slice` returns Some) and once as
+        // a Literal-backed tensor (`as_f32_slice` returns None -> generic path).
+        let n = 1000usize;
+        let data: Vec<f32> = (0..n)
+            .map(|i| match i % 11 {
+                0 => f32::NAN,
+                1 => f32::INFINITY,
+                2 => f32::NEG_INFINITY,
+                3 => -0.0,
+                4 => 0.0,
+                5 => f32::from_bits(0x7fc0_0001),
+                6 => 2.5,
+                _ => ((i as f32) * 1.000_173).sin() * 1e3 - (i as f32),
+            })
+            .collect();
+
+        let dense = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        // Dense storage really is taken (otherwise this test would not exercise
+        // the new branch).
+        assert!(
+            dense.as_tensor().unwrap().elements.as_f32_slice().is_some(),
+            "expected dense f32 storage"
+        );
+        let literal = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.iter()
+                    .map(|&v| Literal::F32Bits(v.to_bits()))
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        assert!(
+            literal
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f32_slice()
+                .is_none(),
+            "literal-backed tensor must not be dense"
+        );
+
+        for k in [1usize, 32, 257] {
+            let p = params(&[("k", &k.to_string())]);
+            let dense_out = super::eval_top_k(std::slice::from_ref(&dense), &p).unwrap();
+            let lit_out = super::eval_top_k(std::slice::from_ref(&literal), &p).unwrap();
+
+            let dense_bits: Vec<u32> = dense_out[0]
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F32Bits(b) => *b,
+                    other => panic!("expected F32Bits, got {other:?}"),
+                })
+                .collect();
+            let lit_bits: Vec<u32> = lit_out[0]
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F32Bits(b) => *b,
+                    other => panic!("expected F32Bits, got {other:?}"),
+                })
+                .collect();
+            assert_eq!(
+                dense_bits, lit_bits,
+                "top_k f32 dense vs literal values, k={k}"
+            );
+            assert_eq!(
+                extract_i64_vec(&dense_out[1]),
+                extract_i64_vec(&lit_out[1]),
+                "top_k f32 dense vs literal indices, k={k}"
             );
         }
     }
