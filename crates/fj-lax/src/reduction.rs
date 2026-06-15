@@ -2618,8 +2618,6 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         )?));
                     }
 
-                    let strides =
-                        checked_strides(primitive, "bitwise reduction input", &tensor.shape.dims)?;
                     let kept_axes: Vec<usize> =
                         (0..rank).filter(|i| !axes_sorted.contains(i)).collect();
                     let mut result = try_filled_vec(
@@ -2628,24 +2626,30 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         out_count,
                         int_init,
                     )?;
-                    let mut multi = Vec::with_capacity(strides.len());
-                    for flat_idx in 0..tensor.elements.len() {
-                        flat_to_multi_into(flat_idx, &strides, &mut multi);
-                        let out_idx = multi_to_out_flat(
-                            primitive,
-                            "bitwise reduction output",
-                            &multi,
-                            &kept_axes,
-                            &out_dims,
-                        )?;
-                        let val =
-                            tensor.elements[flat_idx]
-                                .as_i64()
-                                .ok_or(EvalError::TypeMismatch {
-                                    primitive,
-                                    detail: "expected i64 tensor",
-                                })?;
-                        result[out_idx] = int_op(result[out_idx], val);
+                    // Drive an incremental out-index odometer (no per-element
+                    // flat_to_multi decode); for dense i64 storage fold the
+                    // contiguous i64 slice directly (no Literal materialization /
+                    // per-element as_i64 match). Bit-identical to the prior
+                    // flat_to_multi loop: same ascending flat order, same out_idx
+                    // mapping (the odometer carries the kept-axis coordinate), same
+                    // int_op. Mirrors the Bool path above. (i32 tensors are dense
+                    // i64-backed, so they take the dense branch too.)
+                    let mut odometer =
+                        OutIndexOdometer::new(&tensor.shape.dims, &kept_axes, &out_dims);
+                    if let Some(values) = tensor.elements.as_i64_slice() {
+                        for &val in values {
+                            let out_idx = odometer.next_index();
+                            result[out_idx] = int_op(result[out_idx], val);
+                        }
+                    } else {
+                        for literal in tensor.elements.iter() {
+                            let out_idx = odometer.next_index();
+                            let val = literal.as_i64().ok_or(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "expected i64 tensor",
+                            })?;
+                            result[out_idx] = int_op(result[out_idx], val);
+                        }
                     }
 
                     let elements = result.into_iter().map(Literal::I64).collect();
@@ -2714,49 +2718,6 @@ fn try_filled_vec<T: Clone>(
         })?;
     values.resize(len, value);
     Ok(values)
-}
-
-fn flat_to_multi_into(flat: usize, strides: &[usize], out: &mut Vec<usize>) {
-    out.clear();
-    let mut remainder = flat;
-    for &stride in strides {
-        out.push(remainder / stride);
-        remainder %= stride;
-    }
-}
-
-fn multi_to_out_flat(
-    primitive: Primitive,
-    context: &str,
-    multi: &[usize],
-    kept_axes: &[usize],
-    out_dims: &[u32],
-) -> Result<usize, EvalError> {
-    let mut idx = 0_usize;
-    let mut stride = 1_usize;
-    for i in (0..kept_axes.len()).rev() {
-        let offset =
-            multi[kept_axes[i]]
-                .checked_mul(stride)
-                .ok_or_else(|| EvalError::Unsupported {
-                    primitive,
-                    detail: format!("{context} flat index overflows usize"),
-                })?;
-        idx = idx
-            .checked_add(offset)
-            .ok_or_else(|| EvalError::Unsupported {
-                primitive,
-                detail: format!("{context} flat index overflows usize"),
-            })?;
-        stride =
-            stride
-                .checked_mul(out_dims[i] as usize)
-                .ok_or_else(|| EvalError::Unsupported {
-                    primitive,
-                    detail: format!("{context} stride overflows usize"),
-                })?;
-    }
-    Ok(idx)
 }
 
 /// Cumulative scan along a specified axis. Output shape matches input.
@@ -7093,6 +7054,142 @@ mod tests {
         assert!(
             err.contains("duplicate value in axes"),
             "unexpected error: {err}"
+        );
+    }
+
+    /// The dense-i64 bitwise axis-reduction fast path (OutIndexOdometer over the
+    /// contiguous `as_i64_slice`) must be bit-for-bit identical to the boxed
+    /// Literal path (forced via `new_with_literal_buffer`, `as_i64_slice` None),
+    /// across ReduceAnd/ReduceOr/ReduceXor and every axis subset of a rank-3
+    /// tensor — including negative values / high bits / duplicates.
+    #[test]
+    fn dense_i64_bitwise_axis_reduce_bit_identical_to_literal_path() {
+        let dims = vec![4_u32, 5, 6];
+        let n = 4 * 5 * 6;
+        let data: Vec<i64> = (0..n as i64)
+            .map(|i| (i.wrapping_mul(2_654_435_761) ^ (i << 17)).wrapping_sub(123))
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new_i64_values(Shape { dims: dims.clone() }, data.clone()).unwrap(),
+        );
+        assert!(
+            dense.as_tensor().unwrap().elements.as_i64_slice().is_some(),
+            "dense i64 operand"
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::I64,
+                Shape { dims: dims.clone() },
+                LiteralBuffer::new(data.iter().copied().map(Literal::I64).collect()),
+            )
+            .unwrap(),
+        );
+        assert!(
+            boxed.as_tensor().unwrap().elements.as_i64_slice().is_none(),
+            "boxed i64 operand must not be dense"
+        );
+
+        let i64s = |v: &Value| -> Vec<i64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_i64().unwrap())
+                .collect()
+        };
+        for prim in [
+            Primitive::ReduceAnd,
+            Primitive::ReduceOr,
+            Primitive::ReduceXor,
+        ] {
+            // Partial-axis subsets only (the all-axes reduce returns a Scalar via a
+            // separate branch this fast path doesn't touch).
+            for axes in ["0", "1", "2", "0,1", "1,2", "0,2"] {
+                let mut params = BTreeMap::new();
+                params.insert("axes".to_owned(), axes.to_owned());
+                let d = crate::eval_primitive(prim, std::slice::from_ref(&dense), &params).unwrap();
+                let l = crate::eval_primitive(prim, std::slice::from_ref(&boxed), &params).unwrap();
+                assert_eq!(
+                    d.as_tensor().unwrap().shape.dims,
+                    l.as_tensor().unwrap().shape.dims,
+                    "{prim:?} axes={axes} shape"
+                );
+                assert_eq!(i64s(&d), i64s(&l), "{prim:?} axes={axes} values");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_i64_bitwise_axis_reduce_dense_vs_boxed() {
+        use std::time::Instant;
+        // True before/after for this commit: OLD algorithm (per-element
+        // flat_to_multi divmod decode + multi_to_out_flat + Vec<Literal>
+        // materialization, reconstructed inline) vs NEW (eval_primitive ->
+        // OutIndexOdometer over as_i64_slice). Rank-3 reduce over the middle axis.
+        let (d0, d1, d2) = (256usize, 256usize, 256usize);
+        let n = d0 * d1 * d2;
+        let data: Vec<i64> = (0..n as i64)
+            .map(|i| i.wrapping_mul(6_364_136_223_846_793_005) ^ (i << 13))
+            .collect();
+        let dims = vec![d0 as u32, d1 as u32, d2 as u32];
+        let dense = Value::Tensor(
+            TensorValue::new_i64_values(Shape { dims: dims.clone() }, data.clone()).unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "1".to_owned());
+
+        // Reduce over axis 1: input strides [d1*d2, d2, 1]; output [d0, d2].
+        let strides = [d1 * d2, d2, 1usize];
+        let out_count = d0 * d2;
+        let timed = |mut f: Box<dyn FnMut() -> i64>| -> (f64, i64) {
+            f();
+            let mut b = f64::MAX;
+            let mut digest = 0i64;
+            for _ in 0..10 {
+                let t = Instant::now();
+                digest = std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            (b, digest)
+        };
+
+        // OLD: materialize Vec<Literal> (the dense Index path forced this) + per
+        // element flat_to_multi (3 divmods) + multi_to_out_flat (kept axes 0,2).
+        let lits: Vec<Literal> = data.iter().copied().map(Literal::I64).collect();
+        let (t_old, d_old) = timed(Box::new(move || {
+            let mut result = vec![0i64; out_count];
+            let mut multi = [0usize; 3];
+            for (flat_idx, lit) in lits.iter().enumerate() {
+                let mut rem = flat_idx;
+                for ax in 0..3 {
+                    multi[ax] = rem / strides[ax];
+                    rem %= strides[ax];
+                }
+                let out_idx = multi[0] * d2 + multi[2];
+                let val = lit.as_i64().unwrap();
+                result[out_idx] ^= val;
+            }
+            result.iter().fold(0i64, |a, &v| a ^ v)
+        }));
+
+        // NEW: the production path.
+        let (t_new, d_new) = timed(Box::new(move || {
+            let out =
+                crate::eval_primitive(Primitive::ReduceXor, std::slice::from_ref(&dense), &params)
+                    .unwrap();
+            out.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0i64, |a, l| a ^ l.as_i64().unwrap())
+        }));
+        assert_eq!(d_old, d_new, "old vs new bitwise-reduce digest");
+        println!(
+            "BENCH i64 ReduceXor [{d0},{d1},{d2}] axis1: old(flat_to_multi+materialize)={:.4}ms new(odometer+slice)={:.4}ms speedup={:.2}x digest={d_old:016x}",
+            t_old * 1e3,
+            t_new * 1e3,
+            t_old / t_new,
         );
     }
 
