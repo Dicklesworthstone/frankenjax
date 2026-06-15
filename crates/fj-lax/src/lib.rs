@@ -12035,6 +12035,10 @@ mod tests {
     // ── Bitwise tests ───────────────────────────────────────────────
 
     #[test]
+    // Expected-value arrays below mirror the bitwise-AND operation element-wise
+    // (e.g. `3 & 0`, `2 & -1`) so each entry reads as the op under test; clippy's
+    // erasing_op/identity_op suggestions would obscure that intent.
+    #[allow(clippy::erasing_op, clippy::identity_op)]
     fn i32_bitwise_ops_supported_and_correct() {
         // i32 (JAX's default int) bitwise previously ERRORED ("bitwise ops require
         // integer types"). Verify every op now works at i32 width — especially
