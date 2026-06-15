@@ -5996,12 +5996,36 @@ fn extremum_along_axis(
             };
             result_elements.push(Literal::I64(best_idx as i64));
         }
+    } else if let Some(values) = tensor.elements.as_half_float_slice() {
+        // Dense half-float (BF16/F16): mixed-precision argmax-over-logits. Scan
+        // the contiguous &[u16] slice directly, decoding each tap half->f32->f64.
+        // The generic float branch below reconstructs a `Literal` via
+        // `tensor.elements.get(..)` (materializing the whole Vec<Literal>) then
+        // calls `as_f64()` = `f64::from(f32::from(half))`; `f64::from(decode(b))`
+        // here is exactly that, fed to the same `arg_extreme_float` reducer, so
+        // -NaN selection and ±0.0 ties are identical.
+        let is_bf16 = tensor.dtype == DType::BF16;
+        let decode = |b: u16| -> f32 {
+            if is_bf16 {
+                Literal::BF16Bits(b).as_bf16_f32().unwrap_or(f32::NAN)
+            } else {
+                Literal::F16Bits(b).as_f16_f32().unwrap_or(f32::NAN)
+            }
+        };
+        for outer in 0..outer_count {
+            let base = base_of(outer)?;
+            let best_idx = arg_extreme_float(axis_dim, find_max, |i| {
+                f64::from(decode(values[base + i * axis_stride]))
+            });
+            result_elements.push(Literal::I64(best_idx as i64));
+        }
     } else if matches!(
         tensor.dtype,
         DType::BF16 | DType::F16 | DType::F32 | DType::F64
     ) {
-        // Real floats not in dense f64 storage (F16/F32/BF16, or strided/non-dense
-        // F64): gather each slice's strided values as f64 — widening BF16/F16/F32
+        // Real floats not in dense f64 storage (strided/non-dense F64; or
+        // strided/non-dense F32 — dense F32/half are handled above): gather each
+        // slice's strided values as f64 — widening BF16/F16/F32
         // is exact and order-preserving, NaN stays NaN — then apply the same JAX
         // float reducer as the dense path so -NaN selection and ±0.0 ties match.
         let mut slice_buf: Vec<f64> = Vec::with_capacity(axis_dim);
@@ -17435,6 +17459,142 @@ mod tests {
             };
             assert_eq!(eval(&dense), eval(&boxed), "f32 {prim:?} dense vs generic");
         }
+    }
+
+    #[test]
+    fn argmax_argmin_dense_half_float_matches_generic() {
+        // Dense BF16/F16 (as_half_float_slice) takes the new direct decode fast
+        // path; the same u16 data as a boxed-Literal half tensor takes the generic
+        // per-element `get().as_f64()` float branch. Indices must match exactly
+        // over high-exponent (NaN/inf) words, signed zeros, and dups (incl.
+        // first-occurrence ties) for both argmax and argmin, axis 1.
+        let rows = 7usize;
+        let cols = 300usize;
+        let raw: Vec<u16> = (0..rows * cols)
+            .map(|i| match i % 17 {
+                0 => 0x7FC0, // NaN-ish
+                1 => 0x7F80, // +inf-ish
+                2 => 0xFF80, // -inf-ish
+                3 => 0x8000, // -0
+                4 => 0x0000, // +0
+                5 => 0x4000, // small finite
+                6 => 0xFFC1, // -NaN payload variant
+                _ => ((i as u32).wrapping_mul(40_503) ^ (i as u32 >> 3)) as u16,
+            })
+            .collect();
+        let shape = Shape {
+            dims: vec![rows as u32, cols as u32],
+        };
+        let p = params(&[("axis", "1")]);
+        for dtype in [DType::BF16, DType::F16] {
+            let dense = Value::Tensor(
+                TensorValue::new_half_float_values(dtype, shape.clone(), raw.clone()).unwrap(),
+            );
+            let make_lit = |b: u16| match dtype {
+                DType::BF16 => Literal::BF16Bits(b),
+                _ => Literal::F16Bits(b),
+            };
+            let boxed = Value::Tensor(
+                TensorValue::new(
+                    dtype,
+                    shape.clone(),
+                    raw.iter().map(|&b| make_lit(b)).collect(),
+                )
+                .unwrap(),
+            );
+            assert!(
+                dense
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_half_float_slice()
+                    .is_some(),
+                "expected dense half storage for {dtype:?}"
+            );
+            assert!(
+                boxed
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_half_float_slice()
+                    .is_none(),
+                "boxed half tensor must not be dense for {dtype:?}"
+            );
+            for prim in [Primitive::Argmax, Primitive::Argmin] {
+                let eval = |v: &Value| -> Vec<i64> {
+                    let r = if prim == Primitive::Argmax {
+                        eval_argmax(prim, std::slice::from_ref(v), &p).unwrap()
+                    } else {
+                        eval_argmin(prim, std::slice::from_ref(v), &p).unwrap()
+                    };
+                    extract_i64_vec(&r)
+                };
+                assert_eq!(
+                    eval(&dense),
+                    eval(&boxed),
+                    "{dtype:?} {prim:?} dense vs generic"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_argmax_bf16_dense_vs_boxed() {
+        use std::time::Instant;
+        // Mixed-precision decode-time argmax over bf16 logits: [batch, vocab] axis 1.
+        // FINITE values only (no NaN) so neither path early-breaks — an honest
+        // full-scan comparison of per-element decode overhead.
+        let (batch, vocab) = (256usize, 32768usize);
+        let raw: Vec<u16> = (0..batch * vocab)
+            .map(|i| {
+                let x = ((i.wrapping_mul(2_654_435_761) % 100_003) as f32) * 0.001 - 50.0;
+                // bf16 = high 16 bits of the f32 (truncation); x is finite in
+                // [-50, 50] so no exponent is all-ones -> no NaN/inf.
+                (x.to_bits() >> 16) as u16
+            })
+            .collect();
+        let shape = Shape {
+            dims: vec![batch as u32, vocab as u32],
+        };
+        let dense = Value::Tensor(
+            TensorValue::new_half_float_values(DType::BF16, shape.clone(), raw.clone()).unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::BF16,
+                shape.clone(),
+                raw.iter().map(|&b| Literal::BF16Bits(b)).collect(),
+            )
+            .unwrap(),
+        );
+        let p = params(&[("axis", "1")]);
+        let time = |v: &Value| {
+            let _ = eval_argmax(Primitive::Argmax, std::slice::from_ref(v), &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = eval_argmax(Primitive::Argmax, std::slice::from_ref(v), &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        // Match indices so the bench also asserts bit-identity.
+        let d_idx = extract_i64_vec(
+            &eval_argmax(Primitive::Argmax, std::slice::from_ref(&dense), &p).unwrap(),
+        );
+        let b_idx = extract_i64_vec(
+            &eval_argmax(Primitive::Argmax, std::slice::from_ref(&boxed), &p).unwrap(),
+        );
+        assert_eq!(d_idx, b_idx, "dense bf16 argmax indices must match boxed");
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH argmax bf16 [{batch},{vocab}] axis1: boxed(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
+        );
     }
 
     #[test]
