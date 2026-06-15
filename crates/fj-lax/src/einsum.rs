@@ -175,6 +175,12 @@ pub fn einsum2(
     if let Some(fast) = try_einsum2_matmul_bt(sub_a, sub_b, &sub_out, a, a_shape, b, b_shape) {
         return Ok(fast);
     }
+    // Fast path: lhs-transposed matrix products "B…YX,B…YZ->B…XZ" (Aᵀ·B, backprop
+    // weight gradient) and "B…YX,B…ZY->B…XZ" (Aᵀ·Bᵀ). Transpose the lhs (and rhs
+    // when needed) then route to matmul_2d; bit-identical to the generic odometer.
+    if let Some(fast) = try_einsum2_matmul_at(sub_a, sub_b, &sub_out, a, a_shape, b, b_shape) {
+        return Ok(fast);
+    }
 
     // Compute output shape
     let out_shape: Vec<usize> = sub_out.chars().map(|c| index_dims[&c]).collect();
@@ -679,6 +685,129 @@ fn try_einsum2_matmul_bt(
     Some((out, out_shape))
 }
 
+/// Detect the **lhs-transposed** single-contraction matrix products
+/// "B…YX,B…YZ->B…XZ" (`Aᵀ·B`, the backprop `Xᵀ·dY` weight-gradient layout) and
+/// "B…YX,B…ZY->B…XZ" (`Aᵀ·Bᵀ`) — where the contracted label `Y` is the **leading**
+/// matmul axis of the lhs (so `A` is stored `[…, Y, X]`). The lhs contracted axis
+/// is column-strided in this layout, so the generic odometer's inner contraction
+/// is cache-unfriendly; transposing each lhs slice `[k, m] -> [m, k]` (and the rhs
+/// `[n, k] -> [k, n]` for the `Bᵀ` case) — O(m·k)/O(n·k), cheap vs the O(m·n·k)
+/// product — then routing through the cache-blocked [`matmul_2d`] is a clear win.
+///
+/// Bit-for-bit identical to the generic path: the transposes are exact data
+/// movement and `matmul_2d` accumulates `Y` in ascending order, the same order
+/// the odometer uses. Returns `None` for any other pattern.
+fn try_einsum2_matmul_at(
+    sub_a: &str,
+    sub_b: &str,
+    sub_out: &str,
+    a: &[f64],
+    a_shape: &[usize],
+    b: &[f64],
+    b_shape: &[usize],
+) -> Option<(Vec<f64>, Vec<usize>)> {
+    let sa: Vec<char> = sub_a.chars().collect();
+    let sb: Vec<char> = sub_b.chars().collect();
+    let so: Vec<char> = sub_out.chars().collect();
+    let len = sa.len();
+    if len < 2 || sb.len() != len || so.len() != len {
+        return None;
+    }
+    let nb = len - 2;
+    for i in 0..nb {
+        if sa[i] != sb[i] || sa[i] != so[i] {
+            return None;
+        }
+        for j in (i + 1)..nb {
+            if sa[i] == sa[j] {
+                return None;
+            }
+        }
+    }
+
+    // lhs is "…YX": leading label Y is contracted, trailing X is free.
+    let y = sa[nb];
+    let x = sa[nb + 1];
+    // rhs holds Y either leading ("…YZ", canonical B) or trailing ("…ZY", Bᵀ).
+    let (z, b_transposed) = if sb[nb] == y {
+        (sb[nb + 1], false)
+    } else if sb[nb + 1] == y {
+        (sb[nb], true)
+    } else {
+        return None;
+    };
+    if so[nb] != x || so[nb + 1] != z {
+        return None;
+    }
+    if x == y || y == z || x == z {
+        return None;
+    }
+    for &c in &sa[..nb] {
+        if c == x || c == y || c == z {
+            return None;
+        }
+    }
+
+    // A is [k, m] (Y=k leading, X=m trailing).
+    let k = a_shape[nb];
+    let m = a_shape[nb + 1];
+    let n = if b_transposed { b_shape[nb] } else { b_shape[nb + 1] };
+    let rhs_k = if b_transposed { b_shape[nb + 1] } else { b_shape[nb] };
+    if rhs_k != k || m == 0 || k == 0 || n == 0 {
+        return None;
+    }
+    let mut batch_size = 1usize;
+    for i in 0..nb {
+        if a_shape[i] != b_shape[i] || a_shape[i] == 0 {
+            return None;
+        }
+        batch_size = batch_size.checked_mul(a_shape[i])?;
+    }
+    let lhs_stride = k.checked_mul(m)?;
+    let rhs_stride = n.checked_mul(k)?;
+    let out_stride = m.checked_mul(n)?;
+    if a.len() < batch_size.checked_mul(lhs_stride)?
+        || b.len() < batch_size.checked_mul(rhs_stride)?
+    {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(batch_size.checked_mul(out_stride)?);
+    let mut at_buf = vec![0.0f64; lhs_stride]; // [m, k] transposed lhs scratch
+    let mut bt_buf = vec![0.0f64; rhs_stride]; // [k, n] transposed rhs scratch (Bᵀ case)
+    for bt in 0..batch_size {
+        let a_slice = &a[bt * lhs_stride..bt * lhs_stride + lhs_stride]; // [k, m]
+        for r in 0..k {
+            let row = &a_slice[r * m..r * m + m];
+            for (c, &v) in row.iter().enumerate() {
+                at_buf[c * k + r] = v; // [m, k]
+            }
+        }
+        let b_slice = &b[bt * rhs_stride..bt * rhs_stride + rhs_stride];
+        let b_kn: &[f64] = if b_transposed {
+            // rhs is [n, k] -> transpose to [k, n].
+            for r in 0..n {
+                let row = &b_slice[r * k..r * k + k];
+                for (c, &v) in row.iter().enumerate() {
+                    bt_buf[c * n + r] = v;
+                }
+            }
+            &bt_buf
+        } else {
+            // rhs already [k, n].
+            b_slice
+        };
+        out.extend_from_slice(&crate::tensor_contraction::matmul_2d(
+            &at_buf, m, k, b_kn, n,
+        ));
+    }
+
+    let mut out_shape: Vec<usize> = a_shape[..nb].to_vec();
+    out_shape.push(m);
+    out_shape.push(n);
+    Some((out, out_shape))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1074,6 +1203,93 @@ mod tests {
         for idx in 0..bt * m * n {
             assert_eq!(got[idx].to_bits(), want[idx].to_bits(), "batched a@bT at {idx}");
         }
+    }
+
+    #[test]
+    fn einsum2_lhs_transposed_matmul_bit_identical() {
+        // Aᵀ·B "ji,jk->ik" and Aᵀ·Bᵀ "ji,kj->ik" must hit try_einsum2_matmul_at and
+        // equal the textbook ascending-contracted reference bit-for-bit.
+        let (m, k, n) = (11usize, 13usize, 9usize);
+        let a: Vec<f64> = (0..k * m).map(|i| (i as f64 * 0.031).sin() * 1.7).collect(); // [k, m]
+
+        // Aᵀ·B "ji,jk->ik": rhs canonical [k, n]. want[x,z] = sum_y a[y,x]*bkn[y,z].
+        let bkn: Vec<f64> = (0..k * n).map(|i| (i as f64 * 0.043).cos() * 2.1).collect();
+        let mut want_atb = vec![0.0f64; m * n];
+        for x in 0..m {
+            for z in 0..n {
+                let mut s = 0.0;
+                for y in 0..k {
+                    s += a[y * m + x] * bkn[y * n + z];
+                }
+                want_atb[x * n + z] = s;
+            }
+        }
+        let (got, sh) = einsum2("ji,jk->ik", &a, &[k, m], &bkn, &[k, n]).unwrap();
+        assert_eq!(sh, vec![m, n]);
+        for idx in 0..m * n {
+            assert_eq!(got[idx].to_bits(), want_atb[idx].to_bits(), "AtB at {idx}");
+        }
+
+        // Aᵀ·Bᵀ "ji,kj->ik": rhs [n, k]. want[x,z] = sum_y a[y,x]*bnk[z,y].
+        let bnk: Vec<f64> = (0..n * k).map(|i| (i as f64 * 0.037).cos() * 1.9).collect();
+        let mut want_atbt = vec![0.0f64; m * n];
+        for x in 0..m {
+            for z in 0..n {
+                let mut s = 0.0;
+                for y in 0..k {
+                    s += a[y * m + x] * bnk[z * k + y];
+                }
+                want_atbt[x * n + z] = s;
+            }
+        }
+        let (got2, sh2) = einsum2("ji,kj->ik", &a, &[k, m], &bnk, &[n, k]).unwrap();
+        assert_eq!(sh2, vec![m, n]);
+        for idx in 0..m * n {
+            assert_eq!(got2[idx].to_bits(), want_atbt[idx].to_bits(), "AtBt at {idx}");
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_einsum2_lhs_transposed_vs_odometer() {
+        use std::time::Instant;
+        let (m, k, n) = (1024usize, 1024usize, 1024usize);
+        let a: Vec<f64> = (0..k * m).map(|i| ((i as f64) * 0.0007).sin()).collect(); // [k, m]
+        let b: Vec<f64> = (0..k * n).map(|i| ((i as f64) * 0.0009).cos()).collect(); // [k, n]
+        // "Before": the odometer's inner contraction for Aᵀ·B — the lhs is accessed
+        // column-strided (a[y*m+x]), the cache-UNfriendly orientation.
+        let odometer = || {
+            let mut out = vec![0.0f64; m * n];
+            for x in 0..m {
+                for z in 0..n {
+                    let mut s = 0.0;
+                    for y in 0..k {
+                        s += a[y * m + x] * b[y * n + z];
+                    }
+                    out[x * n + z] = s;
+                }
+            }
+            out
+        };
+        let fast = || einsum2("ji,jk->ik", &a, &[k, m], &b, &[k, n]).unwrap().0;
+        let best = |f: &dyn Fn() -> Vec<f64>| {
+            let _ = f();
+            let mut t = f64::MAX;
+            for _ in 0..3 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                t = t.min(s.elapsed().as_secs_f64());
+            }
+            t
+        };
+        let base = best(&odometer);
+        let fst = best(&fast);
+        println!(
+            "BENCH einsum2 Aᵀ·B [{k}x{m}·{k}x{n}]: odometer={:.2}ms matmul2d={:.2}ms speedup={:.2}x",
+            base * 1e3,
+            fst * 1e3,
+            base / fst
+        );
     }
 
     #[test]
