@@ -53,6 +53,11 @@ pub struct VmapWrapped {
     mode: CompatibilityMode,
     in_axes: Option<String>,
     out_axes: Option<String>,
+    /// Lazily-computed, args-independent dispatch metadata (composition proof +
+    /// cache key) shared across repeated `call`s, mirroring [`ValueAndGradWrapped`]
+    /// and [`GradWrapped`]. Excluded from equality/Debug. Any builder that mutates
+    /// a cache-key input (backend/mode/in_axes/out_axes) must reset it.
+    meta_cache: DispatchMetaCache,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -222,6 +227,7 @@ pub fn vmap(jaxpr: Jaxpr) -> VmapWrapped {
         mode: CompatibilityMode::Strict,
         in_axes: None,
         out_axes: None,
+        meta_cache: DispatchMetaCache::default(),
     }
 }
 
@@ -881,12 +887,15 @@ impl VmapWrapped {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
         self.backend = Cow::Owned(backend.to_owned());
+        // Backend feeds the cache key — invalidate any memoized metadata.
+        self.meta_cache = DispatchMetaCache::default();
         self
     }
 
     #[must_use]
     pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
         self.mode = mode;
+        self.meta_cache = DispatchMetaCache::default();
         self
     }
 
@@ -896,6 +905,8 @@ impl VmapWrapped {
     #[must_use]
     pub fn with_in_axes(mut self, in_axes: &str) -> Self {
         self.in_axes = Some(in_axes.to_owned());
+        // in_axes feeds compile_options, a cache-key input — invalidate the memo.
+        self.meta_cache = DispatchMetaCache::default();
         self
     }
 
@@ -905,6 +916,8 @@ impl VmapWrapped {
     #[must_use]
     pub fn with_out_axes(mut self, out_axes: &str) -> Self {
         self.out_axes = Some(out_axes.to_owned());
+        // out_axes feeds compile_options, a cache-key input — invalidate the memo.
+        self.meta_cache = DispatchMetaCache::default();
         self
     }
 
@@ -917,13 +930,38 @@ impl VmapWrapped {
             compile_options.insert("vmap_out_axes".to_owned(), out_axes.clone());
         }
 
-        dispatch_with_options(
+        let transforms = [Transform::Vmap];
+        let evidence = transform_evidence(&transforms);
+        // Memoize the args-independent composition proof + cache key so repeated
+        // calls skip re-hashing the canonical Jaxpr fingerprint (mirrors
+        // `GradWrapped` / `ValueAndGradWrapped`). The batch-trace evaluation
+        // itself is value-dependent and still runs per call.
+        let prepared = self
+            .meta_cache
+            .0
+            .get_or_init(|| {
+                prepare_dispatch_meta(
+                    self.mode,
+                    &self.jaxpr,
+                    &transforms,
+                    &evidence,
+                    self.backend.as_ref(),
+                    &compile_options,
+                    None,
+                    &[],
+                )
+                .ok()
+            })
+            .as_ref();
+        dispatch_with_options_prepared(
             &self.jaxpr,
-            &[Transform::Vmap],
+            &transforms,
+            &evidence,
             args,
             self.backend.as_ref(),
             self.mode,
             compile_options,
+            prepared,
         )
     }
 
@@ -1662,6 +1700,32 @@ mod tests {
             digest,
             "00973a72bf25a5a56152d373c887ddc555877c6e09545140c723080675c2676a"
         );
+    }
+
+    #[test]
+    fn vmap_repeated_call_meta_cache_matches_dispatch() {
+        use fj_core::ProgramSpec;
+
+        let jaxpr = fj_core::build_program(ProgramSpec::AddOne);
+        let wrapped = vmap(jaxpr.clone());
+        let arg = Value::vector_i64(&[1, 2, 3, 4, 5]).expect("vec");
+
+        // Warm the meta cache on the first call, then the second must match a
+        // fresh unprepared dispatch bit-for-bit.
+        let first = wrapped.call(vec![arg.clone()]).expect("first vmap call");
+        let second = wrapped.call(vec![arg.clone()]).expect("warmed vmap call");
+        assert_eq!(first, second);
+
+        let reference = dispatch_with_options(
+            &jaxpr,
+            &[Transform::Vmap],
+            vec![arg],
+            DEFAULT_BACKEND,
+            CompatibilityMode::Strict,
+            BTreeMap::new(),
+        )
+        .expect("reference vmap dispatch");
+        assert_eq!(second, reference);
     }
 
     #[test]

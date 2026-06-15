@@ -602,6 +602,82 @@ fn bench_grad_meta_cache_scalar(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// 7d. vmap() repeated-call metadata cache: same-binary A/B.
+//
+// VmapWrapped previously dispatched through the unprepared path on every call,
+// re-hashing the canonical Jaxpr fingerprint + recomputing the composition proof
+// each time. The "recompute" arm is the old behavior; the "prepared" arm is what
+// VmapWrapped::call now does after warming its meta cache. The batch-trace eval
+// itself is value-dependent and still runs per call.
+// ---------------------------------------------------------------------------
+
+fn bench_vmap_meta_cache(c: &mut Criterion) {
+    use fj_dispatch::{DispatchRequestRef, dispatch_ref, prepare_dispatch_meta};
+
+    let mut group = c.benchmark_group("vmap_meta_cache");
+    let jaxpr = build_program(ProgramSpec::AddOne);
+    let transforms = [Transform::Vmap];
+    let evidence: Vec<String> = vec!["fj-api-vmap-0".to_owned()];
+    let compile_options = std::collections::BTreeMap::new();
+    let backend = "cpu";
+    let mode = fj_core::CompatibilityMode::Strict;
+    let features: Vec<String> = Vec::new();
+    let input = Value::vector_i64(&[1, 2, 3, 4, 5, 6, 7, 8]).expect("vector");
+
+    let meta = prepare_dispatch_meta(
+        mode,
+        &jaxpr,
+        &transforms,
+        &evidence,
+        backend,
+        &compile_options,
+        None,
+        &features,
+    )
+    .expect("prepare dispatch meta");
+
+    group.bench_function("recompute/add_one", |b| {
+        b.iter(|| {
+            let response = dispatch_ref(DispatchRequestRef {
+                mode,
+                root_jaxpr: &jaxpr,
+                transform_stack: &transforms,
+                transform_evidence: &evidence,
+                args: vec![input.clone()],
+                backend,
+                compile_options: compile_options.clone(),
+                custom_hook: None,
+                unknown_incompatible_features: &features,
+                prepared: None,
+            })
+            .expect("recompute vmap dispatch");
+            std::hint::black_box(&response.outputs);
+        });
+    });
+
+    group.bench_function("prepared/add_one", |b| {
+        b.iter(|| {
+            let response = dispatch_ref(DispatchRequestRef {
+                mode,
+                root_jaxpr: &jaxpr,
+                transform_stack: &transforms,
+                transform_evidence: &evidence,
+                args: vec![input.clone()],
+                backend,
+                compile_options: compile_options.clone(),
+                custom_hook: None,
+                unknown_incompatible_features: &features,
+                prepared: Some(&meta),
+            })
+            .expect("prepared vmap dispatch");
+            std::hint::black_box(&response.outputs);
+        });
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -616,5 +692,6 @@ criterion_group!(
     bench_jit_compiled_eval_cache,
     bench_jit_compiled_eval_cache_tensor,
     bench_grad_meta_cache_scalar,
+    bench_vmap_meta_cache,
 );
 criterion_main!(api_benches);
