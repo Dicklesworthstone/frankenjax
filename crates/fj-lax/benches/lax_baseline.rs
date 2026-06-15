@@ -1544,8 +1544,8 @@ fn bench_svd_48_f64(c: &mut Criterion) {
     });
 }
 
-fn bench_svd_48_f64_jacobi_counters(_c: &mut Criterion) { /* [cc-temp] foreign WIP stubbed to compile bench */
-}
+#[allow(dead_code)] // [cc-temp] foreign WIP stub kept to preserve the bench symbol.
+fn bench_svd_48_f64_jacobi_counters(_c: &mut Criterion) {}
 
 /// Same numeric data as `bench_svd_48_f64`, but typed Complex128 (imag 0) so it
 /// forces the complex SVD kernel. Lets the real-path speedup be measured against
