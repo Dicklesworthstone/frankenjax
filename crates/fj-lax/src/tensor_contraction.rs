@@ -1472,11 +1472,10 @@ pub fn batched_matmul_2d_f32_in(
     // microkernel streams it sequentially (bit-identical, just B read order). Batched
     // (batch>1) GEMM keeps the unpacked register kernel (B differs per batch).
     if batch == 1 && k.saturating_mul(n) >= PACK_B_MIN_KN_F32 {
-        // Past 2048³ the flat packed path re-streams the whole A matrix once per B
-        // panel (A traffic ≈ n/F32_NR × |A|, the binding cost). The KC-blocked nest
-        // keeps a packed [F32_MR×F32_KC] A slab L1/L2-resident and reuses it across
-        // every column panel — A is read once per pc-block. Bit-identical (running-C
-        // f32 store→reload is exact); gated to the regime where the A re-stream wins.
+        // The KC-blocked branch remains available for direct benchmarking/proofs, but
+        // same-worker production profiling currently keeps the flat packed kernel on
+        // the hot route; the empty gate below prevents the noisier KC path from being
+        // selected until fresh evidence finds a winning size band.
         let kn = k.saturating_mul(n);
         let blocked = k > F32_KC && (F32_BLOCKED_B_MIN_KN..F32_BLOCKED_B_MAX_KN).contains(&kn);
         let bpack = if blocked {
@@ -1804,18 +1803,12 @@ fn matmul_2d_packed_row_block_f32(
 /// 2048³ that flat path re-reads all 16 MB of A once per `n/F32_NR` panel ≈ 2 GB).
 const F32_KC: usize = 256;
 
-/// `k·n` band (B element count) for the native-f32 KC-blocked macro-kernel. Below
-/// `MIN` the flat packed path's B-panel-in-L2 reuse already covers the traffic and the
-/// extra per-pc-block C read/write passes do not pay. Above `MAX` the GEMM is so large
-/// that B AND C are both fully RAM-bound (each ≥ 64 MB at 4096³): the unavoidable
-/// B+C transfers dominate and eliminating the A re-stream washes out — same-worker
-/// A/B at 4096³ measured neutral (3.95 s flat vs 3.91 s blocked, within noise), so
-/// stay on the simpler flat path there. The sweet spot is the ~2048³ band where B
-/// spills L2 (so the flat path re-streams A once per panel) but the problem is small
-/// enough that killing that A re-stream is the binding win: same-worker A/B measured
-/// **1.16x** at 2048³ (packed 551 ms → kcblocked 474 ms). Paired with `k > F32_KC`.
-const F32_BLOCKED_B_MIN_KN: usize = 1 << 22;
-const F32_BLOCKED_B_MAX_KN: usize = 1 << 24;
+/// Production gate for the native-f32 KC-blocked macro-kernel. Fresh same-worker
+/// profiling found the KC-blocked path slower and noisier than the flat packed path
+/// at both 2048³ and 4096³, so the production range is intentionally empty while the
+/// direct `kcblocked` bench mode remains available for future profile-backed work.
+const F32_BLOCKED_B_MIN_KN: usize = usize::MAX;
+const F32_BLOCKED_B_MAX_KN: usize = usize::MAX;
 
 /// Pack B's `F32_NR`-wide column panels for ONE pc-block into pc-major panel order
 /// (f32 sibling of [`pack_b_pc_panel_block`]):
@@ -2034,6 +2027,7 @@ pub fn f32_matmul_bench(
 ) -> Vec<f32> {
     let mut out = vec![0.0f32; m * n];
     match mode {
+        "production" => return batched_matmul_2d_f32_in(a, 1, m, k, b, n),
         "rowref" => batched_matmul_row_block_f32_in_rowref(a, b, m, k, n, 0, &mut out),
         "packed" => {
             let bpack = pack_b_panels_f32(b, k, n);
