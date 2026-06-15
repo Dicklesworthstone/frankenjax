@@ -2746,8 +2746,12 @@ fn eval_bitwise_unary(primitive: Primitive, inputs: &[Value]) -> Result<Value, E
                     },
                 )?;
                 return Ok(Value::Tensor(
-                    TensorValue::new_with_literal_buffer(fj_core::DType::Bool, t.shape.clone(), buf)
-                        .map_err(EvalError::InvalidTensor)?,
+                    TensorValue::new_with_literal_buffer(
+                        fj_core::DType::Bool,
+                        t.shape.clone(),
+                        buf,
+                    )
+                    .map_err(EvalError::InvalidTensor)?,
                 ));
             }
             // Dense Bool BitwiseNot (= logical_not / `~mask`): read the contiguous
@@ -3909,10 +3913,7 @@ fn eval_reduce_window_dense_float(
 /// (i64-ring) windowed sums; tagging them I32 lets the eval_primitive chokepoint wrap
 /// each mod 2^32 — congruent to the per-window i32 sum since the 4-corner difference is
 /// computed in the same ring (mod 2^32 is a +/− homomorphism). Identity for I64.
-fn reduce_window_sat_retag_i32(
-    result: Value,
-    dtype: fj_core::DType,
-) -> Result<Value, EvalError> {
+fn reduce_window_sat_retag_i32(result: Value, dtype: fj_core::DType) -> Result<Value, EvalError> {
     if dtype == fj_core::DType::I32
         && let Value::Tensor(t) = &result
         && let Some(v) = t.elements.as_i64_slice()
@@ -5255,7 +5256,10 @@ fn eval_reduce_window(
     // order for the component sums, same lexicographic complex_ge for max/min,
     // same ∓∞/(0,0) init — see eval_reduce_window_dense_complex).
     if no_base_dilation
-        && matches!(tensor.dtype, fj_core::DType::Complex64 | fj_core::DType::Complex128)
+        && matches!(
+            tensor.dtype,
+            fj_core::DType::Complex64 | fj_core::DType::Complex128
+        )
         && matches!(reduce_op, "max" | "min" | "sum")
         && let Some(src) = tensor.elements.as_complex_slice()
     {
@@ -12036,24 +12040,30 @@ mod tests {
         // integer types"). Verify every op now works at i32 width — especially
         // ShiftRightLogical, which must zero-fill from bit 31 (negative i32), not bit 63.
         use fj_core::Primitive::{
-            BitwiseAnd, BitwiseOr, BitwiseXor, ShiftLeft, ShiftRightArithmetic,
-            ShiftRightLogical,
+            BitwiseAnd, BitwiseOr, BitwiseXor, ShiftLeft, ShiftRightArithmetic, ShiftRightLogical,
         };
         let mk = |d: &[i32]| {
             Value::Tensor(
                 TensorValue::new(
                     fj_core::DType::I32,
                     Shape::vector(d.len() as u32),
-                    d.iter().map(|&v| fj_core::Literal::I64(i64::from(v))).collect(),
+                    d.iter()
+                        .map(|&v| fj_core::Literal::I64(i64::from(v)))
+                        .collect(),
                 )
                 .unwrap(),
             )
         };
         let geti = |v: &Value| -> Vec<i32> {
-            v.as_tensor().unwrap().elements.iter().map(|l| match l {
-                fj_core::Literal::I64(x) => *x as i32,
-                o => panic!("expected I64-backed i32, got {o:?}"),
-            }).collect()
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    fj_core::Literal::I64(x) => *x as i32,
+                    o => panic!("expected I64-backed i32, got {o:?}"),
+                })
+                .collect()
         };
         let refop = |op: fj_core::Primitive, x: i32, y: i32| -> i32 {
             match op {
@@ -12069,12 +12079,26 @@ mod tests {
         let a = [-1i32, 0x1234_5678, i32::MIN, 5, -7, 0];
         let b = [0x0f0f_0f0f, -1, 3, 2, 1, 31];
         let p = BTreeMap::new();
-        for op in [BitwiseAnd, BitwiseOr, BitwiseXor, ShiftLeft, ShiftRightArithmetic, ShiftRightLogical] {
+        for op in [
+            BitwiseAnd,
+            BitwiseOr,
+            BitwiseXor,
+            ShiftLeft,
+            ShiftRightArithmetic,
+            ShiftRightLogical,
+        ] {
             let r = eval_primitive(op, &[mk(&a), mk(&b)], &p).unwrap();
-            assert_eq!(r.as_tensor().unwrap().dtype, fj_core::DType::I32, "{op:?} dtype");
+            assert_eq!(
+                r.as_tensor().unwrap().dtype,
+                fj_core::DType::I32,
+                "{op:?} dtype"
+            );
             assert_eq!(
                 geti(&r),
-                a.iter().zip(&b).map(|(&x, &y)| refop(op, x, y)).collect::<Vec<_>>(),
+                a.iter()
+                    .zip(&b)
+                    .map(|(&x, &y)| refop(op, x, y))
+                    .collect::<Vec<_>>(),
                 "{op:?} same-shape"
             );
             let s = Value::Scalar(fj_core::Literal::I64(i64::from(b[0])));
@@ -12094,13 +12118,24 @@ mod tests {
             TensorValue::new(
                 fj_core::DType::I32,
                 Shape { dims: vec![2, 3] },
-                [-1i32, 2, 3, 4, 5, 6].iter().map(|&v| fj_core::Literal::I64(i64::from(v))).collect(),
+                [-1i32, 2, 3, 4, 5, 6]
+                    .iter()
+                    .map(|&v| fj_core::Literal::I64(i64::from(v)))
+                    .collect(),
             )
             .unwrap(),
         );
         let r = eval_primitive(BitwiseAnd, &[m, mk(&[7i32, -1, 0])], &p).unwrap();
-        assert_eq!(r.as_tensor().unwrap().dtype, fj_core::DType::I32, "broadcast dtype");
-        assert_eq!(geti(&r), vec![-1 & 7, 2 & -1, 3 & 0, 4 & 7, 5 & -1, 6 & 0], "broadcast and");
+        assert_eq!(
+            r.as_tensor().unwrap().dtype,
+            fj_core::DType::I32,
+            "broadcast dtype"
+        );
+        assert_eq!(
+            geti(&r),
+            vec![-1 & 7, 2 & -1, 3 & 0, 4 & 7, 5 & -1, 6 & 0],
+            "broadcast and"
+        );
     }
 
     // u32 dense (densified) vs boxed (as_u32_slice None → per-Literal) for A/B + iso.
@@ -12132,8 +12167,7 @@ mod tests {
         // for all six ops, incl high-bit-set values and ShiftRightLogical (unsigned
         // zero-fill is the whole-width shift for u32/u64 — no sign-extension).
         use fj_core::Primitive::{
-            BitwiseAnd, BitwiseOr, BitwiseXor, ShiftLeft, ShiftRightArithmetic,
-            ShiftRightLogical,
+            BitwiseAnd, BitwiseOr, BitwiseXor, ShiftLeft, ShiftRightArithmetic, ShiftRightLogical,
         };
         let geti = |v: &Value| -> Vec<u64> {
             v.as_tensor()
@@ -12175,10 +12209,19 @@ mod tests {
         let a64 = [u64::MAX, 1u64 << 63, 0x1234_5678_9ABC_DEF0, 5, 7, 0];
         let b64 = [0x0F0F_0F0F_0F0F_0F0Fu64, u64::MAX, 4, 2, 1, 63];
 
-        for op in [BitwiseAnd, BitwiseOr, BitwiseXor, ShiftLeft, ShiftRightArithmetic, ShiftRightLogical] {
+        for op in [
+            BitwiseAnd,
+            BitwiseOr,
+            BitwiseXor,
+            ShiftLeft,
+            ShiftRightArithmetic,
+            ShiftRightLogical,
+        ] {
             // u32 same-shape
-            let d = geti(&eval_primitive(op, &[u32_bw_dense(&a32), u32_bw_dense(&b32)], &p).unwrap());
-            let g = geti(&eval_primitive(op, &[u32_bw_boxed(&a32), u32_bw_boxed(&b32)], &p).unwrap());
+            let d =
+                geti(&eval_primitive(op, &[u32_bw_dense(&a32), u32_bw_dense(&b32)], &p).unwrap());
+            let g =
+                geti(&eval_primitive(op, &[u32_bw_boxed(&a32), u32_bw_boxed(&b32)], &p).unwrap());
             assert_eq!(d, g, "{op:?} u32 same-shape dense!=generic");
             // u32 scalar both orders
             let s = Value::Scalar(fj_core::Literal::U32(b32[0]));
@@ -12199,7 +12242,10 @@ mod tests {
             TensorValue::new(
                 fj_core::DType::U32,
                 Shape { dims: vec![2, 3] },
-                [1u32, 2, 3, 4, 5, 6].iter().map(|&v| fj_core::Literal::U32(v)).collect(),
+                [1u32, 2, 3, 4, 5, 6]
+                    .iter()
+                    .map(|&v| fj_core::Literal::U32(v))
+                    .collect(),
             )
             .unwrap(),
         );
@@ -12208,13 +12254,18 @@ mod tests {
                 fj_core::DType::U32,
                 Shape { dims: vec![2, 3] },
                 fj_core::LiteralBuffer::new(
-                    [1u32, 2, 3, 4, 5, 6].iter().map(|&v| fj_core::Literal::U32(v)).collect(),
+                    [1u32, 2, 3, 4, 5, 6]
+                        .iter()
+                        .map(|&v| fj_core::Literal::U32(v))
+                        .collect(),
                 ),
             )
             .unwrap(),
         );
-        let d = geti(&eval_primitive(BitwiseXor, &[m_dense, u32_bw_dense(&[7, 0xFF, 0])], &p).unwrap());
-        let g = geti(&eval_primitive(BitwiseXor, &[m_boxed, u32_bw_boxed(&[7, 0xFF, 0])], &p).unwrap());
+        let d =
+            geti(&eval_primitive(BitwiseXor, &[m_dense, u32_bw_dense(&[7, 0xFF, 0])], &p).unwrap());
+        let g =
+            geti(&eval_primitive(BitwiseXor, &[m_boxed, u32_bw_boxed(&[7, 0xFF, 0])], &p).unwrap());
         assert_eq!(d, g, "u32 broadcast xor dense!=generic");
     }
 
@@ -12223,8 +12274,12 @@ mod tests {
     fn bench_u32_bitwise_dense_vs_generic() {
         use std::time::Instant;
         let n = 1_000_000usize;
-        let a: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
-        let b: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(40_503) ^ 0x9E37_79B9).collect();
+        let a: Vec<u32> = (0..n)
+            .map(|i| (i as u32).wrapping_mul(2_654_435_761))
+            .collect();
+        let b: Vec<u32> = (0..n)
+            .map(|i| (i as u32).wrapping_mul(40_503) ^ 0x9E37_79B9)
+            .collect();
         let (ad, ab) = (u32_bw_dense(&a), u32_bw_boxed(&a));
         let (bd, bb) = (u32_bw_dense(&b), u32_bw_boxed(&b));
         let p = BTreeMap::new();
@@ -12288,33 +12343,72 @@ mod tests {
         // Two BoolWords masks (f64 same-shape ⇒ BoolWords storage).
         let m1 = eval_primitive(Primitive::Lt, &[va.clone(), vb.clone()], &p).unwrap();
         let m2 = eval_primitive(Primitive::Ge, &[va.clone(), vb.clone()], &p).unwrap();
-        assert!(m1.as_tensor().unwrap().elements.as_bool_words().is_some(), "m1 must be BoolWords");
-        assert!(m2.as_tensor().unwrap().elements.as_bool_words().is_some(), "m2 must be BoolWords");
+        assert!(
+            m1.as_tensor().unwrap().elements.as_bool_words().is_some(),
+            "m1 must be BoolWords"
+        );
+        assert!(
+            m2.as_tensor().unwrap().elements.as_bool_words().is_some(),
+            "m2 must be BoolWords"
+        );
         let bits = |v: &Value| -> Vec<bool> {
-            v.as_tensor().unwrap().elements.iter().map(|l| matches!(l, Literal::Bool(true))).collect()
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| matches!(l, Literal::Bool(true)))
+                .collect()
         };
         let m1b = bits(&m1);
         let m2b = bits(&m2);
         // Per-element reference via Bool (Vec<bool>) storage.
-        let ref_mk = |d: &[bool]| Value::Tensor(TensorValue::new_bool_values(Shape::vector(n as u32), d.to_vec()).unwrap());
-        for prim in [Primitive::BitwiseAnd, Primitive::BitwiseOr, Primitive::BitwiseXor] {
+        let ref_mk = |d: &[bool]| {
+            Value::Tensor(
+                TensorValue::new_bool_values(Shape::vector(n as u32), d.to_vec()).unwrap(),
+            )
+        };
+        for prim in [
+            Primitive::BitwiseAnd,
+            Primitive::BitwiseOr,
+            Primitive::BitwiseXor,
+        ] {
             let swar = eval_primitive(prim, &[m1.clone(), m2.clone()], &p).unwrap();
-            assert_eq!(swar.as_tensor().unwrap().dtype, DType::Bool, "{prim:?} dtype");
-            let want: Vec<bool> = m1b.iter().zip(&m2b).map(|(&x, &y)| match prim {
-                Primitive::BitwiseAnd => x & y,
-                Primitive::BitwiseOr => x | y,
-                _ => x ^ y,
-            }).collect();
+            assert_eq!(
+                swar.as_tensor().unwrap().dtype,
+                DType::Bool,
+                "{prim:?} dtype"
+            );
+            let want: Vec<bool> = m1b
+                .iter()
+                .zip(&m2b)
+                .map(|(&x, &y)| match prim {
+                    Primitive::BitwiseAnd => x & y,
+                    Primitive::BitwiseOr => x | y,
+                    _ => x ^ y,
+                })
+                .collect();
             assert_eq!(bits(&swar), want, "{prim:?} SWAR != per-element reference");
             // Also equals the Bool-storage path bit-for-bit.
             let perelem = eval_primitive(prim, &[ref_mk(&m1b), ref_mk(&m2b)], &p).unwrap();
-            assert_eq!(bits(&swar), bits(&perelem), "{prim:?} SWAR != Bool-storage path");
+            assert_eq!(
+                bits(&swar),
+                bits(&perelem),
+                "{prim:?} SWAR != Bool-storage path"
+            );
         }
         // Unary NOT on a BoolWords mask (SWAR word-flip) must match per-element !.
         let not_swar = eval_primitive(Primitive::BitwiseNot, &[m1.clone()], &p).unwrap();
-        assert_eq!(not_swar.as_tensor().unwrap().dtype, DType::Bool, "NOT dtype");
+        assert_eq!(
+            not_swar.as_tensor().unwrap().dtype,
+            DType::Bool,
+            "NOT dtype"
+        );
         let not_want: Vec<bool> = m1b.iter().map(|&x| !x).collect();
-        assert_eq!(bits(&not_swar), not_want, "NOT SWAR != per-element reference");
+        assert_eq!(
+            bits(&not_swar),
+            not_want,
+            "NOT SWAR != per-element reference"
+        );
         assert_eq!(
             bits(&not_swar),
             bits(&eval_primitive(Primitive::BitwiseNot, &[ref_mk(&m1b)], &p).unwrap()),
@@ -12334,8 +12428,20 @@ mod tests {
         let p = no_params();
         let m1 = eval_primitive(Primitive::Lt, &[va.clone(), vb.clone()], &p).unwrap(); // BoolWords
         let m2 = eval_primitive(Primitive::Ge, &[va.clone(), vb.clone()], &p).unwrap(); // BoolWords
-        let m1b: Vec<bool> = m1.as_tensor().unwrap().elements.iter().map(|l| matches!(l, Literal::Bool(true))).collect();
-        let m2b: Vec<bool> = m2.as_tensor().unwrap().elements.iter().map(|l| matches!(l, Literal::Bool(true))).collect();
+        let m1b: Vec<bool> = m1
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| matches!(l, Literal::Bool(true)))
+            .collect();
+        let m2b: Vec<bool> = m2
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| matches!(l, Literal::Bool(true)))
+            .collect();
         let b1 = Value::Tensor(TensorValue::new_bool_values(Shape::vector(n as u32), m1b).unwrap());
         let b2 = Value::Tensor(TensorValue::new_bool_values(Shape::vector(n as u32), m2b).unwrap());
         let best = |x: &Value, y: &Value| {
@@ -12349,8 +12455,8 @@ mod tests {
             }
             t
         };
-        let perelem = best(&b1, &b2);   // Bool (Vec<bool>) per-element path
-        let swar = best(&m1, &m2);      // BoolWords SWAR word path
+        let perelem = best(&b1, &b2); // Bool (Vec<bool>) per-element path
+        let swar = best(&m1, &m2); // BoolWords SWAR word path
         println!(
             "BENCH bool bitwise-and [1e6]: per-element(Bool)={:.3}ms SWAR(BoolWords)={:.3}ms speedup={:.2}x",
             perelem * 1e3,
@@ -13405,19 +13511,40 @@ mod tests {
         // dilated path — which shares the IDENTICAL tap stencil — is covered against a
         // hand-computed reference below.
         let f64_dense = Value::Tensor(
-            TensorValue::new_f64_values(Shape { dims: vec![rows as u32, cols as u32] }, data64.clone())
-                .unwrap(),
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data64.clone(),
+            )
+            .unwrap(),
         );
         let f64_boxed = Value::Tensor(
             TensorValue::new(
                 DType::F64,
-                Shape { dims: vec![rows as u32, cols as u32] },
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
                 data64.iter().copied().map(Literal::from_f64).collect(),
             )
             .unwrap(),
         );
-        assert!(f64_boxed.as_tensor().unwrap().elements.as_f64_slice().is_none());
-        assert!(f64_dense.as_tensor().unwrap().elements.as_f64_slice().is_some());
+        assert!(
+            f64_boxed
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .is_none()
+        );
+        assert!(
+            f64_dense
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .is_some()
+        );
 
         let bits = |v: &Value| -> Vec<u64> {
             v.as_tensor()
@@ -13437,24 +13564,43 @@ mod tests {
             ] {
                 let mut p = rw_params_with_padding(op, win, "1,1", pad);
                 p.insert("window_dilation".to_owned(), dil.to_owned());
-                let d = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&f64_dense), &p)
-                    .unwrap();
-                let l = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&f64_boxed), &p)
-                    .unwrap();
+                let d = eval_primitive(
+                    Primitive::ReduceWindow,
+                    std::slice::from_ref(&f64_dense),
+                    &p,
+                )
+                .unwrap();
+                let l = eval_primitive(
+                    Primitive::ReduceWindow,
+                    std::slice::from_ref(&f64_boxed),
+                    &p,
+                )
+                .unwrap();
                 assert_eq!(
                     d.as_tensor().unwrap().shape.dims,
                     l.as_tensor().unwrap().shape.dims,
                     "{op} win={win} dil={dil} {pad} shape"
                 );
-                assert_eq!(bits(&d), bits(&l), "{op} win={win} dil={dil} {pad} dense!=generic");
+                assert_eq!(
+                    bits(&d),
+                    bits(&l),
+                    "{op} win={win} dil={dil} {pad} dense!=generic"
+                );
             }
         }
 
         // I64 dilated path vs a hand-computed reference (VALID, window 3x3, dilation 2x2).
-        let datai: Vec<i64> = (0..rows * cols).map(|i| (i as i64 * 37 - 211) % 97).collect();
+        let datai: Vec<i64> = (0..rows * cols)
+            .map(|i| (i as i64 * 37 - 211) % 97)
+            .collect();
         let i64_dense = Value::Tensor(
-            TensorValue::new_i64_values(Shape { dims: vec![rows as u32, cols as u32] }, datai.clone())
-                .unwrap(),
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                datai.clone(),
+            )
+            .unwrap(),
         );
         let (wr, wc, dr, dc) = (3usize, 3usize, 2usize, 2usize);
         let eff_r = (wr - 1) * dr + 1;
@@ -13463,14 +13609,24 @@ mod tests {
         for op in ["max", "min", "sum"] {
             let mut p = rw_params_with_padding(op, "3,3", "1,1", "VALID");
             p.insert("window_dilation".to_owned(), "2,2".to_owned());
-            let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&i64_dense), &p)
-                .unwrap();
+            let got = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&i64_dense),
+                &p,
+            )
+            .unwrap();
             let got_vals: Vec<i64> = got
                 .as_tensor()
                 .unwrap()
                 .elements
                 .iter()
-                .map(|l| if let Literal::I64(x) = l { *x } else { panic!() })
+                .map(|l| {
+                    if let Literal::I64(x) = l {
+                        *x
+                    } else {
+                        panic!()
+                    }
+                })
                 .collect();
             let mut want = Vec::with_capacity(out_r * out_c);
             for orow in 0..out_r {
@@ -13493,7 +13649,10 @@ mod tests {
                     want.push(acc);
                 }
             }
-            assert_eq!(got_vals, want, "i64 {op} dilated reduce_window vs hand reference");
+            assert_eq!(
+                got_vals, want,
+                "i64 {op} dilated reduce_window vs hand reference"
+            );
         }
     }
 
@@ -13502,15 +13661,24 @@ mod tests {
     fn bench_reduce_window_window_dilation_dense_vs_generic() {
         use std::time::Instant;
         let (rows, cols) = (512usize, 512usize);
-        let data: Vec<f64> = (0..rows * cols).map(|i| ((i as f64) * 0.013).sin()).collect();
+        let data: Vec<f64> = (0..rows * cols)
+            .map(|i| ((i as f64) * 0.013).sin())
+            .collect();
         let dense = Value::Tensor(
-            TensorValue::new_f64_values(Shape { dims: vec![rows as u32, cols as u32] }, data.clone())
-                .unwrap(),
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let boxed = Value::Tensor(
             TensorValue::new(
                 DType::F64,
-                Shape { dims: vec![rows as u32, cols as u32] },
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
                 data.iter().copied().map(Literal::from_f64).collect(),
             )
             .unwrap(),
@@ -13520,7 +13688,8 @@ mod tests {
         let run = |v: &Value| {
             let mut acc = 0u64;
             for _ in 0..20 {
-                let o = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(v), &p).unwrap();
+                let o =
+                    eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(v), &p).unwrap();
                 acc = acc.wrapping_add(o.as_tensor().unwrap().elements.len() as u64);
             }
             acc
@@ -14147,7 +14316,9 @@ mod tests {
         let dense = Value::Tensor(
             TensorValue::new(
                 DType::I32,
-                Shape { dims: vec![rows as u32, cols as u32] },
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
                 data.iter().map(|&v| Literal::I64(v)).collect(),
             )
             .unwrap(),
@@ -14155,23 +14326,36 @@ mod tests {
         let boxed = Value::Tensor(
             TensorValue::new_with_literal_buffer(
                 DType::I32,
-                Shape { dims: vec![rows as u32, cols as u32] },
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
                 fj_core::LiteralBuffer::new(data.iter().map(|&v| Literal::I64(v)).collect()),
             )
             .unwrap(),
         );
         let geti = |v: &Value| -> Vec<i64> {
-            v.as_tensor().unwrap().elements.iter().map(|l| match l {
-                Literal::I64(x) => *x,
-                o => panic!("expected I64-backed i32, got {o:?}"),
-            }).collect()
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::I64(x) => *x,
+                    o => panic!("expected I64-backed i32, got {o:?}"),
+                })
+                .collect()
         };
         for op in ["max", "min"] {
             // window 9x9 (∏=81 > 2·∑=36) ⇒ deque path.
             let p = rw_params_with_padding(op, "9,9", "1,1", "VALID");
-            let d = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &p).unwrap();
-            let b = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &p).unwrap();
-            assert_eq!(d.as_tensor().unwrap().dtype, DType::I32, "i32 {op} deque dtype");
+            let d =
+                eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &p).unwrap();
+            let b =
+                eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &p).unwrap();
+            assert_eq!(
+                d.as_tensor().unwrap().dtype,
+                DType::I32,
+                "i32 {op} deque dtype"
+            );
             assert_eq!(geti(&d), geti(&b), "i32 {op} deque != generic");
         }
     }
@@ -14204,16 +14388,40 @@ mod tests {
             }
             b
         };
-        let (s1, w1, st1, o1, p1, i1, is1) = (src.clone(), wdims.clone(), strides.clone(), out.clone(), pad.clone(), in_dims.clone(), in_strides.clone());
+        let (s1, w1, st1, o1, p1, i1, is1) = (
+            src.clone(),
+            wdims.clone(),
+            strides.clone(),
+            out.clone(),
+            pad.clone(),
+            in_dims.clone(),
+            in_strides.clone(),
+        );
         let od = vec![1usize, 1];
         let dense_t = best(Box::new(move || {
             super::eval_reduce_window_dense_i64(
-                fj_core::DType::I32, "max", &s1, &w1, &st1, &od, &o1, &p1, &i1, &is1, total,
+                fj_core::DType::I32,
+                "max",
+                &s1,
+                &w1,
+                &st1,
+                &od,
+                &o1,
+                &p1,
+                &i1,
+                &is1,
+                total,
             )
             .unwrap();
             total
         }));
-        let (s2, i2, w2, st2, p2) = (src.clone(), in_dims.clone(), wdims.clone(), strides.clone(), pad.clone());
+        let (s2, i2, w2, st2, p2) = (
+            src.clone(),
+            in_dims.clone(),
+            wdims.clone(),
+            strides.clone(),
+            pad.clone(),
+        );
         let ou = vec![(rows - win + 1), (cols - win + 1)];
         let deque_t = best(Box::new(move || {
             let _ = super::reduce_window_separable_maxmin_i64(&s2, &i2, &w2, &st2, &p2, &ou, true);
@@ -14234,32 +14442,83 @@ mod tests {
         // mod 2^32 by the chokepoint. Dense (densified → SAT) must match boxed-generic,
         // rank-2 AND rank-1, with overflowing values, dtype preserved.
         let geti = |v: &Value| -> Vec<i64> {
-            v.as_tensor().unwrap().elements.iter().map(|l| match l {
-                Literal::I64(x) => *x,
-                o => panic!("expected I64-backed i32, got {o:?}"),
-            }).collect()
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::I64(x) => *x,
+                    o => panic!("expected I64-backed i32, got {o:?}"),
+                })
+                .collect()
         };
         let mk_d = |dims: Vec<u32>, d: &[i64]| {
-            Value::Tensor(TensorValue::new(DType::I32, Shape { dims }, d.iter().map(|&v| Literal::I64(v)).collect()).unwrap())
+            Value::Tensor(
+                TensorValue::new(
+                    DType::I32,
+                    Shape { dims },
+                    d.iter().map(|&v| Literal::I64(v)).collect(),
+                )
+                .unwrap(),
+            )
         };
         let mk_b = |dims: Vec<u32>, d: &[i64]| {
-            Value::Tensor(TensorValue::new_with_literal_buffer(DType::I32, Shape { dims }, fj_core::LiteralBuffer::new(d.iter().map(|&v| Literal::I64(v)).collect())).unwrap())
+            Value::Tensor(
+                TensorValue::new_with_literal_buffer(
+                    DType::I32,
+                    Shape { dims },
+                    fj_core::LiteralBuffer::new(d.iter().map(|&v| Literal::I64(v)).collect()),
+                )
+                .unwrap(),
+            )
         };
         // rank-2: 40x40, window 8x8 (∏=64 ≥ 16 ⇒ SAT). Big magnitudes ⇒ sums overflow i32.
         let (rows, cols) = (40usize, 40usize);
-        let d2: Vec<i64> = (0..rows * cols).map(|i| i64::from((i as i32).wrapping_mul(5_000_003))).collect();
+        let d2: Vec<i64> = (0..rows * cols)
+            .map(|i| i64::from((i as i32).wrapping_mul(5_000_003)))
+            .collect();
         let p2 = rw_params_with_padding("sum", "8,8", "1,1", "VALID");
-        let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&mk_d(vec![rows as u32, cols as u32], &d2)), &p2).unwrap();
-        let exp = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&mk_b(vec![rows as u32, cols as u32], &d2)), &p2).unwrap();
-        assert_eq!(got.as_tensor().unwrap().dtype, DType::I32, "rank2 SAT dtype I32");
+        let got = eval_primitive(
+            Primitive::ReduceWindow,
+            std::slice::from_ref(&mk_d(vec![rows as u32, cols as u32], &d2)),
+            &p2,
+        )
+        .unwrap();
+        let exp = eval_primitive(
+            Primitive::ReduceWindow,
+            std::slice::from_ref(&mk_b(vec![rows as u32, cols as u32], &d2)),
+            &p2,
+        )
+        .unwrap();
+        assert_eq!(
+            got.as_tensor().unwrap().dtype,
+            DType::I32,
+            "rank2 SAT dtype I32"
+        );
         assert_eq!(geti(&got), geti(&exp), "rank2 i32 SAT != generic");
         // rank-1: 4000, window 32 (≥16 ⇒ in_sum_sat).
         let n = 4000usize;
-        let d1: Vec<i64> = (0..n).map(|i| i64::from((i as i32).wrapping_mul(6_000_011))).collect();
+        let d1: Vec<i64> = (0..n)
+            .map(|i| i64::from((i as i32).wrapping_mul(6_000_011)))
+            .collect();
         let p1 = rw_params_with_padding("sum", "32", "1", "VALID");
-        let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&mk_d(vec![n as u32], &d1)), &p1).unwrap();
-        let exp = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&mk_b(vec![n as u32], &d1)), &p1).unwrap();
-        assert_eq!(got.as_tensor().unwrap().dtype, DType::I32, "rank1 SAT dtype I32");
+        let got = eval_primitive(
+            Primitive::ReduceWindow,
+            std::slice::from_ref(&mk_d(vec![n as u32], &d1)),
+            &p1,
+        )
+        .unwrap();
+        let exp = eval_primitive(
+            Primitive::ReduceWindow,
+            std::slice::from_ref(&mk_b(vec![n as u32], &d1)),
+            &p1,
+        )
+        .unwrap();
+        assert_eq!(
+            got.as_tensor().unwrap().dtype,
+            DType::I32,
+            "rank1 SAT dtype I32"
+        );
         assert_eq!(geti(&got), geti(&exp), "rank1 i32 SAT != generic");
     }
 
@@ -14270,7 +14529,9 @@ mod tests {
         // Honest SAT-vs-general-dense A/B for large-window i32 sum pooling (both kernels
         // called directly on identical i32 data), isolating the window-independence win.
         let (rows, cols, win) = (512usize, 512usize, 17usize);
-        let src: Vec<i64> = (0..rows * cols).map(|i| i64::from((i as i64).wrapping_mul(2_654_435_761) as i32)).collect();
+        let src: Vec<i64> = (0..rows * cols)
+            .map(|i| i64::from((i as i64).wrapping_mul(2_654_435_761) as i32))
+            .collect();
         let in_dims = vec![rows, cols];
         let in_strides = vec![cols, 1usize];
         let wdims = vec![win, win];
@@ -14288,15 +14549,44 @@ mod tests {
             }
             b
         };
-        let (s1, w1, st1, o1, p1, i1, is1) = (src.clone(), wdims.clone(), strides.clone(), out.clone(), pad.clone(), in_dims.clone(), in_strides.clone());
+        let (s1, w1, st1, o1, p1, i1, is1) = (
+            src.clone(),
+            wdims.clone(),
+            strides.clone(),
+            out.clone(),
+            pad.clone(),
+            in_dims.clone(),
+            in_strides.clone(),
+        );
         let od = vec![1usize, 1];
         let dense_t = best(Box::new(move || {
-            super::eval_reduce_window_dense_i64(fj_core::DType::I32, "sum", &s1, &w1, &st1, &od, &o1, &p1, &i1, &is1, total).unwrap();
+            super::eval_reduce_window_dense_i64(
+                fj_core::DType::I32,
+                "sum",
+                &s1,
+                &w1,
+                &st1,
+                &od,
+                &o1,
+                &p1,
+                &i1,
+                &is1,
+                total,
+            )
+            .unwrap();
             total
         }));
-        let (s2, w2, st2, o2, p2b, i2) = (src.clone(), wdims.clone(), strides.clone(), out.clone(), pad.clone(), in_dims.clone());
+        let (s2, w2, st2, o2, p2b, i2) = (
+            src.clone(),
+            wdims.clone(),
+            strides.clone(),
+            out.clone(),
+            pad.clone(),
+            in_dims.clone(),
+        );
         let sat_t = best(Box::new(move || {
-            super::eval_reduce_window_rank2_i64_sum_sat(&s2, &w2, &st2, &o2, &p2b, &i2, total).unwrap();
+            super::eval_reduce_window_rank2_i64_sum_sat(&s2, &w2, &st2, &o2, &p2b, &i2, total)
+                .unwrap();
             total
         }));
         println!(
@@ -14325,7 +14615,9 @@ mod tests {
         let dense = Value::Tensor(
             TensorValue::new(
                 DType::I32,
-                Shape { dims: vec![rows as u32, cols as u32] },
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
                 datai.iter().copied().map(Literal::I64).collect(),
             )
             .unwrap(),
@@ -14352,11 +14644,21 @@ mod tests {
                 let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &p)
                     .unwrap();
                 let gt = got.as_tensor().unwrap();
-                assert_eq!(gt.dtype, DType::I32, "{op} {win} {dil} {pad}: dtype preserved");
+                assert_eq!(
+                    gt.dtype,
+                    DType::I32,
+                    "{op} {win} {dil} {pad}: dtype preserved"
+                );
                 let got_vals: Vec<i32> = gt
                     .elements
                     .iter()
-                    .map(|l| if let Literal::I64(x) = l { *x as i32 } else { panic!() })
+                    .map(|l| {
+                        if let Literal::I64(x) = l {
+                            *x as i32
+                        } else {
+                            panic!()
+                        }
+                    })
                     .collect();
 
                 // Hand reference (SAME pad_low from the shared geometry helper).
@@ -14364,13 +14666,17 @@ mod tests {
                 let eff_c = (wc - 1) * dc + 1;
                 let (out_r, plr) = match pad {
                     "VALID" => ((rows - eff_r) / 1 + 1, 0usize),
-                    _ => reduce_window_same_geometry(Primitive::ReduceWindow, rows, eff_r, 1, false)
-                        .unwrap(),
+                    _ => {
+                        reduce_window_same_geometry(Primitive::ReduceWindow, rows, eff_r, 1, false)
+                            .unwrap()
+                    }
                 };
                 let (out_c, plc) = match pad {
                     "VALID" => ((cols - eff_c) / 1 + 1, 0usize),
-                    _ => reduce_window_same_geometry(Primitive::ReduceWindow, cols, eff_c, 1, false)
-                        .unwrap(),
+                    _ => {
+                        reduce_window_same_geometry(Primitive::ReduceWindow, cols, eff_c, 1, false)
+                            .unwrap()
+                    }
                 };
                 let mut want = Vec::with_capacity(out_r * out_c);
                 for orow in 0..out_r {
@@ -14402,7 +14708,10 @@ mod tests {
                         want.push(acc);
                     }
                 }
-                assert_eq!(got_vals, want, "i32 {op} win={win} dil={dil} {pad} vs reference");
+                assert_eq!(
+                    got_vals, want,
+                    "i32 {op} win={win} dil={dil} {pad} vs reference"
+                );
             }
         }
     }
@@ -14420,7 +14729,9 @@ mod tests {
         let dense = Value::Tensor(
             TensorValue::new(
                 DType::I32,
-                Shape { dims: vec![n as u32, n as u32] },
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
                 raw.iter().copied().map(Literal::I64).collect(),
             )
             .unwrap(),
@@ -14456,8 +14767,12 @@ mod tests {
                         }
                     }
                     out.push(
-                        reduce_window_accumulator_literal(Primitive::ReduceWindow, DType::I32, accum)
-                            .unwrap(),
+                        reduce_window_accumulator_literal(
+                            Primitive::ReduceWindow,
+                            DType::I32,
+                            accum,
+                        )
+                        .unwrap(),
                     );
                 }
             }
@@ -14465,8 +14780,12 @@ mod tests {
         }));
         let t_dense = dense.clone();
         let dense_t = best(Box::new(move || {
-            let o = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t_dense), &params)
-                .unwrap();
+            let o = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&t_dense),
+                &params,
+            )
+            .unwrap();
             o.as_tensor().unwrap().elements.len() as u64
         }));
         println!(
@@ -14553,9 +14872,12 @@ mod tests {
 
         let t_fast = tensor.clone();
         let (t_dense, d_dense) = best(Box::new(move || {
-            let out =
-                eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t_fast), &params)
-                    .unwrap();
+            let out = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&t_fast),
+                &params,
+            )
+            .unwrap();
             out.as_tensor()
                 .unwrap()
                 .elements
@@ -14590,7 +14912,9 @@ mod tests {
             .collect();
         let tensor = Value::Tensor(
             TensorValue::new_i64_values(
-                Shape { dims: vec![rows as u32, cols as u32] },
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
                 raw.clone(),
             )
             .unwrap(),
@@ -14604,14 +14928,14 @@ mod tests {
             (4, 5, 3, 2, "VALID"),
         ];
         for (wr, wc, sr, sc, pad) in cases {
-            let params = rw_params_with_padding(
-                "sum",
-                &format!("{wr},{wc}"),
-                &format!("{sr},{sc}"),
-                pad,
-            );
-            let out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor), &params)
-                .unwrap();
+            let params =
+                rw_params_with_padding("sum", &format!("{wr},{wc}"), &format!("{sr},{sc}"), pad);
+            let out = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&tensor),
+                &params,
+            )
+            .unwrap();
             let out_t = out.as_tensor().unwrap();
             let (out_rows, out_cols) = (out_t.shape.dims[0] as usize, out_t.shape.dims[1] as usize);
             // SAME pad_low = floor(((out-1)*stride + win - in)/2); VALID = 0.
@@ -14676,11 +15000,20 @@ mod tests {
         // ∏window ≥ 16; the generic eval (which these compare against via a second
         // tensor that forces the slow path) is the ground truth. Here both go
         // through eval_primitive; the SAT output is checked vs a hand reference.
-        let ref_sum = |raw: &[i64], in_dims: &[usize], win: &[usize], strd: &[usize], pad: &[usize], out_dims: &[usize]| -> Vec<i64> {
+        let ref_sum = |raw: &[i64],
+                       in_dims: &[usize],
+                       win: &[usize],
+                       strd: &[usize],
+                       pad: &[usize],
+                       out_dims: &[usize]|
+         -> Vec<i64> {
             let rank = in_dims.len();
             let mut in_strides = vec![1usize; rank];
             let mut acc = 1;
-            for d in (0..rank).rev() { in_strides[d] = acc; acc *= in_dims[d]; }
+            for d in (0..rank).rev() {
+                in_strides[d] = acc;
+                acc *= in_dims[d];
+            }
             let total_out: usize = out_dims.iter().product();
             let mut out = Vec::with_capacity(total_out);
             let mut oi = vec![0usize; rank];
@@ -14693,22 +15026,44 @@ mod tests {
                     let mut idx = 0usize;
                     for d in 0..rank {
                         let p = oi[d] * strd[d] + wi[d];
-                        if p < pad[d] { ok = false; break; }
+                        if p < pad[d] {
+                            ok = false;
+                            break;
+                        }
                         let ic = p - pad[d];
-                        if ic >= in_dims[d] { ok = false; break; }
+                        if ic >= in_dims[d] {
+                            ok = false;
+                            break;
+                        }
                         idx += ic * in_strides[d];
                     }
-                    if ok { s = s.wrapping_add(raw[idx]); }
+                    if ok {
+                        s = s.wrapping_add(raw[idx]);
+                    }
                     // odometer over window
                     let mut c = true;
                     for d in (0..rank).rev() {
-                        if c { wi[d]+=1; if wi[d]>=win[d] { wi[d]=0; } else { c=false; } }
+                        if c {
+                            wi[d] += 1;
+                            if wi[d] >= win[d] {
+                                wi[d] = 0;
+                            } else {
+                                c = false;
+                            }
+                        }
                     }
                 }
                 out.push(s);
                 let mut c = true;
                 for d in (0..rank).rev() {
-                    if c { oi[d]+=1; if oi[d]>=out_dims[d] { oi[d]=0; } else { c=false; } }
+                    if c {
+                        oi[d] += 1;
+                        if oi[d] >= out_dims[d] {
+                            oi[d] = 0;
+                        } else {
+                            c = false;
+                        }
+                    }
                 }
             }
             out
@@ -14718,31 +15073,65 @@ mod tests {
             (vec![64], vec![16], vec![1], "VALID"),
             (vec![50], vec![20], vec![3], "SAME"),
             (vec![9, 9, 3], vec![4, 4, 1], vec![1, 1, 1], "VALID"),
-            (vec![2, 8, 8, 3], vec![1, 4, 4, 1], vec![1, 2, 2, 1], "VALID"),
+            (
+                vec![2, 8, 8, 3],
+                vec![1, 4, 4, 1],
+                vec![1, 2, 2, 1],
+                "VALID",
+            ),
         ];
         for (in_dims, win, strd, pad) in cases {
             let rank = in_dims.len();
             let total: usize = in_dims.iter().product();
-            let raw: Vec<i64> = (0..total).map(|i| (i as i64).wrapping_mul(2_654_435_761) ^ 0x77).collect();
+            let raw: Vec<i64> = (0..total)
+                .map(|i| (i as i64).wrapping_mul(2_654_435_761) ^ 0x77)
+                .collect();
             let dims_u32: Vec<u32> = in_dims.iter().map(|&d| d as u32).collect();
             let tensor = Value::Tensor(
                 TensorValue::new_i64_values(Shape { dims: dims_u32 }, raw.clone()).unwrap(),
             );
-            let win_s = win.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
-            let str_s = strd.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
+            let win_s = win
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let str_s = strd
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
             let params = rw_params_with_padding("sum", &win_s, &str_s, pad);
-            let out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor), &params).unwrap();
+            let out = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&tensor),
+                &params,
+            )
+            .unwrap();
             let out_t = out.as_tensor().unwrap();
             let out_dims: Vec<usize> = out_t.shape.dims.iter().map(|&d| d as usize).collect();
             // pad_lows: SAME = floor(((out-1)*stride+win-in)/2), VALID = 0
-            let pad_lows: Vec<usize> = (0..rank).map(|d| {
-                if pad == "SAME" {
-                    (((out_dims[d]-1)*strd[d] + win[d]).saturating_sub(in_dims[d])) / 2
-                } else { 0 }
-            }).collect();
-            let got: Vec<i64> = out_t.elements.iter().map(|l| match l { Literal::I64(v) => *v, o => panic!("{o:?}") }).collect();
+            let pad_lows: Vec<usize> = (0..rank)
+                .map(|d| {
+                    if pad == "SAME" {
+                        (((out_dims[d] - 1) * strd[d] + win[d]).saturating_sub(in_dims[d])) / 2
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            let got: Vec<i64> = out_t
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::I64(v) => *v,
+                    o => panic!("{o:?}"),
+                })
+                .collect();
             let expect = ref_sum(&raw, &in_dims, &win, &strd, &pad_lows, &out_dims);
-            assert_eq!(got, expect, "iN SAT rank {rank} win={win:?} stride={strd:?} pad={pad} mismatch");
+            assert_eq!(
+                got, expect,
+                "iN SAT rank {rank} win={win:?} stride={strd:?} pad={pad} mismatch"
+            );
         }
     }
 
@@ -14750,11 +15139,21 @@ mod tests {
     fn reduce_window_i64_maxmin_separable_matches_per_window() {
         // Large-window i64 max/min (separable deque path) must equal an independent
         // per-window in-bounds extremum reference across VALID/SAME, strides, ranks.
-        let ref_ext = |raw: &[i64], in_dims: &[usize], win: &[usize], strd: &[usize], pad: &[usize], out_dims: &[usize], is_max: bool| -> Vec<i64> {
+        let ref_ext = |raw: &[i64],
+                       in_dims: &[usize],
+                       win: &[usize],
+                       strd: &[usize],
+                       pad: &[usize],
+                       out_dims: &[usize],
+                       is_max: bool|
+         -> Vec<i64> {
             let rank = in_dims.len();
             let mut in_strides = vec![1usize; rank];
             let mut a = 1;
-            for d in (0..rank).rev() { in_strides[d] = a; a *= in_dims[d]; }
+            for d in (0..rank).rev() {
+                in_strides[d] = a;
+                a *= in_dims[d];
+            }
             let total_out: usize = out_dims.iter().product();
             let init = if is_max { i64::MIN } else { i64::MAX };
             let mut out = Vec::with_capacity(total_out);
@@ -14767,19 +15166,49 @@ mod tests {
                     let mut ok = true;
                     let mut idx = 0usize;
                     for d in 0..rank {
-                        let p = oi[d]*strd[d] + wi[d];
-                        if p < pad[d] { ok=false; break; }
+                        let p = oi[d] * strd[d] + wi[d];
+                        if p < pad[d] {
+                            ok = false;
+                            break;
+                        }
                         let ic = p - pad[d];
-                        if ic >= in_dims[d] { ok=false; break; }
-                        idx += ic*in_strides[d];
+                        if ic >= in_dims[d] {
+                            ok = false;
+                            break;
+                        }
+                        idx += ic * in_strides[d];
                     }
-                    if ok { acc = if is_max { acc.max(raw[idx]) } else { acc.min(raw[idx]) }; }
+                    if ok {
+                        acc = if is_max {
+                            acc.max(raw[idx])
+                        } else {
+                            acc.min(raw[idx])
+                        };
+                    }
                     let mut c = true;
-                    for d in (0..rank).rev() { if c { wi[d]+=1; if wi[d]>=win[d] { wi[d]=0; } else { c=false; } } }
+                    for d in (0..rank).rev() {
+                        if c {
+                            wi[d] += 1;
+                            if wi[d] >= win[d] {
+                                wi[d] = 0;
+                            } else {
+                                c = false;
+                            }
+                        }
+                    }
                 }
                 out.push(acc);
                 let mut c = true;
-                for d in (0..rank).rev() { if c { oi[d]+=1; if oi[d]>=out_dims[d] { oi[d]=0; } else { c=false; } } }
+                for d in (0..rank).rev() {
+                    if c {
+                        oi[d] += 1;
+                        if oi[d] >= out_dims[d] {
+                            oi[d] = 0;
+                        } else {
+                            c = false;
+                        }
+                    }
+                }
             }
             out
         };
@@ -14794,20 +15223,55 @@ mod tests {
             for (in_dims, win, strd, pad) in &cases {
                 let rank = in_dims.len();
                 let total: usize = in_dims.iter().product();
-                let raw: Vec<i64> = (0..total).map(|i| ((i as i64).wrapping_mul(2_654_435_761) >> 3) ^ 0x2b).collect();
+                let raw: Vec<i64> = (0..total)
+                    .map(|i| ((i as i64).wrapping_mul(2_654_435_761) >> 3) ^ 0x2b)
+                    .collect();
                 let dims_u32: Vec<u32> = in_dims.iter().map(|&d| d as u32).collect();
-                let tensor = Value::Tensor(TensorValue::new_i64_values(Shape { dims: dims_u32 }, raw.clone()).unwrap());
-                let win_s = win.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
-                let str_s = strd.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
+                let tensor = Value::Tensor(
+                    TensorValue::new_i64_values(Shape { dims: dims_u32 }, raw.clone()).unwrap(),
+                );
+                let win_s = win
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let str_s = strd
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
                 let op = if is_max { "max" } else { "min" };
                 let params = rw_params_with_padding(op, &win_s, &str_s, pad);
-                let out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor), &params).unwrap();
+                let out = eval_primitive(
+                    Primitive::ReduceWindow,
+                    std::slice::from_ref(&tensor),
+                    &params,
+                )
+                .unwrap();
                 let out_t = out.as_tensor().unwrap();
                 let out_dims: Vec<usize> = out_t.shape.dims.iter().map(|&d| d as usize).collect();
-                let pad_lows: Vec<usize> = (0..rank).map(|d| if *pad == "SAME" { (((out_dims[d]-1)*strd[d]+win[d]).saturating_sub(in_dims[d]))/2 } else { 0 }).collect();
-                let got: Vec<i64> = out_t.elements.iter().map(|l| match l { Literal::I64(v)=>*v, o=>panic!("{o:?}") }).collect();
+                let pad_lows: Vec<usize> = (0..rank)
+                    .map(|d| {
+                        if *pad == "SAME" {
+                            (((out_dims[d] - 1) * strd[d] + win[d]).saturating_sub(in_dims[d])) / 2
+                        } else {
+                            0
+                        }
+                    })
+                    .collect();
+                let got: Vec<i64> = out_t
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::I64(v) => *v,
+                        o => panic!("{o:?}"),
+                    })
+                    .collect();
                 let expect = ref_ext(&raw, in_dims, win, strd, &pad_lows, &out_dims, is_max);
-                assert_eq!(got, expect, "i64 {op} separable win={win:?} stride={strd:?} pad={pad} mismatch");
+                assert_eq!(
+                    got, expect,
+                    "i64 {op} separable win={win:?} stride={strd:?} pad={pad} mismatch"
+                );
             }
         }
     }
@@ -14818,35 +15282,74 @@ mod tests {
         use std::time::Instant;
         let (rows, cols) = (512usize, 512usize);
         let win = 15usize;
-        let raw: Vec<i64> = (0..rows*cols).map(|i| (i as i64).wrapping_mul(40_503) ^ 0x5).collect();
-        let tensor = Value::Tensor(TensorValue::new_i64_values(Shape { dims: vec![rows as u32, cols as u32] }, raw.clone()).unwrap());
+        let raw: Vec<i64> = (0..rows * cols)
+            .map(|i| (i as i64).wrapping_mul(40_503) ^ 0x5)
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                raw.clone(),
+            )
+            .unwrap(),
+        );
         let params = rw_params_with_padding("max", &format!("{win},{win}"), "1,1", "VALID");
         let out_n = rows - win + 1;
         let best = |mut f: Box<dyn FnMut() -> i64>| {
             f();
-            let mut b = f64::MAX; let mut dg = 0i64;
-            for _ in 0..5 { let t = Instant::now(); dg = std::hint::black_box(f()); b = b.min(t.elapsed().as_secs_f64()); }
+            let mut b = f64::MAX;
+            let mut dg = 0i64;
+            for _ in 0..5 {
+                let t = Instant::now();
+                dg = std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
             (b, dg)
         };
         let raw_ref = raw.clone();
         let (t_win, d_win) = best(Box::new(move || {
             let mut s = 0i64;
-            for or in 0..out_n { for oc in 0..out_n {
-                let mut m = i64::MIN;
-                for dr in 0..win { let base=(or+dr)*cols+oc; for dc in 0..win { m = m.max(raw_ref[base+dc]); } }
-                s = s.wrapping_add(m);
-            }}
+            for or in 0..out_n {
+                for oc in 0..out_n {
+                    let mut m = i64::MIN;
+                    for dr in 0..win {
+                        let base = (or + dr) * cols + oc;
+                        for dc in 0..win {
+                            m = m.max(raw_ref[base + dc]);
+                        }
+                    }
+                    s = s.wrapping_add(m);
+                }
+            }
             s
         }));
         let t_ref = tensor.clone();
         let (t_sep, d_sep) = best(Box::new(move || {
-            let out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t_ref), &params).unwrap();
-            out.as_tensor().unwrap().elements.iter().fold(0i64, |a, l| match l { Literal::I64(v)=>a.wrapping_add(*v), _=>a })
+            let out = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&t_ref),
+                &params,
+            )
+            .unwrap();
+            out.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0i64, |a, l| match l {
+                    Literal::I64(v) => a.wrapping_add(*v),
+                    _ => a,
+                })
         }));
-        assert_eq!(d_win, d_sep, "separable i64 max checksum must match per-window");
+        assert_eq!(
+            d_win, d_sep,
+            "separable i64 max checksum must match per-window"
+        );
         println!(
             "BENCH reduce_window i64 max([{rows},{cols}],win={win}x{win},s=1): per-window={:.4}ms separable={:.4}ms speedup={:.2}x",
-            t_win*1e3, t_sep*1e3, t_win/t_sep,
+            t_win * 1e3,
+            t_sep * 1e3,
+            t_win / t_sep,
         );
     }
 
@@ -14858,9 +15361,17 @@ mod tests {
         // (window-independent) vs the per-window O(out·win) tap sum.
         let n = 1_048_576usize;
         let win = 4096usize;
-        let raw: Vec<i64> = (0..n).map(|i| (i as i64).wrapping_mul(40_503) ^ 0x9).collect();
+        let raw: Vec<i64> = (0..n)
+            .map(|i| (i as i64).wrapping_mul(40_503) ^ 0x9)
+            .collect();
         let tensor = Value::Tensor(
-            TensorValue::new_i64_values(Shape { dims: vec![n as u32] }, raw.clone()).unwrap(),
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                raw.clone(),
+            )
+            .unwrap(),
         );
         let params = rw_params_with_padding("sum", &win.to_string(), "1", "VALID");
         let out_n = n - win + 1;
@@ -14889,12 +15400,20 @@ mod tests {
         }));
         let t_ref = tensor.clone();
         let (t_sat, d_sat) = best(Box::new(move || {
-            let out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t_ref), &params)
-                .unwrap();
-            out.as_tensor().unwrap().elements.iter().fold(0i64, |a, l| match l {
-                Literal::I64(v) => a.wrapping_add(*v),
-                _ => a,
-            })
+            let out = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&t_ref),
+                &params,
+            )
+            .unwrap();
+            out.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0i64, |a, l| match l {
+                    Literal::I64(v) => a.wrapping_add(*v),
+                    _ => a,
+                })
         }));
         assert_eq!(d_win, d_sat, "rank-1 SAT checksum must match per-window");
         println!(
@@ -14920,10 +15439,20 @@ mod tests {
             .map(|i| (i as i64).wrapping_mul(40_503) ^ 0x33)
             .collect();
         let tensor = Value::Tensor(
-            TensorValue::new_i64_values(Shape { dims: vec![rows as u32, cols as u32] }, raw.clone())
-                .unwrap(),
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                raw.clone(),
+            )
+            .unwrap(),
         );
-        let params = rw_params_with_padding("sum", &format!("{win},{win}"), &format!("{stride},{stride}"), "VALID");
+        let params = rw_params_with_padding(
+            "sum",
+            &format!("{win},{win}"),
+            &format!("{stride},{stride}"),
+            "VALID",
+        );
         let out_n = (rows - win) / stride + 1;
         let best = |mut f: Box<dyn FnMut() -> i64>| {
             f();
@@ -14956,8 +15485,12 @@ mod tests {
         }));
         let t_ref = tensor.clone();
         let (t_sat, d_sat) = best(Box::new(move || {
-            let out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t_ref), &params)
-                .unwrap();
+            let out = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&t_ref),
+                &params,
+            )
+            .unwrap();
             out.as_tensor()
                 .unwrap()
                 .elements
@@ -15002,38 +15535,84 @@ mod tests {
                 }
             };
             let lit = |b: u16| -> Literal {
-                if dt == DType::BF16 { Literal::BF16Bits(b) } else { Literal::F16Bits(b) }
+                if dt == DType::BF16 {
+                    Literal::BF16Bits(b)
+                } else {
+                    Literal::F16Bits(b)
+                }
             };
-            let raw: Vec<u16> = (0..n * n).map(|i| bits(((i % 31) as f64) * 0.1 - 1.5)).collect();
+            let raw: Vec<u16> = (0..n * n)
+                .map(|i| bits(((i % 31) as f64) * 0.1 - 1.5))
+                .collect();
             let dims = vec![n as u32, n as u32];
             let dense = Value::Tensor(
                 TensorValue::new_half_float_values(dt, Shape { dims: dims.clone() }, raw.clone())
                     .unwrap(),
             );
             let boxed = Value::Tensor(
-                TensorValue::new(dt, Shape { dims: dims.clone() }, raw.iter().copied().map(lit).collect())
-                    .unwrap(),
+                TensorValue::new(
+                    dt,
+                    Shape { dims: dims.clone() },
+                    raw.iter().copied().map(lit).collect(),
+                )
+                .unwrap(),
             );
             let params = rw_params(op, "3,3", "1,1");
             let half_bits = |v: &Value| -> Vec<u16> {
-                v.as_tensor().unwrap().elements.iter().map(|l| match l {
-                    Literal::BF16Bits(b) | Literal::F16Bits(b) => *b,
-                    _ => 0,
-                }).collect()
+                v.as_tensor()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::BF16Bits(b) | Literal::F16Bits(b) => *b,
+                        _ => 0,
+                    })
+                    .collect()
             };
-            let d_out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &params).unwrap();
-            let g_out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &params).unwrap();
-            assert_eq!(half_bits(&d_out), half_bits(&g_out), "{dt:?} {op} dense != generic half bits");
+            let d_out = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&dense),
+                &params,
+            )
+            .unwrap();
+            let g_out = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&boxed),
+                &params,
+            )
+            .unwrap();
+            assert_eq!(
+                half_bits(&d_out),
+                half_bits(&g_out),
+                "{dt:?} {op} dense != generic half bits"
+            );
             let time = |input: &Value| {
-                let _ = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(input), &params).unwrap();
+                let _ = eval_primitive(
+                    Primitive::ReduceWindow,
+                    std::slice::from_ref(input),
+                    &params,
+                )
+                .unwrap();
                 let mut best = f64::MAX;
-                for _ in 0..10 { let t = Instant::now(); let _ = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(input), &params).unwrap(); best = best.min(t.elapsed().as_secs_f64()); }
+                for _ in 0..10 {
+                    let t = Instant::now();
+                    let _ = eval_primitive(
+                        Primitive::ReduceWindow,
+                        std::slice::from_ref(input),
+                        &params,
+                    )
+                    .unwrap();
+                    best = best.min(t.elapsed().as_secs_f64());
+                }
                 best
             };
-            let g = time(&boxed); let d = time(&dense);
+            let g = time(&boxed);
+            let d = time(&dense);
             println!(
                 "BENCH reduce_window {dt:?} {op}([{n},{n}],win=3x3): generic={:.4}ms dense={:.4}ms speedup={:.2}x (out {out_n}x{out_n})",
-                g*1e3, d*1e3, g/d,
+                g * 1e3,
+                d * 1e3,
+                g / d,
             );
         }
     }
@@ -15054,29 +15633,58 @@ mod tests {
             .collect();
         let dims = vec![rows as u32, cols as u32];
         let dense = Value::Tensor(
-            TensorValue::new_complex_values(DType::Complex128, Shape { dims: dims.clone() }, raw.clone())
-                .unwrap(),
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape { dims: dims.clone() },
+                raw.clone(),
+            )
+            .unwrap(),
         );
         let boxed = Value::Tensor(
             TensorValue::new(
                 DType::Complex128,
                 Shape { dims: dims.clone() },
-                raw.iter().map(|&(re, im)| Literal::from_complex128(re, im)).collect(),
+                raw.iter()
+                    .map(|&(re, im)| Literal::from_complex128(re, im))
+                    .collect(),
             )
             .unwrap(),
         );
         let bits = |v: &Value| -> Vec<(u64, u64)> {
-            v.as_tensor().unwrap().elements.iter().map(|l| match l {
-                Literal::Complex128Bits(re, im) => (*re, *im),
-                o => panic!("expected Complex128Bits, got {o:?}"),
-            }).collect()
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::Complex128Bits(re, im) => (*re, *im),
+                    o => panic!("expected Complex128Bits, got {o:?}"),
+                })
+                .collect()
         };
         for op in ["sum", "max", "min"] {
-            for (win, strd, pad) in [("3,3", "1,1", "VALID"), ("4,4", "2,2", "VALID"), ("3,3", "1,1", "SAME")] {
+            for (win, strd, pad) in [
+                ("3,3", "1,1", "VALID"),
+                ("4,4", "2,2", "VALID"),
+                ("3,3", "1,1", "SAME"),
+            ] {
                 let params = rw_params_with_padding(op, win, strd, pad);
-                let d = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &params).unwrap();
-                let g = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &params).unwrap();
-                assert_eq!(bits(&d), bits(&g), "complex {op} win={win} pad={pad}: dense != generic");
+                let d = eval_primitive(
+                    Primitive::ReduceWindow,
+                    std::slice::from_ref(&dense),
+                    &params,
+                )
+                .unwrap();
+                let g = eval_primitive(
+                    Primitive::ReduceWindow,
+                    std::slice::from_ref(&boxed),
+                    &params,
+                )
+                .unwrap();
+                assert_eq!(
+                    bits(&d),
+                    bits(&g),
+                    "complex {op} win={win} pad={pad}: dense != generic"
+                );
             }
         }
     }
@@ -15086,24 +15694,86 @@ mod tests {
     fn bench_reduce_window_complex_dense_vs_generic() {
         use std::time::Instant;
         let (n, w) = (384usize, 3usize);
-        let raw: Vec<(f64, f64)> = (0..n * n).map(|i| ((i % 97) as f64 * 0.1, (i % 53) as f64 * 0.2)).collect();
+        let raw: Vec<(f64, f64)> = (0..n * n)
+            .map(|i| ((i % 97) as f64 * 0.1, (i % 53) as f64 * 0.2))
+            .collect();
         let dims = vec![n as u32, n as u32];
-        let dense = Value::Tensor(TensorValue::new_complex_values(DType::Complex128, Shape { dims: dims.clone() }, raw.clone()).unwrap());
-        let boxed = Value::Tensor(TensorValue::new(DType::Complex128, Shape { dims: dims.clone() }, raw.iter().map(|&(re,im)| Literal::from_complex128(re,im)).collect()).unwrap());
+        let dense = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape { dims: dims.clone() },
+                raw.clone(),
+            )
+            .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape { dims: dims.clone() },
+                raw.iter()
+                    .map(|&(re, im)| Literal::from_complex128(re, im))
+                    .collect(),
+            )
+            .unwrap(),
+        );
         let params = rw_params("sum", "3,3", "1,1");
         let sumbits = |v: &Value| -> u64 {
-            v.as_tensor().unwrap().elements.iter().fold(0u64, |a, l| match l { Literal::Complex128Bits(re,_) => a.wrapping_add(*re), _=>a })
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0u64, |a, l| match l {
+                    Literal::Complex128Bits(re, _) => a.wrapping_add(*re),
+                    _ => a,
+                })
         };
         let time = |input: &Value| {
-            let _ = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(input), &params).unwrap();
+            let _ = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(input),
+                &params,
+            )
+            .unwrap();
             let mut best = f64::MAX;
-            for _ in 0..8 { let t = Instant::now(); let _ = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(input), &params).unwrap(); best = best.min(t.elapsed().as_secs_f64()); }
+            for _ in 0..8 {
+                let t = Instant::now();
+                let _ = eval_primitive(
+                    Primitive::ReduceWindow,
+                    std::slice::from_ref(input),
+                    &params,
+                )
+                .unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
             best
         };
-        assert_eq!(sumbits(&eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &params).unwrap()),
-                   sumbits(&eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &params).unwrap()), "parity");
-        let g = time(&boxed); let d = time(&dense);
-        println!("BENCH reduce_window Complex128 sum([{n},{n}],win=3x3): generic={:.4}ms dense={:.4}ms speedup={:.2}x", g*1e3, d*1e3, g/d);
+        assert_eq!(
+            sumbits(
+                &eval_primitive(
+                    Primitive::ReduceWindow,
+                    std::slice::from_ref(&dense),
+                    &params
+                )
+                .unwrap()
+            ),
+            sumbits(
+                &eval_primitive(
+                    Primitive::ReduceWindow,
+                    std::slice::from_ref(&boxed),
+                    &params
+                )
+                .unwrap()
+            ),
+            "parity"
+        );
+        let g = time(&boxed);
+        let d = time(&dense);
+        println!(
+            "BENCH reduce_window Complex128 sum([{n},{n}],win=3x3): generic={:.4}ms dense={:.4}ms speedup={:.2}x",
+            g * 1e3,
+            d * 1e3,
+            g / d
+        );
     }
 
     #[test]
@@ -15115,22 +15785,69 @@ mod tests {
         let (n, w) = (40usize, 15usize); // ∏window=225 > 2·∑window=60 ⇒ separable
         for dt in [DType::BF16, DType::F16] {
             let bits = |v: f64| -> u16 {
-                let l = if dt == DType::BF16 { Literal::from_bf16_f64(v) } else { Literal::from_f16_f64(v) };
-                match l { Literal::BF16Bits(b) | Literal::F16Bits(b) => b, _ => 0 }
+                let l = if dt == DType::BF16 {
+                    Literal::from_bf16_f64(v)
+                } else {
+                    Literal::from_f16_f64(v)
+                };
+                match l {
+                    Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                    _ => 0,
+                }
             };
-            let lit = |b: u16| if dt == DType::BF16 { Literal::BF16Bits(b) } else { Literal::F16Bits(b) };
-            let raw: Vec<u16> = (0..n*n).map(|i| bits(((i*7 % 53) as f64) * 0.1 - 2.5)).collect();
+            let lit = |b: u16| {
+                if dt == DType::BF16 {
+                    Literal::BF16Bits(b)
+                } else {
+                    Literal::F16Bits(b)
+                }
+            };
+            let raw: Vec<u16> = (0..n * n)
+                .map(|i| bits(((i * 7 % 53) as f64) * 0.1 - 2.5))
+                .collect();
             let dims = vec![n as u32, n as u32];
-            let dense = Value::Tensor(TensorValue::new_half_float_values(dt, Shape { dims: dims.clone() }, raw.clone()).unwrap());
-            let boxed = Value::Tensor(TensorValue::new(dt, Shape { dims: dims.clone() }, raw.iter().copied().map(lit).collect()).unwrap());
+            let dense = Value::Tensor(
+                TensorValue::new_half_float_values(dt, Shape { dims: dims.clone() }, raw.clone())
+                    .unwrap(),
+            );
+            let boxed = Value::Tensor(
+                TensorValue::new(
+                    dt,
+                    Shape { dims: dims.clone() },
+                    raw.iter().copied().map(lit).collect(),
+                )
+                .unwrap(),
+            );
             let half_bits = |v: &Value| -> Vec<u16> {
-                v.as_tensor().unwrap().elements.iter().map(|l| match l { Literal::BF16Bits(b)|Literal::F16Bits(b)=>*b, _=>0 }).collect()
+                v.as_tensor()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::BF16Bits(b) | Literal::F16Bits(b) => *b,
+                        _ => 0,
+                    })
+                    .collect()
             };
             for op in ["max", "min"] {
                 let params = rw_params_with_padding(op, &format!("{w},{w}"), "1,1", "VALID");
-                let d = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &params).unwrap();
-                let g = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &params).unwrap();
-                assert_eq!(half_bits(&d), half_bits(&g), "{dt:?} {op} separable != generic");
+                let d = eval_primitive(
+                    Primitive::ReduceWindow,
+                    std::slice::from_ref(&dense),
+                    &params,
+                )
+                .unwrap();
+                let g = eval_primitive(
+                    Primitive::ReduceWindow,
+                    std::slice::from_ref(&boxed),
+                    &params,
+                )
+                .unwrap();
+                assert_eq!(
+                    half_bits(&d),
+                    half_bits(&g),
+                    "{dt:?} {op} separable != generic"
+                );
             }
         }
     }
@@ -15140,16 +15857,35 @@ mod tests {
     fn bench_reduce_window_half_maxmin_separable_vs_dense() {
         use std::time::Instant;
         let (n, w) = (512usize, 15usize);
-        let raw: Vec<u16> = (0..n*n).map(|i| {
-            match Literal::from_bf16_f64(((i % 251) as f64) * 0.05 - 6.0) { Literal::BF16Bits(b)=>b, _=>0 }
-        }).collect();
-        let tensor = Value::Tensor(TensorValue::new_half_float_values(DType::BF16, Shape { dims: vec![n as u32, n as u32] }, raw.clone()).unwrap());
+        let raw: Vec<u16> = (0..n * n)
+            .map(
+                |i| match Literal::from_bf16_f64(((i % 251) as f64) * 0.05 - 6.0) {
+                    Literal::BF16Bits(b) => b,
+                    _ => 0,
+                },
+            )
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_half_float_values(
+                DType::BF16,
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                raw.clone(),
+            )
+            .unwrap(),
+        );
         let params = rw_params_with_padding("max", &format!("{w},{w}"), "1,1", "VALID");
         let out_n = n - w + 1;
         let best = |mut f: Box<dyn FnMut() -> u64>| {
             f();
-            let mut b = f64::MAX; let mut dg = 0u64;
-            for _ in 0..5 { let t = Instant::now(); dg = std::hint::black_box(f()); b = b.min(t.elapsed().as_secs_f64()); }
+            let mut b = f64::MAX;
+            let mut dg = 0u64;
+            for _ in 0..5 {
+                let t = Instant::now();
+                dg = std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
             (b, dg)
         };
         // Per-window dense reference (the dense_float path emulated): f64-accumulate jax_max over the window.
@@ -15157,25 +15893,43 @@ mod tests {
         let (t_win, d_win) = best(Box::new(move || {
             let wid = |u: u16| Literal::BF16Bits(u).as_f64().unwrap_or(0.0);
             let mut sum = 0u64;
-            for or in 0..out_n { for oc in 0..out_n {
-                let mut m = f64::NEG_INFINITY;
-                for dr in 0..w { let base=(or+dr)*n+oc; for dc in 0..w { m = m.max(wid(raw_ref[base+dc])); } }
-                sum = sum.wrapping_add(m.to_bits());
-            }}
+            for or in 0..out_n {
+                for oc in 0..out_n {
+                    let mut m = f64::NEG_INFINITY;
+                    for dr in 0..w {
+                        let base = (or + dr) * n + oc;
+                        for dc in 0..w {
+                            m = m.max(wid(raw_ref[base + dc]));
+                        }
+                    }
+                    sum = sum.wrapping_add(m.to_bits());
+                }
+            }
             sum
         }));
         let t_ref = tensor.clone();
         let (t_sep, d_sep) = best(Box::new(move || {
-            let out = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t_ref), &params).unwrap();
-            out.as_tensor().unwrap().elements.iter().fold(0u64, |a, l| match l {
-                Literal::BF16Bits(b)|Literal::F16Bits(b) => a.wrapping_add(u64::from(*b)),
-                _=>a,
-            })
+            let out = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&t_ref),
+                &params,
+            )
+            .unwrap();
+            out.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0u64, |a, l| match l {
+                    Literal::BF16Bits(b) | Literal::F16Bits(b) => a.wrapping_add(u64::from(*b)),
+                    _ => a,
+                })
         }));
         let _ = (d_win, d_sep);
         println!(
             "BENCH reduce_window BF16 max([{n},{n}],win={w}x{w},s=1): per-window={:.4}ms separable={:.4}ms speedup={:.2}x",
-            t_win*1e3, t_sep*1e3, t_win/t_sep,
+            t_win * 1e3,
+            t_sep * 1e3,
+            t_win / t_sep,
         );
     }
 
@@ -15253,9 +16007,12 @@ mod tests {
 
         let t_fast = tensor.clone();
         let (t_dense, d_dense) = best(Box::new(move || {
-            let out =
-                eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t_fast), &params)
-                    .unwrap();
+            let out = eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&t_fast),
+                &params,
+            )
+            .unwrap();
             out.as_tensor()
                 .unwrap()
                 .elements

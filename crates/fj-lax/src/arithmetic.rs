@@ -474,7 +474,8 @@ pub(crate) fn eval_binary_elementwise(
             if let Some(value) = eval_i64_scalar_broadcast_binop(*rhs, lhs, false, &int_op)? {
                 return Ok(value);
             }
-            if let Some(value) = eval_unsigned_scalar_broadcast_binop(primitive, *rhs, lhs, false)? {
+            if let Some(value) = eval_unsigned_scalar_broadcast_binop(primitive, *rhs, lhs, false)?
+            {
                 return Ok(value);
             }
 
@@ -5780,8 +5781,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             if cond.dtype == DType::Bool
                 && matches!(on_true.dtype, DType::U32 | DType::U64)
                 && on_true.dtype == on_false.dtype
-                && let Some(value) =
-                    select_unsigned_same_shape_fast_path(cond, on_true, on_false)?
+                && let Some(value) = select_unsigned_same_shape_fast_path(cond, on_true, on_false)?
             {
                 return Ok(value);
             }
@@ -19339,14 +19339,26 @@ mod tests {
                 unsigned_out_bits(&boxed),
                 "{prim:?} u32 same-shape dense != boxed"
             );
-            assert_eq!(dense.as_tensor().unwrap().dtype, DType::U32, "{prim:?} u32 dtype");
+            assert_eq!(
+                dense.as_tensor().unwrap().dtype,
+                DType::U32,
+                "{prim:?} u32 dtype"
+            );
             let s = Value::Scalar(Literal::U32(3));
             let dl = crate::eval_primitive(prim, &[s.clone(), u32_dense(&lu32)], &p).unwrap();
             let bl = crate::eval_primitive(prim, &[s.clone(), u32_boxed(&lu32)], &p).unwrap();
-            assert_eq!(unsigned_out_bits(&dl), unsigned_out_bits(&bl), "{prim:?} u32 scalar-left");
+            assert_eq!(
+                unsigned_out_bits(&dl),
+                unsigned_out_bits(&bl),
+                "{prim:?} u32 scalar-left"
+            );
             let dr = crate::eval_primitive(prim, &[u32_dense(&lu32), s.clone()], &p).unwrap();
             let br = crate::eval_primitive(prim, &[u32_boxed(&lu32), s.clone()], &p).unwrap();
-            assert_eq!(unsigned_out_bits(&dr), unsigned_out_bits(&br), "{prim:?} u32 scalar-right");
+            assert_eq!(
+                unsigned_out_bits(&dr),
+                unsigned_out_bits(&br),
+                "{prim:?} u32 scalar-right"
+            );
         }
 
         let lu64 = [0u64, 1, 7, u64::MAX, 1 << 40, 100, u64::MAX - 1, 0];
@@ -19361,14 +19373,26 @@ mod tests {
                 unsigned_out_bits(&boxed),
                 "{prim:?} u64 same-shape dense != boxed"
             );
-            assert_eq!(dense.as_tensor().unwrap().dtype, DType::U64, "{prim:?} u64 dtype");
+            assert_eq!(
+                dense.as_tensor().unwrap().dtype,
+                DType::U64,
+                "{prim:?} u64 dtype"
+            );
             let s = Value::Scalar(Literal::U64(3));
             let dl = crate::eval_primitive(prim, &[s.clone(), u64_dense(&lu64)], &p).unwrap();
             let bl = crate::eval_primitive(prim, &[s.clone(), u64_boxed(&lu64)], &p).unwrap();
-            assert_eq!(unsigned_out_bits(&dl), unsigned_out_bits(&bl), "{prim:?} u64 scalar-left");
+            assert_eq!(
+                unsigned_out_bits(&dl),
+                unsigned_out_bits(&bl),
+                "{prim:?} u64 scalar-left"
+            );
             let dr = crate::eval_primitive(prim, &[u64_dense(&lu64), s.clone()], &p).unwrap();
             let br = crate::eval_primitive(prim, &[u64_boxed(&lu64), s.clone()], &p).unwrap();
-            assert_eq!(unsigned_out_bits(&dr), unsigned_out_bits(&br), "{prim:?} u64 scalar-right");
+            assert_eq!(
+                unsigned_out_bits(&dr),
+                unsigned_out_bits(&br),
+                "{prim:?} u64 scalar-right"
+            );
         }
     }
 
@@ -19377,17 +19401,15 @@ mod tests {
     fn bench_u32_arithmetic_dense_vs_boxed() {
         use std::time::Instant;
         let n = 1_000_000usize;
-        let a: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+        let a: Vec<u32> = (0..n)
+            .map(|i| (i as u32).wrapping_mul(2_654_435_761))
+            .collect();
         let b: Vec<u32> = (0..n)
             .map(|i| (i as u32).wrapping_mul(40_503).wrapping_add(7))
             .collect();
         let dense = [
-            Value::Tensor(
-                TensorValue::new_u32_values(Shape::vector(n as u32), a.clone()).unwrap(),
-            ),
-            Value::Tensor(
-                TensorValue::new_u32_values(Shape::vector(n as u32), b.clone()).unwrap(),
-            ),
+            Value::Tensor(TensorValue::new_u32_values(Shape::vector(n as u32), a.clone()).unwrap()),
+            Value::Tensor(TensorValue::new_u32_values(Shape::vector(n as u32), b.clone()).unwrap()),
         ];
         let boxed = [u32_boxed(&a), u32_boxed(&b)];
         let p = std::collections::BTreeMap::new();
@@ -19416,7 +19438,9 @@ mod tests {
         Value::Tensor(
             TensorValue::new(
                 DType::U32,
-                Shape { dims: dims.to_vec() },
+                Shape {
+                    dims: dims.to_vec(),
+                },
                 d.iter().map(|&v| Literal::U32(v)).collect(),
             )
             .unwrap(),
@@ -19426,7 +19450,9 @@ mod tests {
         Value::Tensor(
             TensorValue::new_with_literal_buffer(
                 DType::U32,
-                Shape { dims: dims.to_vec() },
+                Shape {
+                    dims: dims.to_vec(),
+                },
                 fj_core::LiteralBuffer::new(d.iter().map(|&v| Literal::U32(v)).collect()),
             )
             .unwrap(),
@@ -19436,7 +19462,9 @@ mod tests {
         Value::Tensor(
             TensorValue::new(
                 DType::U64,
-                Shape { dims: dims.to_vec() },
+                Shape {
+                    dims: dims.to_vec(),
+                },
                 d.iter().map(|&v| Literal::U64(v)).collect(),
             )
             .unwrap(),
@@ -19446,7 +19474,9 @@ mod tests {
         Value::Tensor(
             TensorValue::new_with_literal_buffer(
                 DType::U64,
-                Shape { dims: dims.to_vec() },
+                Shape {
+                    dims: dims.to_vec(),
+                },
                 fj_core::LiteralBuffer::new(d.iter().map(|&v| Literal::U64(v)).collect()),
             )
             .unwrap(),
@@ -19557,7 +19587,9 @@ mod tests {
         use std::time::Instant;
         let (rows, cols) = (1000usize, 1000usize);
         let n = rows * cols;
-        let m: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+        let m: Vec<u32> = (0..n)
+            .map(|i| (i as u32).wrapping_mul(2_654_435_761))
+            .collect();
         let row: Vec<u32> = (0..cols)
             .map(|i| (i as u32).wrapping_mul(40_503).wrapping_add(7))
             .collect();
@@ -19565,10 +19597,22 @@ mod tests {
         let row_dims = vec![1u32, cols as u32];
         let dense = [
             Value::Tensor(
-                TensorValue::new_u32_values(Shape { dims: mat_dims.clone() }, m.clone()).unwrap(),
+                TensorValue::new_u32_values(
+                    Shape {
+                        dims: mat_dims.clone(),
+                    },
+                    m.clone(),
+                )
+                .unwrap(),
             ),
             Value::Tensor(
-                TensorValue::new_u32_values(Shape { dims: row_dims.clone() }, row.clone()).unwrap(),
+                TensorValue::new_u32_values(
+                    Shape {
+                        dims: row_dims.clone(),
+                    },
+                    row.clone(),
+                )
+                .unwrap(),
             ),
         ];
         let boxed = [u32_boxed_sh(&mat_dims, &m), u32_boxed_sh(&row_dims, &row)];
@@ -19596,7 +19640,13 @@ mod tests {
 
     fn bool_tensor(dims: &[u32], d: &[bool]) -> Value {
         Value::Tensor(
-            TensorValue::new_bool_values(Shape { dims: dims.to_vec() }, d.to_vec()).unwrap(),
+            TensorValue::new_bool_values(
+                Shape {
+                    dims: dims.to_vec(),
+                },
+                d.to_vec(),
+            )
+            .unwrap(),
         )
     }
 
@@ -19613,34 +19663,58 @@ mod tests {
         let f32v = [99u32, 0, 1, u32::MAX, 5, 3_000_000_001];
         let dense = crate::eval_primitive(
             Primitive::Select,
-            &[bool_tensor(&dims, &c), u32_dense_sh(&dims, &t32), u32_dense_sh(&dims, &f32v)],
+            &[
+                bool_tensor(&dims, &c),
+                u32_dense_sh(&dims, &t32),
+                u32_dense_sh(&dims, &f32v),
+            ],
             &p,
         )
         .unwrap();
         let boxed = crate::eval_primitive(
             Primitive::Select,
-            &[bool_tensor(&dims, &c), u32_boxed_sh(&dims, &t32), u32_boxed_sh(&dims, &f32v)],
+            &[
+                bool_tensor(&dims, &c),
+                u32_boxed_sh(&dims, &t32),
+                u32_boxed_sh(&dims, &f32v),
+            ],
             &p,
         )
         .unwrap();
-        assert_eq!(unsigned_out_bits(&dense), unsigned_out_bits(&boxed), "u32 select");
+        assert_eq!(
+            unsigned_out_bits(&dense),
+            unsigned_out_bits(&boxed),
+            "u32 select"
+        );
         assert_eq!(dense.as_tensor().unwrap().dtype, DType::U32);
 
         let t64 = [10u64, 20, u64::MAX, 0, 1 << 50, 7];
         let f64v = [99u64, 0, 1, u64::MAX, 5, (1 << 50) + 1];
         let dense = crate::eval_primitive(
             Primitive::Select,
-            &[bool_tensor(&dims, &c), u64_dense_sh(&dims, &t64), u64_dense_sh(&dims, &f64v)],
+            &[
+                bool_tensor(&dims, &c),
+                u64_dense_sh(&dims, &t64),
+                u64_dense_sh(&dims, &f64v),
+            ],
             &p,
         )
         .unwrap();
         let boxed = crate::eval_primitive(
             Primitive::Select,
-            &[bool_tensor(&dims, &c), u64_boxed_sh(&dims, &t64), u64_boxed_sh(&dims, &f64v)],
+            &[
+                bool_tensor(&dims, &c),
+                u64_boxed_sh(&dims, &t64),
+                u64_boxed_sh(&dims, &f64v),
+            ],
             &p,
         )
         .unwrap();
-        assert_eq!(unsigned_out_bits(&dense), unsigned_out_bits(&boxed), "u64 select");
+        assert_eq!(
+            unsigned_out_bits(&dense),
+            unsigned_out_bits(&boxed),
+            "u64 select"
+        );
         assert_eq!(dense.as_tensor().unwrap().dtype, DType::U64);
     }
 
@@ -19651,7 +19725,9 @@ mod tests {
         let n = 1_000_000usize;
         let dims = vec![1000u32, 1000];
         let c: Vec<bool> = (0..n).map(|i| i % 3 == 0).collect();
-        let t: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+        let t: Vec<u32> = (0..n)
+            .map(|i| (i as u32).wrapping_mul(2_654_435_761))
+            .collect();
         let f: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(40_503)).collect();
         let cond = Value::Tensor(
             TensorValue::new_bool_values(Shape { dims: dims.clone() }, c.clone()).unwrap(),
@@ -19748,7 +19824,11 @@ mod tests {
             &p,
         )
         .unwrap();
-        assert_eq!(f32_bits_vec(&dense), f32_bits_vec(&boxed), "f32 clamp(min,x,max)");
+        assert_eq!(
+            f32_bits_vec(&dense),
+            f32_bits_vec(&boxed),
+            "f32 clamp(min,x,max)"
+        );
         assert_eq!(dense.as_tensor().unwrap().dtype, DType::F32);
 
         let dense2 = crate::eval_primitive(
@@ -19763,7 +19843,11 @@ mod tests {
             &p,
         )
         .unwrap();
-        assert_eq!(f32_bits_vec(&dense2), f32_bits_vec(&boxed2), "f32 clamp(x,lo,hi)");
+        assert_eq!(
+            f32_bits_vec(&dense2),
+            f32_bits_vec(&boxed2),
+            "f32 clamp(x,lo,hi)"
+        );
     }
 
     #[test]

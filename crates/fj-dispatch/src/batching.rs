@@ -482,9 +482,7 @@ pub fn apply_batch_rule(
         // Fma(a,b,c)=a*b+c and Betainc(a,b,x) are elementwise but ternary;
         // batch_passthrough_leading evaluates each batch slice and stacks,
         // broadcasting any unbatched operand.
-        Primitive::Fma | Primitive::Betainc => {
-            batch_ternary_elementwise(primitive, inputs, params)
-        }
+        Primitive::Fma | Primitive::Betainc => batch_ternary_elementwise(primitive, inputs, params),
 
         // ── Reduction ops ──────────────────────────────────────
         Primitive::ReduceSum
@@ -544,9 +542,7 @@ pub fn apply_batch_rule(
 
         // ── Sorting ────────────────────────────────────────────
         Primitive::Sort | Primitive::Argsort => batch_sort(primitive, inputs, params),
-        Primitive::Argmin | Primitive::Argmax => {
-            batch_argmax_argmin(primitive, inputs, params)
-        }
+        Primitive::Argmin | Primitive::Argmax => batch_argmax_argmin(primitive, inputs, params),
 
         // ── Convolution ────────────────────────────────────────
         Primitive::Conv => batch_conv(inputs, params),
@@ -1050,7 +1046,11 @@ fn batch_argmax_argmin(
             let ax: i64 = raw.trim().parse().map_err(|_| {
                 BatchError::EvalError(format!("argmin/argmax axis is not an integer: {raw:?}"))
             })?;
-            let norm = if ax < 0 { per_elem_rank as i64 + ax } else { ax };
+            let norm = if ax < 0 {
+                per_elem_rank as i64 + ax
+            } else {
+                ax
+            };
             if norm < 0 || norm >= per_elem_rank as i64 {
                 return Err(BatchError::EvalError(format!(
                     "argmin/argmax axis {ax} out of range for per-element rank {per_elem_rank}"
@@ -1086,8 +1086,9 @@ fn batch_tile(
     let input = &inputs[0];
     let batch_dim = match input.batch_dim {
         None => {
-            let result = eval_primitive(Primitive::Tile, std::slice::from_ref(&input.value), params)
-                .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            let result =
+                eval_primitive(Primitive::Tile, std::slice::from_ref(&input.value), params)
+                    .map_err(|e| BatchError::EvalError(e.to_string()))?;
             return Ok(BatchTracer::unbatched(result));
         }
         Some(bd) => bd,
@@ -4603,12 +4604,7 @@ fn batch_svd_multi(
             let base = b * matrix_len;
             if thin_3x2 {
                 let a = &all[base..base + 6];
-                svd_decompose_matrix_3x2_thin_into(
-                    [a[0], a[1], a[2], a[3], a[4], a[5]],
-                    u,
-                    s,
-                    vt,
-                );
+                svd_decompose_matrix_3x2_thin_into([a[0], a[1], a[2], a[3], a[4], a[5]], u, s, vt);
             } else {
                 svd_decompose_matrix(m, n, &all[base..base + matrix_len], full_matrices, scratch);
                 u.copy_from_slice(&scratch.u_out);
@@ -4747,12 +4743,7 @@ fn batch_svd_multi_f64_outputs(
             let base = b * matrix_len;
             if thin_3x2 {
                 let a = &all[base..base + 6];
-                svd_decompose_matrix_3x2_thin_into(
-                    [a[0], a[1], a[2], a[3], a[4], a[5]],
-                    u,
-                    s,
-                    vt,
-                );
+                svd_decompose_matrix_3x2_thin_into([a[0], a[1], a[2], a[3], a[4], a[5]], u, s, vt);
             } else {
                 svd_decompose_matrix(m, n, &all[base..base + matrix_len], full_matrices, scratch);
                 u.copy_from_slice(&scratch.u_out);
@@ -5865,9 +5856,12 @@ fn batch_associative_scan(
     let input = &inputs[0];
     let batch_dim = match input.batch_dim {
         None => {
-            let result =
-                eval_primitive(Primitive::AssociativeScan, std::slice::from_ref(&input.value), params)
-                    .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            let result = eval_primitive(
+                Primitive::AssociativeScan,
+                std::slice::from_ref(&input.value),
+                params,
+            )
+            .map_err(|e| BatchError::EvalError(e.to_string()))?;
             return Ok(BatchTracer::unbatched(result));
         }
         Some(bd) => bd,
@@ -14834,11 +14828,11 @@ mod tests {
             .unwrap();
             BatchTracer::batched(Value::Tensor(t), 1)
         };
-        let make_3d = |bd: usize| -> BatchTracer {
-            if bd == 0 { make_front() } else { make_mid() }
-        };
+        let make_3d =
+            |bd: usize| -> BatchTracer { if bd == 0 { make_front() } else { make_mid() } };
 
-        let axis_params: Vec<Option<&str>> = vec![Some("0"), Some("1"), Some("-1"), Some("-2"), None];
+        let axis_params: Vec<Option<&str>> =
+            vec![Some("0"), Some("1"), Some("-1"), Some("-2"), None];
         for prim in [Primitive::Argmax, Primitive::Argmin] {
             for bd in [0usize, 1usize] {
                 for ax in &axis_params {
@@ -14913,10 +14907,9 @@ mod tests {
             extract(batch_passthrough_leading(Primitive::Argmax, &[make()], &params).unwrap())
         }));
         let params2 = BTreeMap::from([("axis".to_owned(), "-1".to_owned())]);
-        let (t_fast, d_fast) =
-            best(Box::new(move || {
-                extract(batch_argmax_argmin(Primitive::Argmax, &[make()], &params2).unwrap())
-            }));
+        let (t_fast, d_fast) = best(Box::new(move || {
+            extract(batch_argmax_argmin(Primitive::Argmax, &[make()], &params2).unwrap())
+        }));
         assert_eq!(d_slow, d_fast, "bench parity: single-call != per-slice");
         println!(
             "BENCH vmap(argmax) [{b},{n}] axis=-1: per-slice={:.4}ms single-call={:.4}ms speedup={:.2}x",
@@ -14932,7 +14925,11 @@ mod tests {
         // to the per-slice eval+stack across reps forms, ranks, and batch dims.
         let summary = |t: &BatchTracer| -> (Option<usize>, Vec<u32>, Vec<f64>) {
             let tensor = t.value.as_tensor().unwrap();
-            (t.batch_dim, tensor.shape.dims.clone(), extract_f64_vec(&t.value))
+            (
+                t.batch_dim,
+                tensor.shape.dims.clone(),
+                extract_f64_vec(&t.value),
+            )
         };
         // batch-front [B=3, R=2, C=2]
         let data: Vec<f64> = (0..12).map(|i| i as f64).collect();
@@ -14941,7 +14938,9 @@ mod tests {
                 Value::Tensor(
                     TensorValue::new(
                         DType::F64,
-                        Shape { dims: vec![3, 2, 2] },
+                        Shape {
+                            dims: vec![3, 2, 2],
+                        },
                         data.iter().copied().map(Literal::from_f64).collect(),
                     )
                     .unwrap(),
@@ -14964,7 +14963,9 @@ mod tests {
                 Value::Tensor(
                     TensorValue::new(
                         DType::F64,
-                        Shape { dims: vec![r as u32, b as u32, c as u32] },
+                        Shape {
+                            dims: vec![r as u32, b as u32, c as u32],
+                        },
                         out.into_iter().map(Literal::from_f64).collect(),
                     )
                     .unwrap(),
@@ -14977,7 +14978,11 @@ mod tests {
                 let params = BTreeMap::from([("reps".to_owned(), reps.to_owned())]);
                 let fast = batch_tile(&[mk()], &params).unwrap();
                 let slow = batch_passthrough_leading(Primitive::Tile, &[mk()], &params).unwrap();
-                assert_eq!(summary(&fast), summary(&slow), "tile reps={reps}: single-call != per-slice");
+                assert_eq!(
+                    summary(&fast),
+                    summary(&slow),
+                    "tile reps={reps}: single-call != per-slice"
+                );
             }
         }
     }
@@ -14996,7 +15001,9 @@ mod tests {
                 Value::Tensor(
                     TensorValue::new(
                         DType::F64,
-                        Shape { dims: vec![b as u32, n as u32] },
+                        Shape {
+                            dims: vec![b as u32, n as u32],
+                        },
                         data.iter().copied().map(Literal::from_f64).collect(),
                     )
                     .unwrap(),
@@ -15016,10 +15023,13 @@ mod tests {
             (t, first)
         };
         let len = |r: BatchTracer| -> usize { r.value.as_tensor().unwrap().elements.len() };
-        let (t_slow, l_slow) =
-            best(Box::new(move || len(batch_passthrough_leading(Primitive::Tile, &[make()], &params).unwrap())));
+        let (t_slow, l_slow) = best(Box::new(move || {
+            len(batch_passthrough_leading(Primitive::Tile, &[make()], &params).unwrap())
+        }));
         let params2 = BTreeMap::from([("reps".to_owned(), rep.to_string())]);
-        let (t_fast, l_fast) = best(Box::new(move || len(batch_tile(&[make()], &params2).unwrap())));
+        let (t_fast, l_fast) = best(Box::new(move || {
+            len(batch_tile(&[make()], &params2).unwrap())
+        }));
         assert_eq!(l_slow, l_fast, "bench parity: output element count differs");
         println!(
             "BENCH vmap(tile) [{b},{n}] reps={rep}: per-slice={:.4}ms single-call={:.4}ms speedup={:.2}x",
@@ -15099,7 +15109,9 @@ mod tests {
                     Value::Tensor(
                         TensorValue::new(
                             DType::F64,
-                            Shape { dims: vec![b as u32, n as u32] },
+                            Shape {
+                                dims: vec![b as u32, n as u32],
+                            },
                             v.iter().copied().map(Literal::from_f64).collect(),
                         )
                         .unwrap(),
@@ -15187,7 +15199,11 @@ mod tests {
         ];
         let fast = batch_select_n(&ins, &BTreeMap::new()).unwrap();
         let slow = batch_passthrough_leading(Primitive::SelectN, &ins, &BTreeMap::new()).unwrap();
-        assert_eq!(summary(&fast), summary(&slow), "select_n elementwise batched");
+        assert_eq!(
+            summary(&fast),
+            summary(&slow),
+            "select_n elementwise batched"
+        );
 
         // (2) shared unbatched index broadcast across batch — fast path.
         let shared_idx = BatchTracer::unbatched(Value::Tensor(
@@ -15205,7 +15221,11 @@ mod tests {
         ];
         let fast2 = batch_select_n(&ins2, &BTreeMap::new()).unwrap();
         let slow2 = batch_passthrough_leading(Primitive::SelectN, &ins2, &BTreeMap::new()).unwrap();
-        assert_eq!(summary(&fast2), summary(&slow2), "select_n shared-index broadcast");
+        assert_eq!(
+            summary(&fast2),
+            summary(&slow2),
+            "select_n shared-index broadcast"
+        );
     }
 
     #[test]
@@ -15220,7 +15240,9 @@ mod tests {
                 Value::Tensor(
                     TensorValue::new(
                         DType::I64,
-                        Shape { dims: vec![b as u32, n as u32] },
+                        Shape {
+                            dims: vec![b as u32, n as u32],
+                        },
                         idx.iter().copied().map(Literal::I64).collect(),
                     )
                     .unwrap(),
@@ -15232,7 +15254,9 @@ mod tests {
                     Value::Tensor(
                         TensorValue::new(
                             DType::F64,
-                            Shape { dims: vec![b as u32, n as u32] },
+                            Shape {
+                                dims: vec![b as u32, n as u32],
+                            },
                             c.iter().map(|&v| Literal::from_f64(v + off)).collect(),
                         )
                         .unwrap(),
@@ -15256,8 +15280,9 @@ mod tests {
         let (t_slow, l_slow) = best(Box::new(move || {
             len(batch_passthrough_leading(Primitive::SelectN, &make(), &BTreeMap::new()).unwrap())
         }));
-        let (t_fast, l_fast) =
-            best(Box::new(move || len(batch_select_n(&make(), &BTreeMap::new()).unwrap())));
+        let (t_fast, l_fast) = best(Box::new(move || {
+            len(batch_select_n(&make(), &BTreeMap::new()).unwrap())
+        }));
         assert_eq!(l_slow, l_fast);
         println!(
             "BENCH vmap(select_n) [{b},{n}] 3 cases: per-slice={:.4}ms single-call={:.4}ms speedup={:.2}x",
@@ -15317,8 +15342,8 @@ mod tests {
                     vec![mid2()],
                 ] {
                     let fast = batch_associative_scan(&ins, &params).unwrap();
-                    let slow =
-                        batch_passthrough_leading(Primitive::AssociativeScan, &ins, &params).unwrap();
+                    let slow = batch_passthrough_leading(Primitive::AssociativeScan, &ins, &params)
+                        .unwrap();
                     assert_eq!(
                         summary(&fast),
                         summary(&slow),
@@ -15340,7 +15365,9 @@ mod tests {
                 Value::Tensor(
                     TensorValue::new(
                         DType::F64,
-                        Shape { dims: vec![b as u32, t as u32] },
+                        Shape {
+                            dims: vec![b as u32, t as u32],
+                        },
                         data.iter().copied().map(Literal::from_f64).collect(),
                     )
                     .unwrap(),
@@ -15364,8 +15391,9 @@ mod tests {
             len(batch_passthrough_leading(Primitive::AssociativeScan, &make(), &params).unwrap())
         }));
         let params2 = BTreeMap::from([("body_op".to_owned(), "add".to_owned())]);
-        let (t_fast, l_fast) =
-            best(Box::new(move || len(batch_associative_scan(&make(), &params2).unwrap())));
+        let (t_fast, l_fast) = best(Box::new(move || {
+            len(batch_associative_scan(&make(), &params2).unwrap())
+        }));
         assert_eq!(l_slow, l_fast);
         println!(
             "BENCH vmap(associative_scan) [{b},{t}]: per-slice={:.4}ms single-call={:.4}ms speedup={:.2}x",
@@ -15424,9 +15452,12 @@ mod tests {
                 vec![mid()],
             ] {
                 let fast = batch_top_k_multi(&ins, &params).unwrap();
-                let slow =
-                    batch_passthrough_leading_multi(Primitive::TopK, &ins, &params).unwrap();
-                assert_eq!(summary(&fast), summary(&slow), "top_k k={k}: single-call != per-slice");
+                let slow = batch_passthrough_leading_multi(Primitive::TopK, &ins, &params).unwrap();
+                assert_eq!(
+                    summary(&fast),
+                    summary(&slow),
+                    "top_k k={k}: single-call != per-slice"
+                );
             }
         }
     }
@@ -15436,13 +15467,17 @@ mod tests {
     fn bench_batch_top_k_single_call_vs_per_slice() {
         use std::time::Instant;
         let (b, n) = (131072usize, 16usize);
-        let data: Vec<f64> = (0..b * n).map(|i| ((i.wrapping_mul(2_654_435_761) >> 9) & 0xffff) as f64).collect();
+        let data: Vec<f64> = (0..b * n)
+            .map(|i| ((i.wrapping_mul(2_654_435_761) >> 9) & 0xffff) as f64)
+            .collect();
         let make = || -> Vec<BatchTracer> {
             vec![BatchTracer::batched(
                 Value::Tensor(
                     TensorValue::new(
                         DType::F64,
-                        Shape { dims: vec![b as u32, n as u32] },
+                        Shape {
+                            dims: vec![b as u32, n as u32],
+                        },
                         data.iter().copied().map(Literal::from_f64).collect(),
                     )
                     .unwrap(),
@@ -15462,14 +15497,17 @@ mod tests {
             (tm, first)
         };
         let nelem = |outs: Vec<BatchTracer>| -> usize {
-            outs.iter().map(|t| t.value.as_tensor().unwrap().elements.len()).sum()
+            outs.iter()
+                .map(|t| t.value.as_tensor().unwrap().elements.len())
+                .sum()
         };
         let (t_slow, l_slow) = best(Box::new(move || {
             nelem(batch_passthrough_leading_multi(Primitive::TopK, &make(), &params).unwrap())
         }));
         let params2 = BTreeMap::from([("k".to_owned(), "4".to_owned())]);
-        let (t_fast, l_fast) =
-            best(Box::new(move || nelem(batch_top_k_multi(&make(), &params2).unwrap())));
+        let (t_fast, l_fast) = best(Box::new(move || {
+            nelem(batch_top_k_multi(&make(), &params2).unwrap())
+        }));
         assert_eq!(l_slow, l_fast);
         println!(
             "BENCH vmap(top_k) [{b},{n}] k=4: per-slice={:.4}ms single-call={:.4}ms speedup={:.2}x",

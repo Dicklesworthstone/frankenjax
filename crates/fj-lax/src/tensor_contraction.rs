@@ -389,13 +389,31 @@ pub fn strassen_matmul_2d(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) ->
     let ak = m2 * k2;
     let bk = k2 * n2;
     // The 7 Strassen products, each on (m2×k2)@(k2×n2).
-    let p1 = strassen_matmul_2d(&strassen_add(&a11, &a22, ak), m2, k2, &strassen_add(&b11, &b22, bk), n2);
+    let p1 = strassen_matmul_2d(
+        &strassen_add(&a11, &a22, ak),
+        m2,
+        k2,
+        &strassen_add(&b11, &b22, bk),
+        n2,
+    );
     let p2 = strassen_matmul_2d(&strassen_add(&a21, &a22, ak), m2, k2, &b11, n2);
     let p3 = strassen_matmul_2d(&a11, m2, k2, &strassen_diff(&b12, &b22, bk), n2);
     let p4 = strassen_matmul_2d(&a22, m2, k2, &strassen_diff(&b21, &b11, bk), n2);
     let p5 = strassen_matmul_2d(&strassen_add(&a11, &a12, ak), m2, k2, &b22, n2);
-    let p6 = strassen_matmul_2d(&strassen_diff(&a21, &a11, ak), m2, k2, &strassen_add(&b11, &b12, bk), n2);
-    let p7 = strassen_matmul_2d(&strassen_diff(&a12, &a22, ak), m2, k2, &strassen_add(&b21, &b22, bk), n2);
+    let p6 = strassen_matmul_2d(
+        &strassen_diff(&a21, &a11, ak),
+        m2,
+        k2,
+        &strassen_add(&b11, &b12, bk),
+        n2,
+    );
+    let p7 = strassen_matmul_2d(
+        &strassen_diff(&a12, &a22, ak),
+        m2,
+        k2,
+        &strassen_add(&b21, &b22, bk),
+        n2,
+    );
 
     // C11=P1+P4-P5+P7; C12=P3+P5; C21=P2+P4; C22=P1-P2+P3+P6.
     let mut c = vec![0.0; m * n];
@@ -416,7 +434,13 @@ pub fn strassen_matmul_2d(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) ->
 }
 
 /// Copy `rows×cols` of `src` into the top-left of a zeroed `new_rows×new_cols` matrix.
-fn strassen_pad(src: &[f64], rows: usize, cols: usize, new_rows: usize, new_cols: usize) -> Vec<f64> {
+fn strassen_pad(
+    src: &[f64],
+    rows: usize,
+    cols: usize,
+    new_rows: usize,
+    new_cols: usize,
+) -> Vec<f64> {
     let mut out = vec![0.0; new_rows * new_cols];
     for r in 0..rows {
         out[r * new_cols..r * new_cols + cols].copy_from_slice(&src[r * cols..r * cols + cols]);
@@ -2000,7 +2024,14 @@ fn matmul_2d_blocked_row_block_f32(
 /// Bench-only single-batch f32 GEMM A/B: `blocked=true` runs the F32_MR cache-blocked
 /// kernel (production), `false` the per-row reference, isolating the register-blocking win.
 #[doc(hidden)]
-pub fn f32_matmul_bench(a: &[f32], m: usize, k: usize, b: &[f32], n: usize, mode: &str) -> Vec<f32> {
+pub fn f32_matmul_bench(
+    a: &[f32],
+    m: usize,
+    k: usize,
+    b: &[f32],
+    n: usize,
+    mode: &str,
+) -> Vec<f32> {
     let mut out = vec![0.0f32; m * n];
     match mode {
         "rowref" => batched_matmul_row_block_f32_in_rowref(a, b, m, k, n, 0, &mut out),
@@ -2968,9 +2999,16 @@ mod tests {
             (11usize, 512usize, 519usize), // k·n=265728 >= 1<<18; m%4=3, n%16=7
             (37, 600, 528),                // larger; m%4=1, n%16=0
         ] {
-            assert!(k * n >= PACK_B_MIN_KN_F32, "test must trigger the packed path");
-            let af: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.0007).sin() - 0.3).collect();
-            let bf: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.0009).cos() + 0.2).collect();
+            assert!(
+                k * n >= PACK_B_MIN_KN_F32,
+                "test must trigger the packed path"
+            );
+            let af: Vec<f32> = (0..m * k)
+                .map(|i| (i as f32 * 0.0007).sin() - 0.3)
+                .collect();
+            let bf: Vec<f32> = (0..k * n)
+                .map(|i| (i as f32 * 0.0009).cos() + 0.2)
+                .collect();
             let got = batched_matmul_2d_f32_in(&af, 1, m, k, &bf, n);
             let mut want = vec![0.0f32; m * n];
             for i in 0..m {
@@ -3041,7 +3079,7 @@ mod tests {
             (2usize, 11usize, 7usize, 19usize), // m%4=3, n%16=3, batch edge at row 11
             (3, 13, 5, 33),                     // m%4=1, n%16=1
             (1, 7, 9, 16),                      // m%4=3, n%16=0 (microkernel + row rem only)
-            (1, 8, 4, 5),                        // m%4=0, n<16 (column remainder only)
+            (1, 8, 4, 5),                       // m%4=0, n<16 (column remainder only)
         ] {
             let af: Vec<f32> = (0..bt * m * k)
                 .map(|i| (i as f32 * 0.011).sin() * 1.7 - 0.4)
@@ -3320,7 +3358,7 @@ mod tests {
             (2usize, 11usize, 7usize, 19usize), // m%4=3, n%16=3, batch edge off MR
             (3, 13, 5, 33),                     // m%4=1, n%16=1
             (1, 7, 9, 16),                      // m%4=3, n%16=0
-            (1, 8, 4, 5),                        // m%4=0, n<16
+            (1, 8, 4, 5),                       // m%4=0, n<16
         ] {
             let a16: Vec<u16> = (0..bt * m * k)
                 .map(|i| to_bf16((i as f64 * 0.011).sin() * 1.7 - 0.4))
@@ -3443,15 +3481,31 @@ mod tests {
         // is gated off for it in production: k*n < BLOCKED_B_MIN_KN.) Single-thread to
         // isolate the macro-kernel. If blocked wins, porting it to f32 is the lever.
         for &(m, k, n) in &[(8192usize, 576, 64), (8192, 576, 128)] {
-            let af64: Vec<f64> = (0..m * k).map(|i| (i as f64 * 0.0007).sin() - 0.3).collect();
-            let bf64: Vec<f64> = (0..k * n).map(|i| (i as f64 * 0.0009).cos() + 0.2).collect();
-            let plan_flat = super::MatmulPlan { threads: 1, pack_b: true, block_k: false };
-            let plan_blk = super::MatmulPlan { threads: 1, pack_b: true, block_k: true };
+            let af64: Vec<f64> = (0..m * k)
+                .map(|i| (i as f64 * 0.0007).sin() - 0.3)
+                .collect();
+            let bf64: Vec<f64> = (0..k * n)
+                .map(|i| (i as f64 * 0.0009).cos() + 0.2)
+                .collect();
+            let plan_flat = super::MatmulPlan {
+                threads: 1,
+                pack_b: true,
+                block_k: false,
+            };
+            let plan_blk = super::MatmulPlan {
+                threads: 1,
+                pack_b: true,
+                block_k: true,
+            };
             let t_flat = best_time(|| {
-                std::hint::black_box(super::matmul_2d_with_threads(&af64, m, k, &bf64, n, plan_flat));
+                std::hint::black_box(super::matmul_2d_with_threads(
+                    &af64, m, k, &bf64, n, plan_flat,
+                ));
             });
             let t_blk = best_time(|| {
-                std::hint::black_box(super::matmul_2d_with_threads(&af64, m, k, &bf64, n, plan_blk));
+                std::hint::black_box(super::matmul_2d_with_threads(
+                    &af64, m, k, &bf64, n, plan_blk,
+                ));
             });
             let gf = 2.0 * (m * k * n) as f64 / 1e9;
             println!(
@@ -3467,8 +3521,12 @@ mod tests {
         // same invocation — these fall below PACK_B_MIN_KN_F32 so production runs them
         // unpacked. Does packing the small-but-deep B (k*n) help the narrow shape?
         for &(m, k, n) in &[(25088usize, 576, 64), (12544, 576, 128), (50176, 288, 64)] {
-            let af32: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.0007).sin() - 0.3).collect();
-            let bf32: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.0009).cos() + 0.2).collect();
+            let af32: Vec<f32> = (0..m * k)
+                .map(|i| (i as f32 * 0.0007).sin() - 0.3)
+                .collect();
+            let bf32: Vec<f32> = (0..k * n)
+                .map(|i| (i as f32 * 0.0009).cos() + 0.2)
+                .collect();
             let t_un = best_time(|| {
                 std::hint::black_box(super::f32_matmul_bench(&af32, m, k, &bf32, n, "default"));
             });
@@ -3488,8 +3546,12 @@ mod tests {
         }
         for &sz in &[1024usize, 2048] {
             let (m, k, n) = (sz, sz, sz);
-            let af64: Vec<f64> = (0..m * k).map(|i| (i as f64 * 0.0007).sin() - 0.3).collect();
-            let bf64: Vec<f64> = (0..k * n).map(|i| (i as f64 * 0.0009).cos() + 0.2).collect();
+            let af64: Vec<f64> = (0..m * k)
+                .map(|i| (i as f64 * 0.0007).sin() - 0.3)
+                .collect();
+            let bf64: Vec<f64> = (0..k * n)
+                .map(|i| (i as f64 * 0.0009).cos() + 0.2)
+                .collect();
             let af32: Vec<f32> = af64.iter().map(|&x| x as f32).collect();
             let bf32: Vec<f32> = bf64.iter().map(|&x| x as f32).collect();
             let t64 = best_time(|| {

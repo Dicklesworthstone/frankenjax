@@ -566,8 +566,7 @@ fn oracle_scatter_out_of_bounds_clip_mode() {
     let updates = make_i64_tensor(&[1], vec![99]);
     let mut params = scatter_params();
     params.insert("index_mode".to_string(), "clip".to_string());
-    let result =
-        eval_primitive(Primitive::Scatter, &[operand, indices, updates], &params).unwrap();
+    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &params).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![0, 0, 0, 99]);
 }
 

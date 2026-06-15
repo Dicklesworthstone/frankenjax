@@ -6929,12 +6929,8 @@ mod tests {
         assert!(buffer.as_u32_slice().is_none());
 
         // TensorValue::new densifies a U32 dtype + all-U32 literals.
-        let tv = TensorValue::new(
-            DType::U32,
-            Shape { dims: vec![6] },
-            expected.clone(),
-        )
-        .expect("build u32 tensor");
+        let tv = TensorValue::new(DType::U32, Shape { dims: vec![6] }, expected.clone())
+            .expect("build u32 tensor");
         assert_eq!(tv.elements.as_u32_slice(), Some(values.as_slice()));
         let tv2 = TensorValue::new_u32_values(Shape { dims: vec![6] }, values.clone())
             .expect("build dense u32 tensor");
@@ -6966,12 +6962,8 @@ mod tests {
         assert_eq!(original.as_u64_slice(), Some(values.as_slice()));
         assert!(buffer.as_u64_slice().is_none());
 
-        let tv = TensorValue::new(
-            DType::U64,
-            Shape { dims: vec![6] },
-            expected.clone(),
-        )
-        .expect("build u64 tensor");
+        let tv = TensorValue::new(DType::U64, Shape { dims: vec![6] }, expected.clone())
+            .expect("build u64 tensor");
         assert_eq!(tv.elements.as_u64_slice(), Some(values.as_slice()));
         let tv2 = TensorValue::new_u64_values(Shape { dims: vec![6] }, values.clone())
             .expect("build dense u64 tensor");

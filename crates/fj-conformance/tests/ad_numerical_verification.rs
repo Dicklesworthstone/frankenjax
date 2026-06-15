@@ -222,7 +222,8 @@ fn det_vjp_numerical_3x3() {
     // ∂det/∂A = det(A)·inv(A)ᵀ. Well-conditioned non-symmetric 3×3.
     let a_data = [2.0, 0.3, -0.1, 0.4, 3.0, 0.2, -0.2, 0.1, 2.5];
     let a = make_f64_matrix(3, 3, &a_data);
-    let det_out = eval_primitive(Primitive::Det, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
+    let det_out =
+        eval_primitive(Primitive::Det, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
     let g = Value::scalar_f64(1.0);
     let vjp = fj_ad::vjp(
         Primitive::Det,
@@ -241,10 +242,18 @@ fn det_vjp_numerical_3x3() {
         plus[idx] += eps;
         let mut minus = a_data.to_vec();
         minus[idx] -= eps;
-        let dp = eval_primitive(Primitive::Det, &[make_f64_matrix(3, 3, &plus)], &BTreeMap::new())
-            .unwrap();
-        let dm = eval_primitive(Primitive::Det, &[make_f64_matrix(3, 3, &minus)], &BTreeMap::new())
-            .unwrap();
+        let dp = eval_primitive(
+            Primitive::Det,
+            &[make_f64_matrix(3, 3, &plus)],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let dm = eval_primitive(
+            Primitive::Det,
+            &[make_f64_matrix(3, 3, &minus)],
+            &BTreeMap::new(),
+        )
+        .unwrap();
         numerical[idx] = (extract_f64_scalar(&dp) - extract_f64_scalar(&dm)) / (2.0 * eps);
     }
     assert_gradients_close(&analytical, &numerical, 1e-5, "Det VJP");
@@ -256,8 +265,12 @@ fn slogdet_vjp_numerical_3x3() {
     // ∂logabsdet/∂A = inv(A)ᵀ (the sign output's cotangent contributes 0 for real A).
     let a_data = [2.0, 0.3, -0.1, 0.4, 3.0, 0.2, -0.2, 0.1, 2.5];
     let a = make_f64_matrix(3, 3, &a_data);
-    let outs =
-        eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
+    let outs = eval_primitive_multi(
+        Primitive::Slogdet,
+        std::slice::from_ref(&a),
+        &BTreeMap::new(),
+    )
+    .unwrap();
     // Cotangents: (sign → 0, logabsdet → 1).
     let g = [Value::scalar_f64(0.0), Value::scalar_f64(1.0)];
     let vjp = fj_ad::vjp(
@@ -290,8 +303,7 @@ fn slogdet_vjp_numerical_3x3() {
         )
         .unwrap();
         // loss = 1·logabsdet (output index 1).
-        numerical[idx] =
-            (extract_f64_scalar(&lp[1]) - extract_f64_scalar(&lm[1])) / (2.0 * eps);
+        numerical[idx] = (extract_f64_scalar(&lp[1]) - extract_f64_scalar(&lm[1])) / (2.0 * eps);
     }
     assert_gradients_close(&analytical, &numerical, 1e-5, "Slogdet VJP");
 }
@@ -320,8 +332,12 @@ fn solve_vjp_numerical_3x3() {
 
     let eps = 1e-6;
     let loss = |av: &Value, bv: &Value| -> f64 {
-        let xx = eval_primitive(Primitive::Solve, &[av.clone(), bv.clone()], &BTreeMap::new())
-            .unwrap();
+        let xx = eval_primitive(
+            Primitive::Solve,
+            &[av.clone(), bv.clone()],
+            &BTreeMap::new(),
+        )
+        .unwrap();
         extract_f64_vec(&xx)
             .iter()
             .zip(g_data.iter())
@@ -334,8 +350,8 @@ fn solve_vjp_numerical_3x3() {
         p[idx] += eps;
         let mut m = a_data.to_vec();
         m[idx] -= eps;
-        num_a[idx] =
-            (loss(&make_f64_matrix(3, 3, &p), &b) - loss(&make_f64_matrix(3, 3, &m), &b)) / (2.0 * eps);
+        num_a[idx] = (loss(&make_f64_matrix(3, 3, &p), &b) - loss(&make_f64_matrix(3, 3, &m), &b))
+            / (2.0 * eps);
     }
     let mut num_b = [0.0; 3];
     for idx in 0..3 {
@@ -369,7 +385,9 @@ fn dot_general_vjp_numerical() {
             .unwrap(),
         )
     };
-    let lhs_data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0];
+    let lhs_data = [
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+    ];
     let rhs_data = [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0, 0.0, 2.0, 1.0, 0.0];
     let lhs = t3(vec![2, 2, 3], &lhs_data);
     let rhs = t3(vec![2, 3, 2], &rhs_data);
@@ -410,8 +428,8 @@ fn dot_general_vjp_numerical() {
         p[idx] += eps;
         let mut m = lhs_data.to_vec();
         m[idx] -= eps;
-        num_lhs[idx] = (loss(&t3(vec![2, 2, 3], &p), &rhs) - loss(&t3(vec![2, 2, 3], &m), &rhs))
-            / (2.0 * eps);
+        num_lhs[idx] =
+            (loss(&t3(vec![2, 2, 3], &p), &rhs) - loss(&t3(vec![2, 2, 3], &m), &rhs)) / (2.0 * eps);
     }
     let mut num_rhs = vec![0.0; rhs_data.len()];
     for idx in 0..rhs_data.len() {
@@ -419,8 +437,8 @@ fn dot_general_vjp_numerical() {
         p[idx] += eps;
         let mut m = rhs_data.to_vec();
         m[idx] -= eps;
-        num_rhs[idx] = (loss(&lhs, &t3(vec![2, 3, 2], &p)) - loss(&lhs, &t3(vec![2, 3, 2], &m)))
-            / (2.0 * eps);
+        num_rhs[idx] =
+            (loss(&lhs, &t3(vec![2, 3, 2], &p)) - loss(&lhs, &t3(vec![2, 3, 2], &m))) / (2.0 * eps);
     }
     assert_gradients_close(&grad_lhs, &num_lhs, 1e-5, "DotGeneral VJP w.r.t. lhs");
     assert_gradients_close(&grad_rhs, &num_rhs, 1e-5, "DotGeneral VJP w.r.t. rhs");
@@ -471,24 +489,40 @@ fn dot_general_vjp_noncanonical_operand_order() {
     let eps = 1e-6;
     let loss = |lv: &Value, rv: &Value| -> f64 {
         let o = eval_primitive(Primitive::DotGeneral, &[lv.clone(), rv.clone()], &params).unwrap();
-        extract_f64_vec(&o).iter().zip(g_data.iter()).map(|(o, g)| o * g).sum()
+        extract_f64_vec(&o)
+            .iter()
+            .zip(g_data.iter())
+            .map(|(o, g)| o * g)
+            .sum()
     };
     let mut num_lhs = vec![0.0; lhs_data.len()];
     for idx in 0..lhs_data.len() {
         let (mut p, mut m) = (lhs_data.to_vec(), lhs_data.to_vec());
         p[idx] += eps;
         m[idx] -= eps;
-        num_lhs[idx] = (loss(&t(vec![3, 2], &p), &rhs) - loss(&t(vec![3, 2], &m), &rhs)) / (2.0 * eps);
+        num_lhs[idx] =
+            (loss(&t(vec![3, 2], &p), &rhs) - loss(&t(vec![3, 2], &m), &rhs)) / (2.0 * eps);
     }
     let mut num_rhs = vec![0.0; rhs_data.len()];
     for idx in 0..rhs_data.len() {
         let (mut p, mut m) = (rhs_data.to_vec(), rhs_data.to_vec());
         p[idx] += eps;
         m[idx] -= eps;
-        num_rhs[idx] = (loss(&lhs, &t(vec![3, 4], &p)) - loss(&lhs, &t(vec![3, 4], &m))) / (2.0 * eps);
+        num_rhs[idx] =
+            (loss(&lhs, &t(vec![3, 4], &p)) - loss(&lhs, &t(vec![3, 4], &m))) / (2.0 * eps);
     }
-    assert_gradients_close(&grad_lhs, &num_lhs, 1e-5, "DotGeneral VJP grad_lhs (non-canonical)");
-    assert_gradients_close(&grad_rhs, &num_rhs, 1e-5, "DotGeneral VJP grad_rhs (non-canonical)");
+    assert_gradients_close(
+        &grad_lhs,
+        &num_lhs,
+        1e-5,
+        "DotGeneral VJP grad_lhs (non-canonical)",
+    );
+    assert_gradients_close(
+        &grad_rhs,
+        &num_rhs,
+        1e-5,
+        "DotGeneral VJP grad_rhs (non-canonical)",
+    );
 }
 
 #[test]
@@ -535,21 +569,27 @@ fn conv_vjp_strided_numerical() {
     let eps = 1e-6;
     let loss = |lv: &Value, rv: &Value| -> f64 {
         let o = eval_primitive(Primitive::Conv, &[lv.clone(), rv.clone()], &params).unwrap();
-        extract_f64_vec(&o).iter().zip(g_data.iter()).map(|(o, g)| o * g).sum()
+        extract_f64_vec(&o)
+            .iter()
+            .zip(g_data.iter())
+            .map(|(o, g)| o * g)
+            .sum()
     };
     let mut num_lhs = vec![0.0; lhs_data.len()];
     for idx in 0..lhs_data.len() {
         let (mut p, mut m) = (lhs_data.to_vec(), lhs_data.to_vec());
         p[idx] += eps;
         m[idx] -= eps;
-        num_lhs[idx] = (loss(&t(vec![1, 5, 1], &p), &rhs) - loss(&t(vec![1, 5, 1], &m), &rhs)) / (2.0 * eps);
+        num_lhs[idx] =
+            (loss(&t(vec![1, 5, 1], &p), &rhs) - loss(&t(vec![1, 5, 1], &m), &rhs)) / (2.0 * eps);
     }
     let mut num_rhs = vec![0.0; rhs_data.len()];
     for idx in 0..rhs_data.len() {
         let (mut p, mut m) = (rhs_data.to_vec(), rhs_data.to_vec());
         p[idx] += eps;
         m[idx] -= eps;
-        num_rhs[idx] = (loss(&lhs, &t(vec![2, 1, 1], &p)) - loss(&lhs, &t(vec![2, 1, 1], &m))) / (2.0 * eps);
+        num_rhs[idx] =
+            (loss(&lhs, &t(vec![2, 1, 1], &p)) - loss(&lhs, &t(vec![2, 1, 1], &m))) / (2.0 * eps);
     }
     assert_gradients_close(&grad_lhs, &num_lhs, 1e-5, "Conv VJP grad_lhs (stride 2)");
     assert_gradients_close(&grad_rhs, &num_rhs, 1e-5, "Conv VJP grad_rhs (stride 2)");
@@ -597,23 +637,29 @@ fn conv2d_vjp_same_padding_numerical() {
     let eps = 1e-6;
     let loss = |lv: &Value, rv: &Value| -> f64 {
         let o = eval_primitive(Primitive::Conv, &[lv.clone(), rv.clone()], &params).unwrap();
-        extract_f64_vec(&o).iter().zip(g_data.iter()).map(|(o, g)| o * g).sum()
+        extract_f64_vec(&o)
+            .iter()
+            .zip(g_data.iter())
+            .map(|(o, g)| o * g)
+            .sum()
     };
     let mut num_lhs = vec![0.0; lhs_data.len()];
     for idx in 0..lhs_data.len() {
         let (mut p, mut m) = (lhs_data.to_vec(), lhs_data.to_vec());
         p[idx] += eps;
         m[idx] -= eps;
-        num_lhs[idx] =
-            (loss(&t(vec![1, 3, 3, 1], &p), &rhs) - loss(&t(vec![1, 3, 3, 1], &m), &rhs)) / (2.0 * eps);
+        num_lhs[idx] = (loss(&t(vec![1, 3, 3, 1], &p), &rhs)
+            - loss(&t(vec![1, 3, 3, 1], &m), &rhs))
+            / (2.0 * eps);
     }
     let mut num_rhs = vec![0.0; rhs_data.len()];
     for idx in 0..rhs_data.len() {
         let (mut p, mut m) = (rhs_data.to_vec(), rhs_data.to_vec());
         p[idx] += eps;
         m[idx] -= eps;
-        num_rhs[idx] =
-            (loss(&lhs, &t(vec![2, 2, 1, 1], &p)) - loss(&lhs, &t(vec![2, 2, 1, 1], &m))) / (2.0 * eps);
+        num_rhs[idx] = (loss(&lhs, &t(vec![2, 2, 1, 1], &p))
+            - loss(&lhs, &t(vec![2, 2, 1, 1], &m)))
+            / (2.0 * eps);
     }
     assert_gradients_close(&grad_lhs, &num_lhs, 1e-5, "Conv2D VJP grad_lhs (SAME)");
     assert_gradients_close(&grad_rhs, &num_rhs, 1e-5, "Conv2D VJP grad_rhs (SAME)");
@@ -635,8 +681,12 @@ fn pad_vjp_interior_dilation_numerical() {
     params.insert("padding_high".to_string(), "1".to_string());
     params.insert("padding_interior".to_string(), "1".to_string());
 
-    let out =
-        eval_primitive(Primitive::Pad, &[operand.clone(), pad_value.clone()], &params).unwrap();
+    let out = eval_primitive(
+        Primitive::Pad,
+        &[operand.clone(), pad_value.clone()],
+        &params,
+    )
+    .unwrap();
     assert_eq!(extract_f64_vec(&out).len(), 7, "pad output shape");
     let g_data = [1.0, -0.5, 0.7, 0.3, -1.1, 0.9, 0.2];
     let g = make_f64_vector(&g_data);
@@ -659,22 +709,31 @@ fn pad_vjp_interior_dilation_numerical() {
     let eps = 1e-6;
     let loss = |ov: &Value, pv: &Value| -> f64 {
         let o = eval_primitive(Primitive::Pad, &[ov.clone(), pv.clone()], &params).unwrap();
-        extract_f64_vec(&o).iter().zip(g_data.iter()).map(|(o, g)| o * g).sum()
+        extract_f64_vec(&o)
+            .iter()
+            .zip(g_data.iter())
+            .map(|(o, g)| o * g)
+            .sum()
     };
     let mut num_operand = vec![0.0; operand_data.len()];
     for idx in 0..operand_data.len() {
         let (mut p, mut m) = (operand_data.to_vec(), operand_data.to_vec());
         p[idx] += eps;
         m[idx] -= eps;
-        num_operand[idx] =
-            (loss(&make_f64_vector(&p), &pad_value) - loss(&make_f64_vector(&m), &pad_value))
-                / (2.0 * eps);
+        num_operand[idx] = (loss(&make_f64_vector(&p), &pad_value)
+            - loss(&make_f64_vector(&m), &pad_value))
+            / (2.0 * eps);
     }
     let num_pad_value = (loss(&operand, &Value::Scalar(Literal::from_f64(0.5 + eps)))
         - loss(&operand, &Value::Scalar(Literal::from_f64(0.5 - eps))))
         / (2.0 * eps);
 
-    assert_gradients_close(&grad_operand, &num_operand, 1e-5, "Pad VJP grad_operand (interior)");
+    assert_gradients_close(
+        &grad_operand,
+        &num_operand,
+        1e-5,
+        "Pad VJP grad_operand (interior)",
+    );
     assert_gradients_close(
         &[grad_pad_value],
         &[num_pad_value],
@@ -698,8 +757,12 @@ fn pad_vjp_negative_crop_numerical() {
     params.insert("padding_high".to_string(), "0".to_string());
     params.insert("padding_interior".to_string(), "0".to_string());
 
-    let out =
-        eval_primitive(Primitive::Pad, &[operand.clone(), pad_value.clone()], &params).unwrap();
+    let out = eval_primitive(
+        Primitive::Pad,
+        &[operand.clone(), pad_value.clone()],
+        &params,
+    )
+    .unwrap();
     assert_eq!(extract_f64_vec(&out).len(), 3, "cropped output shape");
     let g_data = [1.3, -0.7, 2.1];
     let g = make_f64_vector(&g_data);
@@ -717,7 +780,11 @@ fn pad_vjp_negative_crop_numerical() {
     let eps = 1e-6;
     let loss = |ov: &Value| -> f64 {
         let o = eval_primitive(Primitive::Pad, &[ov.clone(), pad_value.clone()], &params).unwrap();
-        extract_f64_vec(&o).iter().zip(g_data.iter()).map(|(o, g)| o * g).sum()
+        extract_f64_vec(&o)
+            .iter()
+            .zip(g_data.iter())
+            .map(|(o, g)| o * g)
+            .sum()
     };
     let mut num_operand = vec![0.0; operand_data.len()];
     for idx in 0..operand_data.len() {
@@ -726,8 +793,16 @@ fn pad_vjp_negative_crop_numerical() {
         m[idx] -= eps;
         num_operand[idx] = (loss(&make_f64_vector(&p)) - loss(&make_f64_vector(&m))) / (2.0 * eps);
     }
-    assert_eq!(grad_operand[0], 0.0, "cropped operand[0] must have zero grad");
-    assert_gradients_close(&grad_operand, &num_operand, 1e-5, "Pad VJP grad_operand (negative crop)");
+    assert_eq!(
+        grad_operand[0], 0.0,
+        "cropped operand[0] must have zero grad"
+    );
+    assert_gradients_close(
+        &grad_operand,
+        &num_operand,
+        1e-5,
+        "Pad VJP grad_operand (negative crop)",
+    );
 }
 
 #[test]
@@ -746,20 +821,32 @@ fn reduce_max_min_vjp_axis_numerical() {
         let out = eval_primitive(prim, std::slice::from_ref(&input), &params).unwrap();
         let g_data = [1.3, -0.7]; // out shape [2]
         let g = make_f64_vector(&g_data);
-        let vjp = fj_ad::vjp(prim, &[input.clone()], std::slice::from_ref(&g), std::slice::from_ref(&out), &params).unwrap();
+        let vjp = fj_ad::vjp(
+            prim,
+            &[input.clone()],
+            std::slice::from_ref(&g),
+            std::slice::from_ref(&out),
+            &params,
+        )
+        .unwrap();
         let grad = extract_f64_vec(&vjp[0]);
 
         let eps = 1e-6;
         let loss = |xv: &Value| -> f64 {
             let o = eval_primitive(prim, std::slice::from_ref(xv), &params).unwrap();
-            extract_f64_vec(&o).iter().zip(g_data.iter()).map(|(o, g)| o * g).sum()
+            extract_f64_vec(&o)
+                .iter()
+                .zip(g_data.iter())
+                .map(|(o, g)| o * g)
+                .sum()
         };
         let mut num = vec![0.0; data.len()];
         for idx in 0..data.len() {
             let (mut p, mut m) = (data.to_vec(), data.to_vec());
             p[idx] += eps;
             m[idx] -= eps;
-            num[idx] = (loss(&make_f64_matrix(2, 3, &p)) - loss(&make_f64_matrix(2, 3, &m))) / (2.0 * eps);
+            num[idx] =
+                (loss(&make_f64_matrix(2, 3, &p)) - loss(&make_f64_matrix(2, 3, &m))) / (2.0 * eps);
         }
         assert_gradients_close(&grad, &num, 1e-5, &format!("{prim:?} VJP (axis, distinct)"));
     }
@@ -778,14 +865,27 @@ fn reduce_max_vjp_splits_ties_evenly() {
         std::slice::from_ref(&input),
         std::slice::from_ref(&g),
         std::slice::from_ref(
-            &eval_primitive(Primitive::ReduceMax, std::slice::from_ref(&input), &BTreeMap::new()).unwrap(),
+            &eval_primitive(
+                Primitive::ReduceMax,
+                std::slice::from_ref(&input),
+                &BTreeMap::new(),
+            )
+            .unwrap(),
         ),
         &BTreeMap::new(),
     )
     .unwrap();
     let vals = extract_f64_vec(&grads[0]);
-    assert!((vals[0] - 0.5).abs() < 1e-12, "tied max[0] must get 0.5, got {}", vals[0]);
-    assert!((vals[1] - 0.5).abs() < 1e-12, "tied max[1] must get 0.5, got {}", vals[1]);
+    assert!(
+        (vals[0] - 0.5).abs() < 1e-12,
+        "tied max[0] must get 0.5, got {}",
+        vals[0]
+    );
+    assert!(
+        (vals[1] - 0.5).abs() < 1e-12,
+        "tied max[1] must get 0.5, got {}",
+        vals[1]
+    );
     assert!(vals[2].abs() < 1e-12, "non-max must get 0, got {}", vals[2]);
 }
 
@@ -802,8 +902,12 @@ fn scatter_vjp_both_modes_numerical() {
     let operand = make_f64_matrix(4, 2, &operand_data);
     let updates = make_f64_matrix(2, 2, &updates_data);
     let indices = Value::Tensor(
-        TensorValue::new(DType::I64, Shape { dims: vec![2] }, vec![Literal::I64(0), Literal::I64(2)])
-            .unwrap(),
+        TensorValue::new(
+            DType::I64,
+            Shape { dims: vec![2] },
+            vec![Literal::I64(0), Literal::I64(2)],
+        )
+        .unwrap(),
     );
 
     for mode in ["overwrite", "add"] {
@@ -832,9 +936,17 @@ fn scatter_vjp_both_modes_numerical() {
 
         let eps = 1e-6;
         let loss = |ov: &Value, uv: &Value| -> f64 {
-            let o = eval_primitive(Primitive::Scatter, &[ov.clone(), indices.clone(), uv.clone()], &params)
-                .unwrap();
-            extract_f64_vec(&o).iter().zip(g_data.iter()).map(|(o, g)| o * g).sum()
+            let o = eval_primitive(
+                Primitive::Scatter,
+                &[ov.clone(), indices.clone(), uv.clone()],
+                &params,
+            )
+            .unwrap();
+            extract_f64_vec(&o)
+                .iter()
+                .zip(g_data.iter())
+                .map(|(o, g)| o * g)
+                .sum()
         };
         let mut num_operand = vec![0.0; operand_data.len()];
         for idx in 0..operand_data.len() {
@@ -854,8 +966,18 @@ fn scatter_vjp_both_modes_numerical() {
                 - loss(&operand, &make_f64_matrix(2, 2, &m)))
                 / (2.0 * eps);
         }
-        assert_gradients_close(&grad_operand, &num_operand, 1e-5, &format!("Scatter VJP grad_operand ({mode})"));
-        assert_gradients_close(&grad_updates, &num_updates, 1e-5, &format!("Scatter VJP grad_updates ({mode})"));
+        assert_gradients_close(
+            &grad_operand,
+            &num_operand,
+            1e-5,
+            &format!("Scatter VJP grad_operand ({mode})"),
+        );
+        assert_gradients_close(
+            &grad_updates,
+            &num_updates,
+            1e-5,
+            &format!("Scatter VJP grad_updates ({mode})"),
+        );
     }
 }
 
@@ -879,7 +1001,12 @@ fn gather_vjp_numerical() {
     let mut params = BTreeMap::new();
     params.insert("slice_sizes".to_string(), "1,2".to_string());
 
-    let out = eval_primitive(Primitive::Gather, &[operand.clone(), indices.clone()], &params).unwrap();
+    let out = eval_primitive(
+        Primitive::Gather,
+        &[operand.clone(), indices.clone()],
+        &params,
+    )
+    .unwrap();
     let g_data = [1.3, -0.7, 2.1, 0.5, -1.1, 0.9]; // out shape [3,2]
     let g = make_f64_matrix(3, 2, &g_data);
 
@@ -896,7 +1023,11 @@ fn gather_vjp_numerical() {
     let eps = 1e-6;
     let loss = |ov: &Value| -> f64 {
         let o = eval_primitive(Primitive::Gather, &[ov.clone(), indices.clone()], &params).unwrap();
-        extract_f64_vec(&o).iter().zip(g_data.iter()).map(|(o, g)| o * g).sum()
+        extract_f64_vec(&o)
+            .iter()
+            .zip(g_data.iter())
+            .map(|(o, g)| o * g)
+            .sum()
     };
     let mut num_operand = vec![0.0; operand_data.len()];
     for idx in 0..operand_data.len() {
@@ -3945,19 +4076,64 @@ fn lgamma_digamma_vjp_numerical() {
 fn bessel_i0e_i1e_vjp_numerical() {
     // i0e/i1e = e^{-|x|}·I0/I1; the grad rule must get the sign right (these are
     // even/odd functions). Test both signs away from the x=0 kink.
-    verify_unary_scalar_vjp(Primitive::BesselI0e, 1.5, 1.0, 1e-4, "bessel_i0e VJP at x=1.5");
-    verify_unary_scalar_vjp(Primitive::BesselI0e, -0.8, 1.0, 1e-4, "bessel_i0e VJP at x=-0.8");
-    verify_unary_scalar_vjp(Primitive::BesselI1e, 1.5, 1.0, 1e-4, "bessel_i1e VJP at x=1.5");
-    verify_unary_scalar_vjp(Primitive::BesselI1e, -0.8, 1.0, 1e-4, "bessel_i1e VJP at x=-0.8");
+    verify_unary_scalar_vjp(
+        Primitive::BesselI0e,
+        1.5,
+        1.0,
+        1e-4,
+        "bessel_i0e VJP at x=1.5",
+    );
+    verify_unary_scalar_vjp(
+        Primitive::BesselI0e,
+        -0.8,
+        1.0,
+        1e-4,
+        "bessel_i0e VJP at x=-0.8",
+    );
+    verify_unary_scalar_vjp(
+        Primitive::BesselI1e,
+        1.5,
+        1.0,
+        1e-4,
+        "bessel_i1e VJP at x=1.5",
+    );
+    verify_unary_scalar_vjp(
+        Primitive::BesselI1e,
+        -0.8,
+        1.0,
+        1e-4,
+        "bessel_i1e VJP at x=-0.8",
+    );
 }
 
 #[test]
 fn igamma_igammac_vjp_numerical() {
     // igamma(a, x): grad w.r.t. a (igamma_grad_a's dedicated series — the most error-prone)
     // AND x (x^(a-1)·e^{-x}/Gamma(a)). igammac = 1 - igamma, so its grads are negated.
-    verify_binary_scalar_vjp(Primitive::Igamma, 2.0, 1.5, 1.0, 1e-4, "igamma VJP at (2,1.5)");
-    verify_binary_scalar_vjp(Primitive::Igamma, 3.5, 2.0, 1.0, 1e-4, "igamma VJP at (3.5,2)");
-    verify_binary_scalar_vjp(Primitive::Igammac, 2.0, 1.5, 1.0, 1e-4, "igammac VJP at (2,1.5)");
+    verify_binary_scalar_vjp(
+        Primitive::Igamma,
+        2.0,
+        1.5,
+        1.0,
+        1e-4,
+        "igamma VJP at (2,1.5)",
+    );
+    verify_binary_scalar_vjp(
+        Primitive::Igamma,
+        3.5,
+        2.0,
+        1.0,
+        1e-4,
+        "igamma VJP at (3.5,2)",
+    );
+    verify_binary_scalar_vjp(
+        Primitive::Igammac,
+        2.0,
+        1.5,
+        1.0,
+        1e-4,
+        "igammac VJP at (2,1.5)",
+    );
 }
 
 #[test]
@@ -3970,8 +4146,12 @@ fn betainc_vjp_a_b_grads_nan_not_silent_zero() {
     let x = Value::scalar_f64(0.4);
     let g = Value::scalar_f64(1.0);
     let params = BTreeMap::new();
-    let out =
-        eval_primitive(Primitive::Betainc, &[a.clone(), b.clone(), x.clone()], &params).unwrap();
+    let out = eval_primitive(
+        Primitive::Betainc,
+        &[a.clone(), b.clone(), x.clone()],
+        &params,
+    )
+    .unwrap();
     let vjp = fj_ad::vjp(
         Primitive::Betainc,
         &[a, b, x],
@@ -3991,7 +4171,10 @@ fn betainc_vjp_a_b_grads_nan_not_silent_zero() {
     );
     // B(2,3) = Γ(2)Γ(3)/Γ(5) = 1·2/24 = 1/12; dx = 0.4·0.6²/(1/12) = 0.144·12 = 1.728.
     let dx = extract_f64_scalar(&vjp[2]);
-    assert!((dx - 1.728).abs() < 1e-6, "betainc d/dx = {dx}, expected 1.728");
+    assert!(
+        (dx - 1.728).abs() < 1e-6,
+        "betainc d/dx = {dx}, expected 1.728"
+    );
 }
 
 // ======================== Binary Scalar VJP Numerical Tests (frankenjax-2zy) ========================

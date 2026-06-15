@@ -1706,7 +1706,10 @@ pub(crate) fn eval_reduce_axes(
         && matches!(t.dtype, DType::U32 | DType::U64)
         && matches!(
             primitive,
-            Primitive::ReduceSum | Primitive::ReduceProd | Primitive::ReduceMax | Primitive::ReduceMin
+            Primitive::ReduceSum
+                | Primitive::ReduceProd
+                | Primitive::ReduceMax
+                | Primitive::ReduceMin
         )
     {
         const FLIP: u64 = 1u64 << 63;
@@ -1751,7 +1754,13 @@ pub(crate) fn eval_reduce_axes(
             widened,
         )?)];
         let result = eval_reduce_axes(
-            primitive, &widened_input, params, int_init, float_init, int_op, float_op,
+            primitive,
+            &widened_input,
+            params,
+            int_init,
+            float_init,
+            int_op,
+            float_op,
         )?;
         let build = |shape: Shape, vals: Vec<u64>| -> Result<Value, EvalError> {
             Ok(Value::Tensor(if is_u32 {
@@ -1773,7 +1782,11 @@ pub(crate) fn eval_reduce_axes(
             Value::Tensor(rt) => {
                 let vals: Vec<u64> = match rt.elements.as_i64_slice() {
                     Some(s) => s.iter().map(|&v| inv(v)).collect(),
-                    None => rt.elements.iter().map(|l| inv(l.as_i64().unwrap_or(0))).collect(),
+                    None => rt
+                        .elements
+                        .iter()
+                        .map(|l| inv(l.as_i64().unwrap_or(0)))
+                        .collect(),
                 };
                 build(rt.shape.clone(), vals)?
             }
@@ -3255,17 +3268,30 @@ pub(crate) fn eval_cumulative(
                     widened,
                 )?)];
                 let result = eval_cumulative(
-                    primitive, &widened_input, params, int_init, float_init, int_op, float_op,
+                    primitive,
+                    &widened_input,
+                    params,
+                    int_init,
+                    float_init,
+                    int_op,
+                    float_op,
                 )?;
                 let Value::Tensor(rt) = result else {
                     return Ok(result);
                 };
                 let vals: Vec<u64> = match rt.elements.as_i64_slice() {
                     Some(s) => s.iter().map(|&v| inv(v)).collect(),
-                    None => rt.elements.iter().map(|l| inv(l.as_i64().unwrap_or(0))).collect(),
+                    None => rt
+                        .elements
+                        .iter()
+                        .map(|l| inv(l.as_i64().unwrap_or(0)))
+                        .collect(),
                 };
                 return Ok(Value::Tensor(if is_u32 {
-                    TensorValue::new_u32_values(rt.shape.clone(), vals.iter().map(|&v| v as u32).collect())?
+                    TensorValue::new_u32_values(
+                        rt.shape.clone(),
+                        vals.iter().map(|&v| v as u32).collect(),
+                    )?
                 } else {
                     TensorValue::new_u64_values(rt.shape.clone(), vals)?
                 }));
@@ -6082,28 +6108,49 @@ mod tests {
             .collect();
         let dims = vec![lines as u32, axdim as u32];
         let dense = Value::Tensor(
-            TensorValue::new_complex_values(DType::Complex128, Shape { dims: dims.clone() }, cplx.clone()).unwrap(),
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape { dims: dims.clone() },
+                cplx.clone(),
+            )
+            .unwrap(),
         );
         let boxed = Value::Tensor(
             TensorValue::new(
                 DType::Complex128,
                 Shape { dims: dims.clone() },
-                cplx.iter().map(|&(re, im)| Literal::from_complex128(re, im)).collect(),
+                cplx.iter()
+                    .map(|&(re, im)| Literal::from_complex128(re, im))
+                    .collect(),
             )
             .unwrap(),
         );
         let bits = |v: &Value| -> Vec<(u64, u64)> {
-            v.as_tensor().unwrap().elements.iter().map(|l| match l {
-                Literal::Complex128Bits(re, im) => (*re, *im),
-                o => panic!("expected Complex128Bits, got {o:?}"),
-            }).collect()
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::Complex128Bits(re, im) => (*re, *im),
+                    o => panic!("expected Complex128Bits, got {o:?}"),
+                })
+                .collect()
         };
         for prim in ["cumsum", "cumprod", "cummax", "cummin"] {
             for rev in ["false", "true"] {
-                let p = BTreeMap::from([("axis".to_owned(), "1".to_owned()), ("reverse".to_owned(), rev.to_owned())]);
-                let d = crate::eval_primitive(cum_prim(prim), std::slice::from_ref(&dense), &p).unwrap();
-                let g = crate::eval_primitive(cum_prim(prim), std::slice::from_ref(&boxed), &p).unwrap();
-                assert_eq!(bits(&d), bits(&g), "complex {prim} rev={rev}: dense != boxed");
+                let p = BTreeMap::from([
+                    ("axis".to_owned(), "1".to_owned()),
+                    ("reverse".to_owned(), rev.to_owned()),
+                ]);
+                let d = crate::eval_primitive(cum_prim(prim), std::slice::from_ref(&dense), &p)
+                    .unwrap();
+                let g = crate::eval_primitive(cum_prim(prim), std::slice::from_ref(&boxed), &p)
+                    .unwrap();
+                assert_eq!(
+                    bits(&d),
+                    bits(&g),
+                    "complex {prim} rev={rev}: dense != boxed"
+                );
             }
         }
     }
@@ -6113,22 +6160,68 @@ mod tests {
     fn bench_complex_cumsum_dense_vs_generic() {
         use std::time::Instant;
         let (lines, axdim) = (4096usize, 1024usize);
-        let cplx: Vec<(f64, f64)> = (0..lines * axdim).map(|k| ((k % 251) as f64 * 0.01, (k % 97) as f64 * 0.02)).collect();
+        let cplx: Vec<(f64, f64)> = (0..lines * axdim)
+            .map(|k| ((k % 251) as f64 * 0.01, (k % 97) as f64 * 0.02))
+            .collect();
         let dims = vec![lines as u32, axdim as u32];
-        let dense = Value::Tensor(TensorValue::new_complex_values(DType::Complex128, Shape { dims: dims.clone() }, cplx.clone()).unwrap());
-        let boxed = Value::Tensor(TensorValue::new(DType::Complex128, Shape { dims: dims.clone() }, cplx.iter().map(|&(re,im)| Literal::from_complex128(re,im)).collect()).unwrap());
+        let dense = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape { dims: dims.clone() },
+                cplx.clone(),
+            )
+            .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape { dims: dims.clone() },
+                cplx.iter()
+                    .map(|&(re, im)| Literal::from_complex128(re, im))
+                    .collect(),
+            )
+            .unwrap(),
+        );
         let p = BTreeMap::from([("axis".to_owned(), "1".to_owned())]);
-        let csum = |v: Value| -> u64 { v.as_tensor().unwrap().elements.iter().fold(0u64, |a, l| match l { Literal::Complex128Bits(re,_) => a.wrapping_add(*re), _=>a }) };
+        let csum = |v: Value| -> u64 {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0u64, |a, l| match l {
+                    Literal::Complex128Bits(re, _) => a.wrapping_add(*re),
+                    _ => a,
+                })
+        };
         let time = |input: &Value| {
-            let _ = crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(input), &p).unwrap();
+            let _ =
+                crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(input), &p).unwrap();
             let mut best = f64::MAX;
-            for _ in 0..10 { let t = Instant::now(); let _ = crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(input), &p).unwrap(); best = best.min(t.elapsed().as_secs_f64()); }
+            for _ in 0..10 {
+                let t = Instant::now();
+                let _ = crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(input), &p)
+                    .unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
             best
         };
-        assert_eq!(csum(crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(&dense), &p).unwrap()),
-                   csum(crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(&boxed), &p).unwrap()), "parity");
-        let g = time(&boxed); let d = time(&dense);
-        println!("BENCH complex128 cumsum axis1 [{lines},{axdim}]: generic={:.4}ms dense={:.4}ms speedup={:.2}x", g*1e3, d*1e3, g/d);
+        assert_eq!(
+            csum(
+                crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(&dense), &p).unwrap()
+            ),
+            csum(
+                crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(&boxed), &p).unwrap()
+            ),
+            "parity"
+        );
+        let g = time(&boxed);
+        let d = time(&dense);
+        println!(
+            "BENCH complex128 cumsum axis1 [{lines},{axdim}]: generic={:.4}ms dense={:.4}ms speedup={:.2}x",
+            g * 1e3,
+            d * 1e3,
+            g / d
+        );
     }
 
     fn cum_prim(name: &str) -> Primitive {
@@ -6617,19 +6710,37 @@ mod tests {
         // Full sum: 2^31 + 2^31 + 1 = 2^32 + 1 ≡ 1 (mod 2^32).
         let r = crate::eval_primitive(Primitive::ReduceSum, &[mk(vec![3], &[two31, two31, 1])], &p)
             .unwrap();
-        assert_eq!(r, Value::Scalar(Literal::U32(1)), "u32 sum must wrap mod 2^32");
+        assert_eq!(
+            r,
+            Value::Scalar(Literal::U32(1)),
+            "u32 sum must wrap mod 2^32"
+        );
 
         // Full prod: 65536 * 65536 = 2^32 ≡ 0 (mod 2^32).
         let r = crate::eval_primitive(Primitive::ReduceProd, &[mk(vec![2], &[65536, 65536])], &p)
             .unwrap();
-        assert_eq!(r, Value::Scalar(Literal::U32(0)), "u32 prod must wrap mod 2^32");
+        assert_eq!(
+            r,
+            Value::Scalar(Literal::U32(0)),
+            "u32 prod must wrap mod 2^32"
+        );
 
         // Full max/min must be UNSIGNED (3e9 > i32::MAX must win the max, not look negative).
         let big = 3_000_000_000u32;
-        let r = crate::eval_primitive(Primitive::ReduceMax, &[mk(vec![3], &[5, big, 7])], &p).unwrap();
-        assert_eq!(r, Value::Scalar(Literal::U32(big)), "u32 max must be unsigned");
-        let r = crate::eval_primitive(Primitive::ReduceMin, &[mk(vec![3], &[5, big, 7])], &p).unwrap();
-        assert_eq!(r, Value::Scalar(Literal::U32(5)), "u32 min must be unsigned");
+        let r =
+            crate::eval_primitive(Primitive::ReduceMax, &[mk(vec![3], &[5, big, 7])], &p).unwrap();
+        assert_eq!(
+            r,
+            Value::Scalar(Literal::U32(big)),
+            "u32 max must be unsigned"
+        );
+        let r =
+            crate::eval_primitive(Primitive::ReduceMin, &[mk(vec![3], &[5, big, 7])], &p).unwrap();
+        assert_eq!(
+            r,
+            Value::Scalar(Literal::U32(5)),
+            "u32 min must be unsigned"
+        );
 
         // Partial axis-0 sum of [[2^31,1],[2^31,2]] → [2^32 mod 2^32 = 0, 3], stays U32.
         let mut pa = BTreeMap::new();
@@ -6640,12 +6751,18 @@ mod tests {
             &pa,
         )
         .unwrap();
-        let Value::Tensor(t) = &r else { panic!("expected tensor, got {r:?}") };
+        let Value::Tensor(t) = &r else {
+            panic!("expected tensor, got {r:?}")
+        };
         assert_eq!(t.dtype, DType::U32, "partial u32 sum stays u32");
-        let vals: Vec<u32> = t.elements.iter().map(|l| match l {
-            Literal::U32(v) => *v,
-            o => panic!("expected U32, got {o:?}"),
-        }).collect();
+        let vals: Vec<u32> = t
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::U32(v) => *v,
+                o => panic!("expected U32, got {o:?}"),
+            })
+            .collect();
         assert_eq!(vals, vec![0, 3], "partial u32 sum wraps mod 2^32 per-cell");
     }
 
@@ -6683,11 +6800,19 @@ mod tests {
 
         // Unsigned max/min: 2^63+100 and u64::MAX exceed i64::MAX, must compare largest.
         let big = two63 + 100;
-        let r = crate::eval_primitive(Primitive::ReduceMax, &[mk(vec![4], &[5, big, u64::MAX, 7])], &p)
-            .unwrap();
+        let r = crate::eval_primitive(
+            Primitive::ReduceMax,
+            &[mk(vec![4], &[5, big, u64::MAX, 7])],
+            &p,
+        )
+        .unwrap();
         assert_eq!(r, Value::Scalar(Literal::U64(u64::MAX)), "u64 max unsigned");
-        let r = crate::eval_primitive(Primitive::ReduceMin, &[mk(vec![4], &[big, 5, u64::MAX, 7])], &p)
-            .unwrap();
+        let r = crate::eval_primitive(
+            Primitive::ReduceMin,
+            &[mk(vec![4], &[big, 5, u64::MAX, 7])],
+            &p,
+        )
+        .unwrap();
         assert_eq!(r, Value::Scalar(Literal::U64(5)), "u64 min unsigned");
 
         // Partial axis-0 max of [[5, u64::MAX],[big, 7]] → [big, u64::MAX], stays U64.
@@ -6699,13 +6824,23 @@ mod tests {
             &pa,
         )
         .unwrap();
-        let Value::Tensor(t) = &r else { panic!("expected tensor, got {r:?}") };
+        let Value::Tensor(t) = &r else {
+            panic!("expected tensor, got {r:?}")
+        };
         assert_eq!(t.dtype, DType::U64, "partial u64 max stays u64");
-        let vals: Vec<u64> = t.elements.iter().map(|l| match l {
-            Literal::U64(v) => *v,
-            o => panic!("expected U64, got {o:?}"),
-        }).collect();
-        assert_eq!(vals, vec![big, u64::MAX], "partial u64 max unsigned per-cell");
+        let vals: Vec<u64> = t
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::U64(v) => *v,
+                o => panic!("expected U64, got {o:?}"),
+            })
+            .collect();
+        assert_eq!(
+            vals,
+            vec![big, u64::MAX],
+            "partial u64 max unsigned per-cell"
+        );
     }
 
     #[test]
@@ -6734,16 +6869,26 @@ mod tests {
             )
         };
         let getu32 = |v: &Value| -> Vec<u32> {
-            v.as_tensor().unwrap().elements.iter().map(|l| match l {
-                Literal::U32(x) => *x,
-                o => panic!("expected U32, got {o:?}"),
-            }).collect()
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::U32(x) => *x,
+                    o => panic!("expected U32, got {o:?}"),
+                })
+                .collect()
         };
         let getu64 = |v: &Value| -> Vec<u64> {
-            v.as_tensor().unwrap().elements.iter().map(|l| match l {
-                Literal::U64(x) => *x,
-                o => panic!("expected U64, got {o:?}"),
-            }).collect()
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::U64(x) => *x,
+                    o => panic!("expected U64, got {o:?}"),
+                })
+                .collect()
         };
 
         // u32 cumsum [2^31, 2^31, 1] → [2^31, 0 (2^32 wraps), 1].
@@ -6764,9 +6909,17 @@ mod tests {
         assert_eq!(getu64(&r), vec![two63, 0], "u64 cumsum wraps mod 2^64");
 
         // u64 cummax [5, 2^63+100, u64::MAX, 7] → running unsigned max.
-        let r = crate::eval_primitive(Primitive::Cummax, &[u64t(&[5, two63 + 100, u64::MAX, 7])], &p)
-            .unwrap();
-        assert_eq!(getu64(&r), vec![5, two63 + 100, u64::MAX, u64::MAX], "u64 cummax unsigned");
+        let r = crate::eval_primitive(
+            Primitive::Cummax,
+            &[u64t(&[5, two63 + 100, u64::MAX, 7])],
+            &p,
+        )
+        .unwrap();
+        assert_eq!(
+            getu64(&r),
+            vec![5, two63 + 100, u64::MAX, u64::MAX],
+            "u64 cummax unsigned"
+        );
     }
 
     #[test]
@@ -7145,7 +7298,9 @@ mod tests {
         let dense = Value::Tensor(
             TensorValue::new(
                 DType::I32,
-                Shape { dims: vec![n as u32] },
+                Shape {
+                    dims: vec![n as u32],
+                },
                 data.iter().map(|&v| Literal::I64(v)).collect(),
             )
             .unwrap(),
@@ -7153,7 +7308,9 @@ mod tests {
         let boxed = Value::Tensor(
             TensorValue::new_with_literal_buffer(
                 DType::I32,
-                Shape { dims: vec![n as u32] },
+                Shape {
+                    dims: vec![n as u32],
+                },
                 fj_core::LiteralBuffer::new(data.iter().map(|&v| Literal::I64(v)).collect()),
             )
             .unwrap(),
@@ -7205,7 +7362,9 @@ mod tests {
         let dense = Value::Tensor(
             TensorValue::new(
                 DType::I32,
-                Shape { dims: vec![rows as u32, cols as u32] },
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
                 data.iter().map(|&v| Literal::I64(v)).collect(),
             )
             .unwrap(),
@@ -7213,7 +7372,9 @@ mod tests {
         let boxed = Value::Tensor(
             TensorValue::new_with_literal_buffer(
                 DType::I32,
-                Shape { dims: vec![rows as u32, cols as u32] },
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
                 fj_core::LiteralBuffer::new(data.iter().map(|&v| Literal::I64(v)).collect()),
             )
             .unwrap(),
@@ -7224,7 +7385,8 @@ mod tests {
             let mut b = f64::MAX;
             for _ in 0..5 {
                 let t = Instant::now();
-                let o = crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(v), &p).unwrap();
+                let o =
+                    crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(v), &p).unwrap();
                 std::hint::black_box(o.as_tensor().unwrap().elements.len());
                 b = b.min(t.elapsed().as_secs_f64());
             }

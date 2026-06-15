@@ -1740,8 +1740,14 @@ mod tests {
             radix2_fft_1d_into(&input, &mut a, false);
             let mut b = Vec::new();
             radix2_fft_serial_ref(&input, &mut b);
-            let bits: Vec<(u64, u64)> = a.iter().map(|&(re, im)| (re.to_bits(), im.to_bits())).collect();
-            let bref: Vec<(u64, u64)> = b.iter().map(|&(re, im)| (re.to_bits(), im.to_bits())).collect();
+            let bits: Vec<(u64, u64)> = a
+                .iter()
+                .map(|&(re, im)| (re.to_bits(), im.to_bits()))
+                .collect();
+            let bref: Vec<(u64, u64)> = b
+                .iter()
+                .map(|&(re, im)| (re.to_bits(), im.to_bits()))
+                .collect();
             assert_eq!(bits, bref, "n={n} hoisted != serial");
         }
     }

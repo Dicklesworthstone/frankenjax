@@ -758,8 +758,16 @@ fn try_einsum2_matmul_at(
     // A is [k, m] (Y=k leading, X=m trailing).
     let k = a_shape[nb];
     let m = a_shape[nb + 1];
-    let n = if b_transposed { b_shape[nb] } else { b_shape[nb + 1] };
-    let rhs_k = if b_transposed { b_shape[nb + 1] } else { b_shape[nb] };
+    let n = if b_transposed {
+        b_shape[nb]
+    } else {
+        b_shape[nb + 1]
+    };
+    let rhs_k = if b_transposed {
+        b_shape[nb + 1]
+    } else {
+        b_shape[nb]
+    };
     if rhs_k != k || m == 0 || k == 0 || n == 0 {
         return None;
     }
@@ -1324,8 +1332,12 @@ mod tests {
         // Batched A·Bᵀ "bij,bkj->bik" must hit try_einsum2_matmul_bt and equal the
         // textbook ascending-contracted reference bit-for-bit.
         let (bt, m, k, n) = (3usize, 9usize, 13usize, 7usize);
-        let a: Vec<f64> = (0..bt * m * k).map(|i| (i as f64 * 0.029).sin() * 1.9).collect();
-        let b: Vec<f64> = (0..bt * n * k).map(|i| (i as f64 * 0.047).cos() * 2.3).collect();
+        let a: Vec<f64> = (0..bt * m * k)
+            .map(|i| (i as f64 * 0.029).sin() * 1.9)
+            .collect();
+        let b: Vec<f64> = (0..bt * n * k)
+            .map(|i| (i as f64 * 0.047).cos() * 2.3)
+            .collect();
         let mut want = vec![0.0f64; bt * m * n];
         for bb in 0..bt {
             for i in 0..m {
@@ -1341,7 +1353,11 @@ mod tests {
         let (got, shape) = einsum2("bij,bkj->bik", &a, &[bt, m, k], &b, &[bt, n, k]).unwrap();
         assert_eq!(shape, vec![bt, m, n]);
         for idx in 0..bt * m * n {
-            assert_eq!(got[idx].to_bits(), want[idx].to_bits(), "batched a@bT at {idx}");
+            assert_eq!(
+                got[idx].to_bits(),
+                want[idx].to_bits(),
+                "batched a@bT at {idx}"
+            );
         }
     }
 
@@ -1385,7 +1401,11 @@ mod tests {
         let (got2, sh2) = einsum2("ji,kj->ik", &a, &[k, m], &bnk, &[n, k]).unwrap();
         assert_eq!(sh2, vec![m, n]);
         for idx in 0..m * n {
-            assert_eq!(got2[idx].to_bits(), want_atbt[idx].to_bits(), "AtBt at {idx}");
+            assert_eq!(
+                got2[idx].to_bits(),
+                want_atbt[idx].to_bits(),
+                "AtBt at {idx}"
+            );
         }
     }
 
@@ -1394,8 +1414,12 @@ mod tests {
         // Grouped free axes, single contraction "abc,cde->abde": M=[a,b], K=[c],
         // N=[d,e]. Bit-identical to the ascending-K textbook reference.
         let (da, db, dc, dd, de) = (3usize, 4, 5, 2, 6);
-        let a: Vec<f64> = (0..da * db * dc).map(|i| (i as f64 * 0.021).sin() * 1.3).collect();
-        let b: Vec<f64> = (0..dc * dd * de).map(|i| (i as f64 * 0.033).cos() * 1.7).collect();
+        let a: Vec<f64> = (0..da * db * dc)
+            .map(|i| (i as f64 * 0.021).sin() * 1.3)
+            .collect();
+        let b: Vec<f64> = (0..dc * dd * de)
+            .map(|i| (i as f64 * 0.033).cos() * 1.7)
+            .collect();
         let (mm, kk, nn) = (da * db, dc, dd * de);
         let mut want = vec![0.0f64; mm * nn];
         for mi in 0..mm {
@@ -1410,15 +1434,23 @@ mod tests {
         let (got, sh) = einsum2("abc,cde->abde", &a, &[da, db, dc], &b, &[dc, dd, de]).unwrap();
         assert_eq!(sh, vec![da, db, dd, de]);
         for idx in 0..mm * nn {
-            assert_eq!(got[idx].to_bits(), want[idx].to_bits(), "abc,cde->abde at {idx}");
+            assert_eq!(
+                got[idx].to_bits(),
+                want[idx].to_bits(),
+                "abc,cde->abde at {idx}"
+            );
         }
 
         // Grouped contraction "abcd,cdef->abef": M=[a,b], K=[c,d], N=[e,f]. The
         // collapsed-K ascending order matches matmul_2d (one valid ordering of the
         // generic's nondeterministic multi-axis sum).
         let (a2, b2, c2, d2, e2, f2) = (2usize, 3, 2, 3, 2, 4);
-        let av: Vec<f64> = (0..a2 * b2 * c2 * d2).map(|i| (i as f64 * 0.017).sin()).collect();
-        let bv: Vec<f64> = (0..c2 * d2 * e2 * f2).map(|i| (i as f64 * 0.029).cos()).collect();
+        let av: Vec<f64> = (0..a2 * b2 * c2 * d2)
+            .map(|i| (i as f64 * 0.017).sin())
+            .collect();
+        let bv: Vec<f64> = (0..c2 * d2 * e2 * f2)
+            .map(|i| (i as f64 * 0.029).cos())
+            .collect();
         let (mm2, kk2, nn2) = (a2 * b2, c2 * d2, e2 * f2);
         let mut want2 = vec![0.0f64; mm2 * nn2];
         for mi in 0..mm2 {
@@ -1430,11 +1462,21 @@ mod tests {
                 want2[mi * nn2 + ni] = s;
             }
         }
-        let (got2, sh2) =
-            einsum2("abcd,cdef->abef", &av, &[a2, b2, c2, d2], &bv, &[c2, d2, e2, f2]).unwrap();
+        let (got2, sh2) = einsum2(
+            "abcd,cdef->abef",
+            &av,
+            &[a2, b2, c2, d2],
+            &bv,
+            &[c2, d2, e2, f2],
+        )
+        .unwrap();
         assert_eq!(sh2, vec![a2, b2, e2, f2]);
         for idx in 0..mm2 * nn2 {
-            assert_eq!(got2[idx].to_bits(), want2[idx].to_bits(), "abcd,cdef->abef at {idx}");
+            assert_eq!(
+                got2[idx].to_bits(),
+                want2[idx].to_bits(),
+                "abcd,cdef->abef at {idx}"
+            );
         }
     }
 

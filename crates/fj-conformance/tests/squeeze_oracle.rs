@@ -195,8 +195,7 @@ fn oracle_squeeze_explicit_partial() {
 fn oracle_squeeze_explicit_negative_last() {
     // lax.squeeze canonicalizes -1 against input rank: [3, 1] dim=-1 -> [3].
     let input = make_i64_tensor(&[3, 1], vec![1, 2, 3]);
-    let result =
-        eval_primitive(Primitive::Squeeze, &[input], &squeeze_params_i64(&[-1])).unwrap();
+    let result = eval_primitive(Primitive::Squeeze, &[input], &squeeze_params_i64(&[-1])).unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
     assert_eq!(extract_i64_vec(&result), vec![1, 2, 3]);
 }
@@ -205,8 +204,7 @@ fn oracle_squeeze_explicit_negative_last() {
 fn oracle_squeeze_explicit_negative_first() {
     // [1, 3] dim=-2 -> [3] (canonicalizes to axis 0).
     let input = make_i64_tensor(&[1, 3], vec![1, 2, 3]);
-    let result =
-        eval_primitive(Primitive::Squeeze, &[input], &squeeze_params_i64(&[-2])).unwrap();
+    let result = eval_primitive(Primitive::Squeeze, &[input], &squeeze_params_i64(&[-2])).unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
 }
 

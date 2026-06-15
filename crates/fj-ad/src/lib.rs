@@ -7683,8 +7683,9 @@ fn dilate_with_fill(
         if factors[ax] > 1 {
             let n = dims[ax] as usize;
             let eff = if n == 0 { 0 } else { (n - 1) * factors[ax] + 1 };
-            new_dims[ax] = u32::try_from(eff)
-                .map_err(|_| AdError::EvalFailed("reduce_window VJP dilate dim overflow".to_owned()))?;
+            new_dims[ax] = u32::try_from(eff).map_err(|_| {
+                AdError::EvalFailed("reduce_window VJP dilate dim overflow".to_owned())
+            })?;
         }
     }
     let new_total = new_dims
@@ -7859,9 +7860,9 @@ fn conv_vjp_batch_grouped(
 
     // Slice `v` to [start, end) along `axis`, full extent elsewhere, via the Slice prim.
     let slice_axis = |v: &Value, axis: usize, start: usize, end: usize| -> Result<Value, AdError> {
-        let t = v
-            .as_tensor()
-            .ok_or_else(|| AdError::EvalFailed("batch-grouped conv VJP expects tensors".to_owned()))?;
+        let t = v.as_tensor().ok_or_else(|| {
+            AdError::EvalFailed("batch-grouped conv VJP expects tensors".to_owned())
+        })?;
         let dims = &t.shape.dims;
         let starts: Vec<String> = (0..dims.len())
             .map(|i| if i == axis { start } else { 0 }.to_string())
@@ -16220,7 +16221,11 @@ mod tests {
                 &params,
             )
             .unwrap();
-            tensor_f64_values(&out).iter().zip(&gv).map(|(o, gg)| o * gg).sum()
+            tensor_f64_values(&out)
+                .iter()
+                .zip(&gv)
+                .map(|(o, gg)| o * gg)
+                .sum()
         };
         let grads = vjp_single(
             Primitive::Conv,
@@ -16239,14 +16244,22 @@ mod tests {
             up[j] += eps;
             dn[j] -= eps;
             let fd = (loss(&up, &rhs0) - loss(&dn, &rhs0)) / (2.0 * eps);
-            assert!((fd - glhs[j]).abs() < 1e-5, "grad_lhs[{j}]={} fd={fd}", glhs[j]);
+            assert!(
+                (fd - glhs[j]).abs() < 1e-5,
+                "grad_lhs[{j}]={} fd={fd}",
+                glhs[j]
+            );
         }
         for j in 0..rhs0.len() {
             let (mut up, mut dn) = (rhs0.clone(), rhs0.clone());
             up[j] += eps;
             dn[j] -= eps;
             let fd = (loss(&lhs0, &up) - loss(&lhs0, &dn)) / (2.0 * eps);
-            assert!((fd - grhs[j]).abs() < 1e-5, "grad_rhs[{j}]={} fd={fd}", grhs[j]);
+            assert!(
+                (fd - grhs[j]).abs() < 1e-5,
+                "grad_rhs[{j}]={} fd={fd}",
+                grhs[j]
+            );
         }
     }
 
@@ -18943,7 +18956,9 @@ mod tests {
             Value::Tensor(
                 TensorValue::new(
                     DType::F64,
-                    Shape { dims: vec![v.len() as u32] },
+                    Shape {
+                        dims: vec![v.len() as u32],
+                    },
                     v.iter().map(|&a| Literal::from_f64(a)).collect(),
                 )
                 .unwrap(),
@@ -18962,11 +18977,19 @@ mod tests {
             let g = mk(&gv);
             let loss = |xv: &[f64]| -> f64 {
                 let out = eval_primitive(Primitive::ReduceWindow, &[mk(xv)], &params).unwrap();
-                tensor_f64_values(&out).iter().zip(&gv).map(|(o, gg)| o * gg).sum()
+                tensor_f64_values(&out)
+                    .iter()
+                    .zip(&gv)
+                    .map(|(o, gg)| o * gg)
+                    .sum()
             };
             let grads = vjp_single(Primitive::ReduceWindow, &[mk(&x0)], &g, &params).unwrap();
             let glhs = tensor_f64_values(&grads[0]);
-            assert_eq!(glhs.len(), x0.len(), "{reduce_op}: grad shape == input shape");
+            assert_eq!(
+                glhs.len(),
+                x0.len(),
+                "{reduce_op}: grad shape == input shape"
+            );
             for i in 0..x0.len() {
                 let (mut up, mut dn) = (x0.clone(), x0.clone());
                 up[i] += eps;
@@ -19113,9 +19136,13 @@ mod tests {
             );
             assert_eq!(ju.len(), out_len, "{reduce_op}: JVP output length");
             let lhs: f64 = ju.iter().zip(&v).map(|(a, b)| a * b).sum();
-            let jtv =
-                vjp_single(Primitive::ReduceWindow, &[x.clone()], &f64_tensor_1d(&v), &params)
-                    .unwrap();
+            let jtv = vjp_single(
+                Primitive::ReduceWindow,
+                &[x.clone()],
+                &f64_tensor_1d(&v),
+                &params,
+            )
+            .unwrap();
             let jtv_vals = tensor_f64_values(&jtv[0]);
             assert_eq!(jtv_vals.len(), u.len(), "{reduce_op}: VJP input length");
             let rhs: f64 = jtv_vals.iter().zip(&u).map(|(a, b)| a * b).sum();

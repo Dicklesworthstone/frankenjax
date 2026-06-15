@@ -268,8 +268,7 @@ pub(crate) fn eval_comparison(
                 }
                 if matches!(lhs.dtype, DType::BF16 | DType::F16)
                     && lhs.dtype == rhs.dtype
-                    && let Some(value) =
-                        eval_same_shape_half_float_compare(lhs, rhs, &float_cmp)?
+                    && let Some(value) = eval_same_shape_half_float_compare(lhs, rhs, &float_cmp)?
                 {
                     return Ok(value);
                 }
@@ -975,7 +974,16 @@ mod tests {
         // generic per-Literal path). Dense (densified I32, as_i64_slice Some) must be
         // bit-identical to the generic boxed path, across all six comparisons, both
         // scalar-broadcast orders, incl i32::MIN/MAX boundary values. Bool output.
-        let lhs = [1i64, -5, i64::from(i32::MAX), i64::from(i32::MIN), 7, 0, -3, 42];
+        let lhs = [
+            1i64,
+            -5,
+            i64::from(i32::MAX),
+            i64::from(i32::MIN),
+            7,
+            0,
+            -3,
+            42,
+        ];
         let rhs = [2i64, -5, 4, i64::from(i32::MIN), 7, -1, -3, 100];
         let (ld, lb) = (v_i32_dense(&lhs), v_i32_boxed(&lhs));
         let (rd, rb) = (v_i32_dense(&rhs), v_i32_boxed(&rhs));
@@ -991,16 +999,28 @@ mod tests {
             Primitive::Gt,
             Primitive::Ge,
         ] {
-            let d = extract_bools(&crate::eval_primitive(p, &[ld.clone(), rd.clone()], &params).unwrap());
-            let g = extract_bools(&crate::eval_primitive(p, &[lb.clone(), rb.clone()], &params).unwrap());
+            let d = extract_bools(
+                &crate::eval_primitive(p, &[ld.clone(), rd.clone()], &params).unwrap(),
+            );
+            let g = extract_bools(
+                &crate::eval_primitive(p, &[lb.clone(), rb.clone()], &params).unwrap(),
+            );
             assert_eq!(d, g, "{p:?} same-shape i32 dense!=generic");
 
-            let d = extract_bools(&crate::eval_primitive(p, &[ld.clone(), s.clone()], &params).unwrap());
-            let g = extract_bools(&crate::eval_primitive(p, &[lb.clone(), s.clone()], &params).unwrap());
+            let d = extract_bools(
+                &crate::eval_primitive(p, &[ld.clone(), s.clone()], &params).unwrap(),
+            );
+            let g = extract_bools(
+                &crate::eval_primitive(p, &[lb.clone(), s.clone()], &params).unwrap(),
+            );
             assert_eq!(d, g, "{p:?} tensor⊗scalar i32 dense!=generic");
 
-            let d = extract_bools(&crate::eval_primitive(p, &[s.clone(), rd.clone()], &params).unwrap());
-            let g = extract_bools(&crate::eval_primitive(p, &[s.clone(), rb.clone()], &params).unwrap());
+            let d = extract_bools(
+                &crate::eval_primitive(p, &[s.clone(), rd.clone()], &params).unwrap(),
+            );
+            let g = extract_bools(
+                &crate::eval_primitive(p, &[s.clone(), rb.clone()], &params).unwrap(),
+            );
             assert_eq!(d, g, "{p:?} scalar⊗tensor i32 dense!=generic");
         }
     }
@@ -1013,7 +1033,9 @@ mod tests {
         let lhs: Vec<i64> = (0..n)
             .map(|i| i64::from((i as i32).wrapping_mul(2_654_435_761u32 as i32)))
             .collect();
-        let rhs: Vec<i64> = (0..n).map(|i| i64::from((i as i32).wrapping_mul(40_503))).collect();
+        let rhs: Vec<i64> = (0..n)
+            .map(|i| i64::from((i as i32).wrapping_mul(40_503)))
+            .collect();
         let (ld, lb) = (v_i32_dense(&lhs), v_i32_boxed(&lhs));
         let (rd, rb) = (v_i32_dense(&rhs), v_i32_boxed(&rhs));
         let params = BTreeMap::new();
@@ -1115,8 +1137,26 @@ mod tests {
         let s32 = Value::Scalar(Literal::U32(3_000_000_000));
 
         // u64: include values above i64::MAX.
-        let lu64 = [0u64, 1, u64::MAX, u32::MAX as u64 + 1, 1 << 63, 7, u64::MAX - 1, 5];
-        let ru64 = [2u64, 1, u64::MAX - 1, u32::MAX as u64 + 2, 1 << 63, 6, u64::MAX, 5];
+        let lu64 = [
+            0u64,
+            1,
+            u64::MAX,
+            u32::MAX as u64 + 1,
+            1 << 63,
+            7,
+            u64::MAX - 1,
+            5,
+        ];
+        let ru64 = [
+            2u64,
+            1,
+            u64::MAX - 1,
+            u32::MAX as u64 + 2,
+            1 << 63,
+            6,
+            u64::MAX,
+            5,
+        ];
         let (ld64, lb64) = (v_u64_dense(&lu64), v_u64_boxed(&lu64));
         let (rd64, rb64) = (v_u64_dense(&ru64), v_u64_boxed(&ru64));
         assert!(ld64.as_tensor().unwrap().elements.as_u64_slice().is_some());
@@ -1134,16 +1174,28 @@ mod tests {
                 (&ld, &lb, &rd, &rb, &s32),
                 (&ld64, &lb64, &rd64, &rb64, &s64),
             ] {
-                let d = extract_bools(&crate::eval_primitive(p, &[ld.clone(), rd.clone()], &params).unwrap());
-                let g = extract_bools(&crate::eval_primitive(p, &[lb.clone(), rb.clone()], &params).unwrap());
+                let d = extract_bools(
+                    &crate::eval_primitive(p, &[ld.clone(), rd.clone()], &params).unwrap(),
+                );
+                let g = extract_bools(
+                    &crate::eval_primitive(p, &[lb.clone(), rb.clone()], &params).unwrap(),
+                );
                 assert_eq!(d, g, "{p:?} same-shape unsigned dense!=generic");
 
-                let d = extract_bools(&crate::eval_primitive(p, &[ld.clone(), s.clone()], &params).unwrap());
-                let g = extract_bools(&crate::eval_primitive(p, &[lb.clone(), s.clone()], &params).unwrap());
+                let d = extract_bools(
+                    &crate::eval_primitive(p, &[ld.clone(), s.clone()], &params).unwrap(),
+                );
+                let g = extract_bools(
+                    &crate::eval_primitive(p, &[lb.clone(), s.clone()], &params).unwrap(),
+                );
                 assert_eq!(d, g, "{p:?} tensor⊗scalar unsigned dense!=generic");
 
-                let d = extract_bools(&crate::eval_primitive(p, &[s.clone(), rd.clone()], &params).unwrap());
-                let g = extract_bools(&crate::eval_primitive(p, &[s.clone(), rb.clone()], &params).unwrap());
+                let d = extract_bools(
+                    &crate::eval_primitive(p, &[s.clone(), rd.clone()], &params).unwrap(),
+                );
+                let g = extract_bools(
+                    &crate::eval_primitive(p, &[s.clone(), rb.clone()], &params).unwrap(),
+                );
                 assert_eq!(d, g, "{p:?} scalar⊗tensor unsigned dense!=generic");
             }
         }
@@ -1154,7 +1206,9 @@ mod tests {
     fn bench_u32_compare_dense_vs_generic() {
         use std::time::Instant;
         let n = 1_000_000usize;
-        let lhs: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+        let lhs: Vec<u32> = (0..n)
+            .map(|i| (i as u32).wrapping_mul(2_654_435_761))
+            .collect();
         let rhs: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(40_503)).collect();
         let (ld, lb) = (v_u32_dense(&lhs), v_u32_boxed(&lhs));
         let (rd, rb) = (v_u32_dense(&rhs), v_u32_boxed(&rhs));
@@ -1924,11 +1978,21 @@ mod tests {
                 .unwrap(),
             );
             assert!(
-                dense_a.as_tensor().unwrap().elements.as_half_float_slice().is_some(),
+                dense_a
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_half_float_slice()
+                    .is_some(),
                 "dense {dt:?} should expose half slice"
             );
             assert!(
-                boxed_a.as_tensor().unwrap().elements.as_half_float_slice().is_none(),
+                boxed_a
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_half_float_slice()
+                    .is_none(),
                 "boxed {dt:?} should NOT expose half slice"
             );
             for p in [
@@ -1940,10 +2004,12 @@ mod tests {
                 Primitive::Ge,
             ] {
                 let d = extract_bools(
-                    &crate::eval_primitive(p, &[dense_a.clone(), dense_b.clone()], &params).unwrap(),
+                    &crate::eval_primitive(p, &[dense_a.clone(), dense_b.clone()], &params)
+                        .unwrap(),
                 );
                 let g = extract_bools(
-                    &crate::eval_primitive(p, &[boxed_a.clone(), boxed_b.clone()], &params).unwrap(),
+                    &crate::eval_primitive(p, &[boxed_a.clone(), boxed_b.clone()], &params)
+                        .unwrap(),
                 );
                 assert_eq!(d, g, "{dt:?} {p:?} half compare dense != boxed");
             }
@@ -2020,7 +2086,14 @@ mod tests {
     fn half_dense_sh(dt: DType, dims: &[u32], vals: &[f32]) -> Value {
         let bits: Vec<u16> = vals.iter().map(|&v| half_bits(half_lit(dt, v))).collect();
         Value::Tensor(
-            TensorValue::new_half_float_values(dt, Shape { dims: dims.to_vec() }, bits).unwrap(),
+            TensorValue::new_half_float_values(
+                dt,
+                Shape {
+                    dims: dims.to_vec(),
+                },
+                bits,
+            )
+            .unwrap(),
         )
     }
     fn half_boxed_sh(dt: DType, dims: &[u32], vals: &[f32]) -> Value {
@@ -2028,7 +2101,9 @@ mod tests {
         Value::Tensor(
             TensorValue::new_with_literal_buffer(
                 dt,
-                Shape { dims: dims.to_vec() },
+                Shape {
+                    dims: dims.to_vec(),
+                },
                 fj_core::LiteralBuffer::new(lits),
             )
             .unwrap(),
@@ -2062,7 +2137,10 @@ mod tests {
                     let d = extract_bools(
                         &crate::eval_primitive(
                             p,
-                            &[half_dense_sh(dt, &[2, 3], &m), half_dense_sh(dt, &rdims, rd)],
+                            &[
+                                half_dense_sh(dt, &[2, 3], &m),
+                                half_dense_sh(dt, &rdims, rd),
+                            ],
                             &params,
                         )
                         .unwrap(),
@@ -2070,7 +2148,10 @@ mod tests {
                     let g = extract_bools(
                         &crate::eval_primitive(
                             p,
-                            &[half_boxed_sh(dt, &[2, 3], &m), half_boxed_sh(dt, &rdims, rd)],
+                            &[
+                                half_boxed_sh(dt, &[2, 3], &m),
+                                half_boxed_sh(dt, &rdims, rd),
+                            ],
                             &params,
                         )
                         .unwrap(),
@@ -2079,7 +2160,10 @@ mod tests {
                     let d2 = extract_bools(
                         &crate::eval_primitive(
                             p,
-                            &[half_dense_sh(dt, &rdims, rd), half_dense_sh(dt, &[2, 3], &m)],
+                            &[
+                                half_dense_sh(dt, &rdims, rd),
+                                half_dense_sh(dt, &[2, 3], &m),
+                            ],
                             &params,
                         )
                         .unwrap(),
@@ -2087,7 +2171,10 @@ mod tests {
                     let g2 = extract_bools(
                         &crate::eval_primitive(
                             p,
-                            &[half_boxed_sh(dt, &rdims, rd), half_boxed_sh(dt, &[2, 3], &m)],
+                            &[
+                                half_boxed_sh(dt, &rdims, rd),
+                                half_boxed_sh(dt, &[2, 3], &m),
+                            ],
                             &params,
                         )
                         .unwrap(),

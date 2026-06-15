@@ -1544,7 +1544,8 @@ fn bench_svd_48_f64(c: &mut Criterion) {
     });
 }
 
-fn bench_svd_48_f64_jacobi_counters(_c: &mut Criterion) { /* [cc-temp] foreign WIP stubbed to compile bench */ }
+fn bench_svd_48_f64_jacobi_counters(_c: &mut Criterion) { /* [cc-temp] foreign WIP stubbed to compile bench */
+}
 
 /// Same numeric data as `bench_svd_48_f64`, but typed Complex128 (imag 0) so it
 /// forces the complex SVD kernel. Lets the real-path speedup be measured against
@@ -1674,13 +1675,17 @@ fn bf16_1024_inputs() -> (Vec<u16>, Vec<u16>) {
 fn bench_bf16_matmul_1024_blocked(c: &mut Criterion) {
     let (a, b) = bf16_1024_inputs();
     c.bench_function("linalg/bf16_matmul_1024_blocked", |bencher| {
-        bencher.iter(|| fj_lax::tensor_contraction::bf16_matmul_bench(&a, 1024, 1024, &b, 1024, "f32simd"))
+        bencher.iter(|| {
+            fj_lax::tensor_contraction::bf16_matmul_bench(&a, 1024, 1024, &b, 1024, "f32simd")
+        })
     });
 }
 fn bench_bf16_matmul_1024_rowref(c: &mut Criterion) {
     let (a, b) = bf16_1024_inputs();
     c.bench_function("linalg/bf16_matmul_1024_rowref", |bencher| {
-        bencher.iter(|| fj_lax::tensor_contraction::bf16_matmul_bench(&a, 1024, 1024, &b, 1024, "f32rowref"))
+        bencher.iter(|| {
+            fj_lax::tensor_contraction::bf16_matmul_bench(&a, 1024, 1024, &b, 1024, "f32rowref")
+        })
     });
 }
 

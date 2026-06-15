@@ -701,7 +701,11 @@ fn batched_tri_solve_real(
     unit_diagonal: bool,
 ) {
     let a_at = |i: usize, k: usize| -> f64 {
-        if transpose { a[k * n + i] } else { a[i * n + k] }
+        if transpose {
+            a[k * n + i]
+        } else {
+            a[i * n + k]
+        }
     };
     let solve_row = |i: usize, ks: std::ops::Range<usize>, x: &mut [f64]| {
         for k in ks {
@@ -750,7 +754,11 @@ fn batched_tri_solve(
 ) {
     let one = (1.0, 0.0);
     let a_at = |i: usize, k: usize| -> (f64, f64) {
-        if transpose { a[k * n + i] } else { a[i * n + k] }
+        if transpose {
+            a[k * n + i]
+        } else {
+            a[i * n + k]
+        }
     };
     // Process one pivot row `i` (subtract its already-solved neighbours `k`, then
     // divide by the diagonal) across all columns.
@@ -8854,7 +8862,11 @@ mod tests {
         let got = extract_f64_elements(&eval_triangular_solve(&[a, b], &BTreeMap::new()).unwrap());
         let want = tri_solve_per_column_lower(&adata, &bdata, n, n_b);
         for k in 0..n * n_b {
-            assert_eq!(got[k].to_bits(), want[k].to_bits(), "batched tri-solve diverged at {k}");
+            assert_eq!(
+                got[k].to_bits(),
+                want[k].to_bits(),
+                "batched tri-solve diverged at {k}"
+            );
         }
     }
 
@@ -9177,8 +9189,14 @@ mod tests {
                     max_orth = max_orth.max((qtq - if i == j { 1.0 } else { 0.0 }).abs());
                 }
             }
-            assert!(max_res < 1e-9, "n={n} real-QR-with-zeros reconstruction {max_res:e}");
-            assert!(max_orth < 1e-9, "n={n} real-QR-with-zeros orthonormality {max_orth:e}");
+            assert!(
+                max_res < 1e-9,
+                "n={n} real-QR-with-zeros reconstruction {max_res:e}"
+            );
+            assert!(
+                max_orth < 1e-9,
+                "n={n} real-QR-with-zeros orthonormality {max_orth:e}"
+            );
         }
     }
 
@@ -9213,11 +9231,16 @@ mod tests {
             let t_real = best_time(|| {
                 std::hint::black_box(super::qr_real_bench(a.clone(), n, n, true));
             });
-            let celems: Vec<Literal> = a.iter().map(|&v| Literal::from_complex128(v, 0.0)).collect();
+            let celems: Vec<Literal> = a
+                .iter()
+                .map(|&v| Literal::from_complex128(v, 0.0))
+                .collect();
             let cval = Value::Tensor(
                 TensorValue::new(
                     DType::Complex128,
-                    Shape { dims: vec![n as u32, n as u32] },
+                    Shape {
+                        dims: vec![n as u32, n as u32],
+                    },
                     celems,
                 )
                 .unwrap(),
@@ -10530,10 +10553,16 @@ mod tests {
         // The pinv reconstruction A⁺ = V_scaled (n×kk) · u_kept (kk×m): isolate the
         // scalar outer-product triple loop vs matmul_2d on the same data.
         for &(n, m, kk) in &[(1024usize, 1024, 1024), (1500, 800, 800)] {
-            let v_scaled: Vec<f64> = (0..n * kk).map(|i| (i as f64 * 0.0007).sin() - 0.3).collect();
-            let u_kept: Vec<f64> = (0..kk * m).map(|i| (i as f64 * 0.0009).cos() + 0.2).collect();
+            let v_scaled: Vec<f64> = (0..n * kk)
+                .map(|i| (i as f64 * 0.0007).sin() - 0.3)
+                .collect();
+            let u_kept: Vec<f64> = (0..kk * m)
+                .map(|i| (i as f64 * 0.0009).cos() + 0.2)
+                .collect();
             let t_matmul = best_time(|| {
-                std::hint::black_box(crate::tensor_contraction::matmul_2d(&v_scaled, n, kk, &u_kept, m));
+                std::hint::black_box(crate::tensor_contraction::matmul_2d(
+                    &v_scaled, n, kk, &u_kept, m,
+                ));
             });
             let t_scalar = best_time(|| {
                 let mut result = vec![0.0f64; n * m];
@@ -11151,13 +11180,21 @@ mod tests {
                 a[i * n + j] = if i == j {
                     ((n as f64) + 4.0, 1.0)
                 } else {
-                    ((((i * 31 + j * 17) % 11) as f64 - 5.0) * 0.1, (((i + j) % 7) as f64 - 3.0) * 0.05)
+                    (
+                        (((i * 31 + j * 17) % 11) as f64 - 5.0) * 0.1,
+                        (((i + j) % 7) as f64 - 3.0) * 0.05,
+                    )
                 };
             }
         }
         let perm = super::complex_lu_factor_blocked(&mut a, n);
         let b: Vec<(f64, f64)> = (0..n * ncols)
-            .map(|k| ((((k * 53 + 11) % 37) as f64) * 0.1 - 1.8, (((k * 13) % 19) as f64 - 9.0) * 0.05))
+            .map(|k| {
+                (
+                    (((k * 53 + 11) % 37) as f64) * 0.1 - 1.8,
+                    (((k * 13) % 19) as f64 - 9.0) * 0.05,
+                )
+            })
             .collect();
         (a, perm, b)
     }
@@ -11170,8 +11207,16 @@ mod tests {
         let got = super::complex_lu_solve(&lu, &perm, &b, n, ncols);
         let want = complex_lu_solve_per_column(&lu, &perm, &b, n, ncols);
         for k in 0..n * ncols {
-            assert_eq!(got[k].0.to_bits(), want[k].0.to_bits(), "re diverged at {k}");
-            assert_eq!(got[k].1.to_bits(), want[k].1.to_bits(), "im diverged at {k}");
+            assert_eq!(
+                got[k].0.to_bits(),
+                want[k].0.to_bits(),
+                "re diverged at {k}"
+            );
+            assert_eq!(
+                got[k].1.to_bits(),
+                want[k].1.to_bits(),
+                "im diverged at {k}"
+            );
         }
     }
 
@@ -11304,7 +11349,9 @@ mod tests {
                 };
             }
         }
-        let b: Vec<f64> = (0..n).map(|i| ((i * 37 + 5) % 29) as f64 * 0.1 - 1.4).collect();
+        let b: Vec<f64> = (0..n)
+            .map(|i| ((i * 37 + 5) % 29) as f64 * 0.1 - 1.4)
+            .collect();
         (a, b)
     }
 
@@ -11358,8 +11405,8 @@ mod tests {
         let n = super::MIXED_PRECISION_SOLVE_MIN_N + 9;
         let m = 32; // n ≥ 8·m so production `solve_multi_rhs` routes through mixed.
         let (a, b) = mixed_solve_system_multi(n, m);
-        let mixed =
-            super::solve_multi_rhs_mixed_precision(&a, &b, n, m).expect("mixed-multi should converge");
+        let mixed = super::solve_multi_rhs_mixed_precision(&a, &b, n, m)
+            .expect("mixed-multi should converge");
         // f64 reference (the pre-mixed batched path).
         let (lu, p) = super::lu_factor_for_solve(&a, n).unwrap();
         let f64ref = super::lu_solve_multi(&lu, &p, &b, n, m);
@@ -11508,7 +11555,10 @@ mod tests {
         for k in 0..n * m {
             max_rel = max_rel.max((blocked[k] - batched[k]).abs() / (batched[k].abs() + 1.0));
         }
-        assert!(max_rel < 1e-9, "blocked TRSM diverged from batched: {max_rel:.3e}");
+        assert!(
+            max_rel < 1e-9,
+            "blocked TRSM diverged from batched: {max_rel:.3e}"
+        );
     }
 
     #[test]

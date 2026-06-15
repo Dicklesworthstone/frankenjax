@@ -499,7 +499,10 @@ fn oracle_svd_rank_deficient_3x3_reconstructs() {
     let s = extract_f64_vec_from_value(&result[1]);
     let vt = extract_f64_matrix(&result[2]);
     assert_eq!(s.len(), 3);
-    assert!(s[0] >= s[1] && s[1] >= s[2], "singular values sorted descending");
+    assert!(
+        s[0] >= s[1] && s[1] >= s[2],
+        "singular values sorted descending"
+    );
     // The exact-zero singular value is recovered to ~ε·‖A‖ (≈1e-15) because the SVD
     // uses one-sided Jacobi (orthogonalizes A's columns directly). The old AᵀA /
     // normal-equations path squared the condition number and gave ≈2.7e-8 here, which
@@ -518,7 +521,12 @@ fn oracle_svd_rank_deficient_3x3_reconstructs() {
         }
     }
     let reconstructed = matmul(3, 3, 3, &us, &vt);
-    assert_close(&reconstructed, &a_data, 1e-7, "U·diag(S)·Vt = A (rank-deficient)");
+    assert_close(
+        &reconstructed,
+        &a_data,
+        1e-7,
+        "U·diag(S)·Vt = A (rank-deficient)",
+    );
 }
 
 // ======================== Eigh (Symmetric Eigendecomposition) ========================
@@ -1697,9 +1705,15 @@ fn oracle_svd_complex128_rank_deficient_reconstructs() {
     // old AᴴA / normal-equations path squared the condition number and would land
     // near √ε·‖A‖ (~1e-7), which the 1e-10 bound rejects (frankenjax-4kx6m).
     let a_data: [(f64, f64); 9] = [
-        (1.0, 1.0), (2.0, 0.0), (3.0, -1.0), //
-        (0.0, 2.0), (1.0, 1.0), (2.0, 0.0), //
-        (1.0, 3.0), (3.0, 1.0), (5.0, -1.0),
+        (1.0, 1.0),
+        (2.0, 0.0),
+        (3.0, -1.0), //
+        (0.0, 2.0),
+        (1.0, 1.0),
+        (2.0, 0.0), //
+        (1.0, 3.0),
+        (3.0, 1.0),
+        (5.0, -1.0),
     ];
     let a = make_complex128_matrix(3, 3, &a_data);
     let result = eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params())

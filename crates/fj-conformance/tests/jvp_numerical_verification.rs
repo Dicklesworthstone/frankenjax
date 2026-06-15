@@ -360,7 +360,9 @@ fn dot_general_jvp_numerical() {
     };
     let lhs = t3(
         vec![2, 2, 3],
-        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+        &[
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ],
     );
     let rhs = t3(
         vec![2, 3, 2],
@@ -372,7 +374,9 @@ fn dot_general_jvp_numerical() {
     );
     let drhs = t3(
         vec![2, 3, 2],
-        &[0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        &[
+            0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6,
+        ],
     );
 
     let mut params = BTreeMap::new();
@@ -440,7 +444,8 @@ fn pad_jvp_pad_value_tangent_numerical() {
     let analytical = extract_f64_vec(&jvp.tangents[0]);
 
     let eps = 1e-6;
-    let perturb_scalar = |base: f64, dv: f64, s: f64| Value::Scalar(Literal::from_f64(base + s * dv));
+    let perturb_scalar =
+        |base: f64, dv: f64, s: f64| Value::Scalar(Literal::from_f64(base + s * dv));
     let op_plus = perturb(&operand, &d_operand, eps);
     let op_minus = perturb(&operand, &d_operand, -eps);
     let pv_plus = perturb_scalar(0.5, 0.7, eps);
@@ -502,7 +507,12 @@ fn reduce_max_min_jvp_axis_numerical() {
             .zip(extract_f64_vec(&out_minus[0]).iter())
             .map(|(p, m)| (p - m) / (2.0 * eps))
             .collect();
-        assert_close(&analytical, &numerical, 1e-5, &format!("{prim:?} JVP (axis)"));
+        assert_close(
+            &analytical,
+            &numerical,
+            1e-5,
+            &format!("{prim:?} JVP (axis)"),
+        );
     }
 }
 
@@ -661,7 +671,11 @@ fn slogdet_jvp_numerical() {
     // pattern that hid the solve-vector-RHS bug. Verify both output tangents against
     // central differences.
     let a = make_f64_matrix(3, 3, &[2.0, 0.5, -1.0, 0.3, 1.7, 0.2, -0.4, 0.1, 1.9]);
-    let da = make_f64_matrix(3, 3, &[0.1, 0.05, 0.03, 0.02, 0.12, -0.04, 0.06, -0.01, 0.09]);
+    let da = make_f64_matrix(
+        3,
+        3,
+        &[0.1, 0.05, 0.03, 0.02, 0.12, -0.04, 0.06, -0.01, 0.09],
+    );
     let jaxpr = Jaxpr::new(
         vec![VarId(1)],
         vec![],
@@ -683,8 +697,8 @@ fn slogdet_jvp_numerical() {
     let out_minus = eval_primitive_multi(Primitive::Slogdet, &[a_minus], &BTreeMap::new()).unwrap();
     for i in 0..2 {
         let an = extract_f64_scalar(&jvp.tangents[i]);
-        let fd = (extract_f64_scalar(&out_plus[i]) - extract_f64_scalar(&out_minus[i]))
-            / (2.0 * eps);
+        let fd =
+            (extract_f64_scalar(&out_plus[i]) - extract_f64_scalar(&out_minus[i])) / (2.0 * eps);
         assert!(
             (an - fd).abs() < 1e-4,
             "Slogdet JVP output[{i}]: analytical {an}, numerical {fd}"
@@ -700,7 +714,11 @@ fn lu_jvp_numerical() {
     // diagonal, so the permutation is stable under the perturbation and the central
     // difference of `lu` is well defined.
     let a = make_f64_matrix(3, 3, &[5.0, 0.3, -0.4, 0.2, 6.0, 0.1, -0.3, 0.2, 7.0]);
-    let da = make_f64_matrix(3, 3, &[0.1, 0.05, 0.03, 0.02, 0.12, -0.04, 0.06, -0.01, 0.09]);
+    let da = make_f64_matrix(
+        3,
+        3,
+        &[0.1, 0.05, 0.03, 0.02, 0.12, -0.04, 0.06, -0.01, 0.09],
+    );
     let jaxpr = Jaxpr::new(
         vec![VarId(1)],
         vec![],
@@ -743,7 +761,11 @@ fn betainc_jvp_raises_on_a_b_differentiation() {
         vec![VarId(4)],
         vec![Equation {
             primitive: Primitive::Betainc,
-            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2)), Atom::Var(VarId(3))],
+            inputs: smallvec![
+                Atom::Var(VarId(1)),
+                Atom::Var(VarId(2)),
+                Atom::Var(VarId(3))
+            ],
             outputs: smallvec![VarId(4)],
             params: BTreeMap::new(),
             effects: vec![],
@@ -764,7 +786,10 @@ fn betainc_jvp_raises_on_a_b_differentiation() {
     ];
     let jvp_x = fj_ad::jvp(&jaxpr, &primals, &t_x).unwrap();
     let dx = extract_f64_scalar(&jvp_x.tangents[0]);
-    assert!((dx - 1.728).abs() < 1e-6, "betainc d/dx JVP = {dx}, expected 1.728");
+    assert!(
+        (dx - 1.728).abs() < 1e-6,
+        "betainc d/dx JVP = {dx}, expected 1.728"
+    );
     // Differentiating w.r.t. a or b must RAISE (JAX: not supported).
     let t_a = [
         Value::scalar_f64(1.0),
