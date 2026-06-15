@@ -677,6 +677,7 @@ fn cholesky_real_blocked(n: usize, a_in: &[f64]) -> Vec<f64> {
 ///   - `lower` (default "true"): if "true", A is lower-triangular; else upper.
 ///   - `transpose_a` (default "false"): if "true", solve A^T X = B instead.
 ///   - `unit_diagonal` (default "false"): if "true", diagonal of A is assumed 1.
+///
 /// Batched triangular solve `op(A)·X = B` for ALL `n_b` RHS columns at once
 /// (`X` starts as `B`, n×n_b row-major, solved in place). Reads each `A` entry
 /// ONCE and applies it across every column (inner column loop auto-vectorizes),
@@ -728,8 +729,8 @@ fn batched_tri_solve_real(
         }
         let d = if unit_diagonal { 1.0 } else { a[i * n + i] };
         let xi = &mut x[i * n_b..i * n_b + n_b];
-        for col in 0..n_b {
-            xi[col] /= d;
+        for v in xi.iter_mut() {
+            *v /= d;
         }
     };
     if forward {
@@ -784,8 +785,8 @@ fn batched_tri_solve(
         }
         let diag = if unit_diagonal { one } else { a[i * n + i] };
         let xi = &mut x[i * n_b..i * n_b + n_b];
-        for col in 0..n_b {
-            xi[col] = complex_div(xi[col], diag);
+        for v in xi.iter_mut() {
+            *v = complex_div(*v, diag);
         }
     };
     if forward {
@@ -3568,8 +3569,8 @@ fn complex_lu_solve(
         }
         let diag = lu[i * n + i];
         let xi_slice = &mut x[xi..xi + ncols];
-        for col in 0..ncols {
-            xi_slice[col] = complex_div(xi_slice[col], diag);
+        for v in xi_slice.iter_mut() {
+            *v = complex_div(*v, diag);
         }
     }
     x
@@ -6234,8 +6235,8 @@ fn lu_solve_multi_blocked_f32(lu: &[f32], p: &[usize], b: &[f32], n: usize, m: u
             }
             let diag = lu[i * n + i];
             let xi = &mut x[i * m..i * m + m];
-            for col in 0..m {
-                xi[col] /= diag;
+            for v in xi.iter_mut() {
+                *v /= diag;
             }
         }
         r1 = r0;
@@ -6534,8 +6535,8 @@ fn lu_solve_multi_blocked(lu: &[f64], p: &[usize], b: &[f64], n: usize, m: usize
             }
             let diag = lu[i * n + i];
             let xi = &mut x[i * m..i * m + m];
-            for col in 0..m {
-                xi[col] /= diag;
+            for v in xi.iter_mut() {
+                *v /= diag;
             }
         }
         r1 = r0;
@@ -9246,7 +9247,9 @@ mod tests {
                 .unwrap(),
             );
             let t_complex = best_time(|| {
-                std::hint::black_box(eval_qr(&[cval.clone()], &BTreeMap::new()).unwrap());
+                std::hint::black_box(
+                    eval_qr(std::slice::from_ref(&cval), &BTreeMap::new()).unwrap(),
+                );
             });
             println!(
                 "BENCH QR real vs complex-path n={n}: complex {:.1}ms -> real {:.1}ms = {:.2}x",
@@ -10164,6 +10167,7 @@ mod tests {
     // ── Blocked complex LU (solve/det) tests ────────────────────────
 
     /// Well-conditioned complex system with a strongly dominant real diagonal.
+    #[allow(clippy::type_complexity)]
     fn complex_solve_test_system(n: usize) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
         let mut a = vec![(0.0f64, 0.0f64); n * n];
         for i in 0..n {
@@ -10535,7 +10539,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[test]
     #[ignore = "benchmark: run with --ignored --nocapture"]
     fn bench_pinv_reconstruction_scalar_vs_matmul() {
@@ -11173,6 +11176,7 @@ mod tests {
         x
     }
 
+    #[allow(clippy::type_complexity)]
     fn complex_lu_system(n: usize, ncols: usize) -> (Vec<(f64, f64)>, Vec<usize>, Vec<(f64, f64)>) {
         let mut a = vec![(0.0_f64, 0.0_f64); n * n];
         for i in 0..n {
