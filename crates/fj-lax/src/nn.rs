@@ -4,6 +4,8 @@
 
 use std::f64::consts::PI;
 
+const SOFTMAX_2D_PARALLEL_MIN: usize = 1 << 18;
+
 /// ReLU: max(x, 0)
 ///
 /// Matches `jax.nn.relu(x)`.
@@ -237,6 +239,68 @@ pub fn softmax(x: &[f64]) -> Vec<f64> {
     exp_shifted.iter().map(|&e| e / sum_exp).collect()
 }
 
+#[inline]
+fn softmax_row_into(src: &[f64], dst: &mut [f64]) {
+    let max_val = src.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let mut sum_exp = 0.0;
+    for (d, &v) in dst.iter_mut().zip(src.iter()) {
+        let e = (v - max_val).exp();
+        *d = e;
+        sum_exp += e;
+    }
+    for d in dst.iter_mut() {
+        *d /= sum_exp;
+    }
+}
+
+#[inline]
+fn softmax_2d_thread_count(rows: usize, total: usize) -> usize {
+    if rows <= 1 || total < SOFTMAX_2D_PARALLEL_MIN {
+        1
+    } else {
+        crate::arithmetic::work_scaled_threads(total).min(rows)
+    }
+}
+
+fn fill_softmax_rows_parallel(
+    x: &[f64],
+    result: &mut [f64],
+    rows: usize,
+    cols: usize,
+    row_fn: fn(&[f64], &mut [f64]),
+) {
+    let threads = softmax_2d_thread_count(rows, result.len());
+    if threads <= 1 {
+        for i in 0..rows {
+            let start = i * cols;
+            row_fn(&x[start..start + cols], &mut result[start..start + cols]);
+        }
+        return;
+    }
+
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut dst_rest: &mut [f64] = result;
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let row_count = rows_per.min(rows - row0);
+            let elem_count = row_count * cols;
+            let (dst_block, dst_tail) = dst_rest.split_at_mut(elem_count);
+            dst_rest = dst_tail;
+            let src_block = &x[row0 * cols..(row0 + row_count) * cols];
+            row0 += row_count;
+            scope.spawn(move || {
+                for (src_row, dst_row) in src_block
+                    .chunks_exact(cols)
+                    .zip(dst_block.chunks_exact_mut(cols))
+                {
+                    row_fn(src_row, dst_row);
+                }
+            });
+        }
+    });
+}
+
 /// Softmax along the last axis of a 2D array.
 ///
 /// Matches `jax.nn.softmax(x, axis=-1)` for a 2D array.
@@ -254,20 +318,7 @@ pub fn softmax_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     if cols == 0 {
         return result;
     }
-    for i in 0..rows {
-        let src = &x[i * cols..(i + 1) * cols];
-        let dst = &mut result[i * cols..(i + 1) * cols];
-        let max_val = src.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let mut sum_exp = 0.0;
-        for (d, &v) in dst.iter_mut().zip(src.iter()) {
-            let e = (v - max_val).exp();
-            *d = e;
-            sum_exp += e;
-        }
-        for d in dst.iter_mut() {
-            *d /= sum_exp;
-        }
-    }
+    fill_softmax_rows_parallel(x, &mut result, rows, cols, softmax_row_into);
     result
 }
 
@@ -466,6 +517,15 @@ mod tests {
         result
     }
 
+    fn softmax_2d_fused_serial_ref(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+        let mut result = vec![0.0; rows * cols];
+        for i in 0..rows {
+            let start = i * cols;
+            softmax_row_into(&x[start..start + cols], &mut result[start..start + cols]);
+        }
+        result
+    }
+
     #[test]
     fn softmax_2d_fused_bit_identical_to_rowmap() {
         // Mixed magnitudes, signs, duplicates, and a row with a large value to
@@ -500,6 +560,58 @@ mod tests {
                 "log_softmax_2d diverged: {a} vs {b}"
             );
         }
+    }
+
+    fn softmax_parallel_fixture(rows: usize, cols: usize) -> Vec<f64> {
+        let mut x: Vec<f64> = (0..rows * cols)
+            .map(|k| ((k as f64) * 0.017).sin() * 40.0 - ((k % cols) as f64) * 0.125)
+            .collect();
+        if rows >= 4 && cols >= 5 {
+            x[cols] = f64::INFINITY;
+            x[cols + 1] = 17.0;
+            x[2 * cols] = f64::NEG_INFINITY;
+            x[2 * cols + 1] = -300.0;
+            x[3 * cols] = f64::NAN;
+            x[3 * cols + 1] = 3.5;
+            x[3 * cols + 2] = -0.0;
+            x[3 * cols + 3] = 0.0;
+            x[3 * cols + 4] = f64::INFINITY;
+        }
+        x
+    }
+
+    #[test]
+    fn softmax_2d_parallel_bit_identical_to_serial_fused() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let cols = 17;
+        let rows = (SOFTMAX_2D_PARALLEL_MIN / cols) + 64;
+        let x = softmax_parallel_fixture(rows, cols);
+        if std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            > 1
+        {
+            assert!(softmax_2d_thread_count(rows, rows * cols) > 1);
+        }
+
+        let parallel = softmax_2d(&x, rows, cols);
+        let reference = softmax_2d_fused_serial_ref(&x, rows, cols);
+        assert_eq!(parallel.len(), reference.len());
+        for (idx, (a, b)) in parallel.iter().zip(reference.iter()).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "parallel softmax_2d diverged at {idx}: {a} vs {b}"
+            );
+        }
+
+        let output_bits: Vec<u64> = parallel.iter().map(|v| v.to_bits()).collect();
+        let digest = fj_test_utils::fixture_id_from_json(&output_bits)?;
+        assert_eq!(
+            digest, "804d2a4abc52612601a766311fbe9a8e230766c65110b667b35676a7803bc6dd",
+            "softmax_2d parallel golden output digest changed"
+        );
+        Ok(())
     }
 
     #[test]
