@@ -762,6 +762,24 @@ pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
 }
 
 impl JitWrapped {
+    fn try_default_cpu_compiled_eval(
+        &self,
+        args: &[Value],
+    ) -> Result<Option<Vec<Value>>, ApiError> {
+        if self.backend.as_ref() != DEFAULT_BACKEND {
+            return Ok(None);
+        }
+        let Some(compiled) = self
+            .compiled_cache
+            .0
+            .get_or_init(|| fj_interpreters::compile_jaxpr_for_repeated_eval(&self.jaxpr))
+            .as_ref()
+        else {
+            return Ok(None);
+        };
+        compiled.eval(args).map(Some).map_err(ApiError::from)
+    }
+
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
         self.backend = Cow::Owned(backend.to_owned());
@@ -780,6 +798,9 @@ impl JitWrapped {
     }
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+        if let Some(outputs) = self.try_default_cpu_compiled_eval(&args)? {
+            return Ok(outputs);
+        }
         let transforms = [Transform::Jit];
         let evidence = transform_evidence(&transforms);
         let compile_options = BTreeMap::new();
@@ -802,16 +823,6 @@ impl JitWrapped {
                 .ok()
             })
             .as_ref();
-        if prepared.is_some()
-            && self.backend.as_ref() == DEFAULT_BACKEND
-            && let Some(compiled) = self
-                .compiled_cache
-                .0
-                .get_or_init(|| fj_interpreters::compile_jaxpr_for_repeated_eval(&self.jaxpr))
-                .as_ref()
-        {
-            return compiled.eval(&args).map_err(ApiError::from);
-        }
         dispatch_with_options_prepared(
             &self.jaxpr,
             &transforms,
