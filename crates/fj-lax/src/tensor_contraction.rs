@@ -2237,6 +2237,23 @@ fn round_f32_to_bf16(acc: f32) -> u16 {
     }
 }
 
+#[inline]
+fn round_f32xn_to_bf16_array(acc: F32xN) -> [u16; F32_NR] {
+    use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+    use std::simd::num::{SimdFloat, SimdUint};
+    use std::simd::{Select, Simd};
+
+    type U32s = Simd<u32, F32_NR>;
+    let bits: U32s = acc.to_bits();
+    let nan = (bits & U32s::splat(0x7FFF_FFFF)).simd_gt(U32s::splat(0x7F80_0000));
+    let nan_res = (bits >> U32s::splat(16)) | U32s::splat(0x0040);
+    let rb_set = (bits & U32s::splat(0x0000_8000)).simd_ne(U32s::splat(0));
+    let sticky = (bits & U32s::splat(0x0001_7FFF)).simd_ne(U32s::splat(0));
+    let round_up = (rb_set & sticky).select(U32s::splat(1), U32s::splat(0));
+    let normal = (bits >> U32s::splat(16)) + round_up;
+    nan.select(nan_res, normal).cast::<u16>().to_array()
+}
+
 /// Round an f32 F16-matmul accumulator to F16 bits, identically to the XLA
 /// rounding `from_f16_f64(f64::from(acc))`: `f64::from(f32)` is exact and the
 /// round-to-odd f64->f32 step inside `from_f16_f64` is then the identity, so this
@@ -2334,9 +2351,7 @@ fn batched_matmul_row_block_bf16_in(
                 }
                 for (r, c) in [c0, c1, c2, c3].iter().enumerate() {
                     let ob = (ri + i + r) * n + j;
-                    for (lane, &av) in c.as_array().iter().enumerate() {
-                        block[ob + lane] = round_f32_to_bf16(av);
-                    }
+                    block[ob..ob + F32_NR].copy_from_slice(&round_f32xn_to_bf16_array(*c));
                 }
                 i += F32_MR;
             }
@@ -2426,9 +2441,7 @@ fn batched_matmul_row_block_bf16_in_rowref(
         }
         for (chunk_idx, acc) in acc_chunks.iter().enumerate() {
             let j = chunk_idx * F32_NR;
-            for (lane, &av) in acc.as_array().iter().enumerate() {
-                c_row[j + lane] = round_f32_to_bf16(av);
-            }
+            c_row[j..j + F32_NR].copy_from_slice(&round_f32xn_to_bf16_array(*acc));
         }
         let tail_start = full_cols * F32_NR;
         for (j, &av) in acc_tail.iter().enumerate() {
@@ -3160,6 +3173,60 @@ mod tests {
         for idx in 0..got.len() {
             assert_eq!(got[idx], want[idx], "mismatch at {idx}");
         }
+    }
+
+    #[test]
+    fn round_f32xn_to_bf16_matches_scalar_edges() {
+        let values = [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            f32::from_bits(0x3f80_8000),
+            f32::from_bits(0x3f80_7fff),
+            f32::MIN_POSITIVE,
+            f32::from_bits(1),
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::from_bits(0x7fc0_1234),
+            f32::from_bits(0xffc0_5678),
+            65_504.0,
+            -65_504.0,
+            f32::MAX,
+            -f32::MAX,
+        ];
+        let got = round_f32xn_to_bf16_array(F32xN::from_array(values));
+        for (idx, value) in values.iter().copied().enumerate() {
+            assert_eq!(
+                got[idx],
+                round_f32_to_bf16(value),
+                "rounding mismatch at lane {idx}: {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn batched_matmul_2d_bf16_native_golden_digest() -> Result<(), Box<dyn std::error::Error>> {
+        let to_bf16 = |v: f64| -> u16 {
+            match fj_core::Literal::from_bf16_f64(v) {
+                fj_core::Literal::BF16Bits(b) => b,
+                _ => 0,
+            }
+        };
+        let (bt, m, k, n) = (2usize, 12usize, 17usize, 19usize);
+        let a16: Vec<u16> = (0..bt * m * k)
+            .map(|i| to_bf16((i as f64 * 0.0103).sin() * 1.4 - 0.2))
+            .collect();
+        let b16: Vec<u16> = (0..bt * k * n)
+            .map(|i| to_bf16((i as f64 * 0.0207).cos() * 1.1 + 0.4))
+            .collect();
+        let got = batched_matmul_2d_bf16_in(&a16, bt, m, k, &b16, n);
+        let digest = fj_test_utils::fixture_id_from_json(&got)?;
+        assert_eq!(
+            digest, "ff880f79bfc352fc4c4943db02e7f7e34b4c6bcb0989c960bc5f88cd6cee7bb9",
+            "native-bf16 matmul golden output digest changed: {digest}"
+        );
+        Ok(())
     }
 
     /// At batch==1 with B past the f32 pack threshold, `batched_matmul_2d_bf16_in`
