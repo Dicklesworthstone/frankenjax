@@ -1225,6 +1225,54 @@ fn bench_concat_axis0_3x_f64(c: &mut Criterion) {
     });
 }
 
+fn bench_concat_axis0_2x512x1024_then_add_f64(c: &mut Criterion) {
+    // Hot pattern for frankenjax-dr67k: concatenate dense feature blocks, then
+    // immediately feed a dense-reader elementwise op.
+    let mk_dense = |rows: usize, cols: usize, base: f64| {
+        let values: Vec<f64> = (0..rows * cols)
+            .map(|i| base + (i as f64 * 0.000_001))
+            .collect();
+        Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                values,
+            )
+            .unwrap(),
+        )
+    };
+    let a = mk_dense(512, 1024, 0.0);
+    let b = mk_dense(512, 1024, 10_000.0);
+    let zero = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![1024, 1024],
+            },
+            vec![0.0; 1024 * 1024],
+        )
+        .unwrap(),
+    );
+    let mut concat_params = no_params();
+    concat_params.insert("dimension".to_owned(), "0".to_owned());
+    let add_params = no_params();
+    c.bench_function("eval/concat_axis0_2x512x1024_then_add_f64", |bencher| {
+        bencher.iter(|| {
+            let concat = eval_primitive(
+                Primitive::Concatenate,
+                &[a.clone(), b.clone()],
+                &concat_params,
+            )
+            .unwrap();
+            black_box(eval_primitive(
+                Primitive::Add,
+                &[concat, zero.clone()],
+                &add_params,
+            ))
+        })
+    });
+}
+
 fn bench_transpose_256x256_f64(c: &mut Criterion) {
     let m = Value::Tensor(TensorValue {
         dtype: DType::F64,
@@ -5397,6 +5445,7 @@ criterion_group!(
     bench_solve_24x24_24rhs,
     bench_concat_axis1_3x_f64,
     bench_concat_axis0_3x_f64,
+    bench_concat_axis0_2x512x1024_then_add_f64,
     bench_transpose_256x256_f64,
     bench_transpose_512x512_complex128_dense,
     bench_transpose_512x512_complex128_literal_reference,

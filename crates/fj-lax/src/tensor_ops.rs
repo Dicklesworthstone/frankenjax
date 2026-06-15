@@ -15134,8 +15134,14 @@ mod tests {
 
     #[test]
     fn concatenate_pass65_lazy_output_preserves_tensor_contract() -> Result<(), String> {
-        let a = v_f64(&[1.0, 2.0]);
-        let b = v_f64(&[3.0, 4.0, 5.0]);
+        let a = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![2] }, vec![1.0, 2.0])
+                .map_err(|err| err.to_string())?,
+        );
+        let b = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![3] }, vec![3.0, 4.0, 5.0])
+                .map_err(|err| err.to_string())?,
+        );
         let p = params(&[("dimension", "0")]);
         let result = eval_concatenate(&[a, b], &p).map_err(|err| err.to_string())?;
         let Value::Tensor(mut tensor) = result else {
@@ -15144,9 +15150,18 @@ mod tests {
 
         assert_eq!(tensor.dtype, DType::F64);
         assert_eq!(tensor.shape.dims, vec![5]);
-        assert!(
-            tensor.elements.as_f64_slice().is_none(),
-            "concat output remains literal-observable storage"
+        assert_eq!(
+            tensor
+                .elements
+                .as_f64_slice()
+                .ok_or_else(|| "concat output should expose dense f64 storage".to_owned())?
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            [1.0_f64, 2.0, 3.0, 4.0, 5.0]
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
         );
         assert_eq!(
             tensor.elements.to_vec(),
@@ -15160,6 +15175,10 @@ mod tests {
         );
 
         tensor.elements[0] = Literal::from_f64(9.0);
+        assert!(
+            tensor.elements.as_f64_slice().is_none(),
+            "mutating a concat output materializes literal storage before writes"
+        );
         assert_eq!(tensor.elements[0], Literal::from_f64(9.0));
         assert_eq!(tensor.elements[1], Literal::from_f64(2.0));
         Ok(())
