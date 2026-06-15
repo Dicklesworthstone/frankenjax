@@ -4657,6 +4657,44 @@ pub(crate) fn eval_broadcasted_iota(
                 out,
             )?));
         }
+        DType::F32 => {
+            // F32 is JAX's default float; iota over f32 is common for positional
+            // encodings / masks. `a as f32` reproduces
+            // `literal_from_index_for_dtype(F32, a) = Literal::from_f32(a as f32)`
+            // exactly, and `new_f32_values` materializes back via
+            // `Literal::from_f32` -> bit-for-bit identical to the generic path.
+            let axis_values: Vec<f32> = (0..axis_extent).map(|a| a as f32).collect();
+            let out = iota_from_axis_values(&axis_values, stride, outer, total);
+            return Ok(Value::Tensor(TensorValue::new_f32_values(
+                Shape { dims: shape_u32 },
+                out,
+            )?));
+        }
+        DType::BF16 | DType::F16 => {
+            // Half-float iota (mixed-precision positional indices). Build the
+            // per-axis half bit pattern via the SAME `literal_from_index_for_dtype`
+            // the generic path uses (`from_{bf16,f16}_f64(a as f64)`), extract the
+            // u16 bits, then fill + block-repeat as dense half storage —
+            // `new_half_float_values` round-trips those bits exactly, so the output
+            // is bit-for-bit identical to the generic per-`Literal` path.
+            let axis_values: Vec<u16> = (0..axis_extent)
+                .map(
+                    |a| match literal_from_index_for_dtype(primitive, dtype, a)? {
+                        Literal::BF16Bits(b) | Literal::F16Bits(b) => Ok(b),
+                        other => Err(EvalError::Unsupported {
+                            primitive,
+                            detail: format!("broadcasted_iota half dtype produced {other:?}"),
+                        }),
+                    },
+                )
+                .collect::<Result<_, _>>()?;
+            let out = iota_from_axis_values(&axis_values, stride, outer, total);
+            return Ok(Value::Tensor(TensorValue::new_half_float_values(
+                dtype,
+                Shape { dims: shape_u32 },
+                out,
+            )?));
+        }
         _ => {}
     }
 
@@ -15281,6 +15319,142 @@ mod tests {
         let p = params(&[("length", "5"), ("dtype", "F64")]);
         let result = eval_iota(&[], &p).unwrap();
         assert_eq!(extract_f64_vec(&result), vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn broadcasted_iota_f32_half_dense_matches_generic_reference() {
+        // The dense F32/BF16/F16 broadcasted_iota fast paths must be bit-for-bit
+        // identical to the generic per-`Literal` path. Independent reference: the
+        // iota value at flat index `i` is `(i / stride) % axis_extent`, fed
+        // through the SAME `literal_from_index_for_dtype` the generic path uses.
+        // Several shapes/dimensions exercise stride/outer/block-repeat layout.
+        let cases: &[(&[usize], usize)] = &[
+            (&[5], 0),
+            (&[3, 4], 0),
+            (&[3, 4], 1),
+            (&[2, 3, 4], 1),
+            (&[2, 3, 4], 2),
+            (&[7, 1, 5], 0),
+        ];
+        for dt in ["f32", "bf16", "f16"] {
+            let dtype = super::parse_dtype_name(Primitive::BroadcastedIota, "dtype", dt).unwrap();
+            for &(shape, dimension) in cases {
+                let shape_csv = shape
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let p = params(&[
+                    ("shape", shape_csv.as_str()),
+                    ("dimension", &dimension.to_string()),
+                    ("dtype", dt),
+                ]);
+                let got = eval_broadcasted_iota(&[], &p).unwrap();
+                let t = got.as_tensor().unwrap();
+                // Stays dense.
+                if dt == "f32" {
+                    assert!(
+                        t.elements.as_f32_slice().is_some(),
+                        "f32 iota dense {shape:?}/{dimension}"
+                    );
+                } else {
+                    assert!(
+                        t.elements.as_half_float_slice().is_some(),
+                        "{dt} iota dense {shape:?}/{dimension}"
+                    );
+                }
+                // Independent expected bits.
+                let total: usize = shape.iter().product();
+                let stride: usize = shape[dimension + 1..].iter().product();
+                let axis_extent = shape[dimension];
+                let lit_bits = |l: Literal| -> u32 {
+                    match l {
+                        Literal::F32Bits(b) => b,
+                        Literal::BF16Bits(b) | Literal::F16Bits(b) => u32::from(b),
+                        other => panic!("unexpected iota literal {other:?}"),
+                    }
+                };
+                let got_bits: Vec<u32> = t.elements.iter().copied().map(lit_bits).collect();
+                let want_bits: Vec<u32> = (0..total)
+                    .map(|i| {
+                        let v = (i / stride) % axis_extent;
+                        lit_bits(
+                            super::literal_from_index_for_dtype(
+                                Primitive::BroadcastedIota,
+                                dtype,
+                                v,
+                            )
+                            .unwrap(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(got_bits, want_bits, "{dt} iota {shape:?} dim={dimension}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_broadcasted_iota_f32_dense_vs_generic() {
+        use std::time::Instant;
+        // Producer-side A/B: NEW dense f32 broadcasted_iota vs the OLD generic
+        // path (build a Vec<Literal::F32Bits> via the same index formula, wrap in
+        // a boxed TensorValue). Same element order/values; only storage differs.
+        let shape = [4096usize, 4096usize];
+        let dimension = 1usize;
+        let total: usize = shape.iter().product();
+        let stride: usize = shape[dimension + 1..].iter().product();
+        let axis_extent = shape[dimension];
+        let p = params(&[("shape", "4096,4096"), ("dimension", "1"), ("dtype", "f32")]);
+
+        let best = |mut f: Box<dyn FnMut() -> u64>| {
+            f();
+            let mut b = f64::MAX;
+            let mut digest = 0u64;
+            for _ in 0..10 {
+                let t = Instant::now();
+                digest = std::hint::black_box(f());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            (b, digest)
+        };
+
+        let (t_generic, d_generic) = best(Box::new(move || {
+            let elems: Vec<Literal> = (0..total)
+                .map(|i| Literal::from_f32(((i / stride) % axis_extent) as f32))
+                .collect();
+            let tv = TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![shape[0] as u32, shape[1] as u32],
+                },
+                elems,
+            )
+            .unwrap();
+            tv.elements.iter().fold(0u64, |a, l| match l {
+                Literal::F32Bits(b) => a ^ u64::from(*b),
+                _ => a,
+            })
+        }));
+
+        let (t_dense, d_dense) = best(Box::new(move || {
+            let out = eval_broadcasted_iota(&[], &p).unwrap();
+            out.as_tensor()
+                .unwrap()
+                .elements
+                .as_f32_slice()
+                .unwrap()
+                .iter()
+                .fold(0u64, |a, &v| a ^ u64::from(v.to_bits()))
+        }));
+
+        assert_eq!(d_generic, d_dense, "dense iota digest must match generic");
+        println!(
+            "BENCH broadcasted_iota f32 [4096,4096] dim1: generic(Vec<Literal>)={:.4}ms dense={:.4}ms speedup={:.2}x digest={d_generic:016x}",
+            t_generic * 1e3,
+            t_dense * 1e3,
+            t_generic / t_dense,
+        );
     }
 
     // ── One-hot ──
