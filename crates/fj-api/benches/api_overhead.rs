@@ -390,6 +390,74 @@ fn bench_prepared_dispatch_metadata(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// 7. Repeated JIT compiled evaluator cache: same-binary A/B
+//
+// Isolates the lever for frankenjax-so4wo. The dispatch arm is the old repeated
+// JIT route after args-independent metadata is already prepared. The API arm is
+// a warmed `JitWrapped` call that reuses the compiled dense scalar evaluator.
+// Both run Add2 with the same transform evidence and must return 7.
+// ---------------------------------------------------------------------------
+
+fn bench_jit_compiled_eval_cache(c: &mut Criterion) {
+    use fj_dispatch::{DispatchRequestRef, dispatch_ref, prepare_dispatch_meta};
+
+    let mut group = c.benchmark_group("jit_compiled_eval_cache");
+    let jaxpr = build_program(ProgramSpec::Add2);
+    let transforms = [Transform::Jit];
+    let evidence: Vec<String> = vec!["fj-api-jit-0".to_owned()];
+    let compile_options = std::collections::BTreeMap::new();
+    let backend = "cpu";
+    let mode = fj_core::CompatibilityMode::Strict;
+    let features: Vec<String> = Vec::new();
+    let meta = prepare_dispatch_meta(
+        mode,
+        &jaxpr,
+        &transforms,
+        &evidence,
+        backend,
+        &compile_options,
+        None,
+        &features,
+    )
+    .expect("prepare dispatch meta");
+
+    let wrapped = jit(jaxpr.clone());
+    wrapped
+        .call(vec![Value::scalar_i64(3), Value::scalar_i64(4)])
+        .expect("warm compiled jit");
+
+    group.bench_function("dispatch_prepared/scalar_add", |b| {
+        b.iter(|| {
+            let response = dispatch_ref(DispatchRequestRef {
+                mode,
+                root_jaxpr: &jaxpr,
+                transform_stack: &transforms,
+                transform_evidence: &evidence,
+                args: vec![Value::scalar_i64(3), Value::scalar_i64(4)],
+                backend,
+                compile_options: compile_options.clone(),
+                custom_hook: None,
+                unknown_incompatible_features: &features,
+                prepared: Some(&meta),
+            })
+            .expect("prepared dispatch");
+            assert_eq!(response.outputs, vec![Value::scalar_i64(7)]);
+        });
+    });
+
+    group.bench_function("api_compiled/scalar_add", |b| {
+        b.iter(|| {
+            let outputs = wrapped
+                .call(vec![Value::scalar_i64(3), Value::scalar_i64(4)])
+                .expect("compiled jit");
+            assert_eq!(outputs, vec![Value::scalar_i64(7)]);
+        });
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -401,5 +469,6 @@ criterion_group!(
     bench_api_composition,
     bench_api_mode_config,
     bench_prepared_dispatch_metadata,
+    bench_jit_compiled_eval_cache,
 );
 criterion_main!(api_benches);

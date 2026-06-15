@@ -8,6 +8,7 @@ use fj_core::{
 };
 use fj_lax::{EvalError, eval_primitive, eval_primitive_multi};
 use rustc_hash::FxHashMap;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterpreterError {
@@ -5875,6 +5876,104 @@ struct DenseEvalPlan {
     scalar_select_plan: Option<ScalarSelectPlan>,
     scalar_select_i64_plan: Option<ScalarSelectI64Plan>,
     scalar_poly_plan: Option<ScalarPolyPlan>,
+}
+
+impl DenseEvalPlan {
+    fn has_scalar_fast_path(&self) -> bool {
+        self.scalar_f64_plan.is_some()
+            || self.scalar_i64_plan.is_some()
+            || self.scalar_f32_plan.is_some()
+            || self.scalar_bf16_plan.is_some()
+            || self.scalar_f16_plan.is_some()
+            || self.scalar_compare_plan.is_some()
+            || self.scalar_compound_compare_plan.is_some()
+            || self.scalar_select_plan.is_some()
+            || self.scalar_select_i64_plan.is_some()
+            || self.scalar_poly_plan.is_some()
+    }
+}
+
+/// One-time compiled evaluator for hot repeated calls of the same small Jaxpr.
+///
+/// The compiled form reuses the existing dense slot plan and scalar step plans;
+/// it does not change primitive order, tie-breaking, floating-point evaluation,
+/// or RNG/effect behavior. Programs outside the pure scalar/dense subset return
+/// `None` from [`compile_jaxpr_for_repeated_eval`] and should use
+/// [`eval_jaxpr_with_consts`] or the backend scheduler.
+pub struct CompiledJaxpr {
+    jaxpr: Jaxpr,
+    plan: DenseEvalPlan,
+}
+
+impl CompiledJaxpr {
+    pub fn eval(&self, args: &[Value]) -> Result<Vec<Value>, InterpreterError> {
+        if args.len() != self.jaxpr.invars.len() {
+            return Err(InterpreterError::InputArity {
+                expected: self.jaxpr.invars.len(),
+                actual: args.len(),
+            });
+        }
+
+        let mut env: Vec<Option<Value>> = vec![None; self.plan.slots];
+        run_dense_plan(&self.jaxpr, &[], args, &mut env, &self.plan)
+    }
+}
+
+/// Compile a pure dense scalar Jaxpr for repeated evaluation.
+///
+/// This deliberately accepts only no-const, effect-free, sub-jaxpr-free programs
+/// with unique bindings and an existing scalar dense plan. Everything else keeps
+/// the normal interpreter/backend route so malformed or non-scalar programs keep
+/// their existing behavior.
+#[must_use]
+pub fn compile_jaxpr_for_repeated_eval(jaxpr: &Jaxpr) -> Option<CompiledJaxpr> {
+    if !jaxpr.constvars.is_empty() || !jaxpr.effects.is_empty() {
+        return None;
+    }
+    if !jaxpr_is_uniquely_bound_effect_free(jaxpr) {
+        return None;
+    }
+
+    let plan = build_dense_plan(jaxpr)?;
+    if !plan.has_scalar_fast_path() {
+        return None;
+    }
+
+    Some(CompiledJaxpr {
+        jaxpr: jaxpr.clone(),
+        plan,
+    })
+}
+
+fn jaxpr_is_uniquely_bound_effect_free(jaxpr: &Jaxpr) -> bool {
+    let mut bindings = BTreeSet::new();
+    for var in jaxpr.constvars.iter().chain(jaxpr.invars.iter()) {
+        if !bindings.insert(*var) {
+            return false;
+        }
+    }
+    for equation in &jaxpr.equations {
+        if !equation.effects.is_empty() || !equation.sub_jaxprs.is_empty() {
+            return false;
+        }
+        if equation.inputs.iter().any(|atom| match atom {
+            Atom::Var(var) => !bindings.contains(var),
+            Atom::Lit(_) => false,
+        }) {
+            return false;
+        }
+        for out_var in &equation.outputs {
+            if !bindings.insert(*out_var) {
+                return false;
+            }
+        }
+    }
+
+    let mut seen_outputs = BTreeSet::new();
+    jaxpr
+        .outvars
+        .iter()
+        .all(|var| seen_outputs.insert(*var) && bindings.contains(var))
 }
 
 /// Build a [`DenseEvalPlan`] iff the jaxpr's variable ids are dense enough for the

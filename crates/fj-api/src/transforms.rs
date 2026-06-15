@@ -27,6 +27,10 @@ pub struct JitWrapped {
     /// repeated `call`s. Excluded from equality/Debug so cached proof/key state
     /// does not change the wrapper's observable identity.
     meta_cache: DispatchMetaCache,
+    /// Lazily-compiled dense scalar evaluator for repeated default-CPU JIT
+    /// calls. Excluded from equality/Debug for the same reason as
+    /// `meta_cache`: it is a pure memo of `jaxpr`.
+    compiled_cache: CompiledEvalCache,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,6 +80,21 @@ impl PartialEq for DispatchMetaCache {
 impl std::fmt::Debug for DispatchMetaCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("DispatchMetaCache(..)")
+    }
+}
+
+#[derive(Clone, Default)]
+struct CompiledEvalCache(Arc<OnceLock<Option<fj_interpreters::CompiledJaxpr>>>);
+
+impl PartialEq for CompiledEvalCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for CompiledEvalCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CompiledEvalCache(..)")
     }
 }
 
@@ -175,6 +194,7 @@ pub fn jit(jaxpr: Jaxpr) -> JitWrapped {
         backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
         meta_cache: DispatchMetaCache::default(),
+        compiled_cache: CompiledEvalCache::default(),
     }
 }
 
@@ -710,6 +730,7 @@ impl JitWrapped {
         self.backend = Cow::Owned(backend.to_owned());
         // Backend feeds the cache key — invalidate any memoized metadata.
         self.meta_cache = DispatchMetaCache::default();
+        self.compiled_cache = CompiledEvalCache::default();
         self
     }
 
@@ -744,6 +765,16 @@ impl JitWrapped {
                 .ok()
             })
             .as_ref();
+        if prepared.is_some()
+            && self.backend.as_ref() == DEFAULT_BACKEND
+            && let Some(compiled) = self
+                .compiled_cache
+                .0
+                .get_or_init(|| fj_interpreters::compile_jaxpr_for_repeated_eval(&self.jaxpr))
+                .as_ref()
+        {
+            return compiled.eval(&args).map_err(ApiError::from);
+        }
         dispatch_with_options_prepared(
             &self.jaxpr,
             &transforms,
@@ -1491,6 +1522,39 @@ mod tests {
             .unwrap();
         assert_eq!(result.len(), 1);
         assert!((result[0].as_f64_scalar().unwrap() - 7.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn jit_repeated_call_compiled_cache_matches_dispatch_golden_sha256() {
+        use fj_core::ProgramSpec;
+
+        let jaxpr = fj_core::build_program(ProgramSpec::Add2);
+        assert!(
+            fj_interpreters::compile_jaxpr_for_repeated_eval(&jaxpr).is_some(),
+            "Add2 should be eligible for the repeated-JIT compiled scalar path"
+        );
+
+        let wrapped = jit(jaxpr.clone());
+        let fast = wrapped
+            .call(vec![Value::scalar_i64(3), Value::scalar_i64(4)])
+            .expect("compiled jit call should succeed");
+        let dispatch = dispatch_with_options(
+            &jaxpr,
+            &[Transform::Jit],
+            vec![Value::scalar_i64(3), Value::scalar_i64(4)],
+            DEFAULT_BACKEND,
+            CompatibilityMode::Strict,
+            BTreeMap::new(),
+        )
+        .expect("dispatch reference should succeed");
+
+        assert_eq!(fast, dispatch);
+        let digest = fj_test_utils::fixture_id_from_json(&("frankenjax-so4wo", &fast))
+            .expect("golden output should hash");
+        assert_eq!(
+            digest,
+            "358ba10d12a581c6dd0ec4adb2ab3f69b71e12df1316ff855ab5387f328dbf38"
+        );
     }
 
     #[test]
