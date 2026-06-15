@@ -228,6 +228,10 @@ fn lookup_custom_jaxpr_vjp(jaxpr: &Jaxpr) -> Option<CustomJaxprVjpRule> {
     })
 }
 
+fn lookup_custom_jaxpr_vjp_fingerprint(fingerprint: &str) -> Option<CustomJaxprVjpRule> {
+    with_registry_read(|registry| registry.jaxpr_vjp_rules.get(fingerprint).cloned())
+}
+
 fn lookup_custom_jaxpr_vjp_by_key(rule_key: &str) -> Option<CustomJaxprVjpRule> {
     with_registry_read(|registry| registry.jaxpr_vjp_rules.get(rule_key).cloned())
 }
@@ -265,8 +269,320 @@ struct Tape {
 
 type TapeVarIds = SmallVec<[VarId; 2]>;
 type TapeValues = SmallVec<[Value; 2]>;
+type CompiledValueAndGradOutput = Option<(Vec<Value>, Vec<Value>)>;
 
 const DENSE_AD_VALUE_STORE_MAX_SLOTS: usize = 1_000_000;
+
+#[derive(Debug, Clone, Copy)]
+enum ScalarF64Atom {
+    Slot(usize),
+    Lit(f64),
+}
+
+#[derive(Debug, Clone)]
+struct ScalarF64ReverseStep {
+    primitive: Primitive,
+    inputs: SmallVec<[ScalarF64Atom; 2]>,
+    output: usize,
+}
+
+/// Reusable reverse-mode plan for hot repeated scalar-F64 AD calls.
+///
+/// This is the first safe-Rust lowering step toward a cached backward Jaxpr:
+/// it pre-validates the static scalar graph once, then evaluates the same
+/// equations in the original order and propagates cotangents in reverse order.
+/// Programs outside the pure scalar-F64 single-output subset return `None` and
+/// keep the existing tape-based AD path.
+#[derive(Debug, Clone)]
+pub struct CompiledValueAndGradJaxpr {
+    jaxpr_fingerprint: String,
+    input_slots: Vec<usize>,
+    output_slot: usize,
+    steps: Vec<ScalarF64ReverseStep>,
+    slots: usize,
+}
+
+impl CompiledValueAndGradJaxpr {
+    /// Evaluate the compiled value-and-gradient plan.
+    ///
+    /// Returns `Ok(None)` when runtime values are outside the scalar-F64 subset
+    /// accepted by this plan, allowing callers to fall back to `value_and_grad_jaxpr`.
+    pub fn value_and_grad(&self, args: &[Value]) -> Result<CompiledValueAndGradOutput, AdError> {
+        if !self.uses_builtin_vjp_rules() {
+            return Ok(None);
+        }
+        if args.len() != self.input_slots.len() {
+            return Err(AdError::InputArity {
+                expected: self.input_slots.len(),
+                actual: args.len(),
+            });
+        }
+
+        let mut values = vec![None; self.slots];
+        for (slot, arg) in self.input_slots.iter().copied().zip(args) {
+            let Value::Scalar(Literal::F64Bits(bits)) = arg else {
+                return Ok(None);
+            };
+            let value = f64::from_bits(*bits);
+            if !value.is_finite() {
+                return Ok(None);
+            }
+            values[slot] = Some(value);
+        }
+
+        for step in &self.steps {
+            let result = scalar_f64_step_forward(step.primitive, &step.inputs, &values)?;
+            if !result.is_finite() {
+                return Ok(None);
+            }
+            values[step.output] = Some(result);
+        }
+
+        let output = values
+            .get(self.output_slot)
+            .and_then(|value| *value)
+            .ok_or(AdError::MissingVariable(VarId(self.output_slot as u32)))?;
+
+        let mut adjoints = vec![None; self.slots];
+        adjoints[self.output_slot] = Some(1.0);
+        for step in self.steps.iter().rev() {
+            let Some(g) = adjoints[step.output] else {
+                continue;
+            };
+            if g == 0.0 {
+                continue;
+            }
+            scalar_f64_step_backward(step, &values, &mut adjoints, g)?;
+        }
+
+        let grads = self
+            .input_slots
+            .iter()
+            .map(|slot| Value::scalar_f64(adjoints[*slot].unwrap_or(0.0)))
+            .collect();
+        Ok(Some((vec![Value::scalar_f64(output)], grads)))
+    }
+
+    /// Evaluate only the gradient outputs.
+    pub fn grad(&self, args: &[Value]) -> Result<Option<Vec<Value>>, AdError> {
+        Ok(self.value_and_grad(args)?.map(|(_, grads)| grads))
+    }
+
+    fn uses_builtin_vjp_rules(&self) -> bool {
+        lookup_custom_jaxpr_vjp_fingerprint(&self.jaxpr_fingerprint).is_none()
+            && self
+                .steps
+                .iter()
+                .all(|step| lookup_custom_vjp(step.primitive).is_none())
+    }
+}
+
+#[must_use]
+pub fn compile_value_and_grad_jaxpr_for_repeated_eval(
+    jaxpr: &Jaxpr,
+) -> Option<CompiledValueAndGradJaxpr> {
+    if !jaxpr.constvars.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.outvars.len() != 1
+        || lookup_custom_jaxpr_vjp(jaxpr).is_some()
+    {
+        return None;
+    }
+    let max_var = max_var_index(jaxpr)?;
+    let slots = max_var.checked_add(1)?;
+    if slots > DENSE_AD_VALUE_STORE_MAX_SLOTS {
+        return None;
+    }
+
+    let mut bound = vec![false; slots];
+    let mut input_slots = Vec::with_capacity(jaxpr.invars.len());
+    for var in &jaxpr.invars {
+        let slot = var.0 as usize;
+        if slot >= slots || bound[slot] {
+            return None;
+        }
+        bound[slot] = true;
+        input_slots.push(slot);
+    }
+
+    let mut steps = Vec::with_capacity(jaxpr.equations.len());
+    for equation in &jaxpr.equations {
+        if !equation.params.is_empty()
+            || !equation.sub_jaxprs.is_empty()
+            || !equation.effects.is_empty()
+            || equation.outputs.len() != 1
+            || !scalar_f64_reverse_primitive_supported(equation.primitive)
+            || lookup_custom_vjp(equation.primitive).is_some()
+        {
+            return None;
+        }
+
+        let expected_arity = scalar_f64_reverse_primitive_arity(equation.primitive)?;
+        if equation.inputs.len() != expected_arity {
+            return None;
+        }
+
+        let mut inputs = SmallVec::with_capacity(equation.inputs.len());
+        for atom in &equation.inputs {
+            match atom {
+                Atom::Var(var) => {
+                    let slot = var.0 as usize;
+                    if slot >= slots || !bound[slot] {
+                        return None;
+                    }
+                    inputs.push(ScalarF64Atom::Slot(slot));
+                }
+                Atom::Lit(Literal::F64Bits(bits)) => {
+                    inputs.push(ScalarF64Atom::Lit(f64::from_bits(*bits)));
+                }
+                Atom::Lit(_) => return None,
+            }
+        }
+
+        let output = equation.outputs[0].0 as usize;
+        if output >= slots || bound[output] {
+            return None;
+        }
+        bound[output] = true;
+        steps.push(ScalarF64ReverseStep {
+            primitive: equation.primitive,
+            inputs,
+            output,
+        });
+    }
+
+    let output_slot = jaxpr.outvars[0].0 as usize;
+    if output_slot >= slots || !bound[output_slot] {
+        return None;
+    }
+
+    Some(CompiledValueAndGradJaxpr {
+        jaxpr_fingerprint: jaxpr.canonical_fingerprint().to_owned(),
+        input_slots,
+        output_slot,
+        steps,
+        slots,
+    })
+}
+
+fn scalar_f64_reverse_primitive_supported(primitive: Primitive) -> bool {
+    matches!(
+        primitive,
+        Primitive::Add
+            | Primitive::Sub
+            | Primitive::Mul
+            | Primitive::Div
+            | Primitive::Neg
+            | Primitive::Sin
+            | Primitive::Cos
+            | Primitive::Exp
+            | Primitive::Log
+    )
+}
+
+fn scalar_f64_reverse_primitive_arity(primitive: Primitive) -> Option<usize> {
+    match primitive {
+        Primitive::Add | Primitive::Sub | Primitive::Mul | Primitive::Div => Some(2),
+        Primitive::Neg | Primitive::Sin | Primitive::Cos | Primitive::Exp | Primitive::Log => {
+            Some(1)
+        }
+        _ => None,
+    }
+}
+
+fn compiled_scalar_f64_atom_value(
+    atom: ScalarF64Atom,
+    values: &[Option<f64>],
+) -> Result<f64, AdError> {
+    match atom {
+        ScalarF64Atom::Slot(slot) => values
+            .get(slot)
+            .and_then(|value| *value)
+            .ok_or(AdError::MissingVariable(VarId(slot as u32))),
+        ScalarF64Atom::Lit(value) => Ok(value),
+    }
+}
+
+fn scalar_f64_step_forward(
+    primitive: Primitive,
+    inputs: &[ScalarF64Atom],
+    values: &[Option<f64>],
+) -> Result<f64, AdError> {
+    let input = |idx| compiled_scalar_f64_atom_value(inputs[idx], values);
+    match primitive {
+        Primitive::Add => Ok(input(0)? + input(1)?),
+        Primitive::Sub => Ok(input(0)? - input(1)?),
+        Primitive::Mul => Ok(input(0)? * input(1)?),
+        Primitive::Div => Ok(input(0)? / input(1)?),
+        Primitive::Neg => Ok(-input(0)?),
+        Primitive::Sin => Ok(input(0)?.sin()),
+        Primitive::Cos => Ok(input(0)?.cos()),
+        Primitive::Exp => Ok(input(0)?.exp()),
+        Primitive::Log => Ok(input(0)?.ln()),
+        _ => Err(AdError::UnsupportedPrimitive(primitive)),
+    }
+}
+
+fn compiled_scalar_f64_add_or_insert(
+    adjoints: &mut [Option<f64>],
+    atom: ScalarF64Atom,
+    cotangent: f64,
+) {
+    if let ScalarF64Atom::Slot(slot) = atom
+        && let Some(target) = adjoints.get_mut(slot)
+    {
+        match target {
+            Some(existing) => *existing += cotangent,
+            None => *target = Some(cotangent),
+        }
+    }
+}
+
+fn scalar_f64_step_backward(
+    step: &ScalarF64ReverseStep,
+    values: &[Option<f64>],
+    adjoints: &mut [Option<f64>],
+    g: f64,
+) -> Result<(), AdError> {
+    let input = |idx| compiled_scalar_f64_atom_value(step.inputs[idx], values);
+    match step.primitive {
+        Primitive::Add => {
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[0], g);
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[1], g);
+        }
+        Primitive::Sub => {
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[0], g);
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[1], -g);
+        }
+        Primitive::Mul => {
+            let lhs = input(0)?;
+            let rhs = input(1)?;
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[0], g * rhs);
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[1], g * lhs);
+        }
+        Primitive::Div => {
+            let lhs = input(0)?;
+            let rhs = input(1)?;
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[0], g / rhs);
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[1], -(g * (lhs / (rhs * rhs))));
+        }
+        Primitive::Neg => compiled_scalar_f64_add_or_insert(adjoints, step.inputs[0], -g),
+        Primitive::Sin => {
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[0], g * input(0)?.cos());
+        }
+        Primitive::Cos => {
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[0], -(g * input(0)?.sin()));
+        }
+        Primitive::Exp => {
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[0], g * input(0)?.exp());
+        }
+        Primitive::Log => {
+            compiled_scalar_f64_add_or_insert(adjoints, step.inputs[0], g / input(0)?);
+        }
+        _ => return Err(AdError::UnsupportedPrimitive(step.primitive)),
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 enum AdValueStore {
@@ -20492,6 +20808,122 @@ mod tests {
         assert_eq!(
             digest,
             "903936a8b8dba3772ffb21833698efe29716639a722e7eabf78ebbc9fe6958fe"
+        );
+
+        clear_custom_derivative_rules();
+        Ok(())
+    }
+
+    #[test]
+    fn compiled_scalar_f64_reverse_plan_matches_generic_bits() -> Result<(), String> {
+        use fj_core::{Jaxpr, VarId};
+        use smallvec::smallvec;
+
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(1)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Cos,
+                    inputs: smallvec![Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let compiled = compile_value_and_grad_jaxpr_for_repeated_eval(&jaxpr)
+            .ok_or_else(|| "compiled scalar-F64 reverse plan did not match".to_string())?;
+        let data = [0.0, -0.0, 1.0, -2.5, std::f64::consts::FRAC_PI_4];
+        let mut bits_hex = Vec::new();
+
+        for x in data {
+            let args = [Value::scalar_f64(x)];
+            let (compiled_outputs, compiled_grads) = compiled
+                .value_and_grad(&args)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "compiled scalar-F64 path returned None".to_string())?;
+            let (generic_outputs, generic_grads) =
+                value_and_grad_jaxpr_with_custom_vjp_key(&jaxpr, &args, "force-generic")
+                    .map_err(|e| e.to_string())?;
+
+            let compiled_output_bits = compiled_outputs
+                .first()
+                .and_then(Value::as_f64_scalar)
+                .ok_or_else(|| "compiled scalar output missing".to_string())?
+                .to_bits();
+            let generic_output_bits = generic_outputs
+                .first()
+                .and_then(Value::as_f64_scalar)
+                .ok_or_else(|| "generic scalar output missing".to_string())?
+                .to_bits();
+            assert_eq!(compiled_output_bits, generic_output_bits, "output x={x:?}");
+
+            let compiled_grad_bits = compiled_grads
+                .first()
+                .and_then(Value::as_f64_scalar)
+                .ok_or_else(|| "compiled scalar gradient missing".to_string())?
+                .to_bits();
+            let generic_grad_bits = generic_grads
+                .first()
+                .and_then(Value::as_f64_scalar)
+                .ok_or_else(|| "generic scalar gradient missing".to_string())?
+                .to_bits();
+            assert_eq!(compiled_grad_bits, generic_grad_bits, "grad x={x:?}");
+
+            bits_hex.push(format!("{compiled_output_bits:016x}"));
+            bits_hex.push(format!("{compiled_grad_bits:016x}"));
+        }
+
+        let digest = fj_test_utils::fixture_id_from_json(&bits_hex).expect("sha256 digest");
+        assert_eq!(
+            digest,
+            "029b47fad80a2743a681fbcb769f4f256b12990093f3d3248ac1041ac53fb285"
+        );
+
+        for x in [
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::from_bits(0x7ff8_0000_0000_0042),
+        ] {
+            let args = [Value::scalar_f64(x)];
+            assert!(
+                compiled
+                    .value_and_grad(&args)
+                    .map_err(|e| e.to_string())?
+                    .is_none(),
+                "non-finite x={x:?} should use the tape fallback"
+            );
+        }
+
+        register_custom_vjp(Primitive::Sin, |_inputs, g, _params| Ok(vec![g.clone()]));
+        assert!(
+            compiled
+                .value_and_grad(&[Value::scalar_f64(1.0)])
+                .map_err(|e| e.to_string())?
+                .is_none(),
+            "warmed compiled plan must defer to custom primitive VJP rules"
         );
 
         clear_custom_derivative_rules();

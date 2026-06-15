@@ -44,6 +44,9 @@ pub struct GradWrapped {
     /// Excluded from equality/Debug so the wrapper's observable identity is
     /// unchanged.
     meta_cache: DispatchMetaCache,
+    /// Lazily-compiled scalar-F64 reverse plan for repeated default-CPU AD
+    /// calls. Excluded from equality/Debug because it is a pure memo of `jaxpr`.
+    compiled_ad_cache: CompiledAdCache,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,6 +73,10 @@ pub struct ValueAndGradWrapped {
     /// cache key) shared across repeated `call`s. Excluded from equality/Debug
     /// so the wrapper's observable identity is unchanged.
     meta_cache: DispatchMetaCache,
+    /// Lazily-compiled scalar-F64 reverse plan for repeated default-CPU
+    /// value-and-grad calls. Excluded from equality/Debug because it is a pure
+    /// memo of `jaxpr`.
+    compiled_ad_cache: CompiledAdCache,
 }
 
 /// Process-lifetime cache for the args-independent dispatch metadata of a
@@ -105,6 +112,21 @@ impl PartialEq for CompiledEvalCache {
 impl std::fmt::Debug for CompiledEvalCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("CompiledEvalCache(..)")
+    }
+}
+
+#[derive(Clone, Default)]
+struct CompiledAdCache(Arc<OnceLock<Option<fj_ad::CompiledValueAndGradJaxpr>>>);
+
+impl PartialEq for CompiledAdCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for CompiledAdCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CompiledAdCache(..)")
     }
 }
 
@@ -216,6 +238,7 @@ pub fn grad(jaxpr: Jaxpr) -> GradWrapped {
         mode: CompatibilityMode::Strict,
         custom_vjp_rule_key: None,
         meta_cache: DispatchMetaCache::default(),
+        compiled_ad_cache: CompiledAdCache::default(),
     }
 }
 
@@ -239,6 +262,7 @@ pub fn value_and_grad(jaxpr: Jaxpr) -> ValueAndGradWrapped {
         mode: CompatibilityMode::Strict,
         custom_vjp_rule_key: None,
         meta_cache: DispatchMetaCache::default(),
+        compiled_ad_cache: CompiledAdCache::default(),
     }
 }
 
@@ -832,6 +856,7 @@ impl GradWrapped {
         self.backend = Cow::Owned(backend.to_owned());
         // Backend feeds the cache key — invalidate any memoized metadata.
         self.meta_cache = DispatchMetaCache::default();
+        self.compiled_ad_cache = CompiledAdCache::default();
         self
     }
 
@@ -839,6 +864,7 @@ impl GradWrapped {
     pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
         self.mode = mode;
         self.meta_cache = DispatchMetaCache::default();
+        self.compiled_ad_cache = CompiledAdCache::default();
         self
     }
 
@@ -870,6 +896,19 @@ impl GradWrapped {
                 .ok()
             })
             .as_ref();
+        if self.custom_vjp_rule_key.is_none()
+            && prepared.is_some()
+            && self.backend.as_ref() == DEFAULT_BACKEND
+            && let Some(compiled) = self
+                .compiled_ad_cache
+                .0
+                .get_or_init(|| fj_ad::compile_value_and_grad_jaxpr_for_repeated_eval(&self.jaxpr))
+                .as_ref()
+            && let Some(grads) = compiled.grad(&args)?
+            && let Some(first_grad) = grads.into_iter().next()
+        {
+            return Ok(vec![first_grad]);
+        }
         dispatch_with_options_prepared(
             &self.jaxpr,
             &transforms,
@@ -1056,6 +1095,7 @@ impl ValueAndGradWrapped {
         self.backend = Cow::Owned(backend.to_owned());
         // Backend feeds the cache key — invalidate any memoized metadata.
         self.meta_cache = DispatchMetaCache::default();
+        self.compiled_ad_cache = CompiledAdCache::default();
         self
     }
 
@@ -1064,6 +1104,7 @@ impl ValueAndGradWrapped {
         self.mode = mode;
         // Mode feeds the cache key — invalidate any memoized metadata.
         self.meta_cache = DispatchMetaCache::default();
+        self.compiled_ad_cache = CompiledAdCache::default();
         self
     }
 
@@ -1101,6 +1142,18 @@ impl ValueAndGradWrapped {
                 .ok()
             })
             .as_ref();
+        if self.custom_vjp_rule_key.is_none()
+            && prepared.is_some()
+            && self.backend.as_ref() == DEFAULT_BACKEND
+            && let Some(compiled) = self
+                .compiled_ad_cache
+                .0
+                .get_or_init(|| fj_ad::compile_value_and_grad_jaxpr_for_repeated_eval(&self.jaxpr))
+                .as_ref()
+            && let Some((values, gradients)) = compiled.value_and_grad(&args)?
+        {
+            return Ok((values, gradients));
+        }
         let outputs = dispatch_with_options_prepared(
             &self.jaxpr,
             &transforms,
@@ -1153,6 +1206,7 @@ impl CustomVjpWrapped {
             mode: self.mode,
             custom_vjp_rule_key: Some(self.rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
+            compiled_ad_cache: CompiledAdCache::default(),
         }
     }
 
@@ -1164,6 +1218,7 @@ impl CustomVjpWrapped {
             mode: self.mode,
             custom_vjp_rule_key: Some(self.rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
+            compiled_ad_cache: CompiledAdCache::default(),
         }
     }
 
@@ -1262,6 +1317,7 @@ impl CheckpointWrapped {
             mode: self.mode,
             custom_vjp_rule_key: Some(self.custom_vjp_rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
+            compiled_ad_cache: CompiledAdCache::default(),
         }
     }
 
@@ -1273,6 +1329,7 @@ impl CheckpointWrapped {
             mode: self.mode,
             custom_vjp_rule_key: Some(self.custom_vjp_rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
+            compiled_ad_cache: CompiledAdCache::default(),
         }
     }
 
@@ -1727,11 +1784,11 @@ mod tests {
         .expect("reference vmap dispatch");
         assert_eq!(second, reference);
 
-        let digest = fj_test_utils::fixture_id_from_json(&("frankenjax-wy3zc", &second))
+        let digest = fj_test_utils::fixture_id_from_json(&("frankenjax-mcqr.62", &second))
             .expect("golden output should hash");
         assert_eq!(
             digest,
-            "33a874be08713435d9a6dedb68458fb54dbed7266029df04d4dfd95dd4b5b102"
+            "71cc9ad54fc35b1240b1419bccafd0ed93ade694ca3368fc2aa008ab4184e65d"
         );
     }
 
@@ -1780,6 +1837,67 @@ mod tests {
         assert!(
             !gradients.is_empty(),
             "should produce at least one gradient"
+        );
+    }
+
+    #[test]
+    fn value_and_grad_compiled_ad_cache_matches_tape_golden_sha256() {
+        use smallvec::smallvec;
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(1)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Cos,
+                    inputs: smallvec![Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let args = vec![Value::scalar_f64(1.0)];
+        let wrapped = value_and_grad(jaxpr.clone());
+        let _ = wrapped.call(args.clone()).expect("warm compiled AD cache");
+        let (cached_values, cached_grads) = wrapped.call(args.clone()).expect("cached call");
+        let (reference_values, reference_grads) =
+            fj_ad::value_and_grad_jaxpr(&jaxpr, &args).expect("reference tape AD");
+        assert_eq!(cached_values, reference_values);
+        assert_eq!(cached_grads, reference_grads);
+
+        let bits_hex = vec![
+            format!(
+                "{:016x}",
+                cached_values[0].as_f64_scalar().expect("value").to_bits()
+            ),
+            format!(
+                "{:016x}",
+                cached_grads[0].as_f64_scalar().expect("gradient").to_bits()
+            ),
+        ];
+        let digest = fj_test_utils::fixture_id_from_json(&bits_hex).expect("sha256 digest");
+        assert_eq!(
+            digest,
+            "984585309be003365780a1f999422efc949c360ec9933d354a6bd50b5b41653a"
         );
     }
 

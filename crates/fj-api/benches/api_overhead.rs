@@ -38,6 +38,40 @@ fn build_deep_value_and_grad_jaxpr(node_count: usize) -> Jaxpr {
     Jaxpr::new(vec![VarId(1)], vec![], vec![current], equations)
 }
 
+fn build_trig_value_and_grad_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(0)],
+        vec![],
+        vec![VarId(3)],
+        vec![
+            Equation {
+                primitive: Primitive::Sin,
+                inputs: vec![Atom::Var(VarId(0))].into(),
+                outputs: vec![VarId(1)].into(),
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            },
+            Equation {
+                primitive: Primitive::Cos,
+                inputs: vec![Atom::Var(VarId(0))].into(),
+                outputs: vec![VarId(2)].into(),
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: vec![Atom::Var(VarId(1)), Atom::Var(VarId(2))].into(),
+                outputs: vec![VarId(3)].into(),
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            },
+        ],
+    )
+}
+
 // ---------------------------------------------------------------------------
 // 1. API Entry Point Overhead (individual transforms)
 // ---------------------------------------------------------------------------
@@ -678,6 +712,54 @@ fn bench_vmap_meta_cache(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// 7e. Reusable scalar-F64 reverse plan: same-binary A/B.
+//
+// The "tape" arm is the old value_and_grad route for a scalar trig graph that
+// does not hit the add/mul value_and_grad fast path. The "compiled" arm reuses
+// the prevalidated scalar-F64 reverse plan that ValueAndGradWrapped caches.
+// ---------------------------------------------------------------------------
+
+fn bench_ad_compiled_reverse_plan(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ad_compiled_reverse_plan");
+    let jaxpr = build_trig_value_and_grad_jaxpr();
+    let args = vec![Value::scalar_f64(1.0)];
+    let compiled = fj_ad::compile_value_and_grad_jaxpr_for_repeated_eval(&jaxpr)
+        .expect("trig scalar graph should compile");
+    let wrapped = value_and_grad(jaxpr.clone());
+    wrapped
+        .call(args.clone())
+        .expect("warm value_and_grad wrapper");
+
+    group.bench_function("tape/value_and_grad_trig", |b| {
+        b.iter(|| {
+            let outputs = fj_ad::value_and_grad_jaxpr(&jaxpr, &args).expect("tape value_and_grad");
+            std::hint::black_box(outputs);
+        });
+    });
+
+    group.bench_function("compiled/value_and_grad_trig", |b| {
+        b.iter(|| {
+            let outputs = compiled
+                .value_and_grad(&args)
+                .expect("compiled value_and_grad")
+                .expect("compiled scalar-F64 path");
+            std::hint::black_box(outputs);
+        });
+    });
+
+    group.bench_function("api_warmed/value_and_grad_trig", |b| {
+        b.iter(|| {
+            let outputs = wrapped
+                .call(args.clone())
+                .expect("api compiled value_and_grad");
+            std::hint::black_box(outputs);
+        });
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -693,5 +775,6 @@ criterion_group!(
     bench_jit_compiled_eval_cache_tensor,
     bench_grad_meta_cache_scalar,
     bench_vmap_meta_cache,
+    bench_ad_compiled_reverse_plan,
 );
 criterion_main!(api_benches);
