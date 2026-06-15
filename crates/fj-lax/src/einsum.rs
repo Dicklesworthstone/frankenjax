@@ -188,6 +188,15 @@ pub fn einsum2(
     if let Some(fast) = try_einsum2_matmul_grouped(sub_a, sub_b, &sub_out, a, a_shape, b, b_shape) {
         return Ok(fast);
     }
+    // General fast path: any remaining distinct-label contraction (interleaved
+    // batch/free/contracted axes — e.g. attention `bqhd,bkhd->bhqk`, or tensordot
+    // over non-adjacent axes) is permuted into `[batch, M, K]`/`[batch, K, N]` and
+    // run as one cache-blocked GEMM per batch slice, replacing the O(out·sum)
+    // strided odometer below. Returns `None` (→ odometer) for diagonal/trace
+    // (repeated labels) or single-operand reductions.
+    if let Some(fast) = try_einsum2_matmul_general(sub_a, sub_b, &sub_out, a, a_shape, b, b_shape) {
+        return Ok(fast);
+    }
 
     // Compute output shape
     let out_shape: Vec<usize> = sub_out.chars().map(|c| index_dims[&c]).collect();
@@ -956,6 +965,215 @@ fn try_einsum2_matmul_grouped(
     Some((out, out_shape))
 }
 
+/// Materialize a contiguous row-major copy of `src` (shape `src_shape`) whose axis
+/// `i` is `src`'s axis `perm[i]` (output shape = `src_shape` gathered by `perm`).
+/// Used to bring an einsum operand into the canonical `[batch…, free…, contract…]`
+/// layout the batched [`matmul_2d`] kernel expects.
+fn permute_copy_f64(src: &[f64], src_shape: &[usize], perm: &[usize]) -> Vec<f64> {
+    let rank = src_shape.len();
+    let src_strides = row_major_strides(src_shape);
+    let out_shape: Vec<usize> = perm.iter().map(|&p| src_shape[p]).collect();
+    let perm_strides: Vec<usize> = perm.iter().map(|&p| src_strides[p]).collect();
+    let total: usize = out_shape.iter().product();
+    let mut out = Vec::with_capacity(total);
+    let mut coord = vec![0usize; rank];
+    for _ in 0..total {
+        let mut idx = 0usize;
+        for ax in 0..rank {
+            idx += coord[ax] * perm_strides[ax];
+        }
+        out.push(src[idx]);
+        for ax in (0..rank).rev() {
+            coord[ax] += 1;
+            if coord[ax] < out_shape[ax] {
+                break;
+            }
+            coord[ax] = 0;
+        }
+    }
+    out
+}
+
+/// General two-operand einsum → permute + batched cache-blocked GEMM.
+///
+/// Subsumes every distinct-label (no diagonal/trace) two-operand contraction the
+/// four pattern-specific fast paths above DON'T already catch — in particular
+/// contractions whose batch / free / contracted axes are INTERLEAVED and so need a
+/// physical permute before they become a matrix product (e.g. `bqhd,bkhd->bhqk`,
+/// attention scores with the head axis in the middle; or any `tensordot` over
+/// non-adjacent axes). The generic fallback handles these with an O(out·sum)
+/// strided per-element odometer whose contracted-multi-index summation order is
+/// derived from a `HashSet` (non-deterministic across runs); this path instead
+/// permutes each operand into `[batch…, free…, K…]` / `[batch…, K…, free…]`,
+/// flattens the groups to `[bsz, M, K]` / `[bsz, K, N]`, and runs one
+/// [`matmul_2d`] per batch slice.
+///
+/// PARITY: the contracted axes are flattened in a fixed row-major order (K-labels
+/// in their order of appearance in A), and `matmul_2d` accumulates that flattened
+/// `K` in ascending order — so the result is bit-for-bit identical to a
+/// deterministic ascending-K naive contraction (see
+/// `einsum2_general_matmul_bit_identical_to_naive`), and within f64 tolerance of
+/// the (order-nondeterministic) generic odometer it replaces.
+#[allow(clippy::too_many_arguments)]
+fn try_einsum2_matmul_general(
+    sub_a: &str,
+    sub_b: &str,
+    sub_out: &str,
+    a: &[f64],
+    a_shape: &[usize],
+    b: &[f64],
+    b_shape: &[usize],
+) -> Option<(Vec<f64>, Vec<usize>)> {
+    let sa: Vec<char> = sub_a.chars().collect();
+    let sb: Vec<char> = sub_b.chars().collect();
+    let so: Vec<char> = sub_out.chars().collect();
+    if sa.len() != a_shape.len() || sb.len() != b_shape.len() {
+        return None;
+    }
+
+    let distinct = |v: &[char]| {
+        for i in 0..v.len() {
+            for j in (i + 1)..v.len() {
+                if v[i] == v[j] {
+                    return None;
+                }
+            }
+        }
+        Some(())
+    };
+    distinct(&sa)?;
+    distinct(&sb)?;
+    distinct(&so)?;
+
+    let in_a = |c: char| sa.contains(&c);
+    let in_b = |c: char| sb.contains(&c);
+    let in_o = |c: char| so.contains(&c);
+
+    // Every A label must be batch (in B & out), contracted (in B, not out), or
+    // free-A (out, not B). An A-only label (not in B, not in out) is a single-
+    // operand reduction this matrix-product path does not model — bail.
+    for &c in &sa {
+        if !in_b(c) && !in_o(c) {
+            return None;
+        }
+    }
+    for &c in &sb {
+        if !in_a(c) && !in_o(c) {
+            return None;
+        }
+    }
+    // No output label may be absent from both operands (no broadcast new-axis).
+    for &c in &so {
+        if !in_a(c) && !in_b(c) {
+            return None;
+        }
+    }
+
+    // Per-label extent, checking the shared dims agree between operands.
+    let mut ext: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
+    for (i, &c) in sa.iter().enumerate() {
+        ext.insert(c, a_shape[i]);
+    }
+    for (i, &c) in sb.iter().enumerate() {
+        if let Some(&e) = ext.get(&c) {
+            if e != b_shape[i] {
+                return None;
+            }
+        }
+        ext.insert(c, b_shape[i]);
+    }
+
+    // Label groups. Batch / free-A / free-B follow their order of appearance in the
+    // OUTPUT (so the canonical [batch, M, N] result aligns with `sub_out`'s grouping
+    // when not interleaved, and a single final permute fixes interleaving). The
+    // contracted labels follow their order of appearance in A (fixing the K layout).
+    let batch: Vec<char> = so.iter().copied().filter(|&c| in_a(c) && in_b(c)).collect();
+    let m_labels: Vec<char> = so
+        .iter()
+        .copied()
+        .filter(|&c| in_a(c) && !in_b(c))
+        .collect();
+    let n_labels: Vec<char> = so
+        .iter()
+        .copied()
+        .filter(|&c| !in_a(c) && in_b(c))
+        .collect();
+    let k_labels: Vec<char> = sa
+        .iter()
+        .copied()
+        .filter(|&c| in_b(c) && !in_o(c))
+        .collect();
+    if k_labels.is_empty() {
+        return None; // no contraction → outer product, not a GEMM
+    }
+
+    let prod = |labels: &[char]| -> usize { labels.iter().map(|&c| ext[&c]).product() };
+    let bsz = prod(&batch);
+    let m = prod(&m_labels);
+    let k = prod(&k_labels);
+    let n = prod(&n_labels);
+    if bsz == 0 || m == 0 || k == 0 || n == 0 {
+        return None;
+    }
+
+    // A → [batch…, M…, K…]; B → [batch…, K…, N…]. perm[i] = position of the target
+    // label within the source subscript.
+    let pos_in = |src: &[char], c: char| -> Option<usize> { src.iter().position(|&x| x == c) };
+    let mut perm_a = Vec::with_capacity(sa.len());
+    for &c in batch.iter().chain(&m_labels).chain(&k_labels) {
+        perm_a.push(pos_in(&sa, c)?);
+    }
+    if perm_a.len() != sa.len() {
+        return None;
+    }
+    let mut perm_b = Vec::with_capacity(sb.len());
+    for &c in batch.iter().chain(&k_labels).chain(&n_labels) {
+        perm_b.push(pos_in(&sb, c)?);
+    }
+    if perm_b.len() != sb.len() {
+        return None;
+    }
+    if a.len() < bsz.checked_mul(m)?.checked_mul(k)?
+        || b.len() < bsz.checked_mul(k)?.checked_mul(n)?
+    {
+        return None;
+    }
+
+    let a_perm = permute_copy_f64(a, a_shape, &perm_a); // [bsz, M, K] row-major
+    let b_perm = permute_copy_f64(b, b_shape, &perm_b); // [bsz, K, N] row-major
+
+    // One cache-blocked GEMM per batch slice; result is [bsz, M, N] row-major.
+    let mut canon = Vec::with_capacity(bsz * m * n);
+    let a_stride = m * k;
+    let b_stride = k * n;
+    for t in 0..bsz {
+        let a_slice = &a_perm[t * a_stride..(t + 1) * a_stride];
+        let b_slice = &b_perm[t * b_stride..(t + 1) * b_stride];
+        canon.extend_from_slice(&crate::tensor_contraction::matmul_2d(
+            a_slice, m, k, b_slice, n,
+        ));
+    }
+
+    // Canonical result layout = [batch…, M…, N…]; permute to `sub_out` if needed.
+    let canon_labels: Vec<char> = batch
+        .iter()
+        .chain(&m_labels)
+        .chain(&n_labels)
+        .copied()
+        .collect();
+    let canon_shape: Vec<usize> = canon_labels.iter().map(|&c| ext[&c]).collect();
+    let final_shape: Vec<usize> = so.iter().map(|&c| ext[&c]).collect();
+    if canon_labels == so {
+        return Some((canon, final_shape));
+    }
+    let mut out_perm = Vec::with_capacity(so.len());
+    for &c in &so {
+        out_perm.push(pos_in(&canon_labels, c)?);
+    }
+    let out = permute_copy_f64(&canon, &canon_shape, &out_perm);
+    Some((out, final_shape))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1613,6 +1831,190 @@ mod tests {
             base * 1e3,
             fst * 1e3,
             base / fst
+        );
+    }
+
+    /// Deterministic ascending-K naive contraction reference: contracted labels are
+    /// those in A∩B not in out, taken in A's order; summed row-major. Mirrors the
+    /// general GEMM path's K flattening exactly, so the two must agree bit-for-bit.
+    fn naive_einsum2(
+        sub_a: &str,
+        sub_b: &str,
+        sub_out: &str,
+        a: &[f64],
+        a_shape: &[usize],
+        b: &[f64],
+        b_shape: &[usize],
+    ) -> (Vec<f64>, Vec<usize>) {
+        let sa: Vec<char> = sub_a.chars().collect();
+        let sb: Vec<char> = sub_b.chars().collect();
+        let so: Vec<char> = sub_out.chars().collect();
+        let mut ext = std::collections::HashMap::new();
+        for (i, &c) in sa.iter().enumerate() {
+            ext.insert(c, a_shape[i]);
+        }
+        for (i, &c) in sb.iter().enumerate() {
+            ext.insert(c, b_shape[i]);
+        }
+        let k_labels: Vec<char> = sa
+            .iter()
+            .copied()
+            .filter(|&c| sb.contains(&c) && !so.contains(&c))
+            .collect();
+        let out_shape: Vec<usize> = so.iter().map(|&c| ext[&c]).collect();
+        let a_str = row_major_strides(a_shape);
+        let b_str = row_major_strides(b_shape);
+        let o_str = row_major_strides(&out_shape);
+        let out_total: usize = out_shape.iter().product();
+        let k_dims: Vec<usize> = k_labels.iter().map(|&c| ext[&c]).collect();
+        let k_total: usize = k_dims.iter().product::<usize>().max(1);
+        let mut out = vec![0.0f64; out_total];
+        let mut coord = std::collections::HashMap::new();
+        for out_idx in 0..out_total {
+            for (ax, &c) in so.iter().enumerate() {
+                coord.insert(c, (out_idx / o_str[ax]) % out_shape[ax]);
+            }
+            let mut sum = 0.0f64;
+            let mut kc = vec![0usize; k_labels.len()];
+            for _ in 0..k_total {
+                for (j, &c) in k_labels.iter().enumerate() {
+                    coord.insert(c, kc[j]);
+                }
+                let mut ai = 0usize;
+                for (ax, &c) in sa.iter().enumerate() {
+                    ai += coord[&c] * a_str[ax];
+                }
+                let mut bi = 0usize;
+                for (ax, &c) in sb.iter().enumerate() {
+                    bi += coord[&c] * b_str[ax];
+                }
+                sum += a[ai] * b[bi];
+                for j in (0..k_labels.len()).rev() {
+                    kc[j] += 1;
+                    if kc[j] < k_dims[j] {
+                        break;
+                    }
+                    kc[j] = 0;
+                }
+            }
+            out[out_idx] = sum;
+        }
+        (out, out_shape)
+    }
+
+    #[test]
+    fn einsum2_general_matmul_bit_identical_to_naive() {
+        // Interleaved batch/free/contracted patterns the four pattern fast paths do
+        // NOT catch (so the general permute+GEMM path runs), checked bit-for-bit
+        // against the deterministic ascending-K reference. Single- and multi-axis K,
+        // and an interleaved output order.
+        struct Case {
+            subs: &'static str, // "sa,sb->so"
+            a_shape: Vec<usize>,
+            b_shape: Vec<usize>,
+        }
+        let cases = [
+            // attention scores, head axis in the middle (batch={b,h}, M={q}, N={k}, K={d})
+            Case {
+                subs: "bqhd,bkhd->bhqk",
+                a_shape: vec![2, 5, 3, 4],
+                b_shape: vec![2, 6, 3, 4],
+            },
+            // two contracted axes (d,e), interleaved batch — exercises multi-K order
+            Case {
+                subs: "bqhde,bkhde->bhqk",
+                a_shape: vec![2, 5, 3, 4, 2],
+                b_shape: vec![2, 6, 3, 4, 2],
+            },
+            // interleaved OUTPUT order (canonical [b,h,q,k] permuted to b,q,h,k)
+            Case {
+                subs: "bqhd,bkhd->bqhk",
+                a_shape: vec![2, 5, 3, 4],
+                b_shape: vec![2, 6, 3, 4],
+            },
+            // plain tensordot over non-adjacent axes: contract b,d
+            Case {
+                subs: "abcd,bedf->acef",
+                a_shape: vec![3, 4, 2, 5],
+                b_shape: vec![4, 3, 5, 2],
+            },
+        ];
+        for case in &cases {
+            let (sub_a, rest) = case.subs.split_once(',').unwrap();
+            let (sub_b, sub_out) = rest.split_once("->").unwrap();
+            let a_n: usize = case.a_shape.iter().product();
+            let b_n: usize = case.b_shape.iter().product();
+            let a: Vec<f64> = (0..a_n).map(|i| (i as f64 * 0.0137).sin() * 3.1).collect();
+            let b: Vec<f64> = (0..b_n).map(|i| (i as f64 * 0.0091).cos() * 2.3).collect();
+
+            // The general path must accept these (not fall through to None).
+            let got = super::try_einsum2_matmul_general(
+                sub_a,
+                sub_b,
+                sub_out,
+                &a,
+                &case.a_shape,
+                &b,
+                &case.b_shape,
+            )
+            .unwrap_or_else(|| panic!("general path rejected {}", case.subs));
+            let want = naive_einsum2(sub_a, sub_b, sub_out, &a, &case.a_shape, &b, &case.b_shape);
+            assert_eq!(got.1, want.1, "shape for {}", case.subs);
+            for (i, (&g, &w)) in got.0.iter().zip(want.0.iter()).enumerate() {
+                assert_eq!(
+                    g.to_bits(),
+                    w.to_bits(),
+                    "value[{i}] mismatch for {} (got {g}, want {w})",
+                    case.subs
+                );
+            }
+            // And the full einsum2 dispatch agrees.
+            let full = einsum2(case.subs, &a, &case.a_shape, &b, &case.b_shape).unwrap();
+            assert_eq!(full.0, got.0, "dispatch mismatch for {}", case.subs);
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_einsum2_general_vs_odometer() {
+        use std::time::Instant;
+        // Attention-scores einsum with the head axis in the middle (bqhd,bkhd->bhqk).
+        // NEW general permute+GEMM path vs the OLD strided odometer (reconstructed via
+        // naive_einsum2, which is the same O(out·sum) gather the generic path runs).
+        let (bsz, q, h, d, kk) = (8usize, 128usize, 8usize, 64usize, 128usize);
+        let a_shape = vec![bsz, q, h, d];
+        let b_shape = vec![bsz, kk, h, d];
+        let a: Vec<f64> = (0..bsz * q * h * d)
+            .map(|i| (i as f64 * 0.0011).sin())
+            .collect();
+        let b: Vec<f64> = (0..bsz * kk * h * d)
+            .map(|i| (i as f64 * 0.0009).cos())
+            .collect();
+        let best = |f: &dyn Fn() -> Vec<f64>| {
+            let _ = f();
+            let mut t = f64::MAX;
+            let mut digest = 0u64;
+            for _ in 0..5 {
+                let s = Instant::now();
+                let v = f();
+                t = t.min(s.elapsed().as_secs_f64());
+                digest = v.iter().fold(0u64, |acc, &x| acc ^ x.to_bits());
+            }
+            (t, digest)
+        };
+        let (t_new, d_new) = best(&|| {
+            super::try_einsum2_matmul_general("bqhd", "bkhd", "bhqk", &a, &a_shape, &b, &b_shape)
+                .unwrap()
+                .0
+        });
+        let (t_old, d_old) =
+            best(&|| naive_einsum2("bqhd", "bkhd", "bhqk", &a, &a_shape, &b, &b_shape).0);
+        assert_eq!(d_new, d_old, "general vs odometer digest");
+        println!(
+            "BENCH einsum2 bqhd,bkhd->bhqk [{bsz},{q},{h},{d}/{kk}]: odometer={:.2}ms general(permute+GEMM)={:.2}ms speedup={:.2}x digest={d_old:016x}",
+            t_old * 1e3,
+            t_new * 1e3,
+            t_old / t_new
         );
     }
 }
