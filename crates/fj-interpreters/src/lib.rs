@@ -3156,6 +3156,21 @@ struct DenseF64TransposePlan {
     permutation: Option<Vec<usize>>,
 }
 
+/// Single-equation dense F64 `broadcast_in_dim` for the common bias-style
+/// rank-1 -> rank-2 trailing-axis case (`broadcast_dimensions=[1]`, or the
+/// default rank-1-to-rank-2 mapping). The plan pre-parses the target shape and
+/// emits each output row with `extend_from_slice`, matching fj-lax's row-major
+/// replication without per-element odometer setup. Scalars, other dtypes/ranks,
+/// incompatible shapes, and non-trailing mappings fall through to generic eval.
+struct DenseF64BroadcastInDimPlan {
+    const_slots: Vec<usize>,
+    input_slots: Vec<usize>,
+    input_slot: usize,
+    target_shape: Shape,
+    target_count: usize,
+    broadcast_dimensions: Option<Vec<usize>>,
+}
+
 /// Single-equation dense tensor reshape with a static, fully-known target
 /// shape. Reshape is metadata-only in fj-lax for tensor inputs, so this plan
 /// pre-parses `new_shape` once and then clones the existing backing buffer with a
@@ -3553,6 +3568,81 @@ fn build_dense_f64_transpose_plan(jaxpr: &Jaxpr, slots: usize) -> Option<DenseF6
         input_slots: var_slots(&jaxpr.invars, slots)?,
         input_slot,
         permutation,
+    })
+}
+
+fn build_dense_f64_broadcast_in_dim_plan(
+    jaxpr: &Jaxpr,
+    slots: usize,
+) -> Option<DenseF64BroadcastInDimPlan> {
+    if !jaxpr.effects.is_empty() || jaxpr.equations.len() != 1 {
+        return None;
+    }
+    let equation = &jaxpr.equations[0];
+    if equation.primitive != Primitive::BroadcastInDim
+        || !equation.sub_jaxprs.is_empty()
+        || !equation.effects.is_empty()
+        || equation.inputs.len() != 1
+        || equation.outputs.len() != 1
+        || jaxpr.outvars.as_slice() != equation.outputs.as_slice()
+        || equation
+            .params
+            .keys()
+            .any(|key| key != "shape" && key != "broadcast_dimensions")
+    {
+        return None;
+    }
+
+    let raw_shape = equation.params.get("shape")?;
+    let mut dims = Vec::new();
+    for part in raw_shape
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let dim = part.parse::<i64>().ok()?;
+        if dim < 0 {
+            return None;
+        }
+        dims.push(u32::try_from(dim).ok()?);
+    }
+    if dims.len() != 2 {
+        return None;
+    }
+    let target_shape = Shape { dims };
+    let target_count = usize::try_from(target_shape.element_count()?).ok()?;
+
+    let broadcast_dimensions = match equation.params.get("broadcast_dimensions") {
+        Some(raw) => {
+            let mut parsed = Vec::new();
+            for part in raw
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+            {
+                parsed.push(part.parse::<usize>().ok()?);
+            }
+            Some(parsed)
+        }
+        None => None,
+    };
+
+    let Atom::Var(input_var) = equation.inputs[0] else {
+        return None;
+    };
+    let input_slot = input_var.0 as usize;
+    let out_slot = equation.outputs[0].0 as usize;
+    if input_slot >= slots || out_slot >= slots {
+        return None;
+    }
+
+    Some(DenseF64BroadcastInDimPlan {
+        const_slots: var_slots(&jaxpr.constvars, slots)?,
+        input_slots: var_slots(&jaxpr.invars, slots)?,
+        input_slot,
+        target_shape,
+        target_count,
+        broadcast_dimensions,
     })
 }
 
@@ -6359,6 +6449,7 @@ struct DenseEvalPlan {
     dense_f64_reduce_sum_plan: Option<DenseF64ReduceSumPlan>,
     dense_f64_dot_plan: Option<DenseF64DotPlan>,
     dense_f64_transpose_plan: Option<DenseF64TransposePlan>,
+    dense_f64_broadcast_in_dim_plan: Option<DenseF64BroadcastInDimPlan>,
     dense_reshape_plan: Option<DenseReshapePlan>,
     dense_axis_reduce_plan: Option<DenseAxisReducePlan>,
     dense_gather_plan: Option<DenseGatherPlan>,
@@ -6490,6 +6581,7 @@ fn build_dense_plan(jaxpr: &Jaxpr) -> Option<DenseEvalPlan> {
             dense_f64_reduce_sum_plan: build_dense_f64_reduce_sum_plan(jaxpr, slots),
             dense_f64_dot_plan: build_dense_f64_dot_plan(jaxpr, slots),
             dense_f64_transpose_plan: build_dense_f64_transpose_plan(jaxpr, slots),
+            dense_f64_broadcast_in_dim_plan: build_dense_f64_broadcast_in_dim_plan(jaxpr, slots),
             dense_reshape_plan: build_dense_reshape_plan(jaxpr, slots),
             dense_axis_reduce_plan: build_dense_axis_reduce_plan(jaxpr, slots),
             dense_gather_plan: build_dense_gather_plan(jaxpr, slots),
@@ -6522,6 +6614,7 @@ fn eval_jaxpr_dense_env(
         dense_f64_reduce_sum_plan: build_dense_f64_reduce_sum_plan(jaxpr, slots),
         dense_f64_dot_plan: build_dense_f64_dot_plan(jaxpr, slots),
         dense_f64_transpose_plan: build_dense_f64_transpose_plan(jaxpr, slots),
+        dense_f64_broadcast_in_dim_plan: build_dense_f64_broadcast_in_dim_plan(jaxpr, slots),
         dense_reshape_plan: build_dense_reshape_plan(jaxpr, slots),
         dense_axis_reduce_plan: build_dense_axis_reduce_plan(jaxpr, slots),
         dense_gather_plan: build_dense_gather_plan(jaxpr, slots),
@@ -7245,6 +7338,81 @@ fn run_dense_f64_transpose_plan_into(
     }
 }
 
+fn run_dense_f64_broadcast_in_dim_plan_into(
+    plan: &DenseF64BroadcastInDimPlan,
+    const_values: &[Value],
+    args: &[Value],
+    out: &mut Vec<Value>,
+) -> Option<Result<(), InterpreterError>> {
+    if const_values.len() != plan.const_slots.len() {
+        return Some(Err(InterpreterError::ConstArity {
+            expected: plan.const_slots.len(),
+            actual: const_values.len(),
+        }));
+    }
+    if args.len() != plan.input_slots.len() {
+        return Some(Err(InterpreterError::InputArity {
+            expected: plan.input_slots.len(),
+            actual: args.len(),
+        }));
+    }
+
+    let input = match dense_f64_dot_input(
+        &plan.const_slots,
+        &plan.input_slots,
+        plan.input_slot,
+        const_values,
+        args,
+    ) {
+        Ok(value) => value,
+        Err(err) => return Some(Err(err)),
+    };
+    let Value::Tensor(tensor) = input else {
+        return None;
+    };
+    if tensor.dtype != DType::F64 || tensor.shape.rank() != 1 || plan.target_shape.rank() != 2 {
+        return None;
+    }
+    let broadcast_dimensions = plan.broadcast_dimensions.as_deref().unwrap_or(&[1]);
+    if broadcast_dimensions != [1] || plan.target_count == 0 {
+        return None;
+    }
+    let src = tensor.elements.as_f64_slice()?;
+    if src.is_empty() {
+        return None;
+    }
+    let input_dim = tensor.shape.dims[0] as usize;
+    let rows = plan.target_shape.dims[0] as usize;
+    let cols = plan.target_shape.dims[1] as usize;
+    if rows.checked_mul(cols)? != plan.target_count
+        || src.len() != input_dim
+        || (input_dim != 1 && input_dim != cols)
+    {
+        return None;
+    }
+
+    let result = if input_dim == 1 {
+        vec![src[0]; plan.target_count]
+    } else {
+        let mut values = Vec::with_capacity(plan.target_count);
+        for _ in 0..rows {
+            values.extend_from_slice(src);
+        }
+        values
+    };
+
+    match TensorValue::new_f64_values(plan.target_shape.clone(), result) {
+        Ok(tensor) => {
+            out.clear();
+            out.push(Value::Tensor(tensor));
+            Some(Ok(()))
+        }
+        Err(err) => Some(Err(InterpreterError::Primitive(EvalError::InvalidTensor(
+            err,
+        )))),
+    }
+}
+
 fn run_dense_reshape_plan_into(
     plan: &DenseReshapePlan,
     const_values: &[Value],
@@ -7431,6 +7599,13 @@ fn run_dense_plan_into(
     // same blocked row-major data movement as fj-lax's transpose fast path.
     if let Some(p) = &plan.dense_f64_transpose_plan
         && let Some(result) = run_dense_f64_transpose_plan_into(p, const_values, args, out)
+    {
+        return result;
+    }
+    // One-equation dense F64 rank-1 -> rank-2 trailing-axis broadcast: pre-parsed
+    // shape/dim mapping and row-copy replication, bit-identical to fj-lax.
+    if let Some(p) = &plan.dense_f64_broadcast_in_dim_plan
+        && let Some(result) = run_dense_f64_broadcast_in_dim_plan_into(p, const_values, args, out)
     {
         return result;
     }
@@ -14079,6 +14254,203 @@ mod tests {
         });
         println!(
             "BENCH dense-f64 transpose [8,8]->[8,8] {n} evals: GENERIC {:.1}ns/eval -> PLANNED {:.1}ns/eval = {:.2}x sha256={sha256}",
+            t_generic * 1e9 / n as f64,
+            t_planned * 1e9 / n as f64,
+            t_generic / t_planned,
+        );
+    }
+
+    #[test]
+    fn dense_f64_broadcast_in_dim_plan_matches_generic_and_golden() {
+        let (x, out) = (VarId(0), VarId(1));
+        let body = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![Equation {
+                primitive: Primitive::BroadcastInDim,
+                inputs: smallvec![Atom::Var(x)],
+                outputs: smallvec![out],
+                params: BTreeMap::from([
+                    ("shape".to_owned(), "8,8".to_owned()),
+                    ("broadcast_dimensions".to_owned(), "1".to_owned()),
+                ]),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let plan = super::build_dense_plan(&body).expect("dense plan");
+        assert!(
+            plan.dense_f64_broadcast_in_dim_plan.is_some(),
+            "broadcast body should compile to the dense F64 broadcast plan"
+        );
+
+        let data: Vec<f64> = (0..8)
+            .map(|i| if i == 7 { -0.0 } else { i as f64 * 0.125 })
+            .collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![8] }, data).unwrap(),
+        )];
+
+        let mut generic_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut generic_scratch: Vec<Value> = Vec::new();
+        let mut generic_out: Vec<Value> = Vec::new();
+        super::run_dense_env_into(
+            &body,
+            &[],
+            &args,
+            &mut generic_env,
+            &plan.last_use,
+            &mut generic_scratch,
+            &mut generic_out,
+        )
+        .expect("generic broadcast");
+
+        let mut planned_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut planned_scratch: Vec<Value> = Vec::new();
+        let mut planned_out: Vec<Value> = Vec::new();
+        let mut bufs = super::ScalarPlanBuffers::default();
+        super::run_dense_plan_into(
+            &body,
+            &[],
+            &args,
+            &mut planned_env,
+            &plan,
+            &mut planned_scratch,
+            &mut planned_out,
+            &mut bufs,
+        )
+        .expect("planned broadcast");
+
+        assert_eq!(planned_out, generic_out);
+        let sha256 =
+            fj_test_utils::fixture_id_from_json(&("frankenjax-0x3pu-broadcast", &planned_out))
+                .expect("golden digest");
+        assert_eq!(
+            sha256,
+            "0633011b20168960838076a4296d2de2081b15e686b9af3b45f7ee835b8e7778"
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_dense_f64_broadcast_in_dim_plan_overhead() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+
+        let (x, out) = (VarId(0), VarId(1));
+        let body = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![Equation {
+                primitive: Primitive::BroadcastInDim,
+                inputs: smallvec![Atom::Var(x)],
+                outputs: smallvec![out],
+                params: BTreeMap::from([
+                    ("shape".to_owned(), "8,8".to_owned()),
+                    ("broadcast_dimensions".to_owned(), "1".to_owned()),
+                ]),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let plan = super::build_dense_plan(&body).expect("dense plan");
+        let data: Vec<f64> = (0..8)
+            .map(|i| if i == 7 { -0.0 } else { i as f64 * 0.125 })
+            .collect();
+        let arg =
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims: vec![8] }, data).unwrap());
+        let args = [arg];
+
+        let mut generic_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut generic_scratch: Vec<Value> = Vec::new();
+        let mut generic_out: Vec<Value> = Vec::new();
+        super::run_dense_env_into(
+            &body,
+            &[],
+            &args,
+            &mut generic_env,
+            &plan.last_use,
+            &mut generic_scratch,
+            &mut generic_out,
+        )
+        .expect("generic sample");
+
+        let mut planned_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut planned_scratch: Vec<Value> = Vec::new();
+        let mut planned_out: Vec<Value> = Vec::new();
+        let mut bufs = super::ScalarPlanBuffers::default();
+        super::run_dense_plan_into(
+            &body,
+            &[],
+            &args,
+            &mut planned_env,
+            &plan,
+            &mut planned_scratch,
+            &mut planned_out,
+            &mut bufs,
+        )
+        .expect("planned sample");
+        assert_eq!(planned_out, generic_out);
+        let sha256 =
+            fj_test_utils::fixture_id_from_json(&("frankenjax-0x3pu-broadcast", &planned_out))
+                .expect("golden digest");
+
+        let n: usize = 1_000_000;
+        let t_generic = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_env_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan.last_use,
+                    &mut scratch,
+                    &mut o,
+                )
+                .expect("generic");
+                acc += tensor_dtype_bits(&o[0]).1[0] as f64;
+            }
+            std::hint::black_box(acc);
+        });
+        let t_planned = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut bufs = super::ScalarPlanBuffers::default();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan,
+                    &mut scratch,
+                    &mut o,
+                    &mut bufs,
+                )
+                .expect("planned");
+                acc += tensor_dtype_bits(&o[0]).1[0] as f64;
+            }
+            std::hint::black_box(acc);
+        });
+        println!(
+            "BENCH dense-f64 broadcast_in_dim [8]->[8,8] {n} evals: GENERIC {:.1}ns/eval -> PLANNED {:.1}ns/eval = {:.2}x sha256={sha256}",
             t_generic * 1e9 / n as f64,
             t_planned * 1e9 / n as f64,
             t_generic / t_planned,
