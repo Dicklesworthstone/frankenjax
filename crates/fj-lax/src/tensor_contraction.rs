@@ -2348,6 +2348,7 @@ fn batched_matmul_row_block_bf16_in(
 ) {
     let total_rows = block.len() / n;
     let full_cols = n / F32_NR * F32_NR;
+    let mut a_tile = vec![0.0f32; F32_MR * k];
     let mut ri = 0;
     while ri < total_rows {
         let g0 = g_start + ri;
@@ -2356,12 +2357,20 @@ fn batched_matmul_row_block_bf16_in(
         let tile_rows = (total_rows - ri).min((bt + 1) * m - g0);
         let full_rows = tile_rows / F32_MR * F32_MR;
 
-        let mut j = 0;
-        while j < full_cols {
-            let mut i = 0;
-            while i < full_rows {
-                let ar0 = (g0 + i) * k;
-                let (ar1, ar2, ar3) = (ar0 + k, ar0 + 2 * k, ar0 + 3 * k);
+        let mut i = 0;
+        while i < full_rows {
+            let ar0 = (g0 + i) * k;
+            let (ar1, ar2, ar3) = (ar0 + k, ar0 + 2 * k, ar0 + 3 * k);
+            for l in 0..k {
+                let base = l * F32_MR;
+                a_tile[base] = bf16_bits_to_f32(a[ar0 + l]);
+                a_tile[base + 1] = bf16_bits_to_f32(a[ar1 + l]);
+                a_tile[base + 2] = bf16_bits_to_f32(a[ar2 + l]);
+                a_tile[base + 3] = bf16_bits_to_f32(a[ar3 + l]);
+            }
+
+            let mut j = 0;
+            while j < full_cols {
                 let mut c0 = F32xN::splat(0.0);
                 let mut c1 = F32xN::splat(0.0);
                 let mut c2 = F32xN::splat(0.0);
@@ -2369,31 +2378,28 @@ fn batched_matmul_row_block_bf16_in(
                 for l in 0..k {
                     let bbase = b_off + l * n + j;
                     let bv = bf16_chunk_to_f32xn(&b[bbase..bbase + F32_NR]);
-                    c0 += F32xN::splat(bf16_bits_to_f32(a[ar0 + l])) * bv;
-                    c1 += F32xN::splat(bf16_bits_to_f32(a[ar1 + l])) * bv;
-                    c2 += F32xN::splat(bf16_bits_to_f32(a[ar2 + l])) * bv;
-                    c3 += F32xN::splat(bf16_bits_to_f32(a[ar3 + l])) * bv;
+                    let base = l * F32_MR;
+                    c0 += F32xN::splat(a_tile[base]) * bv;
+                    c1 += F32xN::splat(a_tile[base + 1]) * bv;
+                    c2 += F32xN::splat(a_tile[base + 2]) * bv;
+                    c3 += F32xN::splat(a_tile[base + 3]) * bv;
                 }
                 for (r, c) in [c0, c1, c2, c3].iter().enumerate() {
                     let ob = (ri + i + r) * n + j;
                     block[ob..ob + F32_NR].copy_from_slice(&round_f32xn_to_bf16_array(*c));
                 }
-                i += F32_MR;
+                j += F32_NR;
             }
-            j += F32_NR;
-        }
 
-        // Column remainder (n not a multiple of F32_NR): F32_MR scalar f32 accumulators.
-        let mut i = 0;
-        while i < full_rows {
-            let ar0 = (g0 + i) * k;
+            // Column remainder (n not a multiple of F32_NR): F32_MR scalar f32 accumulators.
             let mut jj = full_cols;
             while jj < n {
                 let mut s = [0.0f32; F32_MR];
                 for l in 0..k {
                     let bv = bf16_bits_to_f32(b[b_off + l * n + jj]);
+                    let base = l * F32_MR;
                     for (r, sr) in s.iter_mut().enumerate() {
-                        *sr += bf16_bits_to_f32(a[ar0 + r * k + l]) * bv;
+                        *sr += a_tile[base + r] * bv;
                     }
                 }
                 for (r, sr) in s.iter().enumerate() {
@@ -2401,6 +2407,7 @@ fn batched_matmul_row_block_bf16_in(
                 }
                 jj += 1;
             }
+
             i += F32_MR;
         }
 
