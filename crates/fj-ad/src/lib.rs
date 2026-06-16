@@ -8441,52 +8441,121 @@ fn conv_vjp_2d(
     };
 
     let lhs_total = batch * height * width * c_in;
-    let mut grad_lhs_elems = vec![0.0_f64; lhs_total];
     let rhs_total = kernel_h * kernel_w * c_in * c_out;
-    let mut grad_rhs_elems = vec![0.0_f64; rhs_total];
 
-    for n in 0..batch {
-        for oh in 0..out_h {
-            for ow in 0..out_w {
-                for kh in 0..kernel_h {
-                    let in_h = (oh * stride_h + kh) as isize - pad_top as isize;
-                    if in_h < 0 || (in_h as usize) >= height {
-                        continue;
-                    }
-                    for kw in 0..kernel_w {
-                        let in_w = (ow * stride_w + kw) as isize - pad_left as isize;
-                        if in_w < 0 || (in_w as usize) >= width {
+    // GEMM-routed conv backward (NHWC). The previous body was a fully naive 7-deep
+    // loop (n·oh·ow·kh·kw·ci·co) with per-element boxed `Literal::as_f64()` in the
+    // innermost co-loop — the conv backward (half of CNN training compute) ran far
+    // slower than the im2col+GEMM forward. Re-express both gradients as the two
+    // standard conv-backward matrix products through the cache-blocked `matmul_2d`:
+    //
+    //   K = kh·kw·ci  (patch length),  P = n·oh·ow  (number of output sites)
+    //   colsT[K, P] = im2col(lhs)ᵀ : colsT[(kh,kw,ci),(n,oh,ow)] = lhs[n, oh·sh+kh-pt,
+    //                 ow·sw+kw-pl, ci]  (0 where the tap lands in padding)
+    //   G[P, Cout]  = g reshaped (g is already row-major [N,OH,OW,Cout] = [P, Cout])
+    //   grad_rhs[K, Cout] = colsTᵀ?  → grad_rhs = matmul_2d(colsT, K, P, G, Cout)
+    //                 (row (kh,kw,ci), col co → grad_rhs[kh,kw,ci,co], row-major) ✓
+    //   cols2[P, K]  = matmul_2d(G, P, Cout, rhsT, K)  with rhsT[Cout, K]=rhsᵀ
+    //                 cols2[(n,oh,ow),(kh,kw,ci)] = Σ_co g·rhs ; col2im (scatter-add
+    //                 each patch back to grad_lhs[n,ih,iw,ci]) gives the input grad.
+    //
+    // PARITY: conv-VJP parity is TOLERANCE (the conv_vjp tests are finite-difference,
+    // and JAX itself computes conv backward via GEMM), so the GEMM accumulation order
+    // is legal — and matches XLA more closely than the old scalar order.
+    let lhs_f64: Vec<f64> = lhs
+        .elements
+        .iter()
+        .map(|e| e.as_f64().unwrap_or(0.0))
+        .collect();
+    let g_f64: Vec<f64> = g_tensor
+        .elements
+        .iter()
+        .map(|e| e.as_f64().unwrap_or(0.0))
+        .collect();
+    let rhs_f64: Vec<f64> = rhs
+        .elements
+        .iter()
+        .map(|e| e.as_f64().unwrap_or(0.0))
+        .collect();
+
+    let k_patch = kernel_h * kernel_w * c_in; // K
+    let p_sites = batch * out_h * out_w; // P
+
+    // colsT[K, P] = im2col(lhs) transposed (patch-major rows, output-site columns).
+    let mut cols_t = vec![0.0_f64; k_patch * p_sites];
+    for kh in 0..kernel_h {
+        for kw in 0..kernel_w {
+            for ci in 0..c_in {
+                let row = (kh * kernel_w + kw) * c_in + ci;
+                let row_base = row * p_sites;
+                for n in 0..batch {
+                    for oh in 0..out_h {
+                        let in_h = (oh * stride_h + kh) as isize - pad_top as isize;
+                        if in_h < 0 || (in_h as usize) >= height {
                             continue;
                         }
                         let ih = in_h as usize;
-                        let iw = in_w as usize;
-                        for ci in 0..c_in {
+                        for ow in 0..out_w {
+                            let in_w = (ow * stride_w + kw) as isize - pad_left as isize;
+                            if in_w < 0 || (in_w as usize) >= width {
+                                continue;
+                            }
+                            let iw = in_w as usize;
                             let lhs_idx =
                                 n * height * width * c_in + ih * width * c_in + iw * c_in + ci;
-                            let lhs_val = lhs.elements[lhs_idx].as_f64().unwrap_or(0.0);
-
-                            let mut g_acc = 0.0;
-                            for co in 0..c_out {
-                                let g_idx = n * out_h * out_w * c_out
-                                    + oh * out_w * c_out
-                                    + ow * c_out
-                                    + co;
-                                let rhs_idx = kh * kernel_w * c_in * c_out
-                                    + kw * c_in * c_out
-                                    + ci * c_out
-                                    + co;
-                                let g_val = g_tensor.elements[g_idx].as_f64().unwrap_or(0.0);
-                                let rhs_val = rhs.elements[rhs_idx].as_f64().unwrap_or(0.0);
-                                g_acc += g_val * rhs_val;
-                                grad_rhs_elems[rhs_idx] += lhs_val * g_val;
-                            }
-                            grad_lhs_elems[lhs_idx] += g_acc;
+                            let col = (n * out_h + oh) * out_w + ow;
+                            cols_t[row_base + col] = lhs_f64[lhs_idx];
                         }
                     }
                 }
             }
         }
     }
+
+    // grad_rhs[K, Cout] = colsT @ G  (G = g reshaped [P, Cout], row-major).
+    let grad_rhs_elems =
+        fj_lax::tensor_contraction::matmul_2d(&cols_t, k_patch, p_sites, &g_f64, c_out);
+
+    // rhsT[Cout, K] = transpose of rhs reshaped [K, Cout].
+    let mut rhs_t = vec![0.0_f64; c_out * k_patch];
+    for row in 0..k_patch {
+        for co in 0..c_out {
+            rhs_t[co * k_patch + row] = rhs_f64[row * c_out + co];
+        }
+    }
+    // cols2[P, K] = G @ rhsT.
+    let cols2 = fj_lax::tensor_contraction::matmul_2d(&g_f64, p_sites, c_out, &rhs_t, k_patch);
+
+    // col2im: scatter-add each patch column back to the input gradient.
+    let mut grad_lhs_elems = vec![0.0_f64; lhs_total];
+    for kh in 0..kernel_h {
+        for kw in 0..kernel_w {
+            for ci in 0..c_in {
+                let col_k = (kh * kernel_w + kw) * c_in + ci;
+                for n in 0..batch {
+                    for oh in 0..out_h {
+                        let in_h = (oh * stride_h + kh) as isize - pad_top as isize;
+                        if in_h < 0 || (in_h as usize) >= height {
+                            continue;
+                        }
+                        let ih = in_h as usize;
+                        for ow in 0..out_w {
+                            let in_w = (ow * stride_w + kw) as isize - pad_left as isize;
+                            if in_w < 0 || (in_w as usize) >= width {
+                                continue;
+                            }
+                            let iw = in_w as usize;
+                            let site = (n * out_h + oh) * out_w + ow;
+                            let lhs_idx =
+                                n * height * width * c_in + ih * width * c_in + iw * c_in + ci;
+                            grad_lhs_elems[lhs_idx] += cols2[site * k_patch + col_k];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    debug_assert_eq!(grad_rhs_elems.len(), rhs_total);
 
     make_conv_grad_pair(&lhs.shape, &rhs.shape, grad_lhs_elems, grad_rhs_elems)
 }
@@ -16589,6 +16658,208 @@ mod tests {
                 grhs[j]
             );
         }
+    }
+
+    #[test]
+    fn conv_vjp_2d_gemm_matches_numerical() {
+        // 2D (rank-4 NHWC) conv VJP — hits the GEMM-routed conv_vjp_2d — vs central
+        // finite differences of L(lhs,rhs)=sum(conv(lhs,rhs)·g). lhs[N=2,H=5,W=6,Cin=3],
+        // rhs[KH=3,KW=2,Cin=3,Cout=4], SAME padding stride 1 (overlapping windows that
+        // exercise the col2im scatter-add). Validates grad_lhs (col2im of g@rhsᵀ) and
+        // grad_rhs (im2col(lhs)ᵀ@g) to tolerance.
+        let (n, h, w, cin, kh, kw, cout) = (2usize, 5usize, 6usize, 3usize, 3usize, 2usize, 4usize);
+        let oh = h; // SAME, stride 1
+        let ow = w;
+        let lhs0: Vec<f64> = (0..n * h * w * cin)
+            .map(|i| (i as f64 * 0.0131).sin() * 1.7 + 0.1)
+            .collect();
+        let rhs0: Vec<f64> = (0..kh * kw * cin * cout)
+            .map(|i| (i as f64 * 0.0091).cos() * 0.8 - 0.05)
+            .collect();
+        let gv: Vec<f64> = (0..n * oh * ow * cout)
+            .map(|i| (i as f64 * 0.0071).sin() + 0.2)
+            .collect();
+        let params = BTreeMap::from([
+            ("padding".to_owned(), "same".to_owned()),
+            ("strides".to_owned(), "1,1".to_owned()),
+        ]);
+        let mk = |dims: Vec<u32>, d: &[f64]| {
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims }, d.to_vec()).unwrap())
+        };
+        let g = mk(vec![n as u32, oh as u32, ow as u32, cout as u32], &gv);
+        let loss = |lv: &[f64], rv: &[f64]| -> f64 {
+            let out = eval_primitive(
+                Primitive::Conv,
+                &[
+                    mk(vec![n as u32, h as u32, w as u32, cin as u32], lv),
+                    mk(vec![kh as u32, kw as u32, cin as u32, cout as u32], rv),
+                ],
+                &params,
+            )
+            .unwrap();
+            tensor_f64_values(&out)
+                .iter()
+                .zip(&gv)
+                .map(|(o, gg)| o * gg)
+                .sum()
+        };
+        let grads = vjp_single(
+            Primitive::Conv,
+            &[
+                mk(vec![n as u32, h as u32, w as u32, cin as u32], &lhs0),
+                mk(vec![kh as u32, kw as u32, cin as u32, cout as u32], &rhs0),
+            ],
+            &g,
+            &params,
+        )
+        .unwrap();
+        let glhs = tensor_f64_values(&grads[0]);
+        let grhs = tensor_f64_values(&grads[1]);
+        assert_eq!(
+            grads[0].as_tensor().unwrap().shape.dims,
+            vec![n as u32, h as u32, w as u32, cin as u32]
+        );
+        assert_eq!(
+            grads[1].as_tensor().unwrap().shape.dims,
+            vec![kh as u32, kw as u32, cin as u32, cout as u32]
+        );
+        let eps = 1e-6;
+        for j in 0..lhs0.len() {
+            let mut up = lhs0.clone();
+            up[j] += eps;
+            let mut dn = lhs0.clone();
+            dn[j] -= eps;
+            let fd = (loss(&up, &rhs0) - loss(&dn, &rhs0)) / (2.0 * eps);
+            assert!(
+                (fd - glhs[j]).abs() < 1e-5,
+                "grad_lhs[{j}] analytic={} fd={fd}",
+                glhs[j]
+            );
+        }
+        for j in 0..rhs0.len() {
+            let mut up = rhs0.clone();
+            up[j] += eps;
+            let mut dn = rhs0.clone();
+            dn[j] -= eps;
+            let fd = (loss(&lhs0, &up) - loss(&lhs0, &dn)) / (2.0 * eps);
+            assert!(
+                (fd - grhs[j]).abs() < 1e-5,
+                "grad_rhs[{j}] analytic={} fd={fd}",
+                grhs[j]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_conv_vjp_2d_gemm_vs_naive() {
+        use std::time::Instant;
+        // Conv backward [N=8,H=32,W=32,Cin=32], 3x3, Cout=64, SAME stride 1: GEMM-routed
+        // conv_vjp_2d (production) vs the reconstructed naive 7-loop it replaced.
+        let (n, h, w, cin, kh, kw, cout) =
+            (8usize, 32usize, 32usize, 32usize, 3usize, 3usize, 64usize);
+        let oh = h;
+        let ow = w;
+        let pt = (kh - 1) / 2;
+        let pl = (kw - 1) / 2;
+        let lhs0: Vec<f64> = (0..n * h * w * cin)
+            .map(|i| (i as f64 * 0.0007).sin())
+            .collect();
+        let rhs0: Vec<f64> = (0..kh * kw * cin * cout)
+            .map(|i| (i as f64 * 0.0009).cos())
+            .collect();
+        let gv: Vec<f64> = (0..n * oh * ow * cout)
+            .map(|i| (i as f64 * 0.0005).sin())
+            .collect();
+        let params = BTreeMap::from([
+            ("padding".to_owned(), "same".to_owned()),
+            ("strides".to_owned(), "1,1".to_owned()),
+        ]);
+        let mk = |dims: Vec<u32>, d: &[f64]| {
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims }, d.to_vec()).unwrap())
+        };
+        let lhs = mk(vec![n as u32, h as u32, w as u32, cin as u32], &lhs0);
+        let rhs = mk(vec![kh as u32, kw as u32, cin as u32, cout as u32], &rhs0);
+        let g = mk(vec![n as u32, oh as u32, ow as u32, cout as u32], &gv);
+        let best = |f: &dyn Fn() -> f64| {
+            let _ = f();
+            let mut t = f64::MAX;
+            let mut d = 0.0;
+            for _ in 0..3 {
+                let s = Instant::now();
+                d = f();
+                t = t.min(s.elapsed().as_secs_f64());
+            }
+            (t, d)
+        };
+        let (t_new, d_new) = best(&|| {
+            let grads = vjp_single(
+                Primitive::Conv,
+                std::slice::from_ref(&lhs)
+                    .iter()
+                    .chain(std::slice::from_ref(&rhs))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                &g,
+                &params,
+            )
+            .unwrap();
+            tensor_f64_values(&grads[0]).iter().sum::<f64>()
+                + tensor_f64_values(&grads[1]).iter().sum::<f64>()
+        });
+        // Reconstructed naive 7-loop (the old body), summed for a digest.
+        let (t_old, d_old) = best(&|| {
+            let mut gl = vec![0.0_f64; n * h * w * cin];
+            let mut gr = vec![0.0_f64; kh * kw * cin * cout];
+            for nn in 0..n {
+                for ohh in 0..oh {
+                    for oww in 0..ow {
+                        for khh in 0..kh {
+                            let ih = (ohh + khh) as isize - pt as isize;
+                            if ih < 0 || ih as usize >= h {
+                                continue;
+                            }
+                            for kww in 0..kw {
+                                let iw = (oww + kww) as isize - pl as isize;
+                                if iw < 0 || iw as usize >= w {
+                                    continue;
+                                }
+                                let ihu = ih as usize;
+                                let iwu = iw as usize;
+                                for ci in 0..cin {
+                                    let li = nn * h * w * cin + ihu * w * cin + iwu * cin + ci;
+                                    let lv = lhs0[li];
+                                    let mut acc = 0.0;
+                                    for co in 0..cout {
+                                        let gi =
+                                            nn * oh * ow * cout + ohh * ow * cout + oww * cout + co;
+                                        let ri = khh * kw * cin * cout
+                                            + kww * cin * cout
+                                            + ci * cout
+                                            + co;
+                                        acc += gv[gi] * rhs0[ri];
+                                        gr[ri] += lv * gv[gi];
+                                    }
+                                    gl[li] += acc;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            gl.iter().sum::<f64>() + gr.iter().sum::<f64>()
+        });
+        assert!(
+            (d_new - d_old).abs() < 1e-3 * (1.0 + d_old.abs()),
+            "gemm vs naive sum mismatch"
+        );
+        println!(
+            "BENCH conv_vjp_2d [N{n},H{h},W{w},Cin{cin}] {kh}x{kw} Cout{cout} SAME: naive={:.2}ms gemm={:.2}ms speedup={:.2}x",
+            t_old * 1e3,
+            t_new * 1e3,
+            t_old / t_new
+        );
     }
 
     #[test]
