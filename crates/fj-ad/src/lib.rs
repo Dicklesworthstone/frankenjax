@@ -8484,6 +8484,26 @@ fn conv_vjp_batch_grouped(
     Ok(vec![grad_lhs, grad_rhs])
 }
 
+/// Zero-copy f64 extraction for the GEMM-routed conv VJPs: borrows the packed
+/// `as_f64_slice()` backing for dense F64 tensors (avoiding an O(n) per-element
+/// `as_f64()` unbox + a fresh `Vec<f64>` per operand), falling back to the boxed
+/// path only for non-dense storage. Bit-identical: for a dense F64 element the
+/// slice value equals `as_f64().unwrap()` (NaN/inf bit patterns included), and the
+/// fallback is exactly the prior `as_f64().unwrap_or(0.0)` expression.
+fn conv_vjp_extract_f64(tensor: &TensorValue) -> std::borrow::Cow<'_, [f64]> {
+    if let Some(slice) = tensor.elements.as_f64_slice() {
+        std::borrow::Cow::Borrowed(slice)
+    } else {
+        std::borrow::Cow::Owned(
+            tensor
+                .elements
+                .iter()
+                .map(|e| e.as_f64().unwrap_or(0.0))
+                .collect(),
+        )
+    }
+}
+
 /// 1D Conv VJP: lhs=[N, W, C_in], rhs=[K, C_in, C_out], g=[N, W_out, C_out]
 fn conv_vjp_1d(
     lhs: &TensorValue,
@@ -8524,21 +8544,12 @@ fn conv_vjp_1d(
     //   cols2[P,K] = matmul_2d(G,P,Cout, rhsT,K)  (rhsT[Cout,K]=rhsᵀ) ; col2im → grad_lhs
     // PARITY: conv-VJP parity is TOLERANCE (finite-diff tests; JAX uses GEMM), so the
     // GEMM accumulation order is legal.
-    let lhs_f64: Vec<f64> = lhs
-        .elements
-        .iter()
-        .map(|e| e.as_f64().unwrap_or(0.0))
-        .collect();
-    let g_f64: Vec<f64> = g_tensor
-        .elements
-        .iter()
-        .map(|e| e.as_f64().unwrap_or(0.0))
-        .collect();
-    let rhs_f64: Vec<f64> = rhs
-        .elements
-        .iter()
-        .map(|e| e.as_f64().unwrap_or(0.0))
-        .collect();
+    let lhs_cow = conv_vjp_extract_f64(lhs);
+    let lhs_f64: &[f64] = &lhs_cow;
+    let g_cow = conv_vjp_extract_f64(g_tensor);
+    let g_f64: &[f64] = &g_cow;
+    let rhs_cow = conv_vjp_extract_f64(rhs);
+    let rhs_f64: &[f64] = &rhs_cow;
 
     let k_patch = kernel_w * c_in;
     let p_sites = batch * out_w;
@@ -8563,7 +8574,7 @@ fn conv_vjp_1d(
     }
 
     let grad_rhs_elems =
-        fj_lax::tensor_contraction::matmul_2d(&cols_t, k_patch, p_sites, &g_f64, c_out);
+        fj_lax::tensor_contraction::matmul_2d(&cols_t, k_patch, p_sites, g_f64, c_out);
 
     let mut rhs_t = vec![0.0_f64; c_out * k_patch];
     for row in 0..k_patch {
@@ -8571,7 +8582,7 @@ fn conv_vjp_1d(
             rhs_t[co * k_patch + row] = rhs_f64[row * c_out + co];
         }
     }
-    let cols2 = fj_lax::tensor_contraction::matmul_2d(&g_f64, p_sites, c_out, &rhs_t, k_patch);
+    let cols2 = fj_lax::tensor_contraction::matmul_2d(g_f64, p_sites, c_out, &rhs_t, k_patch);
 
     let mut grad_lhs_elems = vec![0.0_f64; lhs_total];
     for k in 0..kernel_w {
@@ -8663,21 +8674,12 @@ fn conv_vjp_2d(
     // PARITY: conv-VJP parity is TOLERANCE (the conv_vjp tests are finite-difference,
     // and JAX itself computes conv backward via GEMM), so the GEMM accumulation order
     // is legal — and matches XLA more closely than the old scalar order.
-    let lhs_f64: Vec<f64> = lhs
-        .elements
-        .iter()
-        .map(|e| e.as_f64().unwrap_or(0.0))
-        .collect();
-    let g_f64: Vec<f64> = g_tensor
-        .elements
-        .iter()
-        .map(|e| e.as_f64().unwrap_or(0.0))
-        .collect();
-    let rhs_f64: Vec<f64> = rhs
-        .elements
-        .iter()
-        .map(|e| e.as_f64().unwrap_or(0.0))
-        .collect();
+    let lhs_cow = conv_vjp_extract_f64(lhs);
+    let lhs_f64: &[f64] = &lhs_cow;
+    let g_cow = conv_vjp_extract_f64(g_tensor);
+    let g_f64: &[f64] = &g_cow;
+    let rhs_cow = conv_vjp_extract_f64(rhs);
+    let rhs_f64: &[f64] = &rhs_cow;
 
     let k_patch = kernel_h * kernel_w * c_in; // K
     let p_sites = batch * out_h * out_w; // P
@@ -8715,7 +8717,7 @@ fn conv_vjp_2d(
 
     // grad_rhs[K, Cout] = colsT @ G  (G = g reshaped [P, Cout], row-major).
     let grad_rhs_elems =
-        fj_lax::tensor_contraction::matmul_2d(&cols_t, k_patch, p_sites, &g_f64, c_out);
+        fj_lax::tensor_contraction::matmul_2d(&cols_t, k_patch, p_sites, g_f64, c_out);
 
     // rhsT[Cout, K] = transpose of rhs reshaped [K, Cout].
     let mut rhs_t = vec![0.0_f64; c_out * k_patch];
@@ -8725,7 +8727,7 @@ fn conv_vjp_2d(
         }
     }
     // cols2[P, K] = G @ rhsT.
-    let cols2 = fj_lax::tensor_contraction::matmul_2d(&g_f64, p_sites, c_out, &rhs_t, k_patch);
+    let cols2 = fj_lax::tensor_contraction::matmul_2d(g_f64, p_sites, c_out, &rhs_t, k_patch);
 
     // col2im: scatter-add each patch column back to the input gradient.
     let mut grad_lhs_elems = vec![0.0_f64; lhs_total];
