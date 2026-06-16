@@ -3137,6 +3137,13 @@ struct DenseF64ReduceSumPlan {
     op: DenseReduceOp,
 }
 
+struct DenseF64DotPlan {
+    const_slots: Vec<usize>,
+    input_slots: Vec<usize>,
+    lhs_slot: usize,
+    rhs_slot: usize,
+}
+
 #[derive(Clone, Copy)]
 enum ScalarF64Slot {
     Missing,
@@ -3226,6 +3233,41 @@ fn build_dense_f64_reduce_sum_plan(jaxpr: &Jaxpr, slots: usize) -> Option<DenseF
         input_slots: var_slots(&jaxpr.invars, slots)?,
         input_slot,
         op,
+    })
+}
+
+fn build_dense_f64_dot_plan(jaxpr: &Jaxpr, slots: usize) -> Option<DenseF64DotPlan> {
+    if !jaxpr.effects.is_empty() || jaxpr.equations.len() != 1 {
+        return None;
+    }
+    let equation = &jaxpr.equations[0];
+    if equation.primitive != Primitive::Dot
+        || !equation.params.is_empty()
+        || !equation.sub_jaxprs.is_empty()
+        || !equation.effects.is_empty()
+        || equation.inputs.len() != 2
+        || equation.outputs.len() != 1
+        || jaxpr.outvars.as_slice() != equation.outputs.as_slice()
+    {
+        return None;
+    }
+
+    let (Atom::Var(lhs_var), Atom::Var(rhs_var)) = (&equation.inputs[0], &equation.inputs[1])
+    else {
+        return None;
+    };
+    let lhs_slot = lhs_var.0 as usize;
+    let rhs_slot = rhs_var.0 as usize;
+    let out_slot = equation.outputs[0].0 as usize;
+    if lhs_slot >= slots || rhs_slot >= slots || out_slot >= slots {
+        return None;
+    }
+
+    Some(DenseF64DotPlan {
+        const_slots: var_slots(&jaxpr.constvars, slots)?,
+        input_slots: var_slots(&jaxpr.invars, slots)?,
+        lhs_slot,
+        rhs_slot,
     })
 }
 
@@ -5979,6 +6021,7 @@ struct DenseEvalPlan {
     scalar_select_i64_plan: Option<ScalarSelectI64Plan>,
     scalar_poly_plan: Option<ScalarPolyPlan>,
     dense_f64_reduce_sum_plan: Option<DenseF64ReduceSumPlan>,
+    dense_f64_dot_plan: Option<DenseF64DotPlan>,
 }
 
 /// One-time compiled evaluator for hot repeated calls of the same small Jaxpr.
@@ -6104,6 +6147,7 @@ fn build_dense_plan(jaxpr: &Jaxpr) -> Option<DenseEvalPlan> {
             scalar_select_i64_plan: build_scalar_select_i64_plan(jaxpr, slots),
             scalar_poly_plan: build_scalar_poly_plan(jaxpr, slots),
             dense_f64_reduce_sum_plan: build_dense_f64_reduce_sum_plan(jaxpr, slots),
+            dense_f64_dot_plan: build_dense_f64_dot_plan(jaxpr, slots),
         })
     } else {
         None
@@ -6130,6 +6174,7 @@ fn eval_jaxpr_dense_env(
         scalar_select_i64_plan: build_scalar_select_i64_plan(jaxpr, slots),
         scalar_poly_plan: build_scalar_poly_plan(jaxpr, slots),
         dense_f64_reduce_sum_plan: build_dense_f64_reduce_sum_plan(jaxpr, slots),
+        dense_f64_dot_plan: build_dense_f64_dot_plan(jaxpr, slots),
     };
     let mut env: Vec<Option<Value>> = vec![None; slots];
     run_dense_plan(jaxpr, const_values, args, &mut env, &plan)
@@ -6256,6 +6301,91 @@ fn run_dense_f64_reduce_sum_plan_into(
     }
 }
 
+fn dense_f64_dot_input<'a>(
+    const_slots: &[usize],
+    input_slots: &[usize],
+    slot: usize,
+    const_values: &'a [Value],
+    args: &'a [Value],
+) -> Result<&'a Value, InterpreterError> {
+    for (&const_slot, value) in const_slots.iter().zip(const_values) {
+        if const_slot == slot {
+            return Ok(value);
+        }
+    }
+    for (&input_slot, value) in input_slots.iter().zip(args) {
+        if input_slot == slot {
+            return Ok(value);
+        }
+    }
+    Err(InterpreterError::MissingVariable(VarId(slot as u32)))
+}
+
+fn run_dense_f64_dot_plan_into(
+    plan: &DenseF64DotPlan,
+    const_values: &[Value],
+    args: &[Value],
+    out: &mut Vec<Value>,
+) -> Option<Result<(), InterpreterError>> {
+    if const_values.len() != plan.const_slots.len() {
+        return Some(Err(InterpreterError::ConstArity {
+            expected: plan.const_slots.len(),
+            actual: const_values.len(),
+        }));
+    }
+    if args.len() != plan.input_slots.len() {
+        return Some(Err(InterpreterError::InputArity {
+            expected: plan.input_slots.len(),
+            actual: args.len(),
+        }));
+    }
+
+    let lhs = match dense_f64_dot_input(
+        &plan.const_slots,
+        &plan.input_slots,
+        plan.lhs_slot,
+        const_values,
+        args,
+    ) {
+        Ok(value) => value,
+        Err(err) => return Some(Err(err)),
+    };
+    let rhs = match dense_f64_dot_input(
+        &plan.const_slots,
+        &plan.input_slots,
+        plan.rhs_slot,
+        const_values,
+        args,
+    ) {
+        Ok(value) => value,
+        Err(err) => return Some(Err(err)),
+    };
+    let (Value::Tensor(lhs), Value::Tensor(rhs)) = (lhs, rhs) else {
+        return None;
+    };
+    if lhs.dtype != DType::F64 || rhs.dtype != DType::F64 {
+        return None;
+    }
+    if lhs.shape.rank() != 1 || rhs.shape.rank() != 1 || lhs.shape.dims[0] != rhs.shape.dims[0] {
+        return None;
+    }
+    let lhs_values = lhs.elements.as_f64_slice()?;
+    let rhs_values = rhs.elements.as_f64_slice()?;
+    if lhs_values.len() != rhs_values.len() {
+        return None;
+    }
+
+    let mut sum = 0.0_f64;
+    for (&left, &right) in lhs_values.iter().zip(rhs_values) {
+        sum += left * right;
+    }
+
+    out.clear();
+    out.reserve(1);
+    out.push(Value::scalar_f64(sum));
+    Some(Ok(()))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_dense_plan_into(
     jaxpr: &Jaxpr,
@@ -6348,6 +6478,14 @@ fn run_dense_plan_into(
     // fall through to the generic interpreter.
     if let Some(p) = &plan.dense_f64_reduce_sum_plan
         && let Some(result) = run_dense_f64_reduce_sum_plan_into(p, const_values, args, out)
+    {
+        return result;
+    }
+    // One-equation rank-1 dense-f64 dot. This is exactly fj-lax's contiguous
+    // dot fold for F64 tensors: seed 0.0 and visit the backing slices in
+    // ascending order, with no reassociation or fused multiply-add.
+    if let Some(p) = &plan.dense_f64_dot_plan
+        && let Some(result) = run_dense_f64_dot_plan_into(p, const_values, args, out)
     {
         return result;
     }
@@ -11526,6 +11664,90 @@ mod tests {
     }
 
     #[test]
+    fn dense_f64_dot_plan_matches_generic_sha256() {
+        let (lhs, rhs, out) = (VarId(0), VarId(1), VarId(2));
+        let body = Jaxpr::new(
+            vec![lhs, rhs],
+            vec![],
+            vec![out],
+            vec![Equation {
+                primitive: Primitive::Dot,
+                inputs: smallvec![Atom::Var(lhs), Atom::Var(rhs)],
+                outputs: smallvec![out],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let plan = super::build_dense_plan(&body).expect("dense plan");
+        assert!(
+            plan.dense_f64_dot_plan.is_some(),
+            "dot body should compile to the dense-f64 plan"
+        );
+
+        let lhs_data: Vec<f64> = (0..64)
+            .map(|i| {
+                if i == 5 {
+                    -0.0
+                } else {
+                    (i as f64) * 0.03125 - 1.0
+                }
+            })
+            .collect();
+        let rhs_data: Vec<f64> = (0..64)
+            .map(|i| {
+                if i == 11 {
+                    f64::NAN
+                } else {
+                    0.75 - (i as f64) * 0.015625
+                }
+            })
+            .collect();
+        let args = [
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims: vec![64] }, lhs_data).unwrap()),
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims: vec![64] }, rhs_data).unwrap()),
+        ];
+
+        let mut generic_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut generic_scratch: Vec<Value> = Vec::new();
+        let mut generic_out: Vec<Value> = Vec::new();
+        super::run_dense_env_into(
+            &body,
+            &[],
+            &args,
+            &mut generic_env,
+            &plan.last_use,
+            &mut generic_scratch,
+            &mut generic_out,
+        )
+        .expect("generic dot");
+
+        let mut planned_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut planned_scratch: Vec<Value> = Vec::new();
+        let mut planned_out: Vec<Value> = Vec::new();
+        let mut bufs = super::ScalarPlanBuffers::default();
+        super::run_dense_plan_into(
+            &body,
+            &[],
+            &args,
+            &mut planned_env,
+            &plan,
+            &mut planned_scratch,
+            &mut planned_out,
+            &mut bufs,
+        )
+        .expect("planned dot");
+
+        assert_eq!(planned_out, generic_out);
+        let sha256 = fj_test_utils::fixture_id_from_json(&("frankenjax-1xu5v-dot", &planned_out))
+            .expect("golden digest");
+        assert_eq!(
+            sha256,
+            "7006db6112a6270916d28d82faab880018eabc2507e4aaf5e130c9bad845a4fa"
+        );
+    }
+
+    #[test]
     #[ignore = "benchmark: run with --ignored --nocapture"]
     fn bench_dense_f64_reduce_sum_plan_overhead() {
         use std::time::Instant;
@@ -11744,6 +11966,151 @@ mod tests {
             t_generic * 1e9 / n as f64,
             t_planned * 1e9 / n as f64,
             t_generic / t_planned,
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_dense_f64_dot_plan_overhead() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+
+        let (lhs, rhs, out) = (VarId(0), VarId(1), VarId(2));
+        let body = Jaxpr::new(
+            vec![lhs, rhs],
+            vec![],
+            vec![out],
+            vec![Equation {
+                primitive: Primitive::Dot,
+                inputs: smallvec![Atom::Var(lhs), Atom::Var(rhs)],
+                outputs: smallvec![out],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let plan = super::build_dense_plan(&body).expect("dense plan");
+        assert!(
+            plan.dense_f64_dot_plan.is_some(),
+            "dot body should compile to the dense-f64 plan"
+        );
+        let lhs_data: Vec<f64> = (0..64)
+            .map(|i| {
+                if i == 5 {
+                    -0.0
+                } else {
+                    (i as f64) * 0.03125 - 1.0
+                }
+            })
+            .collect();
+        let rhs_data: Vec<f64> = (0..64)
+            .map(|i| {
+                if i == 11 {
+                    f64::NAN
+                } else {
+                    0.75 - (i as f64) * 0.015625
+                }
+            })
+            .collect();
+        let args = [
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims: vec![64] }, lhs_data).unwrap()),
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims: vec![64] }, rhs_data).unwrap()),
+        ];
+        let mut generic_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut generic_scratch: Vec<Value> = Vec::new();
+        let mut generic_out: Vec<Value> = Vec::new();
+        super::run_dense_env_into(
+            &body,
+            &[],
+            &args,
+            &mut generic_env,
+            &plan.last_use,
+            &mut generic_scratch,
+            &mut generic_out,
+        )
+        .expect("generic sample");
+
+        let mut planned_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut planned_scratch: Vec<Value> = Vec::new();
+        let mut planned_out: Vec<Value> = Vec::new();
+        let mut bufs = super::ScalarPlanBuffers::default();
+        super::run_dense_plan_into(
+            &body,
+            &[],
+            &args,
+            &mut planned_env,
+            &plan,
+            &mut planned_scratch,
+            &mut planned_out,
+            &mut bufs,
+        )
+        .expect("planned sample");
+        assert_eq!(planned_out, generic_out);
+        let sha256 = fj_test_utils::fixture_id_from_json(&("frankenjax-1xu5v-dot", &planned_out))
+            .expect("golden digest");
+        assert_eq!(
+            sha256,
+            "7006db6112a6270916d28d82faab880018eabc2507e4aaf5e130c9bad845a4fa"
+        );
+
+        let n: usize = 1_000_000;
+        let t_generic = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_env_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan.last_use,
+                    &mut scratch,
+                    &mut o,
+                )
+                .expect("generic");
+                acc += o[0].as_f64_scalar().expect("scalar dot");
+            }
+            std::hint::black_box(acc);
+        });
+        let t_planned = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut bufs = super::ScalarPlanBuffers::default();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan,
+                    &mut scratch,
+                    &mut o,
+                    &mut bufs,
+                )
+                .expect("planned");
+                acc += o[0].as_f64_scalar().expect("scalar dot");
+            }
+            std::hint::black_box(acc);
+        });
+        println!(
+            "BENCH dense-f64 dot [64] {n} evals: GENERIC {:.1}ns/eval -> PLANNED {:.1}ns/eval = {:.2}x sha256={}",
+            t_generic * 1e9 / n as f64,
+            t_planned * 1e9 / n as f64,
+            t_generic / t_planned,
+            sha256,
         );
     }
 
