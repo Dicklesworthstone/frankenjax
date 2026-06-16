@@ -273,6 +273,12 @@ type CompiledValueAndGradOutput = Option<(Vec<Value>, Vec<Value>)>;
 
 const DENSE_AD_VALUE_STORE_MAX_SLOTS: usize = 1_000_000;
 
+/// Minimum estimated work (input_dim × equation-count) per thread before the
+/// general Hessian central-difference column loop fans out across threads. Below
+/// this the 2·input_dim grad calls are cheap enough that thread spawn overhead
+/// dominates, so we stay serial.
+const HESSIAN_PARALLEL_WORK_PER_THREAD: usize = 512;
+
 #[derive(Debug, Clone, Copy)]
 enum ScalarF64Atom {
     Slot(usize),
@@ -12485,9 +12491,17 @@ pub fn hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
         // Unexpected grad shape ⇒ fall through to the exact per-basis path.
     }
 
-    let mut hessian = vec![0.0; input_dim * input_dim];
-
-    for basis_idx in 0..input_dim {
+    // Each Hessian COLUMN is two INDEPENDENT grad calls (central difference at
+    // x ± ε·e_j), so column j depends on nothing computed for any other column —
+    // and grad_jaxpr is a pure function of (jaxpr, args) reading only the global
+    // custom-rule registry behind a read lock. Columns can therefore be evaluated
+    // across threads and scattered into disjoint output slots with no change to the
+    // values (each column is the identical deterministic central difference the
+    // serial loop computes). grad is forward+backward (two passes) per call, so —
+    // unlike the single-pass jvp jacobian column loop, which was malloc-bound and
+    // regressed under threading — the per-column compute amortizes the malloc
+    // traffic and the fan-out is a clean win.
+    let column = |basis_idx: usize| -> Result<Vec<f64>, AdError> {
         let (arg_idx, local_idx) = global_basis_to_arg_index(&input_lengths, basis_idx)
             .ok_or_else(|| {
                 AdError::EvalFailed(format!("unable to resolve basis index {basis_idx}"))
@@ -12496,14 +12510,12 @@ pub fn hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
         let mut plus_flat = base_flat_args.clone();
         plus_flat[arg_idx][local_idx] += epsilon;
         let plus_args = reconstruct_args_from_flat(args, &plus_flat)?;
-        let plus_grad = grad_jaxpr(jaxpr, &plus_args)?;
-        let plus_flat_grad = flatten_values_to_f64(&plus_grad)?;
+        let plus_flat_grad = flatten_values_to_f64(&grad_jaxpr(jaxpr, &plus_args)?)?;
 
         let mut minus_flat = base_flat_args.clone();
         minus_flat[arg_idx][local_idx] -= epsilon;
         let minus_args = reconstruct_args_from_flat(args, &minus_flat)?;
-        let minus_grad = grad_jaxpr(jaxpr, &minus_args)?;
-        let minus_flat_grad = flatten_values_to_f64(&minus_grad)?;
+        let minus_flat_grad = flatten_values_to_f64(&grad_jaxpr(jaxpr, &minus_args)?)?;
 
         if plus_flat_grad.len() != input_dim || minus_flat_grad.len() != input_dim {
             return Err(AdError::EvalFailed(format!(
@@ -12513,9 +12525,78 @@ pub fn hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
             )));
         }
 
+        let mut col = vec![0.0_f64; input_dim];
         for row in 0..input_dim {
-            hessian[row * input_dim + basis_idx] =
-                (plus_flat_grad[row] - minus_flat_grad[row]) / (2.0 * epsilon);
+            col[row] = (plus_flat_grad[row] - minus_flat_grad[row]) / (2.0 * epsilon);
+        }
+        Ok(col)
+    };
+
+    let mut hessian = vec![0.0; input_dim * input_dim];
+
+    // Work proxy: 2·input_dim grad calls, each ≈ equation-count passes. GATE on the
+    // total being large enough that thread spawn overhead is negligible; past the
+    // gate, scale to min(cores, columns) — every column is an independent pair of
+    // grad calls so there is no inter-thread dependency limiting the fan-out.
+    let work = input_dim.saturating_mul(jaxpr.equations.len());
+    let n_threads = if work < HESSIAN_PARALLEL_WORK_PER_THREAD {
+        1
+    } else {
+        let cores = std::thread::available_parallelism()
+            .map(|t| t.get())
+            .unwrap_or(1);
+        cores.min(input_dim).max(1)
+    };
+
+    if n_threads <= 1 {
+        for basis_idx in 0..input_dim {
+            let col = column(basis_idx)?;
+            for row in 0..input_dim {
+                hessian[row * input_dim + basis_idx] = col[row];
+            }
+        }
+    } else {
+        let column = &column;
+        let chunk = input_dim.div_ceil(n_threads);
+        let chunks: Vec<(usize, usize)> = (0..n_threads)
+            .map(|t| {
+                let start = t * chunk;
+                let end = ((t + 1) * chunk).min(input_dim);
+                (start, end)
+            })
+            .filter(|(s, e)| s < e)
+            .collect();
+        type HessianChunk = Result<Vec<(usize, Vec<f64>)>, AdError>;
+        let results: Vec<HessianChunk> = std::thread::scope(|scope| {
+            let handles: Vec<_> = chunks
+                .iter()
+                .map(|&(start, end)| {
+                    scope.spawn(move || {
+                        let mut cols = Vec::with_capacity(end - start);
+                        for basis_idx in start..end {
+                            cols.push((basis_idx, column(basis_idx)?));
+                        }
+                        Ok(cols)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join().unwrap_or_else(|_| {
+                        Err(AdError::EvalFailed(
+                            "Hessian worker thread panicked".to_owned(),
+                        ))
+                    })
+                })
+                .collect()
+        });
+        for chunk_result in results {
+            for (basis_idx, col) in chunk_result? {
+                for row in 0..input_dim {
+                    hessian[row * input_dim + basis_idx] = col[row];
+                }
+            }
         }
     }
 
@@ -23327,6 +23408,240 @@ mod tests {
         assert_eq!(
             sha,
             "7a42b4e6a4b18cf77a7efcf248f694db80fe7b76ea40488f73210b4920e12764"
+        );
+    }
+
+    #[test]
+    fn hessian_general_parallel_matches_serial_central_difference() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        // NON-separable f(x) = (Σ chain(x_i))² — final op is Square AFTER ReduceSum,
+        // so the separable fast path does NOT fire and the general central-difference
+        // column loop runs. The multi-equation chain pushes the work proxy past
+        // HESSIAN_PARALLEL_WORK_PER_THREAD so the loop FANS OUT across threads (with
+        // input_dim=128 columns on a multi-core host n_threads > 1). Each column is
+        // an independent ±ε central difference, so the threaded result must be
+        // BIT-IDENTICAL to an inline serial reference.
+        let n = 128usize;
+        let chain: &[Primitive] = &[
+            Primitive::Sin,
+            Primitive::Cos,
+            Primitive::Tanh,
+            Primitive::Exp,
+            Primitive::Log1p,
+            Primitive::Atan,
+        ];
+        let mut equations = Vec::new();
+        let mut cur = VarId(0);
+        let mut next = 1u32;
+        for &p in chain {
+            let out_v = VarId(next);
+            next += 1;
+            equations.push(Equation {
+                primitive: p,
+                inputs: smallvec![Atom::Var(cur)],
+                outputs: smallvec![out_v],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            });
+            cur = out_v;
+        }
+        let summed = VarId(next);
+        next += 1;
+        equations.push(Equation {
+            primitive: Primitive::ReduceSum,
+            inputs: smallvec![Atom::Var(cur)],
+            outputs: smallvec![summed],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        });
+        let out = VarId(next);
+        equations.push(Equation {
+            primitive: Primitive::Square,
+            inputs: smallvec![Atom::Var(summed)],
+            outputs: smallvec![out],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        });
+        let jaxpr = Jaxpr::new(vec![VarId(0)], vec![], vec![out], equations);
+        assert!(
+            !super::jaxpr_is_separable_sum(&jaxpr),
+            "(Σ chain)² must NOT be detected as separable — general path required"
+        );
+        assert!(
+            n.saturating_mul(jaxpr.equations.len()) >= super::HESSIAN_PARALLEL_WORK_PER_THREAD,
+            "test config must cross the parallel gate to exercise the threaded path"
+        );
+        let xv: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.017).sin() * 0.9).collect();
+        let mk = |v: Vec<f64>| {
+            [Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    v,
+                )
+                .unwrap(),
+            )]
+        };
+        let args = mk(xv.clone());
+
+        let h = hessian_jaxpr(&jaxpr, &args).expect("hessian");
+        let ht = h.as_tensor().expect("tensor");
+        assert_eq!(ht.shape.dims, vec![n as u32, n as u32]);
+        let got = ht.to_f64_vec().expect("f64");
+
+        // Inline serial central-difference reference (path-independent).
+        let eps = 1e-5_f64;
+        let mut want = vec![0.0_f64; n * n];
+        for basis in 0..n {
+            let mut pf = xv.clone();
+            pf[basis] += eps;
+            let mut mf = xv.clone();
+            mf[basis] -= eps;
+            let pg = super::flatten_values_to_f64(&grad_jaxpr(&jaxpr, &mk(pf)).unwrap()).unwrap();
+            let mg = super::flatten_values_to_f64(&grad_jaxpr(&jaxpr, &mk(mf)).unwrap()).unwrap();
+            for row in 0..n {
+                want[row * n + basis] = (pg[row] - mg[row]) / (2.0 * eps);
+            }
+        }
+        for idx in 0..n * n {
+            assert_eq!(
+                got[idx].to_bits(),
+                want[idx].to_bits(),
+                "parallel Hessian entry {idx} != serial central-difference reference"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_hessian_general_parallel_vs_serial() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        use std::time::Instant;
+        // Non-separable, COMPUTE-HEAVY body: a deep chain of transcendental
+        // elementwise ops, then ReduceSum, then Square — (Σ chain(x_i))². The deep
+        // chain makes each grad_jaxpr call expensive enough that the per-column
+        // compute dominates malloc/thread overhead, the regime where fanning the
+        // 2·n independent central-difference grad calls across threads pays off.
+        let n = 192usize;
+        let chain: &[Primitive] = &[
+            Primitive::Sin,
+            Primitive::Cos,
+            Primitive::Tanh,
+            Primitive::Exp,
+            Primitive::Log1p,
+            Primitive::Atan,
+            Primitive::Sinh,
+            Primitive::Erf,
+            Primitive::Asinh,
+            Primitive::Sin,
+        ];
+        let mut equations = Vec::new();
+        let mut cur = VarId(0);
+        let mut next = 1u32;
+        for &p in chain {
+            let out_v = VarId(next);
+            next += 1;
+            equations.push(Equation {
+                primitive: p,
+                inputs: smallvec![Atom::Var(cur)],
+                outputs: smallvec![out_v],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            });
+            cur = out_v;
+        }
+        let summed = VarId(next);
+        next += 1;
+        equations.push(Equation {
+            primitive: Primitive::ReduceSum,
+            inputs: smallvec![Atom::Var(cur)],
+            outputs: smallvec![summed],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        });
+        let out = VarId(next);
+        equations.push(Equation {
+            primitive: Primitive::Square,
+            inputs: smallvec![Atom::Var(summed)],
+            outputs: smallvec![out],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        });
+        let jaxpr = Jaxpr::new(vec![VarId(0)], vec![], vec![out], equations);
+        let xv: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.017).sin() * 0.9).collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
+        )];
+        let eps = 1e-5_f64;
+
+        // Inline SERIAL reference.
+        let serial = || {
+            let mut hessian = vec![0.0_f64; n * n];
+            for basis in 0..n {
+                let mut pf = xv.clone();
+                pf[basis] += eps;
+                let mut mf = xv.clone();
+                mf[basis] -= eps;
+                let pa = [Value::Tensor(
+                    TensorValue::new_f64_values(
+                        Shape {
+                            dims: vec![n as u32],
+                        },
+                        pf,
+                    )
+                    .unwrap(),
+                )];
+                let ma = [Value::Tensor(
+                    TensorValue::new_f64_values(
+                        Shape {
+                            dims: vec![n as u32],
+                        },
+                        mf,
+                    )
+                    .unwrap(),
+                )];
+                let pg = super::flatten_values_to_f64(&grad_jaxpr(&jaxpr, &pa).unwrap()).unwrap();
+                let mg = super::flatten_values_to_f64(&grad_jaxpr(&jaxpr, &ma).unwrap()).unwrap();
+                for row in 0..n {
+                    hessian[row * n + basis] = (pg[row] - mg[row]) / (2.0 * eps);
+                }
+            }
+            hessian
+        };
+
+        let iters = 5;
+        for _ in 0..2 {
+            std::hint::black_box(serial());
+            std::hint::black_box(hessian_jaxpr(&jaxpr, &args).unwrap());
+        }
+        let t = Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(serial());
+        }
+        let serial_ms = t.elapsed().as_secs_f64() * 1e3 / iters as f64;
+        let t = Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(hessian_jaxpr(&jaxpr, &args).unwrap());
+        }
+        let par_ms = t.elapsed().as_secs_f64() * 1e3 / iters as f64;
+        eprintln!(
+            "hessian general n={n}: SERIAL {serial_ms:.3}ms  PARALLEL {par_ms:.3}ms  speedup {:.2}x",
+            serial_ms / par_ms
         );
     }
 
