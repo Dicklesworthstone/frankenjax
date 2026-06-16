@@ -6430,30 +6430,46 @@ fn run_dense_axis_reduce_plan_into(
         outer = outer.checked_mul(d as usize)?;
     }
 
-    // F64 ONLY. Fold each contiguous K-block in ascending order with the op's
-    // (seed, fold), accumulating in f64 — matching fj-lax's contiguous-block
-    // axis-reduce exactly (sum/prod serial; max/min jax_max/min == its SIMD
-    // axis-reduce). NOTE: f32 is deliberately NOT handled here — fj-lax's generic
-    // axis-reduce WIDENS f32 input to an F64 output tensor (unlike full-reduce,
-    // which keeps F32), so an f32 typed plan returning F32 would diverge from the
-    // eager path; f32 stays on the generic route until that fj-lax gap is fixed.
-    if tensor.dtype != DType::F64 {
-        return None;
-    }
-    let values = tensor.elements.as_f64_slice()?;
-    if values.len() != outer * k {
-        return None;
-    }
-    let mut result = Vec::with_capacity(outer);
-    for cell in 0..outer {
-        let block = &values[cell * k..cell * k + k];
-        let mut acc = plan.op.seed();
-        for &v in block {
-            acc = plan.op.fold(acc, v);
+    // Fold each contiguous K-block in ascending order with the op's (seed, fold),
+    // accumulating in f64 — matching fj-lax's contiguous-block axis-reduce exactly
+    // (sum/prod serial; max/min jax_max/min == its SIMD axis-reduce). F64 emits an
+    // f64 result; F32 rounds each cell's f64 accumulator back to f32, mirroring
+    // fj-lax's `reduce_real_literal(F32, acc)` (the result is value-equal to the
+    // eager path's F32 output — a dense vs boxed F32 storage difference only).
+    let built = match tensor.dtype {
+        DType::F64 => {
+            let values = tensor.elements.as_f64_slice()?;
+            if values.len() != outer * k {
+                return None;
+            }
+            let mut result = Vec::with_capacity(outer);
+            for cell in 0..outer {
+                let mut acc = plan.op.seed();
+                for &v in &values[cell * k..cell * k + k] {
+                    acc = plan.op.fold(acc, v);
+                }
+                result.push(acc);
+            }
+            TensorValue::new_f64_values(Shape { dims: out_dims }, result)
         }
-        result.push(acc);
-    }
-    match TensorValue::new_f64_values(Shape { dims: out_dims }, result) {
+        DType::F32 => {
+            let values = tensor.elements.as_f32_slice()?;
+            if values.len() != outer * k {
+                return None;
+            }
+            let mut result = Vec::with_capacity(outer);
+            for cell in 0..outer {
+                let mut acc = plan.op.seed();
+                for &v in &values[cell * k..cell * k + k] {
+                    acc = plan.op.fold(acc, f64::from(v));
+                }
+                result.push(acc as f32);
+            }
+            TensorValue::new_f32_values(Shape { dims: out_dims }, result)
+        }
+        _ => return None,
+    };
+    match built {
         Ok(t) => {
             out.clear();
             out.push(Value::Tensor(t));
@@ -11836,20 +11852,24 @@ mod tests {
         }
     }
 
-    // Per-element bit pattern of a real tensor (f64 or f32), NaN-payload-exact.
-    fn tensor_real_bits(value: &Value) -> Vec<u64> {
+    // Storage-AGNOSTIC (dtype, native-width per-element bits) of a real tensor,
+    // NaN-payload-exact. Iterating `.elements` yields Literals regardless of dense
+    // vs boxed backing, so a dense-F32 and a boxed-F32 tensor with equal values
+    // compare equal (the typed plan returns dense; the eager path may return
+    // boxed). Comparing the (dtype, bits) tuple catches any real divergence.
+    fn tensor_dtype_bits(value: &Value) -> (DType, Vec<u64>) {
         match value {
             Value::Tensor(t) => {
-                if let Some(s) = t.elements.as_f64_slice() {
-                    return s.iter().map(|v| v.to_bits()).collect();
-                }
-                if let Some(s) = t.elements.as_f32_slice() {
-                    return s.iter().map(|v| u64::from(v.to_bits())).collect();
-                }
-                t.elements
+                let bits = t
+                    .elements
                     .iter()
-                    .map(|l| l.as_f64().unwrap_or(0.0).to_bits())
-                    .collect()
+                    .map(|l| match l {
+                        Literal::F64Bits(b) => *b,
+                        Literal::F32Bits(b) => u64::from(*b),
+                        other => panic!("expected real element, got {other:?}"),
+                    })
+                    .collect();
+                (t.dtype, bits)
             }
             other => panic!("expected tensor, got {other:?}"),
         }
@@ -11857,12 +11877,12 @@ mod tests {
 
     #[test]
     fn dense_axis_reduce_plan_matches_generic_and_golden() {
-        // Single trailing-axis reductions (sum/prod/max/min) over dense f64
-        // tensors of rank 2 and 3 must take the typed plan and be BIT-IDENTICAL
-        // to the generic interpreter (eval_primitive -> fj-lax, the oracle),
-        // including -0.0 and NaN. A golden digest freezes the f64 sum case.
-        // (f32 is intentionally excluded — fj-lax widens f32 axis-reduce to F64;
-        // the plan returns None for f32 so the generic path keeps that behavior.)
+        // Single trailing-axis reductions (sum/prod/max/min) over dense f64 AND
+        // f32 tensors of rank 2 and 3 must take the typed plan and be value-equal
+        // (dtype + native-width bits) to the generic interpreter (eval_primitive
+        // -> fj-lax, the oracle), including -0.0 and NaN. The plan returns dense
+        // tensors while the eager path may return boxed — same logical value, so
+        // the comparison is storage-agnostic. A golden freezes the f64 sum case.
         let (x, out) = (VarId(0), VarId(1));
         let mut golden: Option<Vec<u64>> = None;
         for (shape, axis) in [(vec![6u32, 8u32], 1usize), (vec![3u32, 4u32, 5u32], 2usize)] {
@@ -11874,6 +11894,7 @@ mod tests {
                     _ => (i as f64) * 0.07 - 1.3,
                 })
                 .collect();
+            let f32v: Vec<f32> = f64v.iter().map(|&v| v as f32).collect();
             for primitive in [
                 Primitive::ReduceSum,
                 Primitive::ReduceProd,
@@ -11899,16 +11920,27 @@ mod tests {
                     "{primitive:?} trailing-axis should compile to the dense axis-reduce plan"
                 );
 
-                {
-                    let args = [Value::Tensor(
-                        TensorValue::new_f64_values(
-                            Shape {
-                                dims: shape.clone(),
-                            },
-                            f64v.clone(),
-                        )
-                        .unwrap(),
-                    )];
+                let f64_arg = Value::Tensor(
+                    TensorValue::new_f64_values(
+                        Shape {
+                            dims: shape.clone(),
+                        },
+                        f64v.clone(),
+                    )
+                    .unwrap(),
+                );
+                let f32_arg = Value::Tensor(
+                    TensorValue::new_f32_values(
+                        Shape {
+                            dims: shape.clone(),
+                        },
+                        f32v.clone(),
+                    )
+                    .unwrap(),
+                );
+                for arg in [f64_arg, f32_arg] {
+                    let is_f64 = matches!(&arg, Value::Tensor(t) if t.dtype == DType::F64);
+                    let args = [arg];
                     let mut genv: Vec<Option<Value>> = vec![None; plan.slots];
                     let mut gscratch: Vec<Value> = Vec::new();
                     let mut gout: Vec<Value> = Vec::new();
@@ -11940,12 +11972,12 @@ mod tests {
                     .expect("planned reduce");
 
                     assert_eq!(
-                        tensor_real_bits(&pout[0]),
-                        tensor_real_bits(&gout[0]),
-                        "{primitive:?} axis={axis} plan diverged from oracle"
+                        tensor_dtype_bits(&pout[0]),
+                        tensor_dtype_bits(&gout[0]),
+                        "{primitive:?} axis={axis} f64={is_f64} plan diverged from oracle"
                     );
-                    if primitive == Primitive::ReduceSum && shape.len() == 2 {
-                        golden = Some(tensor_real_bits(&pout[0]));
+                    if primitive == Primitive::ReduceSum && is_f64 && shape.len() == 2 {
+                        golden = Some(tensor_dtype_bits(&pout[0]).1);
                     }
                 }
             }
@@ -12013,7 +12045,7 @@ mod tests {
                     &mut o,
                 )
                 .expect("generic");
-                acc += tensor_real_bits(&o[0])[0] as f64;
+                acc += tensor_dtype_bits(&o[0]).1[0] as f64;
             }
             std::hint::black_box(acc);
         });
@@ -12035,7 +12067,7 @@ mod tests {
                     &mut bufs,
                 )
                 .expect("planned");
-                acc += tensor_real_bits(&o[0])[0] as f64;
+                acc += tensor_dtype_bits(&o[0]).1[0] as f64;
             }
             std::hint::black_box(acc);
         });
