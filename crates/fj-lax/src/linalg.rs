@@ -1079,6 +1079,7 @@ fn eval_qr_real_matrix_impl(
     let mut v_scratch = vec![0.0_f64; m];
     let mut v_store = vec![0.0_f64; qr_reflector_packed_len(m, k)];
     let mut tau_store = vec![0.0_f64; k];
+    let mut panel_ts: Vec<(usize, usize, Vec<f64>)> = Vec::new();
 
     if blocked {
         // R = QᵀA: factor each QR_BLOCK-column panel (reflectors applied only within the
@@ -1099,10 +1100,11 @@ fn eval_qr_real_matrix_impl(
                     &mut tau_store,
                 );
             }
+            let t = qr_compact_wy_t(&v_store, &tau_store, m, p, b);
             if p + b < n {
-                let t = qr_compact_wy_t(&v_store, &tau_store, m, p, b);
                 qr_block_apply(&mut r, m, n, &v_store, &t, p, b, p + b, n, true);
             }
+            panel_ts.push((p, b, t));
             p += b;
         }
     } else {
@@ -1131,15 +1133,8 @@ fn eval_qr_real_matrix_impl(
         // Q = H_0…H_{k-1} applied to I: apply each panel block reflector I − V T Vᵀ
         // (note: T, not Tᵀ — the forward product, opposite of the R update) backward,
         // over columns [p, q_cols) (columns < p stay identity, so they are skipped).
-        let mut starts: Vec<(usize, usize)> = Vec::new();
-        let mut p = 0;
-        while p < k {
-            starts.push((p, QR_BLOCK.min(k - p)));
-            p += QR_BLOCK;
-        }
-        for &(p, b) in starts.iter().rev() {
-            let t = qr_compact_wy_t(&v_store, &tau_store, m, p, b);
-            qr_block_apply(&mut q, m, q_cols, &v_store, &t, p, b, p, q_cols, false);
+        for (p, b, t) in panel_ts.iter().rev() {
+            qr_block_apply(&mut q, m, q_cols, &v_store, t, *p, *b, *p, q_cols, false);
         }
     } else {
         for j in (0..k).rev() {
