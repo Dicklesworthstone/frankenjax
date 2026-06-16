@@ -12220,6 +12220,27 @@ fn is_diagonal_elementwise_primitive(p: Primitive) -> bool {
             | XLogY
             | XLog1PY
             | IntegerPow
+            // Piecewise / selection / rounding — all position-local & shape-
+            // preserving (out[i] from inputs[i]), with derivative rules in
+            // jvp_rule: Select/SelectN/Clamp (where/clamp/leaky-relu), the six
+            // comparisons (bool, zero tangent — used as Select predicates), and
+            // Floor/Ceil/Round/Trunc/Sign (zero derivative a.e.). Keeps the
+            // diagonal-Jacobian / separable-Hessian fast paths firing on
+            // piecewise elementwise functions.
+            | Select
+            | SelectN
+            | Clamp
+            | Eq
+            | Ne
+            | Lt
+            | Le
+            | Gt
+            | Ge
+            | Floor
+            | Ceil
+            | Round
+            | Trunc
+            | Sign
     )
 }
 
@@ -22638,6 +22659,104 @@ mod tests {
             t_col / t_rev,
             d_rev,
         );
+    }
+
+    #[test]
+    fn jacobian_diagonal_piecewise_select_matches_columns() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        // Leaky-ReLU via Select+Gt+Mul (piecewise, still componentwise):
+        //   slope = x*0.01 ; pred = x > 0 ; out = select(pred, x, slope).
+        // Diagonal Jacobian = diag(1 if x>0 else 0.01). Verifies the expanded
+        // whitelist (Select/Gt) keeps the diagonal fast path firing, bit-identical
+        // to the column-by-column reference.
+        let n = 11usize;
+        let (x, slope, pred, out) = (VarId(0), VarId(1), VarId(2), VarId(3));
+        let mk = |p: Primitive, ins: smallvec::SmallVec<[Atom; 4]>, o: VarId| Equation {
+            primitive: p,
+            inputs: ins,
+            outputs: smallvec![o],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        let jaxpr = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                mk(
+                    Primitive::Mul,
+                    smallvec![Atom::Var(x), Atom::Lit(Literal::from_f64(0.01))],
+                    slope,
+                ),
+                mk(
+                    Primitive::Gt,
+                    smallvec![Atom::Var(x), Atom::Lit(Literal::from_f64(0.0))],
+                    pred,
+                ),
+                mk(
+                    Primitive::Select,
+                    smallvec![Atom::Var(pred), Atom::Var(x), Atom::Var(slope)],
+                    out,
+                ),
+            ],
+        );
+        assert!(
+            super::jaxpr_is_elementwise_diagonal(&jaxpr),
+            "leaky-relu (select+gt+mul) should be detected diagonal"
+        );
+        let xv: Vec<f64> = (0..n).map(|i| (i as f64) - 5.0).collect(); // spans <0 and >0
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
+        )];
+
+        let jac = jacobian_jaxpr(&jaxpr, &args).expect("jacobian");
+        let jt = jac.as_tensor().expect("tensor");
+        assert_eq!(jt.shape.dims, vec![n as u32, n as u32]);
+        let got = jt.to_f64_vec().expect("f64");
+
+        let mut want = vec![0.0_f64; n * n];
+        for basis in 0..n {
+            let mut tan = vec![0.0_f64; n];
+            tan[basis] = 1.0;
+            let tangents = [Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    tan,
+                )
+                .unwrap(),
+            )];
+            let jr = super::jvp_inner(&jaxpr, &args, &tangents, None).expect("jvp");
+            let col = super::flatten_values_to_f64(&jr.tangents).expect("flat");
+            for row in 0..n {
+                want[row * n + basis] = col[row];
+            }
+        }
+        for r in 0..n {
+            for c in 0..n {
+                let idx = r * n + c;
+                if r == c {
+                    assert_eq!(
+                        got[idx].to_bits(),
+                        want[idx].to_bits(),
+                        "diagonal {r} != column reference"
+                    );
+                    let expect = if xv[r] > 0.0 { 1.0 } else { 0.01 };
+                    assert!((got[idx] - expect).abs() < 1e-12, "diag {r} = {}", got[idx]);
+                } else {
+                    assert_eq!(got[idx], 0.0, "off-diagonal ({r},{c}) not zero");
+                }
+            }
+        }
     }
 
     #[test]
