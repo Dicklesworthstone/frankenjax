@@ -8344,53 +8344,84 @@ fn conv_vjp_1d(
     };
 
     let lhs_total = batch * width * c_in;
-    let mut grad_lhs_elems = vec![0.0_f64; lhs_total];
-
-    for n in 0..batch {
-        for w_out in 0..out_w {
-            for k in 0..kernel_w {
-                let in_pos = (w_out * stride + k) as isize - pad_left as isize;
-                if in_pos >= 0 && (in_pos as usize) < width {
-                    let w = in_pos as usize;
-                    for ci in 0..c_in {
-                        let mut acc = 0.0;
-                        for co in 0..c_out {
-                            let g_idx = n * out_w * c_out + w_out * c_out + co;
-                            let rhs_idx = k * c_in * c_out + ci * c_out + co;
-                            acc += g_tensor.elements[g_idx].as_f64().unwrap_or(0.0)
-                                * rhs.elements[rhs_idx].as_f64().unwrap_or(0.0);
-                        }
-                        grad_lhs_elems[n * width * c_in + w * c_in + ci] += acc;
-                    }
-                }
-            }
-        }
-    }
-
     let rhs_total = kernel_w * c_in * c_out;
-    let mut grad_rhs_elems = vec![0.0_f64; rhs_total];
 
-    for n in 0..batch {
-        for w_out in 0..out_w {
-            for k in 0..kernel_w {
-                let in_pos = (w_out * stride + k) as isize - pad_left as isize;
-                if in_pos >= 0 && (in_pos as usize) < width {
-                    let w = in_pos as usize;
-                    for ci in 0..c_in {
-                        let lhs_val = lhs.elements[n * width * c_in + w * c_in + ci]
-                            .as_f64()
-                            .unwrap_or(0.0);
-                        for co in 0..c_out {
-                            let g_val = g_tensor.elements[n * out_w * c_out + w_out * c_out + co]
-                                .as_f64()
-                                .unwrap_or(0.0);
-                            grad_rhs_elems[k * c_in * c_out + ci * c_out + co] += lhs_val * g_val;
-                        }
+    // GEMM-routed 1D conv backward (sibling of conv_vjp_2d; one spatial axis). The
+    // previous body was two naive 5-deep loops with per-element boxed as_f64().
+    //   K = kernel_w·c_in (patch length), P = batch·out_w (output sites)
+    //   colsT[K,P] = im2col(lhs)ᵀ ; G[P,Cout] = g reshaped [N·OW, Cout]
+    //   grad_rhs[K,Cout] = matmul_2d(colsT,K,P, G,Cout)   (row (k,ci),col co → grad_rhs[k,ci,co])
+    //   cols2[P,K] = matmul_2d(G,P,Cout, rhsT,K)  (rhsT[Cout,K]=rhsᵀ) ; col2im → grad_lhs
+    // PARITY: conv-VJP parity is TOLERANCE (finite-diff tests; JAX uses GEMM), so the
+    // GEMM accumulation order is legal.
+    let lhs_f64: Vec<f64> = lhs
+        .elements
+        .iter()
+        .map(|e| e.as_f64().unwrap_or(0.0))
+        .collect();
+    let g_f64: Vec<f64> = g_tensor
+        .elements
+        .iter()
+        .map(|e| e.as_f64().unwrap_or(0.0))
+        .collect();
+    let rhs_f64: Vec<f64> = rhs
+        .elements
+        .iter()
+        .map(|e| e.as_f64().unwrap_or(0.0))
+        .collect();
+
+    let k_patch = kernel_w * c_in;
+    let p_sites = batch * out_w;
+
+    let mut cols_t = vec![0.0_f64; k_patch * p_sites];
+    for k in 0..kernel_w {
+        for ci in 0..c_in {
+            let row = k * c_in + ci;
+            let row_base = row * p_sites;
+            for n in 0..batch {
+                for w_out in 0..out_w {
+                    let in_pos = (w_out * stride + k) as isize - pad_left as isize;
+                    if in_pos < 0 || (in_pos as usize) >= width {
+                        continue;
                     }
+                    let wpos = in_pos as usize;
+                    let col = n * out_w + w_out;
+                    cols_t[row_base + col] = lhs_f64[n * width * c_in + wpos * c_in + ci];
                 }
             }
         }
     }
+
+    let grad_rhs_elems =
+        fj_lax::tensor_contraction::matmul_2d(&cols_t, k_patch, p_sites, &g_f64, c_out);
+
+    let mut rhs_t = vec![0.0_f64; c_out * k_patch];
+    for row in 0..k_patch {
+        for co in 0..c_out {
+            rhs_t[co * k_patch + row] = rhs_f64[row * c_out + co];
+        }
+    }
+    let cols2 = fj_lax::tensor_contraction::matmul_2d(&g_f64, p_sites, c_out, &rhs_t, k_patch);
+
+    let mut grad_lhs_elems = vec![0.0_f64; lhs_total];
+    for k in 0..kernel_w {
+        for ci in 0..c_in {
+            let col_k = k * c_in + ci;
+            for n in 0..batch {
+                for w_out in 0..out_w {
+                    let in_pos = (w_out * stride + k) as isize - pad_left as isize;
+                    if in_pos < 0 || (in_pos as usize) >= width {
+                        continue;
+                    }
+                    let wpos = in_pos as usize;
+                    let site = n * out_w + w_out;
+                    grad_lhs_elems[n * width * c_in + wpos * c_in + ci] +=
+                        cols2[site * k_patch + col_k];
+                }
+            }
+        }
+    }
+    debug_assert_eq!(grad_rhs_elems.len(), rhs_total);
 
     make_conv_grad_pair(&lhs.shape, &rhs.shape, grad_lhs_elems, grad_rhs_elems)
 }
@@ -16745,6 +16776,85 @@ mod tests {
             assert!(
                 (fd - grhs[j]).abs() < 1e-5,
                 "grad_rhs[{j}] analytic={} fd={fd}",
+                grhs[j]
+            );
+        }
+    }
+
+    #[test]
+    fn conv_vjp_1d_gemm_matches_numerical() {
+        // Non-grouped 1D (rank-3) conv VJP — hits the GEMM-routed conv_vjp_1d — vs
+        // central finite differences. lhs[N=2,W=7,Cin=3], rhs[K=3,Cin=3,Cout=4], SAME
+        // padding stride 1 (overlapping → exercises col2im).
+        let (n, w, cin, kw, cout) = (2usize, 7usize, 3usize, 3usize, 4usize);
+        let ow = w; // SAME, stride 1
+        let lhs0: Vec<f64> = (0..n * w * cin)
+            .map(|i| (i as f64 * 0.0151).sin() * 1.4 + 0.1)
+            .collect();
+        let rhs0: Vec<f64> = (0..kw * cin * cout)
+            .map(|i| (i as f64 * 0.011).cos() * 0.7 - 0.05)
+            .collect();
+        let gv: Vec<f64> = (0..n * ow * cout)
+            .map(|i| (i as f64 * 0.009).sin() + 0.2)
+            .collect();
+        let params = BTreeMap::from([
+            ("padding".to_owned(), "same".to_owned()),
+            ("strides".to_owned(), "1".to_owned()),
+        ]);
+        let mk = |dims: Vec<u32>, d: &[f64]| {
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims }, d.to_vec()).unwrap())
+        };
+        let g = mk(vec![n as u32, ow as u32, cout as u32], &gv);
+        let loss = |lv: &[f64], rv: &[f64]| -> f64 {
+            let out = eval_primitive(
+                Primitive::Conv,
+                &[
+                    mk(vec![n as u32, w as u32, cin as u32], lv),
+                    mk(vec![kw as u32, cin as u32, cout as u32], rv),
+                ],
+                &params,
+            )
+            .unwrap();
+            tensor_f64_values(&out)
+                .iter()
+                .zip(&gv)
+                .map(|(o, gg)| o * gg)
+                .sum()
+        };
+        let grads = vjp_single(
+            Primitive::Conv,
+            &[
+                mk(vec![n as u32, w as u32, cin as u32], &lhs0),
+                mk(vec![kw as u32, cin as u32, cout as u32], &rhs0),
+            ],
+            &g,
+            &params,
+        )
+        .unwrap();
+        let glhs = tensor_f64_values(&grads[0]);
+        let grhs = tensor_f64_values(&grads[1]);
+        let eps = 1e-6;
+        for j in 0..lhs0.len() {
+            let mut up = lhs0.clone();
+            up[j] += eps;
+            let mut dn = lhs0.clone();
+            dn[j] -= eps;
+            let fd = (loss(&up, &rhs0) - loss(&dn, &rhs0)) / (2.0 * eps);
+            assert!(
+                (fd - glhs[j]).abs() < 1e-5,
+                "1d grad_lhs[{j}] analytic={} fd={fd}",
+                glhs[j]
+            );
+        }
+        for j in 0..rhs0.len() {
+            let mut up = rhs0.clone();
+            up[j] += eps;
+            let mut dn = rhs0.clone();
+            dn[j] -= eps;
+            let fd = (loss(&lhs0, &up) - loss(&lhs0, &dn)) / (2.0 * eps);
+            assert!(
+                (fd - grhs[j]).abs() < 1e-5,
+                "1d grad_rhs[{j}] analytic={} fd={fd}",
                 grhs[j]
             );
         }
