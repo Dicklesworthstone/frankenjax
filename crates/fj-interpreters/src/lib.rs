@@ -3173,6 +3173,42 @@ struct DenseGatherPlan {
     slice_sizes: Vec<usize>,
 }
 
+/// Single-equation argmax/argmin over ONE trailing axis (`axis=rank-1`, the
+/// default), e.g. `jnp.argmax(logits, axis=-1)` — decode predictions / sampling.
+/// Each output cell is the index of the extremum within a contiguous row;
+/// `find_max` picks argmax vs argmin, `axis` (None = default trailing) is checked
+/// against the runtime rank.
+struct DenseArgExtremumPlan {
+    const_slots: Vec<usize>,
+    input_slots: Vec<usize>,
+    input_slot: usize,
+    find_max: bool,
+    axis: Option<usize>,
+}
+
+/// fj-lax's `arg_extreme_float` reducer, replicated bit-for-bit: first NaN wins
+/// (and stops), else strict `>`/`<` with first-occurrence tie-break (±0 compare
+/// equal so the earlier index is kept). The fj-lax SIMD argmax falls back to this
+/// on any-NaN and matches it otherwise, so this is the exact reference.
+fn plan_arg_extreme_float(n: usize, find_max: bool, get: impl Fn(usize) -> f64) -> usize {
+    let mut best_idx = 0usize;
+    let mut best = get(0);
+    let mut best_nan = best.is_nan();
+    let mut i = 1;
+    while i < n && !best_nan {
+        let v = get(i);
+        if v.is_nan() {
+            best_idx = i;
+            best_nan = true;
+        } else if (find_max && v > best) || (!find_max && v < best) {
+            best_idx = i;
+            best = v;
+        }
+        i += 1;
+    }
+    best_idx
+}
+
 #[derive(Clone, Copy)]
 enum ScalarF64Slot {
     Missing,
@@ -3363,6 +3399,52 @@ fn build_dense_gather_plan(jaxpr: &Jaxpr, slots: usize) -> Option<DenseGatherPla
         operand_slot,
         indices_slot,
         slice_sizes,
+    })
+}
+
+fn build_dense_arg_extremum_plan(jaxpr: &Jaxpr, slots: usize) -> Option<DenseArgExtremumPlan> {
+    if !jaxpr.effects.is_empty() || jaxpr.equations.len() != 1 {
+        return None;
+    }
+    let equation = &jaxpr.equations[0];
+    let find_max = match equation.primitive {
+        Primitive::Argmax => true,
+        Primitive::Argmin => false,
+        _ => return None,
+    };
+    if !equation.sub_jaxprs.is_empty()
+        || !equation.effects.is_empty()
+        || equation.inputs.len() != 1
+        || equation.outputs.len() != 1
+        || jaxpr.outvars.as_slice() != equation.outputs.as_slice()
+    {
+        return None;
+    }
+    // Only the `axis` param is allowed (absent => default trailing axis). Any
+    // other key bails to the generic interpreter.
+    if equation.params.keys().any(|k| k != "axis") {
+        return None;
+    }
+    let axis = match equation.params.get("axis") {
+        Some(raw) => Some(raw.trim().parse::<usize>().ok()?),
+        None => None,
+    };
+
+    let Atom::Var(input_var) = equation.inputs[0] else {
+        return None;
+    };
+    let input_slot = input_var.0 as usize;
+    let out_slot = equation.outputs[0].0 as usize;
+    if input_slot >= slots || out_slot >= slots {
+        return None;
+    }
+
+    Some(DenseArgExtremumPlan {
+        const_slots: var_slots(&jaxpr.constvars, slots)?,
+        input_slots: var_slots(&jaxpr.invars, slots)?,
+        input_slot,
+        find_max,
+        axis,
     })
 }
 
@@ -6154,6 +6236,7 @@ struct DenseEvalPlan {
     dense_f64_dot_plan: Option<DenseF64DotPlan>,
     dense_axis_reduce_plan: Option<DenseAxisReducePlan>,
     dense_gather_plan: Option<DenseGatherPlan>,
+    dense_arg_extremum_plan: Option<DenseArgExtremumPlan>,
 }
 
 /// One-time compiled evaluator for hot repeated calls of the same small Jaxpr.
@@ -6282,6 +6365,7 @@ fn build_dense_plan(jaxpr: &Jaxpr) -> Option<DenseEvalPlan> {
             dense_f64_dot_plan: build_dense_f64_dot_plan(jaxpr, slots),
             dense_axis_reduce_plan: build_dense_axis_reduce_plan(jaxpr, slots),
             dense_gather_plan: build_dense_gather_plan(jaxpr, slots),
+            dense_arg_extremum_plan: build_dense_arg_extremum_plan(jaxpr, slots),
         })
     } else {
         None
@@ -6311,6 +6395,7 @@ fn eval_jaxpr_dense_env(
         dense_f64_dot_plan: build_dense_f64_dot_plan(jaxpr, slots),
         dense_axis_reduce_plan: build_dense_axis_reduce_plan(jaxpr, slots),
         dense_gather_plan: build_dense_gather_plan(jaxpr, slots),
+        dense_arg_extremum_plan: build_dense_arg_extremum_plan(jaxpr, slots),
     };
     let mut env: Vec<Option<Value>> = vec![None; slots];
     run_dense_plan(jaxpr, const_values, args, &mut env, &plan)
@@ -6725,6 +6810,119 @@ fn run_dense_gather_plan_into(
     }
 }
 
+// 3-way f64/f32/i64 dtype if-let chain fills `result`; clippy::question_mark
+// misfires on the trailing `else { return None }` (a dtype alternative, not a
+// `?`-expressible early return).
+#[allow(clippy::question_mark)]
+fn run_dense_arg_extremum_plan_into(
+    plan: &DenseArgExtremumPlan,
+    const_values: &[Value],
+    args: &[Value],
+    out: &mut Vec<Value>,
+) -> Option<Result<(), InterpreterError>> {
+    if const_values.len() != plan.const_slots.len() {
+        return Some(Err(InterpreterError::ConstArity {
+            expected: plan.const_slots.len(),
+            actual: const_values.len(),
+        }));
+    }
+    if args.len() != plan.input_slots.len() {
+        return Some(Err(InterpreterError::InputArity {
+            expected: plan.input_slots.len(),
+            actual: args.len(),
+        }));
+    }
+
+    let input = match dense_f64_dot_input(
+        &plan.const_slots,
+        &plan.input_slots,
+        plan.input_slot,
+        const_values,
+        args,
+    ) {
+        Ok(v) => v,
+        Err(err) => return Some(Err(err)),
+    };
+    let Value::Tensor(tensor) = input else {
+        return None;
+    };
+    let rank = tensor.shape.rank();
+    if rank == 0 {
+        return None;
+    }
+    // Only the TRAILING axis: then each output cell scans one contiguous row of
+    // axis_dim = dims[rank-1], emitting I64 indices of shape dims[..rank-1] — the
+    // contiguous (axis_stride==1) case fj-lax handles with its SIMD argmax, which
+    // matches plan_arg_extreme_float bit-for-bit.
+    let eff_axis = plan.axis.unwrap_or(rank - 1);
+    if eff_axis != rank - 1 {
+        return None;
+    }
+    let dims = &tensor.shape.dims;
+    let axis_dim = dims[rank - 1] as usize;
+    if axis_dim == 0 {
+        return None;
+    }
+    let mut outer = 1usize;
+    for &d in &dims[..rank - 1] {
+        outer = outer.checked_mul(d as usize)?;
+    }
+    let out_dims: Vec<u32> = dims[..rank - 1].to_vec();
+    let find_max = plan.find_max;
+
+    let mut result: Vec<i64> = Vec::with_capacity(outer);
+    if let Some(values) = tensor.elements.as_f64_slice() {
+        if values.len() != outer * axis_dim {
+            return None;
+        }
+        for cell in 0..outer {
+            let base = cell * axis_dim;
+            let best = plan_arg_extreme_float(axis_dim, find_max, |i| values[base + i]);
+            result.push(best as i64);
+        }
+    } else if let Some(values) = tensor.elements.as_f32_slice() {
+        if values.len() != outer * axis_dim {
+            return None;
+        }
+        for cell in 0..outer {
+            let base = cell * axis_dim;
+            let best = plan_arg_extreme_float(axis_dim, find_max, |i| f64::from(values[base + i]));
+            result.push(best as i64);
+        }
+    } else if let Some(values) = tensor.elements.as_i64_slice() {
+        if values.len() != outer * axis_dim {
+            return None;
+        }
+        // Integers: strict cmp, first-occurrence tie-break (no NaN).
+        for cell in 0..outer {
+            let base = cell * axis_dim;
+            let mut best_idx = 0usize;
+            let mut best = values[base];
+            for i in 1..axis_dim {
+                let v = values[base + i];
+                if (find_max && v > best) || (!find_max && v < best) {
+                    best_idx = i;
+                    best = v;
+                }
+            }
+            result.push(best_idx as i64);
+        }
+    } else {
+        return None;
+    }
+
+    match TensorValue::new_i64_values(Shape { dims: out_dims }, result) {
+        Ok(t) => {
+            out.clear();
+            out.push(Value::Tensor(t));
+            Some(Ok(()))
+        }
+        Err(e) => Some(Err(InterpreterError::Primitive(EvalError::InvalidTensor(
+            e,
+        )))),
+    }
+}
+
 fn dense_f64_dot_input<'a>(
     const_slots: &[usize],
     input_slots: &[usize],
@@ -6920,6 +7118,15 @@ fn run_dense_plan_into(
     // index/dtype, OOB-fill mode, or negative indices fall to the generic interp.
     if let Some(p) = &plan.dense_gather_plan
         && let Some(result) = run_dense_gather_plan_into(p, const_values, args, out)
+    {
+        return result;
+    }
+    // One-equation argmax/argmin over the trailing axis (jnp.argmax(x, -1)) over a
+    // dense f64/f32/i64 tensor: per-row scan emitting I64 indices, bit-identical to
+    // fj-lax (same first-NaN/strict-cmp/first-occurrence reducer). Non-trailing
+    // axis, other dtypes, or non-dense fall to the generic interpreter.
+    if let Some(p) = &plan.dense_arg_extremum_plan
+        && let Some(result) = run_dense_arg_extremum_plan_into(p, const_values, args, out)
     {
         return result;
     }
@@ -12255,6 +12462,241 @@ mod tests {
         assert_eq!(
             sha,
             "1bcf973d9732ae43f0400652c2559be5b187f4b9560dbf28fb926d295f8647d7"
+        );
+    }
+
+    #[test]
+    fn dense_arg_extremum_plan_matches_generic_and_golden() {
+        // Trailing-axis argmax/argmin over dense f64/f32/i64 must take the typed
+        // plan and be value-equal (dtype + bits) to the generic interpreter
+        // (eval_primitive -> fj-lax). Data includes ties (first-occurrence wins),
+        // -0.0, and NaN (first-NaN wins) — the parity-sensitive reducer cases.
+        // Tested with default axis (no param) and explicit axis=rank-1.
+        let (x, out) = (VarId(0), VarId(1));
+        // [4, 5]: row 0 has a tie at the max; another row a NaN.
+        let shape = vec![4u32, 5u32];
+        let n = 20usize;
+        let f64v: Vec<f64> = vec![
+            1.0,
+            3.0,
+            3.0,
+            2.0,
+            -0.0, // tie at idx 1,2 (max 3.0) -> argmax 1
+            -1.0,
+            -1.0,
+            0.0,
+            5.0,
+            4.0, // argmax 3
+            f64::NAN,
+            2.0,
+            9.0,
+            1.0,
+            0.0, // NaN at idx 0 -> argmax 0 (first NaN)
+            7.0,
+            7.0,
+            7.0,
+            7.0,
+            7.0, // all-tie -> argmax 0 / argmin 0
+        ];
+        assert_eq!(f64v.len(), n);
+        let mut golden: Option<Vec<u64>> = None;
+        for find_max in [true, false] {
+            let prim = if find_max {
+                Primitive::Argmax
+            } else {
+                Primitive::Argmin
+            };
+            for axis_param in [None, Some(1usize)] {
+                let params = match axis_param {
+                    Some(a) => BTreeMap::from([("axis".to_owned(), a.to_string())]),
+                    None => BTreeMap::new(),
+                };
+                let body = Jaxpr::new(
+                    vec![x],
+                    vec![],
+                    vec![out],
+                    vec![Equation {
+                        primitive: prim,
+                        inputs: smallvec![Atom::Var(x)],
+                        outputs: smallvec![out],
+                        params,
+                        sub_jaxprs: vec![],
+                        effects: vec![],
+                    }],
+                );
+                let plan = super::build_dense_plan(&body).expect("dense plan");
+                assert!(
+                    plan.dense_arg_extremum_plan.is_some(),
+                    "{prim:?} axis={axis_param:?} should compile to the dense arg-extremum plan"
+                );
+
+                let args_list = [
+                    Value::Tensor(
+                        TensorValue::new_f64_values(
+                            Shape {
+                                dims: shape.clone(),
+                            },
+                            f64v.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                    Value::Tensor(
+                        TensorValue::new_f32_values(
+                            Shape {
+                                dims: shape.clone(),
+                            },
+                            f64v.iter().map(|&x| x as f32).collect(),
+                        )
+                        .unwrap(),
+                    ),
+                    Value::Tensor(
+                        TensorValue::new_i64_values(
+                            Shape {
+                                dims: shape.clone(),
+                            },
+                            // distinct-ish ints with a tie per row
+                            vec![1, 3, 3, 2, 0, -1, -1, 0, 5, 4, 8, 2, 9, 1, 0, 7, 7, 7, 7, 7],
+                        )
+                        .unwrap(),
+                    ),
+                ];
+                for arg in args_list {
+                    let is_f64 = matches!(&arg, Value::Tensor(t) if t.dtype == DType::F64);
+                    let args = [arg];
+                    let mut genv: Vec<Option<Value>> = vec![None; plan.slots];
+                    let mut gscratch: Vec<Value> = Vec::new();
+                    let mut gout: Vec<Value> = Vec::new();
+                    super::run_dense_env_into(
+                        &body,
+                        &[],
+                        &args,
+                        &mut genv,
+                        &plan.last_use,
+                        &mut gscratch,
+                        &mut gout,
+                    )
+                    .expect("generic arg");
+
+                    let mut penv: Vec<Option<Value>> = vec![None; plan.slots];
+                    let mut pscratch: Vec<Value> = Vec::new();
+                    let mut pout: Vec<Value> = Vec::new();
+                    let mut bufs = super::ScalarPlanBuffers::default();
+                    super::run_dense_plan_into(
+                        &body,
+                        &[],
+                        &args,
+                        &mut penv,
+                        &plan,
+                        &mut pscratch,
+                        &mut pout,
+                        &mut bufs,
+                    )
+                    .expect("planned arg");
+
+                    assert_eq!(
+                        tensor_dtype_bits(&pout[0]),
+                        tensor_dtype_bits(&gout[0]),
+                        "{prim:?} axis={axis_param:?} f64={is_f64} plan diverged from oracle"
+                    );
+                    if find_max && axis_param.is_none() && is_f64 {
+                        golden = Some(tensor_dtype_bits(&pout[0]).1);
+                    }
+                }
+            }
+        }
+        let sha = fj_test_utils::fixture_id_from_json(&(
+            "frankenjax-argmax",
+            &golden.expect("golden ran"),
+        ))
+        .expect("digest");
+        assert_eq!(
+            sha,
+            "dc014a70f31d3199aad026dadbdcba86776afde194471136262869505b7bc876"
+        );
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_dense_arg_extremum_plan_overhead() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        let (x, out) = (VarId(0), VarId(1));
+        let body = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![Equation {
+                primitive: Primitive::Argmax,
+                inputs: smallvec![Atom::Var(x)],
+                outputs: smallvec![out],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let plan = super::build_dense_plan(&body).expect("dense plan");
+        // [8, 16] f32 logits, argmax over last axis -> [8].
+        let data: Vec<f32> = (0..8 * 16).map(|i| ((i * 7) % 16) as f32 * 0.1).collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![8, 16] }, data).unwrap(),
+        )];
+        let n: usize = 500_000;
+        let t_generic = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut acc = 0i64;
+            for _ in 0..n {
+                super::run_dense_env_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan.last_use,
+                    &mut scratch,
+                    &mut o,
+                )
+                .expect("generic");
+                acc = acc.wrapping_add(tensor_dtype_bits(&o[0]).1[0] as i64);
+            }
+            std::hint::black_box(acc);
+        });
+        let t_planned = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut bufs = super::ScalarPlanBuffers::default();
+            let mut acc = 0i64;
+            for _ in 0..n {
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan,
+                    &mut scratch,
+                    &mut o,
+                    &mut bufs,
+                )
+                .expect("planned");
+                acc = acc.wrapping_add(tensor_dtype_bits(&o[0]).1[0] as i64);
+            }
+            std::hint::black_box(acc);
+        });
+        println!(
+            "BENCH dense-f32 argmax [8,16] axis-1 {n} evals: GENERIC {:.1}ns/eval -> PLANNED {:.1}ns/eval = {:.2}x",
+            t_generic * 1e9 / n as f64,
+            t_planned * 1e9 / n as f64,
+            t_generic / t_planned,
         );
     }
 
