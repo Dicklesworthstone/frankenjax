@@ -12334,6 +12334,245 @@ fn jaxpr_is_elementwise_diagonal(jaxpr: &Jaxpr) -> bool {
         .all(|eqn| eqn.sub_jaxprs.is_empty() && is_diagonal_elementwise_primitive(eqn.primitive))
 }
 
+/// True for single-input primitives whose `jvp_rule` produces its tangent as a
+/// FINAL `Mul(coeff, tangent)` where `coeff = f'(primal)` does not depend on the
+/// tangent. For these, the cached `coeff = jvp_rule(p,[x],[ones])` (= coeff·1.0 =
+/// coeff for finite values) reproduces `jvp_rule(p,[x],[t])` bit-for-bit via
+/// `value_mul(coeff, t)`. Verified against the live jvp_rule arms by
+/// `jacfwd_linearize_cached_ops_are_multiply_form`. Divide-form rules (Log/Atan/
+/// Asin/Sqrt/Tan: `Div(tangent, denom)`) are deliberately excluded — reordering to
+/// `Mul(1/denom, tangent)` is not bit-exact — but their derivatives are cheap.
+fn jvp_rule_is_cached_multiply_form(p: Primitive) -> bool {
+    matches!(
+        p,
+        Primitive::Sin
+            | Primitive::Cos
+            | Primitive::Sinh
+            | Primitive::Cosh
+            | Primitive::Tanh
+            | Primitive::Asinh
+            | Primitive::Acosh
+            | Primitive::Atanh
+            | Primitive::Exp
+            | Primitive::Exp2
+            | Primitive::Expm1
+            | Primitive::Erf
+            | Primitive::Erfc
+            | Primitive::Logistic
+            | Primitive::Sinc
+            | Primitive::Square
+            | Primitive::Rsqrt
+    )
+}
+
+/// Linearize-based forward Jacobian (jacfwd). Computes the primal forward ONCE,
+/// caching `f'(primal)` for every unary-elementwise equation, then builds each
+/// column by replaying only the tangent map — a single `value_mul` per cached unary
+/// op instead of recomputing its (often transcendental) derivative once per column.
+///
+/// Correctness: in jacfwd the primal is the SAME for all columns (only the seed
+/// tangent e_j differs), so the cached derivative is exact. For a unary elementwise
+/// primitive `value_mul(jvp_rule(p,[x],[ones]), t) == jvp_rule(p,[x],[t])` on finite
+/// data (the cached `f'(x)·1.0 == f'(x)`), and every other equation replays through
+/// the identical `jvp_rule` the per-column loop uses with the same primals — so the
+/// result matches the per-column path bit-for-bit on finite inputs (Jacobian parity
+/// is tolerance; NaN/inf at singularities stay NaN in both).
+///
+/// Returns `None` (caller falls back to the per-column jvp loop) unless the jaxpr is
+/// friendly: single output, all single-output equations, no custom JVP/VJP rules,
+/// tensor args, and at least one compute-heavy cacheable unary op (else no benefit).
+fn jacfwd_linearize(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    input_lengths: &[usize],
+    input_dim: usize,
+    zero_tangents: &[Value],
+    custom_jvp_rule_key: Option<&str>,
+) -> Result<Option<Value>, AdError> {
+    if jaxpr.outvars.len() != 1 || custom_jvp_rule_key.is_some() {
+        return Ok(None);
+    }
+    if lookup_custom_jaxpr_jvp(jaxpr).is_some() || lookup_custom_jaxpr_vjp(jaxpr).is_some() {
+        return Ok(None);
+    }
+    if !args.iter().all(|v| matches!(v, Value::Tensor(_))) {
+        return Ok(None);
+    }
+    // An equation's derivative is cacheable iff it is a single-input op whose
+    // jvp_rule FINAL step is `Mul(coeff, tangent)` with `coeff` independent of the
+    // tangent (see [`jvp_rule_is_cached_multiply_form`]). Then the cached
+    // `coeff = jvp_rule(p,[x],[ones])` reproduces `jvp_rule(p,[x],[t])` exactly via
+    // `value_mul(coeff, t)` (== `Mul(coeff, t)`). Divide-form rules (`Div(t, denom)`)
+    // are NOT cacheable — `Mul(1/denom, t) != Div(t, denom)` by a rounding step — but
+    // their derivatives are cheap (no transcendental), so they replay via jvp_rule.
+    let cacheable = |eqn: &fj_core::Equation| -> bool {
+        eqn.inputs.len() == 1
+            && jvp_rule_is_cached_multiply_form(eqn.primitive)
+            && lookup_custom_jvp(eqn.primitive).is_none()
+    };
+    let mut heavy_unary = 0usize;
+    for eqn in &jaxpr.equations {
+        if eqn.outputs.len() != 1 || !eqn.sub_jaxprs.is_empty() || !eqn.effects.is_empty() {
+            return Ok(None);
+        }
+        if cacheable(eqn) && primitive_is_compute_heavy(eqn.primitive) {
+            heavy_unary += 1;
+        }
+    }
+    if heavy_unary == 0 {
+        return Ok(None);
+    }
+
+    // Forward once: primal env + cached unary derivatives.
+    let mut penv = AdValueStore::for_jaxpr(jaxpr);
+    for (i, var) in jaxpr.invars.iter().enumerate() {
+        penv.insert(*var, args[i].clone());
+    }
+    let mut unary_deriv: Vec<Option<Value>> = vec![None; jaxpr.equations.len()];
+    for (ei, eqn) in jaxpr.equations.iter().enumerate() {
+        let mut primals = Vec::with_capacity(eqn.inputs.len());
+        for atom in eqn.inputs.iter() {
+            match atom {
+                Atom::Var(v) => {
+                    primals.push(penv.get(v).cloned().ok_or(AdError::MissingVariable(*v))?)
+                }
+                Atom::Lit(l) => primals.push(Value::Scalar(*l)),
+            }
+        }
+        if cacheable(eqn) {
+            let ones = ones_like(&primals[0]);
+            unary_deriv[ei] = Some(jvp_rule(
+                eqn.primitive,
+                &primals,
+                std::slice::from_ref(&ones),
+                &eqn.params,
+            )?);
+        }
+        let out0 = eval_primitive_multi(eqn.primitive, &primals, &eqn.params)
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| AdError::EvalFailed("primitive produced no primal output".to_owned()))?;
+        penv.insert(eqn.outputs[0], out0);
+    }
+
+    // Replay one column: propagate the seed tangent through the cached linear map.
+    let out_var = jaxpr.outvars[0];
+    let replay = |basis_idx: usize| -> Result<Vec<f64>, AdError> {
+        let (arg_idx, local_idx) =
+            global_basis_to_arg_index(input_lengths, basis_idx).ok_or_else(|| {
+                AdError::EvalFailed(format!("unable to resolve basis index {basis_idx}"))
+            })?;
+        let mut tenv = AdValueStore::for_jaxpr(jaxpr);
+        for (i, var) in jaxpr.invars.iter().enumerate() {
+            let t = if i == arg_idx {
+                basis_value_like(&args[arg_idx], local_idx)?
+            } else {
+                zero_tangents[i].clone()
+            };
+            tenv.insert(*var, t);
+        }
+        for (ei, eqn) in jaxpr.equations.iter().enumerate() {
+            let mut tangent_ins = Vec::with_capacity(eqn.inputs.len());
+            for atom in eqn.inputs.iter() {
+                match atom {
+                    Atom::Var(v) => {
+                        tangent_ins.push(tenv.get(v).cloned().ok_or(AdError::MissingVariable(*v))?)
+                    }
+                    Atom::Lit(l) => tangent_ins.push(zeros_like(&Value::Scalar(*l))),
+                }
+            }
+            let t_out = if let Some(deriv) = &unary_deriv[ei] {
+                value_mul(deriv, &tangent_ins[0])?
+            } else {
+                let mut primal_ins = Vec::with_capacity(eqn.inputs.len());
+                for atom in eqn.inputs.iter() {
+                    match atom {
+                        Atom::Var(v) => primal_ins
+                            .push(penv.get(v).cloned().ok_or(AdError::MissingVariable(*v))?),
+                        Atom::Lit(l) => primal_ins.push(Value::Scalar(*l)),
+                    }
+                }
+                jvp_rule(eqn.primitive, &primal_ins, &tangent_ins, &eqn.params)?
+            };
+            tenv.insert(eqn.outputs[0], t_out);
+        }
+        let out_t = tenv
+            .get(&out_var)
+            .ok_or_else(|| AdError::EvalFailed("missing output tangent".to_owned()))?;
+        flatten_value_to_f64(out_t)
+    };
+
+    // The replay columns are independent; fan out when there are enough of them
+    // (replay is cheap per column, so gate on input_dim, not heavy-op count).
+    let n_threads = if input_dim < 64 {
+        1
+    } else {
+        let cores = std::thread::available_parallelism()
+            .map(|t| t.get())
+            .unwrap_or(1);
+        cores.min(input_dim).max(1)
+    };
+
+    let columns: Vec<Vec<f64>> = if n_threads <= 1 {
+        (0..input_dim).map(replay).collect::<Result<Vec<_>, _>>()?
+    } else {
+        let replay = &replay;
+        let chunk = input_dim.div_ceil(n_threads);
+        let bounds: Vec<(usize, usize)> = (0..n_threads)
+            .map(|t| (t * chunk, ((t + 1) * chunk).min(input_dim)))
+            .filter(|(s, e)| s < e)
+            .collect();
+        type ColChunk = Result<Vec<(usize, Vec<f64>)>, AdError>;
+        let chunk_results: Vec<ColChunk> = std::thread::scope(|scope| {
+            let handles: Vec<_> = bounds
+                .iter()
+                .map(|&(start, end)| {
+                    scope.spawn(move || {
+                        let mut out = Vec::with_capacity(end - start);
+                        for basis_idx in start..end {
+                            out.push((basis_idx, replay(basis_idx)?));
+                        }
+                        Ok(out)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join().unwrap_or_else(|_| {
+                        Err(AdError::EvalFailed(
+                            "Jacobian linearize worker thread panicked".to_owned(),
+                        ))
+                    })
+                })
+                .collect()
+        });
+        let mut assembled = vec![Vec::new(); input_dim];
+        for cr in chunk_results {
+            for (basis_idx, col) in cr? {
+                assembled[basis_idx] = col;
+            }
+        }
+        assembled
+    };
+
+    let output_dim = columns.first().map_or(0, Vec::len);
+    for col in &columns {
+        if col.len() != output_dim {
+            // Inconsistent output dim ⇒ let the caller's column path produce the error.
+            return Ok(None);
+        }
+    }
+    let mut jacobian = vec![0.0_f64; output_dim * input_dim];
+    for (basis_idx, col) in columns.iter().enumerate() {
+        for (row, &value) in col.iter().enumerate() {
+            jacobian[row * input_dim + basis_idx] = value;
+        }
+    }
+    Ok(Some(matrix_value(output_dim, input_dim, jacobian)?))
+}
+
 fn jacobian_jaxpr_inner(
     jaxpr: &Jaxpr,
     args: &[Value],
@@ -12511,6 +12750,22 @@ fn jacobian_jaxpr_inner(
                 // Row length mismatch ⇒ fall through to the forward column path.
             }
         }
+    }
+
+    // LINEARIZE fast path: in jacfwd the primal is IDENTICAL for every column (only
+    // the seed tangent varies), so each unary-elementwise op's derivative f'(primal)
+    // can be computed ONCE and every column reduced to a cheap value_mul instead of
+    // recomputing the transcendental N times. Bit-identical to the per-column jvp
+    // loop on finite data. Falls through when the jaxpr is not linearize-friendly.
+    if let Some(jac) = jacfwd_linearize(
+        jaxpr,
+        args,
+        &input_lengths,
+        input_dim,
+        &zero_tangents,
+        custom_jvp_rule_key,
+    )? {
+        return Ok(jac);
     }
 
     // FORWARD column path (jacfwd): one jvp pass per input basis e_j fills column j.
@@ -22963,6 +23218,154 @@ mod tests {
         eprintln!(
             "jacobian forward-column n={n}: SERIAL {serial_ms:.3}ms  PARALLEL {par_ms:.3}ms  speedup {:.2}x",
             serial_ms / par_ms
+        );
+    }
+
+    #[test]
+    fn jacfwd_linearize_cached_ops_are_multiply_form() {
+        use fj_core::{Shape, TensorValue};
+        // The invariant jacfwd_linearize relies on: for every cached op the replay
+        // value_mul(jvp_rule(p,[x],[ones]), t) must equal jvp_rule(p,[x],[t]) BIT-FOR-
+        // BIT on finite data. (op, x) pairs keep x in each op's domain so f'(x) is
+        // finite. If a jvp_rule arm ever stops being final-Mul(coeff, tangent), this
+        // catches it.
+        let cases: &[(Primitive, f64)] = &[
+            (Primitive::Sin, 0.5),
+            (Primitive::Cos, 0.5),
+            (Primitive::Sinh, 0.5),
+            (Primitive::Cosh, 0.5),
+            (Primitive::Tanh, 0.5),
+            (Primitive::Asinh, 0.5),
+            (Primitive::Acosh, 1.7),
+            (Primitive::Atanh, 0.4),
+            (Primitive::Exp, 0.5),
+            (Primitive::Exp2, 0.5),
+            (Primitive::Expm1, 0.5),
+            (Primitive::Erf, 0.5),
+            (Primitive::Erfc, 0.5),
+            (Primitive::Logistic, 0.5),
+            (Primitive::Sinc, 0.5),
+            (Primitive::Square, 0.5),
+            (Primitive::Rsqrt, 2.0),
+        ];
+        // Every op the linearize path will cache must be covered by a case here.
+        for &(op, _) in cases {
+            assert!(
+                super::jvp_rule_is_cached_multiply_form(op),
+                "{op:?} listed as a test case but not in the cached set"
+            );
+        }
+        let n = 5u32;
+        for &(op, xval) in cases {
+            let x = Value::Tensor(
+                TensorValue::new_f64_values(Shape { dims: vec![n] }, vec![xval; n as usize])
+                    .unwrap(),
+            );
+            let t = Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape { dims: vec![n] },
+                    (0..n).map(|i| 0.1 + f64::from(i) * 0.7).collect(),
+                )
+                .unwrap(),
+            );
+            let ones = super::ones_like(&x);
+            let deriv = super::jvp_rule(
+                op,
+                std::slice::from_ref(&x),
+                std::slice::from_ref(&ones),
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            let cached = super::value_mul(&deriv, &t).unwrap();
+            let direct = super::jvp_rule(
+                op,
+                std::slice::from_ref(&x),
+                std::slice::from_ref(&t),
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            let cb = super::flatten_value_to_f64(&cached).unwrap();
+            let db = super::flatten_value_to_f64(&direct).unwrap();
+            for (a, b) in cb.iter().zip(db.iter()) {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "{op:?} cached replay not bit-identical to direct jvp_rule"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_jacfwd_linearize_vs_column() {
+        use fj_core::{Shape, TensorValue};
+        use std::time::Instant;
+        // Deep transcendental chain -> cumsum (square non-diagonal). Compares the
+        // current jacobian_jaxpr (linearize fast path) against an inline per-column
+        // jvp_inner loop (the pre-linearize path).
+        let n = 384usize;
+        let chain: &[Primitive] = &[
+            Primitive::Sin,
+            Primitive::Cos,
+            Primitive::Tanh,
+            Primitive::Exp,
+            Primitive::Sinh,
+            Primitive::Erf,
+            Primitive::Logistic,
+            Primitive::Cosh,
+        ];
+        let jaxpr = build_forward_column_jaxpr(chain);
+        let xv: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.007).sin() * 0.5).collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
+        )];
+        let column_loop = || {
+            let mut jac = vec![0.0_f64; n * n];
+            for basis in 0..n {
+                let mut tan = vec![0.0_f64; n];
+                tan[basis] = 1.0;
+                let tangents = [Value::Tensor(
+                    TensorValue::new_f64_values(
+                        Shape {
+                            dims: vec![n as u32],
+                        },
+                        tan,
+                    )
+                    .unwrap(),
+                )];
+                let jr = super::jvp_inner(&jaxpr, &args, &tangents, None).unwrap();
+                let col = super::flatten_values_to_f64(&jr.tangents).unwrap();
+                for row in 0..n {
+                    jac[row * n + basis] = col[row];
+                }
+            }
+            jac
+        };
+        let iters = 5;
+        for _ in 0..2 {
+            std::hint::black_box(column_loop());
+            std::hint::black_box(jacobian_jaxpr(&jaxpr, &args).unwrap());
+        }
+        let t = Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(column_loop());
+        }
+        let col_ms = t.elapsed().as_secs_f64() * 1e3 / iters as f64;
+        let t = Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(jacobian_jaxpr(&jaxpr, &args).unwrap());
+        }
+        let lin_ms = t.elapsed().as_secs_f64() * 1e3 / iters as f64;
+        eprintln!(
+            "jacfwd n={n}: COLUMN-LOOP {col_ms:.3}ms  LINEARIZE {lin_ms:.3}ms  speedup {:.2}x",
+            col_ms / lin_ms
         );
     }
 
