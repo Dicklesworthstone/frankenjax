@@ -6442,32 +6442,141 @@ fn vjp_reduce_window(
         return Ok(vec![zeros_like(&inputs[0])]);
     }
 
-    // Real magnitudes used only for max/min window selection (complex
-    // max/min pooling is undefined). Gradient values are accumulated below in
-    // a dtype-preserving regime — the previous code rebuilt every element via
-    // `Literal::from_f64` while declaring `input_tensor.dtype`, so a non-F64
-    // input produced a tensor whose declared dtype disagreed with its F64Bits
-    // literals (and complex grads were zeroed by `as_f64().unwrap_or(0.0)`).
-    let input_vals: Vec<f64> = input_tensor
-        .elements
-        .iter()
-        .map(|e| e.as_f64().unwrap_or(0.0))
-        .collect();
+    // Row-major input strides for the interior-stencil fast path.
+    let mut input_strides = vec![1usize; rank];
+    for d in (0..rank.saturating_sub(1)).rev() {
+        input_strides[d] = input_strides[d + 1] * input_dims[d + 1];
+    }
 
-    // Collect (input_flat, output_flat) scatter pairs: the cotangent at each
-    // output position flows back to these input positions.
-    let mut scatter: Vec<(usize, usize)> = Vec::new();
     let win_total = ad_checked_usize_product("reduce_window window", &window_dims)?;
+
+    // Flat offset of each window tap relative to the window corner: tap t at win
+    // index w contributes Σ_d w[d]·window_dilation[d]·input_stride[d]. For an
+    // INTERIOR output (the whole dilated window lands in bounds) the contributing
+    // input flat is simply corner_flat + tap_offsets[t] — no per-tap N-d decode
+    // and no padding bounds test. This is the dense-stencil analogue of the
+    // forward pass, replacing the old O(output·window) scatter list + per-tap
+    // `compute_flat_index` decode. Border outputs (window overhangs the padding)
+    // still take the exact per-tap path, so bounds/overflow semantics are
+    // unchanged on that ring.
+    let mut tap_offsets = vec![0usize; win_total];
+    {
+        let mut win_idx = vec![0usize; rank];
+        for off in tap_offsets.iter_mut() {
+            let mut acc = 0usize;
+            for d in 0..rank {
+                acc += win_idx[d] * window_dilation[d] * input_strides[d];
+            }
+            *off = acc;
+            increment_nd_index(&mut win_idx, &window_dims);
+        }
+    }
+
+    let want_extremum = reduce_op == "max" || reduce_op == "min";
+    let want_max = reduce_op == "max";
+
+    // Real magnitudes used only for max/min window selection (complex max/min
+    // pooling is undefined). Skip the O(input) boxed extraction for sum.
+    let input_vals: Vec<f64> = if want_extremum {
+        input_tensor
+            .elements
+            .iter()
+            .map(|e| e.as_f64().unwrap_or(0.0))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let is_complex = matches!(input_tensor.dtype, DType::Complex64 | DType::Complex128);
+
+    // Cotangent extracted once in the accumulation regime (see dtype note below).
+    let g_vals: Vec<f64> = if is_complex {
+        Vec::new()
+    } else {
+        g_tensor
+            .elements
+            .iter()
+            .map(|e| e.as_f64().unwrap_or(0.0))
+            .collect()
+    };
+    let g_pairs: Vec<(f64, f64)> = if is_complex {
+        g_tensor
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::Complex64Bits(re, im) => (
+                    f64::from(f32::from_bits(*re)),
+                    f64::from(f32::from_bits(*im)),
+                ),
+                Literal::Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
+                _ => (0.0, 0.0),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Accumulate in the upstream dtype's regime, then rebuild literals at
+    // `input_tensor.dtype` so the AD chain neither widens F32/BF16/F16 nor zeros
+    // complex gradients. Accumulation is streamed directly into `acc` (no
+    // materialized scatter list); across outputs the order is ascending
+    // `out_flat` in both regimes and within a window the row-major tap order is
+    // preserved, so the f64 accumulation order — hence the bits — is identical
+    // to the previous scatter-list version.
+    let mut acc_r = if is_complex {
+        Vec::new()
+    } else {
+        vec![0.0_f64; total_input]
+    };
+    let mut acc_c = if is_complex {
+        vec![(0.0_f64, 0.0_f64); total_input]
+    } else {
+        Vec::new()
+    };
+
+    // One output's contributing input flats (max one per tap), reused per output.
+    let mut tap_buf: Vec<usize> = Vec::with_capacity(win_total);
     let mut out_idx = vec![0usize; rank];
     for out_flat in 0..total_output {
-        match reduce_op {
-            "max" | "min" => {
-                let mut best_flat: Option<usize> = None;
-                let mut best_val = if reduce_op == "max" {
-                    f64::NEG_INFINITY
-                } else {
-                    f64::INFINITY
-                };
+        tap_buf.clear();
+
+        // Window corner (win index 0) per axis; interior iff the whole dilated
+        // window lands in bounds, in which case corner_flat + tap_offsets[t] is
+        // the input flat for tap t (corner_flat ≥ 0 holds when interior).
+        let mut interior = true;
+        let mut corner_flat = 0isize;
+        for d in 0..rank {
+            let corner = out_idx[d] as isize * strides[d] as isize - pad_lows[d] as isize;
+            let last = corner + ((window_dims[d] - 1) * window_dilation[d]) as isize;
+            if corner < 0 || last >= input_dims[d] as isize {
+                interior = false;
+            }
+            corner_flat += corner * input_strides[d] as isize;
+        }
+
+        if want_extremum {
+            let mut best_flat: Option<usize> = None;
+            let mut best_val = if want_max {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            };
+            if interior {
+                let base = corner_flat as usize;
+                for &off in &tap_offsets {
+                    let flat_idx = base + off;
+                    let val = input_vals[flat_idx];
+                    let is_better = if want_max {
+                        val > best_val
+                    } else {
+                        val < best_val
+                    };
+                    if is_better {
+                        best_val = val;
+                        best_flat = Some(flat_idx);
+                    }
+                }
+            } else {
                 let mut win_idx = vec![0usize; rank];
                 for _ in 0..win_total {
                     let flat = compute_flat_index(
@@ -6481,7 +6590,7 @@ fn vjp_reduce_window(
                     )?;
                     if let Some(flat_idx) = flat {
                         let val = input_vals[flat_idx];
-                        let is_better = if reduce_op == "max" {
+                        let is_better = if want_max {
                             val > best_val
                         } else {
                             val < best_val
@@ -6493,79 +6602,67 @@ fn vjp_reduce_window(
                     }
                     increment_nd_index(&mut win_idx, &window_dims);
                 }
-                if let Some(idx) = best_flat {
-                    scatter.push((idx, out_flat));
-                }
             }
-            _ => {
-                // Sum reduction: gradient scatters to every window position.
-                let mut win_idx = vec![0usize; rank];
-                for _ in 0..win_total {
-                    let flat = compute_flat_index(
-                        &out_idx,
-                        &win_idx,
-                        &strides,
-                        &input_dims,
-                        &pad_lows,
-                        &window_dilation,
-                        rank,
-                    )?;
-                    if let Some(flat_idx) = flat {
-                        scatter.push((flat_idx, out_flat));
-                    }
-                    increment_nd_index(&mut win_idx, &window_dims);
+            if let Some(idx) = best_flat {
+                tap_buf.push(idx);
+            }
+        } else if interior {
+            // Sum: gradient scatters to every (in-bounds) window position.
+            let base = corner_flat as usize;
+            for &off in &tap_offsets {
+                tap_buf.push(base + off);
+            }
+        } else {
+            let mut win_idx = vec![0usize; rank];
+            for _ in 0..win_total {
+                let flat = compute_flat_index(
+                    &out_idx,
+                    &win_idx,
+                    &strides,
+                    &input_dims,
+                    &pad_lows,
+                    &window_dilation,
+                    rank,
+                )?;
+                if let Some(flat_idx) = flat {
+                    tap_buf.push(flat_idx);
                 }
+                increment_nd_index(&mut win_idx, &window_dims);
             }
         }
+
+        if is_complex {
+            let (gr, gi) = g_pairs[out_flat];
+            for &in_flat in &tap_buf {
+                acc_c[in_flat].0 += gr;
+                acc_c[in_flat].1 += gi;
+            }
+        } else {
+            let gv = g_vals[out_flat];
+            for &in_flat in &tap_buf {
+                acc_r[in_flat] += gv;
+            }
+        }
+
         increment_nd_index(&mut out_idx, &out_dims);
     }
 
-    // Accumulate in the upstream dtype's regime, then rebuild literals at
-    // `input_tensor.dtype` so the AD chain neither widens F32/BF16/F16 nor
-    // zeros complex gradients.
-    let elements: Vec<Literal> = match input_tensor.dtype {
-        DType::Complex64 | DType::Complex128 => {
-            let g_pairs: Vec<(f64, f64)> = g_tensor
-                .elements
-                .iter()
-                .map(|l| match l {
-                    Literal::Complex64Bits(re, im) => (
-                        f64::from(f32::from_bits(*re)),
-                        f64::from(f32::from_bits(*im)),
-                    ),
-                    Literal::Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
-                    _ => (0.0, 0.0),
-                })
-                .collect();
-            let mut acc = vec![(0.0_f64, 0.0_f64); total_input];
-            for (in_flat, out_flat) in scatter {
-                acc[in_flat].0 += g_pairs[out_flat].0;
-                acc[in_flat].1 += g_pairs[out_flat].1;
-            }
-            acc.into_iter()
-                .map(|(re, im)| {
-                    if input_tensor.dtype == DType::Complex64 {
-                        Literal::from_complex64(re as f32, im as f32)
-                    } else {
-                        Literal::from_complex128(re, im)
-                    }
-                })
-                .collect()
-        }
-        _ => {
-            let g_vals: Vec<f64> = g_tensor
-                .elements
-                .iter()
-                .map(|e| e.as_f64().unwrap_or(0.0))
-                .collect();
-            let mut acc = vec![0.0_f64; total_input];
-            for (in_flat, out_flat) in scatter {
-                acc[in_flat] += g_vals[out_flat];
-            }
-            acc.into_iter()
-                .map(|v| literal_from_f64_for_dtype(input_tensor.dtype, v))
-                .collect()
-        }
+    let elements: Vec<Literal> = if is_complex {
+        acc_c
+            .into_iter()
+            .map(|(re, im)| {
+                if input_tensor.dtype == DType::Complex64 {
+                    Literal::from_complex64(re as f32, im as f32)
+                } else {
+                    Literal::from_complex128(re, im)
+                }
+            })
+            .collect()
+    } else {
+        acc_r
+            .into_iter()
+            .map(|v| literal_from_f64_for_dtype(input_tensor.dtype, v))
+            .collect()
     };
     let grad_tensor = TensorValue::new(input_tensor.dtype, input_tensor.shape.clone(), elements)
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
@@ -16966,6 +17063,107 @@ mod tests {
         );
         println!(
             "BENCH conv_vjp_2d [N{n},H{h},W{w},Cin{cin}] {kh}x{kw} Cout{cout} SAME: naive={:.2}ms gemm={:.2}ms speedup={:.2}x",
+            t_old * 1e3,
+            t_new * 1e3,
+            t_old / t_new
+        );
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_reduce_window_vjp_stencil_vs_scatter() {
+        use std::time::Instant;
+        // Overlapping max-pool backward [256,256], 8x8 window, stride 1, VALID:
+        // production streaming+interior-stencil vjp_reduce_window vs the
+        // reconstructed scatter-list + per-tap compute_flat_index it replaced.
+        let (h, w, win, stride) = (256usize, 256usize, 8usize, 1usize);
+        let oh = (h - win) / stride + 1;
+        let ow = (w - win) / stride + 1;
+        let x: Vec<f64> = (0..h * w).map(|i| (i as f64 * 0.0013).sin()).collect();
+        let gv: Vec<f64> = (0..oh * ow).map(|i| (i as f64 * 0.0007).cos()).collect();
+        let mk = |dims: Vec<u32>, d: &[f64]| {
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims }, d.to_vec()).unwrap())
+        };
+        let operand = mk(vec![h as u32, w as u32], &x);
+        let g = mk(vec![oh as u32, ow as u32], &gv);
+        let params = BTreeMap::from([
+            ("window_dimensions".to_owned(), format!("{win},{win}")),
+            ("window_strides".to_owned(), format!("{stride},{stride}")),
+            ("padding".to_owned(), "valid".to_owned()),
+            ("reduce_op".to_owned(), "max".to_owned()),
+        ]);
+        let best = |f: &dyn Fn() -> f64| {
+            let _ = f();
+            let mut t = f64::MAX;
+            let mut d = 0.0;
+            for _ in 0..3 {
+                let s = Instant::now();
+                d = f();
+                t = t.min(s.elapsed().as_secs_f64());
+            }
+            (t, d)
+        };
+        let (t_new, d_new) = best(&|| {
+            let grads = vjp_single(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&operand),
+                &g,
+                &params,
+            )
+            .unwrap();
+            tensor_f64_values(&grads[0]).iter().sum::<f64>()
+        });
+        // Reconstructed scatter-list + per-tap compute_flat_index (the old body).
+        let input_dims = [h, w];
+        let out_dims = [oh, ow];
+        let window_dims = [win, win];
+        let strides = [stride, stride];
+        let pad_lows = [0usize, 0usize];
+        let dil = [1usize, 1usize];
+        let win_total = win * win;
+        let (t_old, d_old) = best(&|| {
+            let mut scatter: Vec<(usize, usize)> = Vec::new();
+            let mut out_idx = [0usize, 0usize];
+            for out_flat in 0..oh * ow {
+                let mut best_flat: Option<usize> = None;
+                let mut best_val = f64::NEG_INFINITY;
+                let mut win_idx = [0usize, 0usize];
+                for _ in 0..win_total {
+                    let flat = compute_flat_index(
+                        &out_idx,
+                        &win_idx,
+                        &strides,
+                        &input_dims,
+                        &pad_lows,
+                        &dil,
+                        2,
+                    )
+                    .unwrap();
+                    if let Some(fi) = flat {
+                        if x[fi] > best_val {
+                            best_val = x[fi];
+                            best_flat = Some(fi);
+                        }
+                    }
+                    increment_nd_index(&mut win_idx, &window_dims);
+                }
+                if let Some(idx) = best_flat {
+                    scatter.push((idx, out_flat));
+                }
+                increment_nd_index(&mut out_idx, &out_dims);
+            }
+            let mut acc = vec![0.0_f64; h * w];
+            for (i, o) in scatter {
+                acc[i] += gv[o];
+            }
+            acc.iter().sum::<f64>()
+        });
+        assert!(
+            (d_new - d_old).abs() < 1e-9 * (1.0 + d_old.abs()),
+            "stencil vs scatter digest mismatch: {d_new} vs {d_old}"
+        );
+        println!(
+            "BENCH reduce_window_vjp max [{h},{w}] {win}x{win} stride{stride} VALID: scatter={:.2}ms stencil={:.2}ms speedup={:.2}x",
             t_old * 1e3,
             t_new * 1e3,
             t_old / t_new
