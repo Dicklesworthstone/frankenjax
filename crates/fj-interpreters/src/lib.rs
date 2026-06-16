@@ -6679,6 +6679,38 @@ fn run_dense_gather_plan_into(
             }
             TensorValue::new_f32_values(Shape { dims: out_dims }, data)
         }
+        // Gather is a pure contiguous COPY (no arithmetic, no dtype decode), so
+        // i64/i32 + bf16/f16 tables copy bit-for-bit too — bf16/f16 here have NO
+        // widen/round floor (rows are copied as raw u16), unlike bf16 reductions.
+        // i32 shares the i64 dense backing; emit the matching dtype ctor.
+        DType::I64 | DType::I32 => {
+            let src = operand.elements.as_i64_slice()?;
+            let mut data = Vec::with_capacity(resolved.len() * slice_elems);
+            for &idx in &resolved {
+                let base = idx * slice_elems;
+                if base + slice_elems > src.len() {
+                    return None;
+                }
+                data.extend_from_slice(&src[base..base + slice_elems]);
+            }
+            if operand.dtype == DType::I64 {
+                TensorValue::new_i64_values(Shape { dims: out_dims }, data)
+            } else {
+                TensorValue::new_i32_values(Shape { dims: out_dims }, data)
+            }
+        }
+        DType::BF16 | DType::F16 => {
+            let src = operand.elements.as_half_float_slice()?;
+            let mut data = Vec::with_capacity(resolved.len() * slice_elems);
+            for &idx in &resolved {
+                let base = idx * slice_elems;
+                if base + slice_elems > src.len() {
+                    return None;
+                }
+                data.extend_from_slice(&src[base..base + slice_elems]);
+            }
+            TensorValue::new_half_float_values(operand.dtype, Shape { dims: out_dims }, data)
+        }
         _ => return None,
     };
     match built {
@@ -12087,7 +12119,9 @@ mod tests {
                     .map(|l| match l {
                         Literal::F64Bits(b) => *b,
                         Literal::F32Bits(b) => u64::from(*b),
-                        other => panic!("expected real element, got {other:?}"),
+                        Literal::BF16Bits(b) | Literal::F16Bits(b) => u64::from(*b),
+                        Literal::I64(n) => *n as u64,
+                        other => panic!("expected real/int element, got {other:?}"),
                     })
                     .collect();
                 (t.dtype, bits)
@@ -12287,6 +12321,36 @@ mod tests {
                             dims: vec![v as u32, d as u32],
                         },
                         table_f32.clone(),
+                    )
+                    .unwrap(),
+                ),
+            ),
+            (
+                false,
+                Value::Tensor(
+                    TensorValue::new_i64_values(
+                        Shape {
+                            dims: vec![v as u32, d as u32],
+                        },
+                        (0..v * d).map(|i| i as i64 - 5).collect(),
+                    )
+                    .unwrap(),
+                ),
+            ),
+            (
+                false,
+                Value::Tensor(
+                    TensorValue::new_half_float_values(
+                        DType::BF16,
+                        Shape {
+                            dims: vec![v as u32, d as u32],
+                        },
+                        (0..v * d)
+                            .map(|i| match Literal::from_bf16_f64((i as f64) * 0.5 - 3.0) {
+                                Literal::BF16Bits(b) => b,
+                                _ => unreachable!(),
+                            })
+                            .collect(),
                     )
                     .unwrap(),
                 ),
