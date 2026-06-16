@@ -6907,6 +6907,28 @@ fn run_dense_arg_extremum_plan_into(
             }
             result.push(best_idx as i64);
         }
+    } else if let Some(values) = tensor.elements.as_half_float_slice() {
+        // BF16/F16 argmax/argmin (mixed-precision logits). fj-lax's half argmax is
+        // SCALAR (decode each tap half->f32->f64, no SIMD — unlike its f64/f32 SIMD
+        // argmax), so this matches its kernel exactly while saving the dispatch.
+        // Decode mirrors fj-lax: as_bf16_f32/as_f16_f32 -> f32 -> f64.
+        if values.len() != outer * axis_dim {
+            return None;
+        }
+        let is_bf16 = tensor.dtype == DType::BF16;
+        let decode = |b: u16| -> f64 {
+            let f = if is_bf16 {
+                Literal::BF16Bits(b).as_bf16_f32()
+            } else {
+                Literal::F16Bits(b).as_f16_f32()
+            };
+            f64::from(f.unwrap_or(f32::NAN))
+        };
+        for cell in 0..outer {
+            let base = cell * axis_dim;
+            let best = plan_arg_extreme_float(axis_dim, find_max, |i| decode(values[base + i]));
+            result.push(best as i64);
+        }
     } else {
         return None;
     }
@@ -12556,6 +12578,36 @@ mod tests {
                             },
                             // distinct-ish ints with a tie per row
                             vec![1, 3, 3, 2, 0, -1, -1, 0, 5, 4, 8, 2, 9, 1, 0, 7, 7, 7, 7, 7],
+                        )
+                        .unwrap(),
+                    ),
+                    Value::Tensor(
+                        TensorValue::new_half_float_values(
+                            DType::BF16,
+                            Shape {
+                                dims: shape.clone(),
+                            },
+                            f64v.iter()
+                                .map(|&x| match Literal::from_bf16_f64(x) {
+                                    Literal::BF16Bits(b) => b,
+                                    _ => unreachable!(),
+                                })
+                                .collect(),
+                        )
+                        .unwrap(),
+                    ),
+                    Value::Tensor(
+                        TensorValue::new_half_float_values(
+                            DType::F16,
+                            Shape {
+                                dims: shape.clone(),
+                            },
+                            f64v.iter()
+                                .map(|&x| match Literal::from_f16_f64(x) {
+                                    Literal::F16Bits(b) => b,
+                                    _ => unreachable!(),
+                                })
+                                .collect(),
                         )
                         .unwrap(),
                     ),
