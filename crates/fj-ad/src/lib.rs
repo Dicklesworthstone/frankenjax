@@ -12325,6 +12325,28 @@ fn jacobian_jaxpr_inner(
 ///
 /// Uses central-difference directional derivatives of `grad_jaxpr` with
 /// epsilon `1e-5`. Output is row-major `[input_dim, input_dim]`.
+/// True when `jaxpr` is a SEPARABLE scalar sum `f(x) = Σ_i g(x_i)`: a single
+/// input, a chain of position-local elementwise primitives, then a FINAL
+/// `ReduceSum` producing the scalar output (nothing after it). Each summand
+/// depends on one input coordinate, so the cross-partials vanish and the Hessian
+/// is DIAGONAL. (Restricted to ReduceSum — max/prod/min reductions are not
+/// coordinate-separable under a finite-ε perturbation of all coordinates.)
+fn jaxpr_is_separable_sum(jaxpr: &Jaxpr) -> bool {
+    if jaxpr.invars.len() != 1 || jaxpr.outvars.len() != 1 || jaxpr.equations.is_empty() {
+        return false;
+    }
+    let last = jaxpr.equations.last().expect("non-empty");
+    if last.primitive != Primitive::ReduceSum
+        || !last.sub_jaxprs.is_empty()
+        || last.outputs.as_slice() != jaxpr.outvars.as_slice()
+    {
+        return false;
+    }
+    jaxpr.equations[..jaxpr.equations.len() - 1]
+        .iter()
+        .all(|e| e.sub_jaxprs.is_empty() && is_diagonal_elementwise_primitive(e.primitive))
+}
+
 pub fn hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
     if args.is_empty() {
         return Err(AdError::InputArity {
@@ -12346,6 +12368,41 @@ pub fn hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
     }
 
     let epsilon = 1e-5_f64;
+
+    // DIAGONAL fast path: for a SEPARABLE scalar sum f(x) = Σ g(x_i) the Hessian
+    // is diagonal, and because each grad component grad[i] = g'(x_i) depends only
+    // on x_i, perturbing ALL coordinates by ±ε at once yields the SAME per-coordinate
+    // central difference as perturbing each alone — so the whole diagonal comes from
+    // TWO grad calls instead of 2N. Bit-identical to the loop below: diag[i] uses the
+    // identical x_i±ε grad, and the loop's off-diagonals are themselves
+    // (grad[row] − grad[row])/2ε == +0.0 for the separable case. Single input only.
+    if args.len() == 1 && jaxpr_is_separable_sum(jaxpr) {
+        let mut plus_flat = base_flat_args.clone();
+        let mut minus_flat = base_flat_args.clone();
+        for v in &mut plus_flat[0] {
+            *v += epsilon;
+        }
+        for v in &mut minus_flat[0] {
+            *v -= epsilon;
+        }
+        let plus_grad = flatten_values_to_f64(&grad_jaxpr(
+            jaxpr,
+            &reconstruct_args_from_flat(args, &plus_flat)?,
+        )?)?;
+        let minus_grad = flatten_values_to_f64(&grad_jaxpr(
+            jaxpr,
+            &reconstruct_args_from_flat(args, &minus_flat)?,
+        )?)?;
+        if plus_grad.len() == input_dim && minus_grad.len() == input_dim {
+            let mut hessian = vec![0.0_f64; input_dim * input_dim];
+            for i in 0..input_dim {
+                hessian[i * input_dim + i] = (plus_grad[i] - minus_grad[i]) / (2.0 * epsilon);
+            }
+            return matrix_value(input_dim, input_dim, hessian);
+        }
+        // Unexpected grad shape ⇒ fall through to the exact per-basis path.
+    }
+
     let mut hessian = vec![0.0; input_dim * input_dim];
 
     for basis_idx in 0..input_dim {
@@ -22495,6 +22552,220 @@ mod tests {
         assert!((vals[1] - 1.0).abs() < 1e-10);
         assert!((vals[2] - 3.0).abs() < 1e-10);
         assert!((vals[3] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn hessian_separable_diagonal_matches_perbasis_and_golden() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        // Separable scalar sum f(x) = Σ sin(x_i): t1=sin(x); out=reduce_sum(t1).
+        // Hessian is diagonal (H[i][i] ≈ -sin(x_i) via central diff). The 2-grad
+        // diagonal fast path must be BIT-IDENTICAL on the diagonal to the per-basis
+        // central-difference reference, with off-diagonals == 0.
+        let n = 10usize;
+        let (x, t1, out) = (VarId(0), VarId(1), VarId(2));
+        let jaxpr = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![t1],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(t1)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        assert!(
+            super::jaxpr_is_separable_sum(&jaxpr),
+            "elementwise->reduce_sum should be detected separable"
+        );
+        let xv: Vec<f64> = (0..n).map(|i| (i as f64) * 0.3 - 1.2).collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
+        )];
+
+        let h = hessian_jaxpr(&jaxpr, &args).expect("hessian");
+        let ht = h.as_tensor().expect("tensor");
+        assert_eq!(ht.shape.dims, vec![n as u32, n as u32]);
+        let got = ht.to_f64_vec().expect("f64");
+
+        // Per-basis central-difference reference (the O(N) path this replaced).
+        let eps = 1e-5_f64;
+        let mut want = vec![0.0_f64; n * n];
+        for basis in 0..n {
+            let mut pf = xv.clone();
+            pf[basis] += eps;
+            let mut mf = xv.clone();
+            mf[basis] -= eps;
+            let pa = [Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    pf,
+                )
+                .unwrap(),
+            )];
+            let ma = [Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    mf,
+                )
+                .unwrap(),
+            )];
+            let pg = super::flatten_values_to_f64(&grad_jaxpr(&jaxpr, &pa).unwrap()).unwrap();
+            let mg = super::flatten_values_to_f64(&grad_jaxpr(&jaxpr, &ma).unwrap()).unwrap();
+            for row in 0..n {
+                want[row * n + basis] = (pg[row] - mg[row]) / (2.0 * eps);
+            }
+        }
+        for r in 0..n {
+            for c in 0..n {
+                let idx = r * n + c;
+                if r == c {
+                    assert_eq!(
+                        got[idx].to_bits(),
+                        want[idx].to_bits(),
+                        "diagonal {r} != per-basis reference"
+                    );
+                } else {
+                    assert_eq!(got[idx], 0.0, "fast off-diagonal ({r},{c}) not zero");
+                    assert_eq!(want[idx], 0.0, "ref off-diagonal ({r},{c}) not zero");
+                }
+            }
+        }
+        let bits: Vec<u64> = got.iter().map(|v| v.to_bits()).collect();
+        let sha = fj_test_utils::fixture_id_from_json(&("frankenjax-hessian-separable", &bits))
+            .expect("digest");
+        assert_eq!(
+            sha,
+            "7a42b4e6a4b18cf77a7efcf248f694db80fe7b76ea40488f73210b4920e12764"
+        );
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_hessian_separable_diagonal_vs_perbasis() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        use std::time::Instant;
+        let n = 96usize;
+        let (x, t1, out) = (VarId(0), VarId(1), VarId(2));
+        let jaxpr = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![t1],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(t1)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let xv: Vec<f64> = (0..n).map(|i| (i as f64) * 0.02 - 0.9).collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
+        )];
+        let eps = 1e-5_f64;
+        let best = |f: &dyn Fn() -> f64| {
+            let _ = f();
+            let mut t = f64::MAX;
+            let mut d = 0.0;
+            for _ in 0..3 {
+                let s = Instant::now();
+                d = f();
+                t = t.min(s.elapsed().as_secs_f64());
+            }
+            (t, d)
+        };
+        let (t_diag, d_diag) = best(&|| {
+            hessian_jaxpr(&jaxpr, &args)
+                .unwrap()
+                .as_tensor()
+                .unwrap()
+                .to_f64_vec()
+                .unwrap()
+                .iter()
+                .sum()
+        });
+        let (t_pb, d_pb) = best(&|| {
+            let mut hess = vec![0.0_f64; n * n];
+            for basis in 0..n {
+                let mut pf = xv.clone();
+                pf[basis] += eps;
+                let mut mf = xv.clone();
+                mf[basis] -= eps;
+                let pa = [Value::Tensor(
+                    TensorValue::new_f64_values(
+                        Shape {
+                            dims: vec![n as u32],
+                        },
+                        pf,
+                    )
+                    .unwrap(),
+                )];
+                let ma = [Value::Tensor(
+                    TensorValue::new_f64_values(
+                        Shape {
+                            dims: vec![n as u32],
+                        },
+                        mf,
+                    )
+                    .unwrap(),
+                )];
+                let pg = super::flatten_values_to_f64(&grad_jaxpr(&jaxpr, &pa).unwrap()).unwrap();
+                let mg = super::flatten_values_to_f64(&grad_jaxpr(&jaxpr, &ma).unwrap()).unwrap();
+                for row in 0..n {
+                    hess[row * n + basis] = (pg[row] - mg[row]) / (2.0 * eps);
+                }
+            }
+            hess.iter().sum()
+        });
+        assert_eq!(d_diag.to_bits(), d_pb.to_bits(), "A/B digest mismatch");
+        println!(
+            "BENCH hessian [{n}->{n}] separable sum(sin): PER-BASIS {:.2}ms -> DIAGONAL {:.2}ms = {:.2}x",
+            t_pb * 1e3,
+            t_diag * 1e3,
+            t_pb / t_diag,
+        );
     }
 
     #[test]
