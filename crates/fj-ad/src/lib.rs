@@ -12288,24 +12288,40 @@ fn jacobian_jaxpr_inner(
 
     let zero_tangents = args.iter().map(zeros_like).collect::<Vec<_>>();
 
-    // REVERSE-MODE fast path for SCALAR-output functions: the Jacobian of
-    // f: R^n -> R is a single 1×n row that equals the GRADIENT, computable in ONE
-    // reverse pass instead of n forward (jvp) passes. A cheap zero-tangent jvp
-    // probes the output arity. Only when NO custom JVP/VJP rule applies to this
-    // jaxpr — otherwise forward (jvp rules) and reverse (vjp rules) could use
-    // different derivative definitions and disagree. The gradient is the exact
-    // same derivative as the column path (different accumulation order, within
-    // Jacobian's tolerance parity). Falls through to the column path otherwise.
-    if custom_jvp_rule_key.is_none()
+    // REVERSE-MODE fast path for WIDE functions (output_dim < input_dim): build
+    // the Jacobian ROW-by-row with `output_dim` reverse passes (one per output
+    // basis e_j, the gradient of f·e_j = f_j) instead of `input_dim` forward (jvp)
+    // passes — strictly fewer when output_dim < input_dim (scalar output ⇒ 1 pass
+    // == the gradient). A cheap zero-tangent jvp probes the output shape. Gated to
+    // a single output var and NO custom JVP/VJP rule on the jaxpr: with only
+    // built-in rules, reverse-mode yields the exact same derivative as the forward
+    // column path (different float accumulation order — within Jacobian's tolerance
+    // parity, and matching JAX's own jacrev choice for wide functions). Falls
+    // through to the column path otherwise.
+    if jaxpr.outvars.len() == 1
+        && custom_jvp_rule_key.is_none()
         && lookup_custom_jaxpr_jvp(jaxpr).is_none()
         && lookup_custom_jaxpr_vjp(jaxpr).is_none()
     {
         let probe = jvp_inner(jaxpr, args, &zero_tangents, custom_jvp_rule_key)?;
-        if flatten_values_to_f64(&probe.primals)?.len() == 1 {
-            let grads = grad_jaxpr(jaxpr, args)?;
-            let row = flatten_values_to_f64(&grads)?;
-            if row.len() == input_dim {
-                return matrix_value(1, input_dim, row);
+        if let Some(out_template) = probe.primals.first() {
+            let output_dim = flatten_values_to_f64(&probe.primals)?.len();
+            if output_dim >= 1 && output_dim < input_dim {
+                let mut jacobian = vec![0.0_f64; output_dim * input_dim];
+                let mut ok = true;
+                for j in 0..output_dim {
+                    let cotangent = basis_value_like(out_template, j)?;
+                    let grads = grad_jaxpr_with_cotangent(jaxpr, args, &cotangent)?;
+                    let row = flatten_values_to_f64(&grads)?;
+                    if row.len() != input_dim {
+                        ok = false;
+                        break;
+                    }
+                    jacobian[j * input_dim..(j + 1) * input_dim].copy_from_slice(&row);
+                }
+                if ok {
+                    return matrix_value(output_dim, input_dim, jacobian);
+                }
             }
         }
     }
@@ -22349,6 +22365,89 @@ mod tests {
 
         clear_custom_derivative_rules();
         Ok(())
+    }
+
+    #[test]
+    fn jacobian_wide_output_reverse_matches_columns_and_golden() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        // WIDE f: input x is [3,4] (input_dim 12), out = reduce_sum(x, axis=1) -> [3]
+        // (output_dim 3 < 12), so the reverse-mode row path runs 3 passes instead
+        // of 12. Jacobian [3×12]: row j = ∂(Σ x[j,:])/∂x = 1 over block j, 0 else.
+        let (rows, cols) = (3usize, 4usize);
+        let n = rows * cols;
+        let (x, out) = (VarId(0), VarId(1));
+        let jaxpr = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec![Atom::Var(x)],
+                outputs: smallvec![out],
+                params: BTreeMap::from([("axes".to_owned(), "1".to_owned())]),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let xv: Vec<f64> = (0..n).map(|i| (i as f64) * 0.3 - 1.0).collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
+        )];
+
+        let jac = jacobian_jaxpr(&jaxpr, &args).expect("jacobian");
+        let jt = jac.as_tensor().expect("tensor");
+        assert_eq!(jt.shape.dims, vec![rows as u32, n as u32]);
+        let got = jt.to_f64_vec().expect("f64");
+
+        // Column-by-column forward reference (12 jvp passes).
+        let mut want = vec![0.0_f64; rows * n];
+        for basis in 0..n {
+            let mut tan = vec![0.0_f64; n];
+            tan[basis] = 1.0;
+            let tangents = [Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![rows as u32, cols as u32],
+                    },
+                    tan,
+                )
+                .unwrap(),
+            )];
+            let jr = super::jvp_inner(&jaxpr, &args, &tangents, None).expect("jvp");
+            let col = super::flatten_values_to_f64(&jr.tangents).expect("flat");
+            for r in 0..rows {
+                want[r * n + basis] = col[r];
+            }
+        }
+        for j in 0..rows {
+            for i in 0..n {
+                let analytic = if i / cols == j { 1.0 } else { 0.0 };
+                assert!(
+                    (got[j * n + i] - analytic).abs() < 1e-12,
+                    "({j},{i}) = {} want {analytic}",
+                    got[j * n + i]
+                );
+                assert!(
+                    (got[j * n + i] - want[j * n + i]).abs()
+                        <= 1e-12 * (1.0 + want[j * n + i].abs()),
+                    "reverse != forward at ({j},{i})"
+                );
+            }
+        }
+        let bits: Vec<u64> = got.iter().map(|v| v.to_bits()).collect();
+        let sha = fj_test_utils::fixture_id_from_json(&("frankenjax-jacobian-wide-rev", &bits))
+            .expect("digest");
+        assert_eq!(
+            sha,
+            "07709116fc9660f9f8daeb78ff6ca6e5756e586fb4589a5cffb1bd0a03758c8d"
+        );
     }
 
     #[test]
