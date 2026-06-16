@@ -12356,21 +12356,92 @@ fn jacobian_jaxpr_inner(
         if let Some(out_template) = probe.primals.first() {
             let output_dim = flatten_values_to_f64(&probe.primals)?.len();
             if output_dim >= 1 && output_dim < input_dim {
-                let mut jacobian = vec![0.0_f64; output_dim * input_dim];
-                let mut ok = true;
-                for j in 0..output_dim {
+                // Each ROW is an independent reverse pass (gradient of f·e_j), and
+                // grad_jaxpr_with_cotangent is a pure function of (jaxpr, args,
+                // cotangent) — so rows can be evaluated across threads and scattered
+                // into disjoint row slabs with identical values. grad is two passes
+                // (forward+backward) per row, heavy enough that the fan-out amortizes
+                // malloc, mirroring the parallel general-Hessian column loop.
+                let row_fn = |j: usize| -> Result<Vec<f64>, AdError> {
                     let cotangent = basis_value_like(out_template, j)?;
                     let grads = grad_jaxpr_with_cotangent(jaxpr, args, &cotangent)?;
-                    let row = flatten_values_to_f64(&grads)?;
-                    if row.len() != input_dim {
-                        ok = false;
-                        break;
+                    flatten_values_to_f64(&grads)
+                };
+
+                let work = output_dim.saturating_mul(jaxpr.equations.len());
+                let n_threads = if work < HESSIAN_PARALLEL_WORK_PER_THREAD {
+                    1
+                } else {
+                    let cores = std::thread::available_parallelism()
+                        .map(|t| t.get())
+                        .unwrap_or(1);
+                    cores.min(output_dim).max(1)
+                };
+
+                let rows: Result<Vec<Vec<f64>>, AdError> = if n_threads <= 1 {
+                    (0..output_dim).map(row_fn).collect()
+                } else {
+                    let row_fn = &row_fn;
+                    let chunk = output_dim.div_ceil(n_threads);
+                    let bounds: Vec<(usize, usize)> = (0..n_threads)
+                        .map(|t| (t * chunk, ((t + 1) * chunk).min(output_dim)))
+                        .filter(|(s, e)| s < e)
+                        .collect();
+                    type RowChunk = Result<Vec<(usize, Vec<f64>)>, AdError>;
+                    let chunk_results: Vec<RowChunk> = std::thread::scope(|scope| {
+                        let handles: Vec<_> = bounds
+                            .iter()
+                            .map(|&(start, end)| {
+                                scope.spawn(move || {
+                                    let mut out = Vec::with_capacity(end - start);
+                                    for j in start..end {
+                                        out.push((j, row_fn(j)?));
+                                    }
+                                    Ok(out)
+                                })
+                            })
+                            .collect();
+                        handles
+                            .into_iter()
+                            .map(|h| {
+                                h.join().unwrap_or_else(|_| {
+                                    Err(AdError::EvalFailed(
+                                        "Jacobian worker thread panicked".to_owned(),
+                                    ))
+                                })
+                            })
+                            .collect()
+                    });
+                    let mut assembled = vec![Vec::new(); output_dim];
+                    let mut err = None;
+                    for cr in chunk_results {
+                        match cr {
+                            Ok(part) => {
+                                for (j, row) in part {
+                                    assembled[j] = row;
+                                }
+                            }
+                            Err(e) => {
+                                err = Some(e);
+                                break;
+                            }
+                        }
                     }
-                    jacobian[j * input_dim..(j + 1) * input_dim].copy_from_slice(&row);
-                }
-                if ok {
+                    match err {
+                        Some(e) => Err(e),
+                        None => Ok(assembled),
+                    }
+                };
+
+                let rows = rows?;
+                if rows.iter().all(|r| r.len() == input_dim) {
+                    let mut jacobian = vec![0.0_f64; output_dim * input_dim];
+                    for (j, row) in rows.iter().enumerate() {
+                        jacobian[j * input_dim..(j + 1) * input_dim].copy_from_slice(row);
+                    }
                     return matrix_value(output_dim, input_dim, jacobian);
                 }
+                // Row length mismatch ⇒ fall through to the forward column path.
             }
         }
     }
@@ -22571,6 +22642,203 @@ mod tests {
         assert_eq!(
             sha,
             "07709116fc9660f9f8daeb78ff6ca6e5756e586fb4589a5cffb1bd0a03758c8d"
+        );
+    }
+
+    #[test]
+    fn jacobian_wide_parallel_matches_serial_reverse() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        // WIDE f: x is [R,C], out = reduce_sum(chain(x), axis=1) -> [R]. output_dim=R
+        // (< input_dim R·C), so the reverse-mode ROW path runs. A multi-equation
+        // elementwise chain pushes output_dim × equation-count past the parallel gate
+        // so rows fan out across threads. The threaded Jacobian must be BIT-IDENTICAL
+        // to an inline serial reverse-pass reference (same grad_jaxpr_with_cotangent
+        // per one-hot output basis).
+        let (rows, cols) = (128usize, 4usize);
+        let n = rows * cols;
+        let chain: &[Primitive] = &[
+            Primitive::Sin,
+            Primitive::Tanh,
+            Primitive::Exp,
+            Primitive::Log1p,
+            Primitive::Atan,
+        ];
+        let mut equations = Vec::new();
+        let mut cur = VarId(0);
+        let mut next = 1u32;
+        for &p in chain {
+            let out_v = VarId(next);
+            next += 1;
+            equations.push(Equation {
+                primitive: p,
+                inputs: smallvec![Atom::Var(cur)],
+                outputs: smallvec![out_v],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            });
+            cur = out_v;
+        }
+        let out = VarId(next);
+        equations.push(Equation {
+            primitive: Primitive::ReduceSum,
+            inputs: smallvec![Atom::Var(cur)],
+            outputs: smallvec![out],
+            params: BTreeMap::from([("axes".to_owned(), "1".to_owned())]),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        });
+        let jaxpr = Jaxpr::new(vec![VarId(0)], vec![], vec![out], equations);
+        assert!(
+            rows.saturating_mul(jaxpr.equations.len()) >= super::HESSIAN_PARALLEL_WORK_PER_THREAD,
+            "test config must cross the parallel gate to exercise the threaded row path"
+        );
+
+        let xv: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.011).sin() * 0.8).collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
+        )];
+
+        let jac = jacobian_jaxpr(&jaxpr, &args).expect("jacobian");
+        let jt = jac.as_tensor().expect("tensor");
+        assert_eq!(jt.shape.dims, vec![rows as u32, n as u32]);
+        let got = jt.to_f64_vec().expect("f64");
+
+        // Inline serial reverse-pass reference: row j = grad of f·e_j.
+        for j in 0..rows {
+            let mut oh = vec![0.0_f64; rows];
+            oh[j] = 1.0;
+            let cotangent = Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![rows as u32],
+                    },
+                    oh,
+                )
+                .unwrap(),
+            );
+            let row = super::flatten_values_to_f64(
+                &super::grad_jaxpr_with_cotangent(&jaxpr, &args, &cotangent).unwrap(),
+            )
+            .unwrap();
+            for i in 0..n {
+                assert_eq!(
+                    got[j * n + i].to_bits(),
+                    row[i].to_bits(),
+                    "parallel row {j} col {i} != serial reverse reference"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_jacobian_wide_parallel_vs_serial() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        use std::time::Instant;
+        // WIDE f: x [R,C] -> reduce_sum(chain(x), axis=1) -> [R]. Deep elementwise
+        // chain makes each reverse pass compute-heavy; compares the threaded row
+        // fan-out (current code) against an inline single-threaded reverse loop.
+        let (rows, cols) = (192usize, 4usize);
+        let n = rows * cols;
+        let chain: &[Primitive] = &[
+            Primitive::Sin,
+            Primitive::Cos,
+            Primitive::Tanh,
+            Primitive::Exp,
+            Primitive::Log1p,
+            Primitive::Atan,
+            Primitive::Sinh,
+            Primitive::Erf,
+            Primitive::Asinh,
+            Primitive::Sin,
+        ];
+        let mut equations = Vec::new();
+        let mut cur = VarId(0);
+        let mut next = 1u32;
+        for &p in chain {
+            let out_v = VarId(next);
+            next += 1;
+            equations.push(Equation {
+                primitive: p,
+                inputs: smallvec![Atom::Var(cur)],
+                outputs: smallvec![out_v],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            });
+            cur = out_v;
+        }
+        let out = VarId(next);
+        equations.push(Equation {
+            primitive: Primitive::ReduceSum,
+            inputs: smallvec![Atom::Var(cur)],
+            outputs: smallvec![out],
+            params: BTreeMap::from([("axes".to_owned(), "1".to_owned())]),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        });
+        let jaxpr = Jaxpr::new(vec![VarId(0)], vec![], vec![out], equations);
+        let xv: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.011).sin() * 0.8).collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
+        )];
+
+        let serial = || {
+            let mut jac = vec![0.0_f64; rows * n];
+            for j in 0..rows {
+                let mut oh = vec![0.0_f64; rows];
+                oh[j] = 1.0;
+                let cot = Value::Tensor(
+                    TensorValue::new_f64_values(
+                        Shape {
+                            dims: vec![rows as u32],
+                        },
+                        oh,
+                    )
+                    .unwrap(),
+                );
+                let row = super::flatten_values_to_f64(
+                    &super::grad_jaxpr_with_cotangent(&jaxpr, &args, &cot).unwrap(),
+                )
+                .unwrap();
+                jac[j * n..(j + 1) * n].copy_from_slice(&row);
+            }
+            jac
+        };
+
+        let iters = 5;
+        for _ in 0..2 {
+            std::hint::black_box(serial());
+            std::hint::black_box(jacobian_jaxpr(&jaxpr, &args).unwrap());
+        }
+        let t = Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(serial());
+        }
+        let serial_ms = t.elapsed().as_secs_f64() * 1e3 / iters as f64;
+        let t = Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(jacobian_jaxpr(&jaxpr, &args).unwrap());
+        }
+        let par_ms = t.elapsed().as_secs_f64() * 1e3 / iters as f64;
+        eprintln!(
+            "jacobian wide rows={rows}: SERIAL {serial_ms:.3}ms  PARALLEL {par_ms:.3}ms  speedup {:.2}x",
+            serial_ms / par_ms
         );
     }
 
