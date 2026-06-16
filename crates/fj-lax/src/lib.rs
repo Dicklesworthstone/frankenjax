@@ -4026,6 +4026,115 @@ fn eval_reduce_window_separable_extremum(
     }
 }
 
+/// i64 sibling of [`reduce_window_extremum_1d_axis_f64`]: 1-D sliding max/min along
+/// `axis` via a monotonic deque, O(axis_len) per line. Simpler than the f64 version —
+/// integers have no NaN, so no `nan_count`. Out-of-bounds (padded) taps are the op
+/// identity (`i64::MIN` max / `i64::MAX` min) and are never visited, matching the
+/// naive i64 halo. Returns the new buffer with `out_ax` positions along `axis`.
+fn reduce_window_extremum_1d_axis_i64(
+    cur: &[i64],
+    dims: &[usize],
+    axis: usize,
+    window: usize,
+    stride: usize,
+    pad_low: usize,
+    out_ax: usize,
+    is_max: bool,
+) -> Vec<i64> {
+    let axis_len = dims[axis];
+    let inner: usize = dims[axis + 1..].iter().product();
+    let outer: usize = dims[..axis].iter().product();
+    let ident = if is_max { i64::MIN } else { i64::MAX };
+    let mut out = vec![0_i64; outer * out_ax * inner];
+    let mut dq: std::collections::VecDeque<(i64, usize)> = std::collections::VecDeque::new();
+    for o in 0..outer {
+        for ii in 0..inner {
+            let line_base = o * axis_len * inner + ii;
+            let get = |k: usize| cur[line_base + k * inner];
+            dq.clear();
+            let mut added = 0usize;
+            let mut left = 0usize;
+            let out_base = o * out_ax * inner + ii;
+            for oa in 0..out_ax {
+                let start = oa * stride;
+                let lo = start.saturating_sub(pad_low);
+                let hi = (start + window).saturating_sub(pad_low).min(axis_len);
+                while added < hi {
+                    let v = get(added);
+                    while let Some(&(bv, _)) = dq.back() {
+                        let dominated = if is_max { bv <= v } else { bv >= v };
+                        if dominated {
+                            dq.pop_back();
+                        } else {
+                            break;
+                        }
+                    }
+                    dq.push_back((v, added));
+                    added += 1;
+                }
+                while left < lo {
+                    if dq.front().map(|&(_, i)| i) == Some(left) {
+                        dq.pop_front();
+                    }
+                    left += 1;
+                }
+                let val = if hi <= lo {
+                    ident
+                } else {
+                    dq.front().map(|&(v, _)| v).unwrap_or(ident)
+                };
+                out[out_base + oa * inner] = val;
+            }
+        }
+    }
+    out
+}
+
+/// Separable monotonic-deque max/min `reduce_window` for dense i64/i32 (no dilation):
+/// the integer sibling of [`eval_reduce_window_separable_extremum`]. Runs one O(axis_len)
+/// deque pass per windowed axis (max/min separable + order-independent), O(total) vs the
+/// naive O(out·∏window) tap loop. Bit-for-bit identical to `eval_reduce_window_dense_i64`'s
+/// max/min path (integer max/min is exact). I32 output is wrapped/tagged exactly as that
+/// function does (max/min of in-range i32 values stay in range, so the wrap is a no-op).
+#[allow(clippy::too_many_arguments)]
+fn eval_reduce_window_separable_extremum_i64(
+    out_dtype: fj_core::DType,
+    is_max: bool,
+    src: &[i64],
+    window_dims: &[usize],
+    strides: &[usize],
+    out_dims: &[u32],
+    pad_lows: &[usize],
+    input_dims: &[usize],
+) -> Result<Value, EvalError> {
+    let rank = window_dims.len();
+    let mut cur = src.to_vec();
+    let mut cur_dims = input_dims.to_vec();
+    for ax in 0..rank {
+        let w = window_dims[ax];
+        let s = strides[ax];
+        let p = pad_lows[ax];
+        let out_ax = out_dims[ax] as usize;
+        if w == 1 && s == 1 && p == 0 && out_ax == cur_dims[ax] {
+            continue;
+        }
+        cur = reduce_window_extremum_1d_axis_i64(&cur, &cur_dims, ax, w, s, p, out_ax, is_max);
+        cur_dims[ax] = out_ax;
+    }
+    let shape = Shape {
+        dims: out_dims.to_vec(),
+    };
+    if out_dtype == fj_core::DType::I32 {
+        let wrapped: Vec<i64> = cur.into_iter().map(|v| i64::from(v as i32)).collect();
+        return Ok(Value::Tensor(
+            TensorValue::new_i32_values(shape, wrapped).map_err(EvalError::from)?,
+        ));
+    }
+    Ok(Value::Tensor(
+        TensorValue::new_i64_values(shape, cur).map_err(EvalError::from)?,
+    ))
+}
+
 /// Dense i64 reduce_window (any rank, sum/max/min, I64 input).
 ///
 /// The I64-accumulator integer case of the generic loop, specialized for a dense
@@ -5362,6 +5471,33 @@ fn eval_reduce_window(
     // default integer dtype (so integer pooling is common) but was excluded here and
     // fell to the generic per-`Literal` loop; route it through the same stencil and let
     // the eval_primitive chokepoint wrap the I32 output mod 2^32.
+    // Separable monotonic-deque MAX/MIN for dense i64/i32 OVERLAPPING windows: the
+    // integer sibling of the float deque path above. Same O(input) window-independent
+    // win, simpler (integers have no NaN). Gated to overlapping (stride < window) +
+    // no dilation; non-overlapping pooling is already O(input) on the dense_i64 path.
+    if no_base_dilation
+        && no_window_dilation
+        && matches!(tensor.dtype, fj_core::DType::I64 | fj_core::DType::I32)
+        && matches!(reduce_op, "max" | "min")
+        && window_dims
+            .iter()
+            .zip(strides.iter())
+            .any(|(&w, &s)| w > 1 && s < w)
+        && let Some(src) = tensor.elements.as_i64_slice()
+    {
+        let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+        return eval_reduce_window_separable_extremum_i64(
+            tensor.dtype,
+            reduce_op == "max",
+            src,
+            &window_dims,
+            &strides,
+            &out_dims,
+            &pad_lows,
+            &input_dims,
+        );
+    }
+
     if no_base_dilation
         && matches!(tensor.dtype, fj_core::DType::I64 | fj_core::DType::I32)
         && (matches!(reduce_op, "max" | "min") || reduce_window_sum_like(reduce_op))
@@ -13744,6 +13880,138 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn separable_deque_maxpool_i64_matches_naive_dense_i64() {
+        // i64 OVERLAPPING max/min pooling: the new i64 deque path must be bit-identical
+        // to the naive eval_reduce_window_dense_i64 tap loop (integer max/min is exact),
+        // across windows/ops, incl i64::MIN/MAX and negatives.
+        let (rows, cols) = (37usize, 41usize);
+        let data: Vec<i64> = (0..rows * cols)
+            .map(|i| match i % 9 {
+                0 => i64::MIN,
+                1 => i64::MAX,
+                2 => -((i as i64) * 7),
+                _ => (i as i64).wrapping_mul(2_654_435_761) ^ (i as i64),
+            })
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        for op in ["max", "min"] {
+            for (wr, wc) in [(4usize, 6usize), (5, 5), (7, 2)] {
+                let out_r = rows - wr + 1;
+                let out_c = cols - wc + 1;
+                let p = rw_params(op, &format!("{wr},{wc}"), "1,1"); // VALID, stride 1 (overlapping)
+                let deque =
+                    eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &p)
+                        .unwrap();
+                let naive = super::eval_reduce_window_dense_i64(
+                    DType::I64,
+                    op,
+                    &data,
+                    &[wr, wc],
+                    &[1, 1],
+                    &[1, 1],
+                    &[out_r as u32, out_c as u32],
+                    &[0, 0],
+                    &[rows, cols],
+                    &[cols, 1],
+                    out_r * out_c,
+                )
+                .unwrap();
+                let iv = |v: &Value| -> Vec<i64> {
+                    v.as_tensor()
+                        .unwrap()
+                        .elements
+                        .iter()
+                        .map(|l| l.as_i64().unwrap())
+                        .collect()
+                };
+                assert_eq!(
+                    iv(&deque),
+                    iv(&naive),
+                    "i64 {op} window {wr}x{wc} deque vs naive"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_separable_deque_maxpool_i64_vs_naive() {
+        use std::time::Instant;
+        let (rows, cols, w) = (256usize, 256usize, 8usize);
+        let data: Vec<i64> = (0..rows * cols)
+            .map(|i| (i as i64).wrapping_mul(2_654_435_761))
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let out_r = rows - w + 1;
+        let out_c = cols - w + 1;
+        let p = rw_params("max", &format!("{w},{w}"), "1,1");
+        let best = |f: &dyn Fn() -> i64| {
+            let _ = f();
+            let mut t = f64::MAX;
+            let mut d = 0i64;
+            for _ in 0..5 {
+                let s = Instant::now();
+                d = f();
+                t = t.min(s.elapsed().as_secs_f64());
+            }
+            (t, d)
+        };
+        let (t_new, d_new) = best(&|| {
+            let r =
+                eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &p).unwrap();
+            r.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0i64, |a, l| a ^ l.as_i64().unwrap())
+        });
+        let (t_old, d_old) = best(&|| {
+            let r = super::eval_reduce_window_dense_i64(
+                DType::I64,
+                "max",
+                &data,
+                &[w, w],
+                &[1, 1],
+                &[1, 1],
+                &[out_r as u32, out_c as u32],
+                &[0, 0],
+                &[rows, cols],
+                &[cols, 1],
+                out_r * out_c,
+            )
+            .unwrap();
+            r.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .fold(0i64, |a, l| a ^ l.as_i64().unwrap())
+        });
+        assert_eq!(d_new, d_old, "i64 deque vs naive maxpool digest");
+        println!(
+            "BENCH i64 maxpool [{rows},{cols}] {w}x{w} stride1 VALID: naive={:.2}ms deque={:.2}ms speedup={:.2}x",
+            t_old * 1e3,
+            t_new * 1e3,
+            t_old / t_new
+        );
     }
 
     #[test]
