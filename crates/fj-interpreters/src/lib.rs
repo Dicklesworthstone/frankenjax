@@ -3145,17 +3145,18 @@ struct DenseF64DotPlan {
 }
 
 /// Single-equation reduction over ONE trailing axis (`axes=<rank-1>`), e.g.
-/// `jnp.sum(x, axis=-1)` / softmax denominators. The reduced axis being the last
-/// one makes every output cell a fold over a CONTIGUOUS block, so the typed plan
-/// reproduces fj-lax's contiguous-block axis-reduce exactly while skipping the
-/// per-call param re-parse + eval_primitive dispatch. The recorded `axis` is
-/// validated against the runtime rank (must equal `rank-1`).
+/// `jnp.sum(x, axis=-1)` / `jnp.mean(x, axis=(-2,-1))` (softmax denominators,
+/// global/spatial pooling). When the reduced axes are a CONTIGUOUS TRAILING block
+/// every output cell folds one contiguous run, so the typed plan reproduces
+/// fj-lax's contiguous-block axis-reduce exactly while skipping the per-call param
+/// re-parse + eval_primitive dispatch. The recorded sorted `axes` are validated
+/// against the runtime rank (must be exactly the last `axes.len()` axes).
 struct DenseAxisReducePlan {
     const_slots: Vec<usize>,
     input_slots: Vec<usize>,
     input_slot: usize,
     op: DenseReduceOp,
-    axis: usize,
+    axes: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -3264,18 +3265,23 @@ fn build_dense_axis_reduce_plan(jaxpr: &Jaxpr, slots: usize) -> Option<DenseAxis
     {
         return None;
     }
-    // Require EXACTLY one param, "axes", holding a single axis index. Anything
-    // else (multi-axis, keep_dims, extra params, unparseable) bails to generic.
+    // Require EXACTLY one param, "axes", a non-empty comma list of axis indices.
+    // Anything else (keep_dims, extra params, unparseable) bails to generic. The
+    // axes are sorted+deduped here; the runtime validates they are a contiguous
+    // TRAILING block for the actual rank (the only bit-exact contiguous-fold case).
     if equation.params.len() != 1 {
         return None;
     }
     let raw = equation.params.get("axes")?;
-    let mut parts = raw.split(',').map(|s| s.trim()).filter(|s| !s.is_empty());
-    let first = parts.next()?;
-    if parts.next().is_some() {
-        return None; // more than one axis
+    let mut axes: Vec<usize> = Vec::new();
+    for part in raw.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        axes.push(part.parse().ok()?);
     }
-    let axis: usize = first.parse().ok()?;
+    if axes.is_empty() {
+        return None;
+    }
+    axes.sort_unstable();
+    axes.dedup();
 
     let Atom::Var(input_var) = equation.inputs[0] else {
         return None;
@@ -3291,7 +3297,7 @@ fn build_dense_axis_reduce_plan(jaxpr: &Jaxpr, slots: usize) -> Option<DenseAxis
         input_slots: var_slots(&jaxpr.invars, slots)?,
         input_slot,
         op,
-        axis,
+        axes,
     })
 }
 
@@ -6410,20 +6416,33 @@ fn run_dense_axis_reduce_plan_into(
         return None;
     };
     let rank = tensor.shape.rank();
-    // Only the TRAILING single axis on a rank>=2 dense tensor: then each output
-    // cell folds one contiguous block of length K = dims[rank-1], producing a
-    // tensor of shape dims[..rank-1] (axis removed, no keepdims) — exactly
-    // fj-lax's contiguous-block axis-reduce. rank-1 (== full reduce, returns a
-    // SCALAR in fj-lax) and non-trailing/multi axes fall to the generic interp.
-    if rank < 2 || plan.axis != rank - 1 {
+    let m = plan.axes.len();
+    // The reduced axes must be a CONTIGUOUS TRAILING block [rank-m .. rank-1] and
+    // leave at least one kept axis (m < rank — reducing ALL axes is the full
+    // reduce, which returns a SCALAR in fj-lax, a different shape). Then each
+    // output cell folds one contiguous run of K = product(trailing dims), giving
+    // shape dims[..rank-m] (axes removed, no keepdims) — exactly fj-lax's
+    // contiguous-block axis-reduce. Any other axis set falls to the generic interp.
+    if m == 0 || m >= rank {
+        return None;
+    }
+    if plan
+        .axes
+        .iter()
+        .enumerate()
+        .any(|(i, &a)| a != rank - m + i)
+    {
         return None;
     }
     let dims = &tensor.shape.dims;
-    let k = dims[rank - 1] as usize;
+    let mut k = 1usize;
+    for &d in &dims[rank - m..] {
+        k = k.checked_mul(d as usize)?;
+    }
     if k == 0 {
         return None;
     }
-    let out_dims: Vec<u32> = dims[..rank - 1].to_vec();
+    let out_dims: Vec<u32> = dims[..rank - m].to_vec();
     // outer = product of kept dims; equals total / k.
     let mut outer = 1usize;
     for &d in &out_dims {
@@ -11885,7 +11904,11 @@ mod tests {
         // the comparison is storage-agnostic. A golden freezes the f64 sum case.
         let (x, out) = (VarId(0), VarId(1));
         let mut golden: Option<Vec<u64>> = None;
-        for (shape, axis) in [(vec![6u32, 8u32], 1usize), (vec![3u32, 4u32, 5u32], 2usize)] {
+        for (shape, axes) in [
+            (vec![6u32, 8u32], vec![1usize]),
+            (vec![3u32, 4u32, 5u32], vec![2usize]),
+            (vec![3u32, 4u32, 5u32], vec![1usize, 2usize]),
+        ] {
             let n: usize = shape.iter().map(|&d| d as usize).product();
             let f64v: Vec<f64> = (0..n)
                 .map(|i| match i {
@@ -11909,7 +11932,13 @@ mod tests {
                         primitive,
                         inputs: smallvec![Atom::Var(x)],
                         outputs: smallvec![out],
-                        params: BTreeMap::from([("axes".to_owned(), axis.to_string())]),
+                        params: BTreeMap::from([(
+                            "axes".to_owned(),
+                            axes.iter()
+                                .map(|a| a.to_string())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                        )]),
                         sub_jaxprs: vec![],
                         effects: vec![],
                     }],
@@ -11974,7 +12003,7 @@ mod tests {
                     assert_eq!(
                         tensor_dtype_bits(&pout[0]),
                         tensor_dtype_bits(&gout[0]),
-                        "{primitive:?} axis={axis} f64={is_f64} plan diverged from oracle"
+                        "{primitive:?} axes={axes:?} f64={is_f64} plan diverged from oracle"
                     );
                     if primitive == Primitive::ReduceSum && is_f64 && shape.len() == 2 {
                         golden = Some(tensor_dtype_bits(&pout[0]).1);
