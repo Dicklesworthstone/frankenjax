@@ -12248,7 +12248,11 @@ fn is_diagonal_elementwise_primitive(p: Primitive) -> bool {
 /// position-local elementwise primitives — so every output cell depends only on
 /// the same input cell and the Jacobian is DIAGONAL.
 fn jaxpr_is_elementwise_diagonal(jaxpr: &Jaxpr) -> bool {
-    if jaxpr.invars.len() != 1 || jaxpr.equations.is_empty() {
+    // >=1 input + only position-local elementwise primitives ⇒ COMPONENTWISE: each
+    // output cell depends only on the same-position cell of each input. With one
+    // input the Jacobian is diagonal; with K inputs it is block-diagonal (one
+    // square diagonal block per input).
+    if jaxpr.invars.is_empty() || jaxpr.equations.is_empty() {
         return false;
     }
     jaxpr
@@ -12281,33 +12285,51 @@ fn jacobian_jaxpr_inner(
         ));
     }
 
-    // DIAGONAL fast path: for a single-input pure-elementwise (componentwise)
-    // function the Jacobian is diagonal, so ONE forward pass with an all-ones
-    // tangent yields the entire diagonal (JVP is linear and componentwise:
-    // jvp(ones)[i] = Σ_j J[i][j]·1 = J[i][i] = f'(x_i) = jvp(e_i)[i], and every
-    // off-diagonal entry is exactly 0). This is bit-identical to the O(N)
-    // column-by-column loop below but does O(1) forward passes instead of N.
-    if args.len() == 1 && jaxpr_is_elementwise_diagonal(jaxpr) {
-        let ones = ones_like(&args[0]);
-        let jvp_result = jvp_inner(
-            jaxpr,
-            args,
-            std::slice::from_ref(&ones),
-            custom_jvp_rule_key,
-        )?;
-        let diag = flatten_values_to_f64(&jvp_result.tangents)?;
-        if diag.len() == input_dim {
-            let mut jacobian = vec![0.0_f64; input_dim * input_dim];
-            for (i, &d) in diag.iter().enumerate() {
-                jacobian[i * input_dim + i] = d;
-            }
-            return matrix_value(input_dim, input_dim, jacobian);
-        }
-        // Not square (output_dim != input_dim) ⇒ not componentwise after all;
-        // fall through to the exact column-by-column path.
-    }
-
     let zero_tangents = args.iter().map(zeros_like).collect::<Vec<_>>();
+
+    // (BLOCK-)DIAGONAL fast path: for a pure-elementwise (componentwise) function
+    // each output cell depends only on the same-position cell of each input, so the
+    // Jacobian is diagonal (one input) or BLOCK-diagonal (K inputs — one square
+    // diagonal block per input, side by side). ONE forward pass per INPUT with an
+    // all-ones tangent on that input yields that input's block diagonal:
+    // jvp(ones_k)[i] = ∂out[i]/∂x_k[i] = block_k[i][i] = jvp(e_{k,i})[i]; all other
+    // entries are 0. So K passes (1 for the common single-arg case) instead of
+    // input_dim — bit-identical diagonals to the O(N) column loop below, off-blocks
+    // exactly 0. Requires each input to share the output's length (square blocks).
+    if jaxpr_is_elementwise_diagonal(jaxpr) {
+        let mut jacobian: Option<Vec<f64>> = None;
+        let mut output_dim = 0usize;
+        let mut col_offset = 0usize;
+        let mut ok = true;
+        for k in 0..args.len() {
+            let mut tangents = zero_tangents.clone();
+            tangents[k] = ones_like(&args[k]);
+            let jvp_result = jvp_inner(jaxpr, args, &tangents, custom_jvp_rule_key)?;
+            let diag = flatten_values_to_f64(&jvp_result.tangents)?;
+            if jacobian.is_none() {
+                output_dim = diag.len();
+                jacobian = Some(vec![0.0_f64; output_dim * input_dim]);
+            } else if diag.len() != output_dim {
+                ok = false;
+                break;
+            }
+            // Block k must be square (its input length == output length), else the
+            // function is not componentwise-diagonal in this input — bail.
+            if input_lengths[k] != output_dim {
+                ok = false;
+                break;
+            }
+            let jac = jacobian.as_mut().expect("initialized");
+            for i in 0..output_dim {
+                jac[i * input_dim + col_offset + i] = diag[i];
+            }
+            col_offset += input_lengths[k];
+        }
+        if ok && let Some(jac) = jacobian {
+            return matrix_value(output_dim, input_dim, jac);
+        }
+        // Shapes didn't line up (not componentwise-square) ⇒ fall through.
+    }
 
     // REVERSE-MODE fast path for WIDE functions (output_dim < input_dim): build
     // the Jacobian ROW-by-row with `output_dim` reverse passes (one per output
@@ -22658,6 +22680,220 @@ mod tests {
             t_rev * 1e3,
             t_col / t_rev,
             d_rev,
+        );
+    }
+
+    #[test]
+    fn jacobian_block_diagonal_multi_input_matches_columns() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        // MULTI-INPUT componentwise f(x, y) = x * y elementwise over [n]. The
+        // Jacobian wrt the concatenated inputs is BLOCK-diagonal: [diag(y) |
+        // diag(x)] of shape [n × 2n]. The block-diagonal fast path (2 jvp passes,
+        // one per input) must be bit-identical to the 2n-pass column reference.
+        let n = 6usize;
+        let (x, y, out) = (VarId(0), VarId(1), VarId(2));
+        let jaxpr = Jaxpr::new(
+            vec![x, y],
+            vec![],
+            vec![out],
+            vec![Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(x), Atom::Var(y)],
+                outputs: smallvec![out],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        assert!(super::jaxpr_is_elementwise_diagonal(&jaxpr));
+        let xv: Vec<f64> = (0..n).map(|i| (i as f64) * 0.3 - 0.7).collect();
+        let yv: Vec<f64> = (0..n).map(|i| (i as f64) * -0.2 + 1.1).collect();
+        let mkt = |v: &[f64]| {
+            Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    v.to_vec(),
+                )
+                .unwrap(),
+            )
+        };
+        let args = [mkt(&xv), mkt(&yv)];
+
+        let jac = jacobian_jaxpr(&jaxpr, &args).expect("jacobian");
+        let jt = jac.as_tensor().expect("tensor");
+        assert_eq!(jt.shape.dims, vec![n as u32, (2 * n) as u32]);
+        let got = jt.to_f64_vec().expect("f64");
+
+        // Column-by-column reference over all 2n input bases.
+        let total = 2 * n;
+        let mut want = vec![0.0_f64; n * total];
+        for basis in 0..total {
+            let (arg, local) = if basis < n {
+                (0usize, basis)
+            } else {
+                (1usize, basis - n)
+            };
+            let mut tx = vec![0.0_f64; n];
+            let mut ty = vec![0.0_f64; n];
+            if arg == 0 {
+                tx[local] = 1.0;
+            } else {
+                ty[local] = 1.0;
+            }
+            let tangents = [mkt(&tx), mkt(&ty)];
+            let jr = super::jvp_inner(&jaxpr, &args, &tangents, None).expect("jvp");
+            let col = super::flatten_values_to_f64(&jr.tangents).expect("flat");
+            for row in 0..n {
+                want[row * total + basis] = col[row];
+            }
+        }
+        for r in 0..n {
+            for c in 0..total {
+                let idx = r * total + c;
+                // analytic: block0 (c<n) = diag(y); block1 (c>=n) = diag(x).
+                let analytic = if c == r {
+                    yv[r]
+                } else if c == n + r {
+                    xv[r]
+                } else {
+                    0.0
+                };
+                assert!(
+                    (got[idx] - analytic).abs() < 1e-12,
+                    "({r},{c}) = {} want {analytic}",
+                    got[idx]
+                );
+                if c == r || c == n + r {
+                    assert_eq!(
+                        got[idx].to_bits(),
+                        want[idx].to_bits(),
+                        "block entry ({r},{c})"
+                    );
+                } else {
+                    assert_eq!(got[idx], 0.0, "off-block ({r},{c}) not zero");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_jacobian_block_diagonal_multi_input() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        use std::time::Instant;
+        let n = 128usize;
+        let (x, y, t1, out) = (VarId(0), VarId(1), VarId(2), VarId(3));
+        // f(x,y) = sin(x) * y (componentwise, 2 inputs) -> [n], Jacobian [n × 2n].
+        let jaxpr = Jaxpr::new(
+            vec![x, y],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![t1],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(t1), Atom::Var(y)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let mkt = |seed: f64| {
+            Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    (0..n).map(|i| (i as f64) * 0.01 + seed).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let args = [mkt(0.1), mkt(0.3)];
+        let total = 2 * n;
+        let best = |f: &dyn Fn() -> f64| {
+            let _ = f();
+            let mut t = f64::MAX;
+            let mut d = 0.0;
+            for _ in 0..3 {
+                let s = Instant::now();
+                d = f();
+                t = t.min(s.elapsed().as_secs_f64());
+            }
+            (t, d)
+        };
+        let (t_blk, d_blk) = best(&|| {
+            jacobian_jaxpr(&jaxpr, &args)
+                .unwrap()
+                .as_tensor()
+                .unwrap()
+                .to_f64_vec()
+                .unwrap()
+                .iter()
+                .sum()
+        });
+        let (t_col, d_col) = best(&|| {
+            let mut jac = vec![0.0_f64; n * total];
+            for basis in 0..total {
+                let (arg, local) = if basis < n {
+                    (0usize, basis)
+                } else {
+                    (1usize, basis - n)
+                };
+                let mut tx = vec![0.0_f64; n];
+                let mut ty = vec![0.0_f64; n];
+                if arg == 0 {
+                    tx[local] = 1.0;
+                } else {
+                    ty[local] = 1.0;
+                }
+                let tangents = [
+                    Value::Tensor(
+                        TensorValue::new_f64_values(
+                            Shape {
+                                dims: vec![n as u32],
+                            },
+                            tx,
+                        )
+                        .unwrap(),
+                    ),
+                    Value::Tensor(
+                        TensorValue::new_f64_values(
+                            Shape {
+                                dims: vec![n as u32],
+                            },
+                            ty,
+                        )
+                        .unwrap(),
+                    ),
+                ];
+                let jr = super::jvp_inner(&jaxpr, &args, &tangents, None).unwrap();
+                let col = super::flatten_values_to_f64(&jr.tangents).unwrap();
+                for row in 0..n {
+                    jac[row * total + basis] = col[row];
+                }
+            }
+            jac.iter().sum()
+        });
+        assert_eq!(d_blk.to_bits(), d_col.to_bits(), "A/B digest mismatch");
+        println!(
+            "BENCH jacobian [{n}->{n}] 2-input sin(x)*y: COLUMNS({total}) {:.2}ms -> BLOCK-DIAG(2) {:.2}ms = {:.2}x",
+            t_col * 1e3,
+            t_blk * 1e3,
+            t_col / t_blk,
         );
     }
 
