@@ -3144,6 +3144,20 @@ struct DenseF64DotPlan {
     rhs_slot: usize,
 }
 
+/// Single-equation reduction over ONE trailing axis (`axes=<rank-1>`), e.g.
+/// `jnp.sum(x, axis=-1)` / softmax denominators. The reduced axis being the last
+/// one makes every output cell a fold over a CONTIGUOUS block, so the typed plan
+/// reproduces fj-lax's contiguous-block axis-reduce exactly while skipping the
+/// per-call param re-parse + eval_primitive dispatch. The recorded `axis` is
+/// validated against the runtime rank (must equal `rank-1`).
+struct DenseAxisReducePlan {
+    const_slots: Vec<usize>,
+    input_slots: Vec<usize>,
+    input_slot: usize,
+    op: DenseReduceOp,
+    axis: usize,
+}
+
 #[derive(Clone, Copy)]
 enum ScalarF64Slot {
     Missing,
@@ -3233,6 +3247,51 @@ fn build_dense_f64_reduce_sum_plan(jaxpr: &Jaxpr, slots: usize) -> Option<DenseF
         input_slots: var_slots(&jaxpr.invars, slots)?,
         input_slot,
         op,
+    })
+}
+
+fn build_dense_axis_reduce_plan(jaxpr: &Jaxpr, slots: usize) -> Option<DenseAxisReducePlan> {
+    if !jaxpr.effects.is_empty() || jaxpr.equations.len() != 1 {
+        return None;
+    }
+    let equation = &jaxpr.equations[0];
+    let op = DenseReduceOp::from_primitive(equation.primitive)?;
+    if !equation.sub_jaxprs.is_empty()
+        || !equation.effects.is_empty()
+        || equation.inputs.len() != 1
+        || equation.outputs.len() != 1
+        || jaxpr.outvars.as_slice() != equation.outputs.as_slice()
+    {
+        return None;
+    }
+    // Require EXACTLY one param, "axes", holding a single axis index. Anything
+    // else (multi-axis, keep_dims, extra params, unparseable) bails to generic.
+    if equation.params.len() != 1 {
+        return None;
+    }
+    let raw = equation.params.get("axes")?;
+    let mut parts = raw.split(',').map(|s| s.trim()).filter(|s| !s.is_empty());
+    let first = parts.next()?;
+    if parts.next().is_some() {
+        return None; // more than one axis
+    }
+    let axis: usize = first.parse().ok()?;
+
+    let Atom::Var(input_var) = equation.inputs[0] else {
+        return None;
+    };
+    let input_slot = input_var.0 as usize;
+    let out_slot = equation.outputs[0].0 as usize;
+    if input_slot >= slots || out_slot >= slots {
+        return None;
+    }
+
+    Some(DenseAxisReducePlan {
+        const_slots: var_slots(&jaxpr.constvars, slots)?,
+        input_slots: var_slots(&jaxpr.invars, slots)?,
+        input_slot,
+        op,
+        axis,
     })
 }
 
@@ -6022,6 +6081,7 @@ struct DenseEvalPlan {
     scalar_poly_plan: Option<ScalarPolyPlan>,
     dense_f64_reduce_sum_plan: Option<DenseF64ReduceSumPlan>,
     dense_f64_dot_plan: Option<DenseF64DotPlan>,
+    dense_axis_reduce_plan: Option<DenseAxisReducePlan>,
 }
 
 /// One-time compiled evaluator for hot repeated calls of the same small Jaxpr.
@@ -6148,6 +6208,7 @@ fn build_dense_plan(jaxpr: &Jaxpr) -> Option<DenseEvalPlan> {
             scalar_poly_plan: build_scalar_poly_plan(jaxpr, slots),
             dense_f64_reduce_sum_plan: build_dense_f64_reduce_sum_plan(jaxpr, slots),
             dense_f64_dot_plan: build_dense_f64_dot_plan(jaxpr, slots),
+            dense_axis_reduce_plan: build_dense_axis_reduce_plan(jaxpr, slots),
         })
     } else {
         None
@@ -6175,6 +6236,7 @@ fn eval_jaxpr_dense_env(
         scalar_poly_plan: build_scalar_poly_plan(jaxpr, slots),
         dense_f64_reduce_sum_plan: build_dense_f64_reduce_sum_plan(jaxpr, slots),
         dense_f64_dot_plan: build_dense_f64_dot_plan(jaxpr, slots),
+        dense_axis_reduce_plan: build_dense_axis_reduce_plan(jaxpr, slots),
     };
     let mut env: Vec<Option<Value>> = vec![None; slots];
     run_dense_plan(jaxpr, const_values, args, &mut env, &plan)
@@ -6298,6 +6360,108 @@ fn run_dense_f64_reduce_sum_plan_into(
             Some(Ok(()))
         }
         _ => None,
+    }
+}
+
+fn dense_axis_reduce_input<'a>(
+    plan: &DenseAxisReducePlan,
+    const_values: &'a [Value],
+    args: &'a [Value],
+) -> Result<&'a Value, InterpreterError> {
+    for (&slot, value) in plan.const_slots.iter().zip(const_values) {
+        if slot == plan.input_slot {
+            return Ok(value);
+        }
+    }
+    for (&slot, value) in plan.input_slots.iter().zip(args) {
+        if slot == plan.input_slot {
+            return Ok(value);
+        }
+    }
+    Err(InterpreterError::MissingVariable(VarId(
+        plan.input_slot as u32,
+    )))
+}
+
+fn run_dense_axis_reduce_plan_into(
+    plan: &DenseAxisReducePlan,
+    const_values: &[Value],
+    args: &[Value],
+    out: &mut Vec<Value>,
+) -> Option<Result<(), InterpreterError>> {
+    if const_values.len() != plan.const_slots.len() {
+        return Some(Err(InterpreterError::ConstArity {
+            expected: plan.const_slots.len(),
+            actual: const_values.len(),
+        }));
+    }
+    if args.len() != plan.input_slots.len() {
+        return Some(Err(InterpreterError::InputArity {
+            expected: plan.input_slots.len(),
+            actual: args.len(),
+        }));
+    }
+
+    let input = match dense_axis_reduce_input(plan, const_values, args) {
+        Ok(value) => value,
+        Err(err) => return Some(Err(err)),
+    };
+    let Value::Tensor(tensor) = input else {
+        return None;
+    };
+    let rank = tensor.shape.rank();
+    // Only the TRAILING single axis on a rank>=2 dense tensor: then each output
+    // cell folds one contiguous block of length K = dims[rank-1], producing a
+    // tensor of shape dims[..rank-1] (axis removed, no keepdims) — exactly
+    // fj-lax's contiguous-block axis-reduce. rank-1 (== full reduce, returns a
+    // SCALAR in fj-lax) and non-trailing/multi axes fall to the generic interp.
+    if rank < 2 || plan.axis != rank - 1 {
+        return None;
+    }
+    let dims = &tensor.shape.dims;
+    let k = dims[rank - 1] as usize;
+    if k == 0 {
+        return None;
+    }
+    let out_dims: Vec<u32> = dims[..rank - 1].to_vec();
+    // outer = product of kept dims; equals total / k.
+    let mut outer = 1usize;
+    for &d in &out_dims {
+        outer = outer.checked_mul(d as usize)?;
+    }
+
+    // F64 ONLY. Fold each contiguous K-block in ascending order with the op's
+    // (seed, fold), accumulating in f64 — matching fj-lax's contiguous-block
+    // axis-reduce exactly (sum/prod serial; max/min jax_max/min == its SIMD
+    // axis-reduce). NOTE: f32 is deliberately NOT handled here — fj-lax's generic
+    // axis-reduce WIDENS f32 input to an F64 output tensor (unlike full-reduce,
+    // which keeps F32), so an f32 typed plan returning F32 would diverge from the
+    // eager path; f32 stays on the generic route until that fj-lax gap is fixed.
+    if tensor.dtype != DType::F64 {
+        return None;
+    }
+    let values = tensor.elements.as_f64_slice()?;
+    if values.len() != outer * k {
+        return None;
+    }
+    let mut result = Vec::with_capacity(outer);
+    for cell in 0..outer {
+        let block = &values[cell * k..cell * k + k];
+        let mut acc = plan.op.seed();
+        for &v in block {
+            acc = plan.op.fold(acc, v);
+        }
+        result.push(acc);
+    }
+    match TensorValue::new_f64_values(Shape { dims: out_dims }, result) {
+        Ok(t) => {
+            out.clear();
+            out.push(Value::Tensor(t));
+            Some(Ok(()))
+        }
+        Err(e) => Some(Err(InterpreterError::Primitive(EvalError::InvalidTensor(
+            e,
+        )))),
     }
 }
 
@@ -6478,6 +6642,15 @@ fn run_dense_plan_into(
     // fall through to the generic interpreter.
     if let Some(p) = &plan.dense_f64_reduce_sum_plan
         && let Some(result) = run_dense_f64_reduce_sum_plan_into(p, const_values, args, out)
+    {
+        return result;
+    }
+    // One-equation single-trailing-axis reduction (sum/prod/max/min) over a dense
+    // f64/f32 tensor: per-output-cell contiguous-block fold, bit-identical to
+    // fj-lax's contiguous-block axis-reduce. Non-trailing/multi axes, rank<2,
+    // half/int/complex, or non-dense fall through to the generic interpreter.
+    if let Some(p) = &plan.dense_axis_reduce_plan
+        && let Some(result) = run_dense_axis_reduce_plan_into(p, const_values, args, out)
     {
         return result;
     }
@@ -11661,6 +11834,217 @@ mod tests {
             Value::Scalar(Literal::F32Bits(b)) => u64::from(*b),
             other => panic!("expected real scalar, got {other:?}"),
         }
+    }
+
+    // Per-element bit pattern of a real tensor (f64 or f32), NaN-payload-exact.
+    fn tensor_real_bits(value: &Value) -> Vec<u64> {
+        match value {
+            Value::Tensor(t) => {
+                if let Some(s) = t.elements.as_f64_slice() {
+                    return s.iter().map(|v| v.to_bits()).collect();
+                }
+                if let Some(s) = t.elements.as_f32_slice() {
+                    return s.iter().map(|v| u64::from(v.to_bits())).collect();
+                }
+                t.elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap_or(0.0).to_bits())
+                    .collect()
+            }
+            other => panic!("expected tensor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dense_axis_reduce_plan_matches_generic_and_golden() {
+        // Single trailing-axis reductions (sum/prod/max/min) over dense f64
+        // tensors of rank 2 and 3 must take the typed plan and be BIT-IDENTICAL
+        // to the generic interpreter (eval_primitive -> fj-lax, the oracle),
+        // including -0.0 and NaN. A golden digest freezes the f64 sum case.
+        // (f32 is intentionally excluded — fj-lax widens f32 axis-reduce to F64;
+        // the plan returns None for f32 so the generic path keeps that behavior.)
+        let (x, out) = (VarId(0), VarId(1));
+        let mut golden: Option<Vec<u64>> = None;
+        for (shape, axis) in [(vec![6u32, 8u32], 1usize), (vec![3u32, 4u32, 5u32], 2usize)] {
+            let n: usize = shape.iter().map(|&d| d as usize).product();
+            let f64v: Vec<f64> = (0..n)
+                .map(|i| match i {
+                    2 => -0.0,
+                    11 => f64::NAN,
+                    _ => (i as f64) * 0.07 - 1.3,
+                })
+                .collect();
+            for primitive in [
+                Primitive::ReduceSum,
+                Primitive::ReduceProd,
+                Primitive::ReduceMax,
+                Primitive::ReduceMin,
+            ] {
+                let body = Jaxpr::new(
+                    vec![x],
+                    vec![],
+                    vec![out],
+                    vec![Equation {
+                        primitive,
+                        inputs: smallvec![Atom::Var(x)],
+                        outputs: smallvec![out],
+                        params: BTreeMap::from([("axes".to_owned(), axis.to_string())]),
+                        sub_jaxprs: vec![],
+                        effects: vec![],
+                    }],
+                );
+                let plan = super::build_dense_plan(&body).expect("dense plan");
+                assert!(
+                    plan.dense_axis_reduce_plan.is_some(),
+                    "{primitive:?} trailing-axis should compile to the dense axis-reduce plan"
+                );
+
+                {
+                    let args = [Value::Tensor(
+                        TensorValue::new_f64_values(
+                            Shape {
+                                dims: shape.clone(),
+                            },
+                            f64v.clone(),
+                        )
+                        .unwrap(),
+                    )];
+                    let mut genv: Vec<Option<Value>> = vec![None; plan.slots];
+                    let mut gscratch: Vec<Value> = Vec::new();
+                    let mut gout: Vec<Value> = Vec::new();
+                    super::run_dense_env_into(
+                        &body,
+                        &[],
+                        &args,
+                        &mut genv,
+                        &plan.last_use,
+                        &mut gscratch,
+                        &mut gout,
+                    )
+                    .expect("generic reduce");
+
+                    let mut penv: Vec<Option<Value>> = vec![None; plan.slots];
+                    let mut pscratch: Vec<Value> = Vec::new();
+                    let mut pout: Vec<Value> = Vec::new();
+                    let mut bufs = super::ScalarPlanBuffers::default();
+                    super::run_dense_plan_into(
+                        &body,
+                        &[],
+                        &args,
+                        &mut penv,
+                        &plan,
+                        &mut pscratch,
+                        &mut pout,
+                        &mut bufs,
+                    )
+                    .expect("planned reduce");
+
+                    assert_eq!(
+                        tensor_real_bits(&pout[0]),
+                        tensor_real_bits(&gout[0]),
+                        "{primitive:?} axis={axis} plan diverged from oracle"
+                    );
+                    if primitive == Primitive::ReduceSum && shape.len() == 2 {
+                        golden = Some(tensor_real_bits(&pout[0]));
+                    }
+                }
+            }
+        }
+        let sha = fj_test_utils::fixture_id_from_json(&(
+            "frankenjax-zmdg5-axis-reduce",
+            &golden.expect("golden case ran"),
+        ))
+        .expect("digest");
+        assert_eq!(
+            sha,
+            "1bcf973d9732ae43f0400652c2559be5b187f4b9560dbf28fb926d295f8647d7"
+        );
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_dense_axis_reduce_plan_overhead() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+
+        let (x, out) = (VarId(0), VarId(1));
+        let body = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec![Atom::Var(x)],
+                outputs: smallvec![out],
+                params: BTreeMap::from([("axes".to_owned(), "1".to_owned())]),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let plan = super::build_dense_plan(&body).expect("dense plan");
+        let data: Vec<f64> = (0..16 * 16).map(|i| (i as f64) * 0.013 - 1.0).collect();
+        let arg =
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims: vec![16, 16] }, data).unwrap());
+        let args = [arg];
+
+        let n: usize = 500_000;
+        let t_generic = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_env_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan.last_use,
+                    &mut scratch,
+                    &mut o,
+                )
+                .expect("generic");
+                acc += tensor_real_bits(&o[0])[0] as f64;
+            }
+            std::hint::black_box(acc);
+        });
+        let t_planned = best_time(|| {
+            let mut env: Vec<Option<Value>> = vec![None; plan.slots];
+            let mut scratch: Vec<Value> = Vec::new();
+            let mut o: Vec<Value> = Vec::new();
+            let mut bufs = super::ScalarPlanBuffers::default();
+            let mut acc = 0.0f64;
+            for _ in 0..n {
+                super::run_dense_plan_into(
+                    &body,
+                    &[],
+                    &args,
+                    &mut env,
+                    &plan,
+                    &mut scratch,
+                    &mut o,
+                    &mut bufs,
+                )
+                .expect("planned");
+                acc += tensor_real_bits(&o[0])[0] as f64;
+            }
+            std::hint::black_box(acc);
+        });
+        println!(
+            "BENCH dense-f64 axis-reduce [16,16] axis1 {n} evals: GENERIC {:.1}ns/eval -> PLANNED {:.1}ns/eval = {:.2}x",
+            t_generic * 1e9 / n as f64,
+            t_planned * 1e9 / n as f64,
+            t_generic / t_planned,
+        );
     }
 
     #[test]
