@@ -12287,6 +12287,29 @@ fn jacobian_jaxpr_inner(
     }
 
     let zero_tangents = args.iter().map(zeros_like).collect::<Vec<_>>();
+
+    // REVERSE-MODE fast path for SCALAR-output functions: the Jacobian of
+    // f: R^n -> R is a single 1×n row that equals the GRADIENT, computable in ONE
+    // reverse pass instead of n forward (jvp) passes. A cheap zero-tangent jvp
+    // probes the output arity. Only when NO custom JVP/VJP rule applies to this
+    // jaxpr — otherwise forward (jvp rules) and reverse (vjp rules) could use
+    // different derivative definitions and disagree. The gradient is the exact
+    // same derivative as the column path (different accumulation order, within
+    // Jacobian's tolerance parity). Falls through to the column path otherwise.
+    if custom_jvp_rule_key.is_none()
+        && lookup_custom_jaxpr_jvp(jaxpr).is_none()
+        && lookup_custom_jaxpr_vjp(jaxpr).is_none()
+    {
+        let probe = jvp_inner(jaxpr, args, &zero_tangents, custom_jvp_rule_key)?;
+        if flatten_values_to_f64(&probe.primals)?.len() == 1 {
+            let grads = grad_jaxpr(jaxpr, args)?;
+            let row = flatten_values_to_f64(&grads)?;
+            if row.len() == input_dim {
+                return matrix_value(1, input_dim, row);
+            }
+        }
+    }
+
     let mut output_dim = None::<usize>;
     let mut jacobian = Vec::<f64>::new();
 
@@ -22326,6 +22349,196 @@ mod tests {
 
         clear_custom_derivative_rules();
         Ok(())
+    }
+
+    #[test]
+    fn jacobian_scalar_output_reverse_matches_columns_and_golden() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        // Scalar-output NON-separable f(x) = (Σ x_i)^2: t1=reduce_sum(x);
+        // t2=mul(t1,t1). The Jacobian is the 1×n gradient [2·Σx, …]. The
+        // reverse-mode fast path (one grad pass) must match the column-by-column
+        // forward (jvp) reference within tolerance (both are the exact gradient,
+        // accumulated in different orders — Jacobian parity is tolerance).
+        let n = 16usize;
+        let (x, t1, t2) = (VarId(0), VarId(1), VarId(2));
+        let jaxpr = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![t2],
+            vec![
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![t1],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(t1), Atom::Var(t1)],
+                    outputs: smallvec![t2],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let xv: Vec<f64> = (0..n).map(|i| (i as f64) * 0.1 - 0.7).collect();
+        let sum: f64 = xv.iter().sum();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
+        )];
+
+        let jac = jacobian_jaxpr(&jaxpr, &args).expect("jacobian");
+        let jt = jac.as_tensor().expect("tensor");
+        assert_eq!(jt.shape.dims, vec![1, n as u32]);
+        let got = jt.to_f64_vec().expect("f64");
+
+        // Column-by-column forward reference.
+        let mut want = vec![0.0_f64; n];
+        for basis in 0..n {
+            let mut tan = vec![0.0_f64; n];
+            tan[basis] = 1.0;
+            let tangents = [Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    tan,
+                )
+                .unwrap(),
+            )];
+            let jr = super::jvp_inner(&jaxpr, &args, &tangents, None).expect("jvp");
+            want[basis] = super::flatten_values_to_f64(&jr.tangents).expect("flat")[0];
+        }
+        for i in 0..n {
+            // analytic: d/dx_i (Σx)^2 = 2·Σx
+            assert!(
+                (got[i] - 2.0 * sum).abs() < 1e-9,
+                "entry {i} wrong: {}",
+                got[i]
+            );
+            assert!(
+                (got[i] - want[i]).abs() <= 1e-12 * (1.0 + want[i].abs()),
+                "reverse {} != forward {} at {i}",
+                got[i],
+                want[i]
+            );
+        }
+        let bits: Vec<u64> = got.iter().map(|v| v.to_bits()).collect();
+        let sha = fj_test_utils::fixture_id_from_json(&("frankenjax-jacobian-scalar-rev", &bits))
+            .expect("digest");
+        assert_eq!(
+            sha,
+            "bc78708e085206ff32ea09226abf9fa71a59f5ae82d458e8d8b02493cdeb62fc"
+        );
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_jacobian_scalar_reverse_vs_columns() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+        use std::time::Instant;
+        let n = 256usize;
+        let (x, t1, t2, out) = (VarId(0), VarId(1), VarId(2), VarId(3));
+        // scalar f(x) = Σ sin(x)·x : t1=sin(x); t2=mul(t1,x); out=reduce_sum(t2).
+        let jaxpr = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![t1],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(t1), Atom::Var(x)],
+                    outputs: smallvec![t2],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(t2)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let xv: Vec<f64> = (0..n).map(|i| (i as f64) * 0.003 - 0.4).collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
+        )];
+        let best = |f: &dyn Fn() -> f64| {
+            let _ = f();
+            let mut t = f64::MAX;
+            let mut d = 0.0;
+            for _ in 0..3 {
+                let s = Instant::now();
+                d = f();
+                t = t.min(s.elapsed().as_secs_f64());
+            }
+            (t, d)
+        };
+        let (t_rev, d_rev) = best(&|| {
+            jacobian_jaxpr(&jaxpr, &args)
+                .unwrap()
+                .as_tensor()
+                .unwrap()
+                .to_f64_vec()
+                .unwrap()
+                .iter()
+                .sum()
+        });
+        let (t_col, _d_col) = best(&|| {
+            let mut sum = 0.0;
+            for basis in 0..n {
+                let mut tan = vec![0.0_f64; n];
+                tan[basis] = 1.0;
+                let tangents = [Value::Tensor(
+                    TensorValue::new_f64_values(
+                        Shape {
+                            dims: vec![n as u32],
+                        },
+                        tan,
+                    )
+                    .unwrap(),
+                )];
+                let jr = super::jvp_inner(&jaxpr, &args, &tangents, None).unwrap();
+                sum += super::flatten_values_to_f64(&jr.tangents).unwrap()[0];
+            }
+            sum
+        });
+        println!(
+            "BENCH jacobian [{n}->1] scalar: COLUMNS(fwd) {:.2}ms -> REVERSE(grad) {:.2}ms = {:.2}x  (digest {:.4})",
+            t_col * 1e3,
+            t_rev * 1e3,
+            t_col / t_rev,
+            d_rev,
+        );
     }
 
     #[test]
