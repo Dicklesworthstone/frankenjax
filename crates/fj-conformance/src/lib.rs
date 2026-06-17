@@ -1835,6 +1835,7 @@ fn value_type_fingerprint(expected: &FixtureValue) -> &'static str {
 fn value_type_runtime(actual: &Value) -> &'static str {
     if let Some(scalar) = actual.as_scalar_literal() {
         return match scalar {
+            fj_core::Literal::I32(_) => "i32",
             fj_core::Literal::I64(_) => "i64",
             fj_core::Literal::U32(_) => "u32",
             fj_core::Literal::U64(_) => "u64",

@@ -182,9 +182,8 @@ fn jax_min_f64(left: f64, right: f64) -> f64 {
 /// returned untouched with NO realloc (only a cheap scan), so it cannot change any
 /// currently-correct value; only genuinely-overflowing results are corrected.
 ///
-/// NOTE: i32 SCALARS cannot be narrowed here (a `Value::Scalar(Literal::I64)` carries no
-/// dtype, so an i32 scalar is indistinguishable from i64) — that residual gap and the
-/// underlying `Literal::I32` design question are tracked in the bead.
+/// I32 scalars now use `Literal::I32`; this remains the tensor-output chokepoint for
+/// dense I32 paths that share the I64 storage lane.
 fn narrow_i32_tensor_result(value: Value) -> Value {
     let Value::Tensor(t) = &value else {
         return value;
@@ -1477,6 +1476,7 @@ fn scalar_literal(primitive: Primitive, value: &Value) -> Result<Literal, EvalEr
 fn literal_to_bool(primitive: Primitive, literal: Literal) -> Result<bool, EvalError> {
     match literal {
         Literal::Bool(b) => Ok(b),
+        Literal::I32(v) => Ok(v != 0),
         Literal::I64(v) => Ok(v != 0),
         Literal::U32(v) => Ok(v != 0),
         Literal::U64(v) => Ok(v != 0),
@@ -1505,6 +1505,14 @@ fn literal_to_switch_index(
     let last_branch = num_branches.saturating_sub(1);
     match literal {
         Literal::Bool(b) => Ok(usize::from(b).min(last_branch)),
+        Literal::I32(v) => {
+            let clamped = if v <= 0 {
+                0
+            } else {
+                (v as u32).min(last_branch as u32) as usize
+            };
+            Ok(clamped)
+        }
         Literal::I64(v) => {
             let clamped = if v <= 0 {
                 0
@@ -1541,6 +1549,7 @@ fn value_shape_fingerprint(v: &Value) -> String {
     match v {
         Value::Scalar(lit) => {
             let kind = match lit {
+                fj_core::Literal::I32(_) => "i32",
                 fj_core::Literal::I64(_) => "i64",
                 fj_core::Literal::U32(_) => "u32",
                 fj_core::Literal::U64(_) => "u64",
@@ -1860,6 +1869,11 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
         (Value::Scalar(fj_core::Literal::I64(a)), Value::Scalar(fj_core::Literal::I64(b))) => Ok(
             Value::scalar_i64(apply_bitwise_binary_i64(primitive, *a, *b)),
         ),
+        (Value::Scalar(fj_core::Literal::I32(a)), Value::Scalar(fj_core::Literal::I32(b))) => {
+            Ok(Value::scalar_i32(
+                apply_bitwise_binary_i32(primitive, i64::from(*a), i64::from(*b)) as i32,
+            ))
+        }
         (Value::Scalar(fj_core::Literal::U32(a)), Value::Scalar(fj_core::Literal::U32(b))) => Ok(
             Value::scalar_u32(apply_bitwise_binary_u32(primitive, *a, *b)),
         ),
@@ -1904,8 +1918,72 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
                     .map_err(EvalError::InvalidTensor)?,
             ))
         }
-        // i32 (JAX's default int) scalar⊗tensor: was unsupported (fell through to error).
-        // The scalar is a dtype-less Literal::I64 taken as i32 here (tensor is i32).
+        // i32 (JAX's default int) scalar⊗tensor.
+        (Value::Scalar(fj_core::Literal::I32(scalar)), Value::Tensor(tensor))
+            if tensor.dtype == fj_core::DType::I32 =>
+        {
+            if let Some(vals) = tensor.elements.as_i64_slice() {
+                let out: Vec<i64> = vals
+                    .iter()
+                    .map(|&v| apply_bitwise_binary_i32(primitive, i64::from(*scalar), v))
+                    .collect();
+                return Ok(Value::Tensor(
+                    TensorValue::new_i32_values(tensor.shape.clone(), out)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
+            }
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for el in tensor.elements.iter() {
+                let fj_core::Literal::I64(v) = el else {
+                    return Err(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "bitwise ops require integer tensors",
+                    });
+                };
+                elements.push(fj_core::Literal::I64(apply_bitwise_binary_i32(
+                    primitive,
+                    i64::from(*scalar),
+                    *v,
+                )));
+            }
+            Ok(Value::Tensor(
+                TensorValue::new(fj_core::DType::I32, tensor.shape.clone(), elements)
+                    .map_err(EvalError::InvalidTensor)?,
+            ))
+        }
+        (Value::Tensor(tensor), Value::Scalar(fj_core::Literal::I32(scalar)))
+            if tensor.dtype == fj_core::DType::I32 =>
+        {
+            if let Some(vals) = tensor.elements.as_i64_slice() {
+                let out: Vec<i64> = vals
+                    .iter()
+                    .map(|&v| apply_bitwise_binary_i32(primitive, v, i64::from(*scalar)))
+                    .collect();
+                return Ok(Value::Tensor(
+                    TensorValue::new_i32_values(tensor.shape.clone(), out)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
+            }
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for el in tensor.elements.iter() {
+                let fj_core::Literal::I64(v) = el else {
+                    return Err(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "bitwise ops require integer tensors",
+                    });
+                };
+                elements.push(fj_core::Literal::I64(apply_bitwise_binary_i32(
+                    primitive,
+                    *v,
+                    i64::from(*scalar),
+                )));
+            }
+            Ok(Value::Tensor(
+                TensorValue::new(fj_core::DType::I32, tensor.shape.clone(), elements)
+                    .map_err(EvalError::InvalidTensor)?,
+            ))
+        }
+        // Legacy dtype-less Literal::I64 scalar is still accepted with I32 tensors.
         (Value::Scalar(fj_core::Literal::I64(scalar)), Value::Tensor(tensor))
             if tensor.dtype == fj_core::DType::I32 =>
         {

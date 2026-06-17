@@ -1346,6 +1346,10 @@ fn add_atom_to_egraph(
             .copied()
             .ok_or(EGraphLoweringError::MissingVariable { var: *var })?,
         Atom::Lit(Literal::I64(n)) => expr.add(FjLang::Num(*n)),
+        Atom::Lit(Literal::I32(n)) => {
+            let sym = egg::Symbol::from(format!("i32:{n}"));
+            expr.add(FjLang::Symbol(sym))
+        }
         Atom::Lit(Literal::U32(n)) => {
             let sym = egg::Symbol::from(format!("u32:{n}"));
             expr.add(FjLang::Symbol(sym))

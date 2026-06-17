@@ -1946,6 +1946,7 @@ fn zeros_like(v: &Value) -> Value {
             // Non-differentiable types keep the legacy F64 widening so
             // existing AD conventions (e.g., switch index gradients are
             // F64 zero) stay intact.
+            Literal::I32(_) => Value::scalar_i32(0),
             Literal::I64(_) => Value::scalar_i64(0),
             Literal::U32(_) | Literal::U64(_) | Literal::Bool(_) => Value::scalar_f64(0.0),
             // Differentiable types preserve their natural dtype so the
@@ -2103,9 +2104,11 @@ fn ones_like(v: &Value) -> Value {
     match v {
         Value::Scalar(lit) => match lit {
             // Non-differentiable types follow the legacy F64 convention.
-            Literal::I64(_) | Literal::U32(_) | Literal::U64(_) | Literal::Bool(_) => {
-                Value::scalar_f64(1.0)
-            }
+            Literal::I32(_)
+            | Literal::I64(_)
+            | Literal::U32(_)
+            | Literal::U64(_)
+            | Literal::Bool(_) => Value::scalar_f64(1.0),
             Literal::BF16Bits(_) => Value::Scalar(Literal::from_bf16_f32(1.0)),
             Literal::F16Bits(_) => Value::Scalar(Literal::from_f16_f32(1.0)),
             Literal::F32Bits(_) => Value::scalar_f32(1.0),
@@ -3242,6 +3245,7 @@ fn tensor_sub(a: &TensorValue, b: &TensorValue) -> Result<Value, AdError> {
 fn is_zero_value(v: &Value) -> bool {
     match v {
         Value::Scalar(Literal::F64Bits(bits)) => f64::from_bits(*bits) == 0.0,
+        Value::Scalar(Literal::I32(val)) => *val == 0,
         Value::Scalar(Literal::I64(val)) => *val == 0,
         Value::Scalar(Literal::U32(val)) => *val == 0,
         Value::Scalar(Literal::U64(val)) => *val == 0,
@@ -3258,6 +3262,7 @@ fn is_zero_value(v: &Value) -> bool {
         }
         Value::Tensor(t) => t.elements.iter().all(|e| match e {
             Literal::F64Bits(bits) => f64::from_bits(*bits) == 0.0,
+            Literal::I32(v) => *v == 0,
             Literal::I64(v) => *v == 0,
             Literal::U32(v) => *v == 0,
             Literal::U64(v) => *v == 0,
@@ -7113,6 +7118,7 @@ fn dynamic_update_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, A
         let start_val = match &inputs[2 + ax] {
             Value::Scalar(lit) => {
                 let raw = match lit {
+                    Literal::I32(v) => i64::from(*v),
                     Literal::I64(v) => *v,
                     Literal::U32(v) => i64::from(*v),
                     Literal::U64(v) => i64::try_from(*v).unwrap_or(i64::MAX),
@@ -7286,6 +7292,7 @@ fn scalar_predicate_for_ad(
 ) -> Result<bool, AdError> {
     match scalar_literal_for_ad(primitive, context, value)? {
         Literal::Bool(value) => Ok(value),
+        Literal::I32(value) => Ok(value != 0),
         Literal::I64(value) => Ok(value != 0),
         Literal::U32(value) => Ok(value != 0),
         Literal::U64(value) => Ok(value != 0),
@@ -7515,6 +7522,7 @@ fn scan_vjp(
 
 fn dtype_for_literal(lit: &Literal) -> DType {
     match lit {
+        Literal::I32(_) => DType::I32,
         Literal::I64(_) => DType::I64,
         Literal::U32(_) => DType::U32,
         Literal::U64(_) => DType::U64,

@@ -1097,7 +1097,7 @@ impl PyValue {
         })?;
 
         match literal {
-            Literal::I64(_) | Literal::U32(_) | Literal::U64(_) => {
+            Literal::I32(_) | Literal::I64(_) | Literal::U32(_) | Literal::U64(_) => {
                 literal_to_py_object(py, literal)
             }
             Literal::Bool(_)
@@ -1680,6 +1680,7 @@ fn dtype_from_name(name: &str) -> PyResult<DType> {
 fn literal_truth_value(literal: Literal) -> bool {
     match literal {
         Literal::Bool(value) => value,
+        Literal::I32(value) => value != 0,
         Literal::I64(value) => value != 0,
         Literal::U32(value) => value != 0,
         Literal::U64(value) => value != 0,
@@ -2002,6 +2003,12 @@ fn value_with_shape(dtype: DType, elements: &[Literal], dims: Vec<u32>) -> PyRes
                 "cannot reshape empty array into scalar shape",
             )
         })?;
+        if dtype == DType::I32 {
+            let value = literal
+                .as_i64()
+                .ok_or_else(|| value_error("int32 scalar reshape element is not integral"))?;
+            return Ok(Value::scalar_i32(value as i32));
+        }
         return Ok(Value::Scalar(literal));
     }
 
@@ -2367,7 +2374,8 @@ fn complex_component_dtype(dtype: DType) -> DType {
 fn zero_literal_for_dtype(dtype: DType) -> Literal {
     match dtype {
         DType::Bool => Literal::Bool(false),
-        DType::I32 | DType::I64 => Literal::I64(0),
+        DType::I32 => Literal::I32(0),
+        DType::I64 => Literal::I64(0),
         DType::U32 => Literal::U32(0),
         DType::U64 => Literal::U64(0),
         DType::BF16 => Literal::BF16Bits(0),
@@ -2404,7 +2412,7 @@ fn cast_literal_to_dtype(literal: Literal, dtype: DType) -> PyResult<Literal> {
             i64::from(i32::MIN),
             i64::from(i32::MAX),
         )
-        .map(Literal::I64),
+        .map(|value| Literal::I32(value as i32)),
         DType::I64 => {
             float_to_i64(literal_real_f64(literal)?, i64::MIN, i64::MAX).map(Literal::I64)
         }
@@ -2589,15 +2597,21 @@ fn round_f64(value: f64, decimals: i32) -> f64 {
 
 fn round_integer_literal(literal: Literal, dtype: DType, decimals: i32) -> PyResult<Literal> {
     match (dtype, literal) {
+        (DType::I32, Literal::I32(value)) => round_signed_integer(i64::from(value), decimals)
+            .and_then(|rounded| {
+                i32::try_from(rounded).map(Literal::I32).map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyOverflowError, _>(
+                        "rounded value does not fit int32",
+                    )
+                })
+            }),
         (DType::I32, Literal::I64(value)) => {
             round_signed_integer(value, decimals).and_then(|rounded| {
-                i32::try_from(rounded)
-                    .map(|_| Literal::I64(rounded))
-                    .map_err(|_| {
-                        PyErr::new::<pyo3::exceptions::PyOverflowError, _>(
-                            "rounded value does not fit int32",
-                        )
-                    })
+                i32::try_from(rounded).map(Literal::I32).map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyOverflowError, _>(
+                        "rounded value does not fit int32",
+                    )
+                })
             })
         }
         (DType::I64, Literal::I64(value)) => {
@@ -2713,6 +2727,7 @@ fn round_unsigned_magnitude(magnitude: u128, factor: u128) -> PyResult<u128> {
 
 fn rounded_literal_to_i64(literal: Literal) -> PyResult<Literal> {
     match literal {
+        Literal::I32(value) => Ok(Literal::I64(i64::from(value))),
         Literal::I64(value) => Ok(Literal::I64(value)),
         Literal::U32(value) => Ok(Literal::I64(i64::from(value))),
         Literal::U64(value) => i64::try_from(value).map(Literal::I64).map_err(|_| {
@@ -2775,6 +2790,7 @@ fn py_object_repr(py: Python<'_>, value: Option<Py<PyAny>>) -> PyResult<String> 
 
 fn literal_to_py_object(py: Python<'_>, literal: Literal) -> PyResult<Py<PyAny>> {
     match literal {
+        Literal::I32(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
         Literal::I64(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
         Literal::U32(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
         Literal::U64(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
@@ -2885,6 +2901,7 @@ fn write_tensor_native_bytes(
 
 fn literal_to_native_bytes(literal: Literal, bytes: &mut Vec<u8>) {
     match literal {
+        Literal::I32(value) => bytes.extend_from_slice(&value.to_ne_bytes()),
         Literal::I64(value) => bytes.extend_from_slice(&value.to_ne_bytes()),
         Literal::U32(value) => bytes.extend_from_slice(&value.to_ne_bytes()),
         Literal::U64(value) => bytes.extend_from_slice(&value.to_ne_bytes()),

@@ -127,6 +127,7 @@ fn scalar_literal_from_value(primitive: Primitive, value: &Value) -> Result<Lite
 fn predicate_value_to_bool(primitive: Primitive, value: &Value) -> Result<bool, EvalError> {
     match scalar_literal_from_value(primitive, value)? {
         Literal::Bool(value) => Ok(value),
+        Literal::I32(value) => Ok(value != 0),
         Literal::I64(value) => Ok(value != 0),
         Literal::U32(value) => Ok(value != 0),
         Literal::U64(value) => Ok(value != 0),
@@ -16157,11 +16158,18 @@ mod tests {
             vec![VarId(1)],
             vec![],
             vec![VarId(3)],
-            vec![add(VarId(1), VarId(1), VarId(2)), add(VarId(2), VarId(1), VarId(3))],
+            vec![
+                add(VarId(1), VarId(1), VarId(2)),
+                add(VarId(2), VarId(1), VarId(3)),
+            ],
         );
         check("i64_add_chain", &chain, &[Value::scalar_i64(7)]);
         check("i64_add_chain_neg", &chain, &[Value::scalar_i64(-3)]);
-        check("i64_add_chain_overflowy", &chain, &[Value::scalar_i64(i64::MAX - 1)]);
+        check(
+            "i64_add_chain_overflowy",
+            &chain,
+            &[Value::scalar_i64(i64::MAX - 1)],
+        );
 
         // scalar f64 / i64 single ops.
         check(
@@ -16180,7 +16188,9 @@ mod tests {
             Value::Tensor(
                 TensorValue::new(
                     DType::F64,
-                    Shape { dims: vec![v.len() as u32] },
+                    Shape {
+                        dims: vec![v.len() as u32],
+                    },
                     v.into_iter().map(Literal::from_f64).collect(),
                 )
                 .unwrap(),

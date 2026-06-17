@@ -2958,6 +2958,10 @@ fn offset_scatter_index_literal(
         .ok_or_else(|| BatchError::TensorError("scatter adjusted index overflowed".to_owned()))?;
 
     match literal {
+        Literal::I32(_) => i32::try_from(adjusted)
+            .map(Literal::I32)
+            .map(Some)
+            .map_err(|_| BatchError::TensorError("scatter adjusted index exceeds i32".to_owned())),
         Literal::I64(_) => i64::try_from(adjusted)
             .map(Literal::I64)
             .map(Some)
@@ -2983,6 +2987,14 @@ fn offset_scatter_index_literal(
 
 fn scatter_index_literal_to_usize(literal: Literal) -> Result<Option<usize>, BatchError> {
     match literal {
+        Literal::I32(value) => {
+            if value < 0 {
+                return Ok(None);
+            }
+            usize::try_from(value)
+                .map(Some)
+                .map_err(|_| BatchError::TensorError("scatter i32 index exceeds usize".to_owned()))
+        }
         Literal::I64(value) => {
             if value < 0 {
                 return Ok(None);
@@ -7075,6 +7087,7 @@ fn scalar_to_bool(value: &Value) -> Result<bool, BatchError> {
     };
     match literal {
         fj_core::Literal::Bool(b) => Ok(b),
+        fj_core::Literal::I32(v) => Ok(v != 0),
         fj_core::Literal::I64(v) => Ok(v != 0),
         fj_core::Literal::U32(v) => Ok(v != 0),
         fj_core::Literal::U64(v) => Ok(v != 0),
@@ -7113,6 +7126,13 @@ fn scalar_to_switch_index(value: &Value, branch_count: usize) -> Result<usize, B
 
     let last_branch = branch_count - 1;
     match literal {
+        fj_core::Literal::I32(v) => {
+            if v <= 0 {
+                Ok(0)
+            } else {
+                Ok((v as u32).min(last_branch as u32) as usize)
+            }
+        }
         fj_core::Literal::I64(v) => {
             if v <= 0 {
                 Ok(0)
@@ -13012,7 +13032,10 @@ mod tests {
                     });
                 let slow =
                     batch_passthrough_leading(Primitive::ReduceWindow, &[make()], &params).unwrap();
-                assert_eq!(fast.batch_dim, slow.batch_dim, "{key}={val} op={op} batch_dim");
+                assert_eq!(
+                    fast.batch_dim, slow.batch_dim,
+                    "{key}={val} op={op} batch_dim"
+                );
                 assert_eq!(
                     fast.value.as_tensor().unwrap().shape.dims,
                     slow.value.as_tensor().unwrap().shape.dims,
@@ -14929,7 +14952,9 @@ mod tests {
             if bd == 0 {
                 let t = TensorValue::new(
                     DType::I64,
-                    Shape { dims: vec![3, 2, 4] },
+                    Shape {
+                        dims: vec![3, 2, 4],
+                    },
                     data.iter().copied().map(Literal::I64).collect(),
                 )
                 .unwrap();
@@ -14945,7 +14970,9 @@ mod tests {
                 }
                 let t = TensorValue::new(
                     DType::I64,
-                    Shape { dims: vec![r as u32, b as u32, c as u32] },
+                    Shape {
+                        dims: vec![r as u32, b as u32, c as u32],
+                    },
                     out.into_iter().map(Literal::I64).collect(),
                 )
                 .unwrap();
@@ -15061,7 +15088,9 @@ mod tests {
                 }
                 let t = TensorValue::new(
                     DType::I64,
-                    Shape { dims: vec![d0 as u32, b as u32, d1 as u32] },
+                    Shape {
+                        dims: vec![d0 as u32, b as u32, d1 as u32],
+                    },
                     out.into_iter().map(Literal::I64).collect(),
                 )
                 .unwrap();
@@ -15075,9 +15104,12 @@ mod tests {
             for ax in ["0", "1", "2"] {
                 let params = BTreeMap::from([("axis".to_owned(), ax.to_owned())]);
                 let fast = batch_expand_dims(&[make(bd, &[2, 4], &ed)], &params).unwrap();
-                let slow =
-                    batch_passthrough_leading(Primitive::ExpandDims, &[make(bd, &[2, 4], &ed)], &params)
-                        .unwrap();
+                let slow = batch_passthrough_leading(
+                    Primitive::ExpandDims,
+                    &[make(bd, &[2, 4], &ed)],
+                    &params,
+                )
+                .unwrap();
                 assert_eq!(
                     extract(&fast),
                     extract(&slow),

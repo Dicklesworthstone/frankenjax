@@ -55,6 +55,7 @@ impl ShapedArray {
         match value {
             Value::Scalar(lit) => {
                 let dtype = match lit {
+                    fj_core::Literal::I32(_) => DType::I32,
                     fj_core::Literal::I64(_) => DType::I64,
                     fj_core::Literal::U32(_) => DType::U32,
                     fj_core::Literal::U64(_) => DType::U64,
@@ -8864,11 +8865,9 @@ mod tests {
     fn shape_inference_det_slogdet_preserve_f32() {
         // det/slogdet shape inference must preserve f32 (matching the eval fix); the
         // prior hardcoded F64 diverged from eval_det/eval_slogdet for f32 inputs.
-        let f32_mat = || {
-            ShapedArray {
-                dtype: DType::F32,
-                shape: Shape { dims: vec![3, 3] },
-            }
+        let f32_mat = || ShapedArray {
+            dtype: DType::F32,
+            shape: Shape { dims: vec![3, 3] },
         };
         let mut ctx = SimpleTraceContext::with_inputs(vec![f32_mat()]);
         let det = ctx

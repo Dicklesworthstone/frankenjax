@@ -7,6 +7,7 @@ use crate::EvalError;
 #[inline]
 fn literal_dtype(literal: Literal) -> DType {
     match literal {
+        Literal::I32(_) => DType::I32,
         Literal::I64(_) => DType::I64,
         Literal::U32(_) => DType::U32,
         Literal::U64(_) => DType::U64,
@@ -25,6 +26,7 @@ fn literal_to_u64(literal: Literal) -> Option<u64> {
     match literal {
         Literal::U32(value) => Some(u64::from(value)),
         Literal::U64(value) => Some(value),
+        Literal::I32(value) => u64::try_from(value).ok(),
         Literal::I64(value) => u64::try_from(value).ok(),
         Literal::Bool(value) => Some(u64::from(value)),
         _ => None,
@@ -34,6 +36,7 @@ fn literal_to_u64(literal: Literal) -> Option<u64> {
 #[inline]
 fn literal_to_i128(literal: Literal) -> Option<i128> {
     match literal {
+        Literal::I32(value) => Some(i128::from(value)),
         Literal::I64(value) => Some(i128::from(value)),
         Literal::U32(value) => Some(i128::from(value)),
         Literal::U64(value) => Some(i128::from(value)),
@@ -67,6 +70,7 @@ fn literal_from_numeric_f64(dtype: DType, value: f64) -> Literal {
         DType::BF16 => Literal::from_bf16_f64(value),
         DType::F16 => Literal::from_f16_f64(value),
         DType::F32 => Literal::from_f32(value as f32),
+        DType::I32 => Literal::I32(value as i32),
         _ => Literal::from_f64(value),
     }
 }
@@ -198,7 +202,12 @@ pub(crate) fn binary_literal_op(
                     primitive,
                     detail: "integral rhs does not fit i64",
                 })?;
-                Ok(Literal::I64(int_op(left_i64, right_i64)))
+                let out = int_op(left_i64, right_i64);
+                if out_dtype == DType::I32 {
+                    Ok(Literal::I32(out as i32))
+                } else {
+                    Ok(Literal::I64(out))
+                }
             } else {
                 let lhs_f = literal_to_numeric_f64(lhs).ok_or(EvalError::TypeMismatch {
                     primitive,

@@ -2057,6 +2057,7 @@ fn value_to_json(value: &Value) -> JsonValue {
 
 fn literal_to_json(lit: Literal) -> JsonValue {
     match lit {
+        Literal::I32(value) => json!(value),
         Literal::I64(value) => json!(value),
         Literal::U32(value) => json!(value),
         Literal::U64(value) => json!(value),

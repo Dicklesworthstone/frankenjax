@@ -1596,6 +1596,7 @@ fn infer_solve_output_avals(input_avals: &[AbstractValue]) -> Vec<AbstractValue>
 fn abstract_value_of_literal(lit: &fj_core::Literal) -> AbstractValue {
     AbstractValue {
         dtype: match lit {
+            fj_core::Literal::I32(_) => DType::I32,
             fj_core::Literal::I64(_) => DType::I64,
             fj_core::Literal::U32(_) => DType::U32,
             fj_core::Literal::U64(_) => DType::U64,
@@ -1641,6 +1642,7 @@ fn abstract_value_of(value: &Value) -> AbstractValue {
     match value {
         Value::Scalar(lit) => {
             let dtype = match lit {
+                fj_core::Literal::I32(_) => DType::I32,
                 fj_core::Literal::I64(_) => DType::I64,
                 fj_core::Literal::U32(_) => DType::U32,
                 fj_core::Literal::U64(_) => DType::U64,
@@ -4910,8 +4912,9 @@ mod tests {
         // det/slogdet of an f32 matrix must stage f32 output avals (validates the
         // delegate_infer_to_trace path returns the f32-preserving fj-trace inference,
         // matching eval — the prior hardcoded-F64 inference diverged for f32 inputs).
-        let det = infer_equation_output_avals(&eqn_n(Primitive::Det, 1, &[]), &[av(&[3, 3], DType::F32)])
-            .unwrap();
+        let det =
+            infer_equation_output_avals(&eqn_n(Primitive::Det, 1, &[]), &[av(&[3, 3], DType::F32)])
+                .unwrap();
         assert_eq!(det.len(), 1);
         assert_eq!(det[0].dtype, DType::F32);
         assert_eq!(det[0].shape.dims, Vec::<u32>::new());
@@ -4924,8 +4927,9 @@ mod tests {
         assert_eq!(sld[0].dtype, DType::F32);
         assert_eq!(sld[1].dtype, DType::F32);
         // f64 input still stages f64 (unchanged).
-        let det64 = infer_equation_output_avals(&eqn_n(Primitive::Det, 1, &[]), &[av(&[2, 2], DType::F64)])
-            .unwrap();
+        let det64 =
+            infer_equation_output_avals(&eqn_n(Primitive::Det, 1, &[]), &[av(&[2, 2], DType::F64)])
+                .unwrap();
         assert_eq!(det64[0].dtype, DType::F64);
     }
 }

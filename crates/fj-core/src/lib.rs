@@ -638,6 +638,7 @@ pub struct VarId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Literal {
+    I32(i32),
     I64(i64),
     U32(u32),
     U64(u64),
@@ -724,13 +725,14 @@ impl Literal {
     ///
     /// Used to assert the dtype/element invariant: a `TensorValue` declaring
     /// `DType::X` must contain only literals whose kind corresponds to `X`.
-    /// `I32` and `I64` both map to `Literal::I64`; everything else is a 1:1
-    /// pairing.
+    /// `I32` tensors may still use `Literal::I64` as their dense backing;
+    /// scalar `I32` values use `Literal::I32`. Everything else is a 1:1 pairing.
     #[must_use]
     pub fn matches_dtype(self, dtype: DType) -> bool {
         match dtype {
             DType::Bool => matches!(self, Self::Bool(_)),
-            DType::I32 | DType::I64 => matches!(self, Self::I64(_)),
+            DType::I32 => matches!(self, Self::I32(_) | Self::I64(_)),
+            DType::I64 => matches!(self, Self::I64(_)),
             DType::U32 => matches!(self, Self::U32(_)),
             DType::U64 => matches!(self, Self::U64(_)),
             DType::BF16 => matches!(self, Self::BF16Bits(_)),
@@ -747,6 +749,7 @@ impl Literal {
         match self {
             Self::F64Bits(bits) => Some(f64::from_bits(bits)),
             Self::F32Bits(bits) => Some(f64::from(f32::from_bits(bits))),
+            Self::I32(value) => Some(f64::from(value)),
             Self::I64(value) => Some(value as f64),
             Self::U32(value) => Some(value as f64),
             Self::U64(value) => Some(value as f64),
@@ -759,6 +762,7 @@ impl Literal {
     #[must_use]
     pub fn as_i64(self) -> Option<i64> {
         match self {
+            Self::I32(value) => Some(i64::from(value)),
             Self::I64(value) => Some(value),
             Self::U32(value) => Some(i64::from(value)),
             Self::U64(value) => i64::try_from(value).ok(),
@@ -777,6 +781,7 @@ impl Literal {
         match self {
             Self::U32(value) => Some(u64::from(value)),
             Self::U64(value) => Some(value),
+            Self::I32(value) => u64::try_from(value).ok(),
             Self::I64(value) => u64::try_from(value).ok(),
             Self::Bool(_)
             | Self::BF16Bits(_)
@@ -822,7 +827,10 @@ impl Literal {
 
     #[must_use]
     pub fn is_integral(self) -> bool {
-        matches!(self, Self::I64(_) | Self::U32(_) | Self::U64(_))
+        matches!(
+            self,
+            Self::I32(_) | Self::I64(_) | Self::U32(_) | Self::U64(_)
+        )
     }
 
     #[must_use]
@@ -838,6 +846,11 @@ pub enum Value {
 }
 
 impl Value {
+    #[must_use]
+    pub fn scalar_i32(value: i32) -> Self {
+        Self::Scalar(Literal::I32(value))
+    }
+
     #[must_use]
     pub fn scalar_i64(value: i64) -> Self {
         Self::Scalar(Literal::I64(value))
@@ -950,6 +963,7 @@ impl Value {
     pub fn dtype(&self) -> DType {
         match self {
             Self::Scalar(lit) => match lit {
+                Literal::I32(_) => DType::I32,
                 Literal::I64(_) => DType::I64,
                 Literal::U32(_) => DType::U32,
                 Literal::U64(_) => DType::U64,
@@ -2297,13 +2311,14 @@ impl TensorValue {
         let elements = if matches!(dtype, DType::I32 | DType::I64)
             && elements
                 .iter()
-                .all(|literal| matches!(literal, Literal::I64(_)))
+                .all(|literal| matches!(literal, Literal::I32(_) | Literal::I64(_)))
         {
             let values = elements
                 .into_iter()
                 .map(|literal| match literal {
+                    Literal::I32(value) => i64::from(value),
                     Literal::I64(value) => value,
-                    _ => unreachable!("all elements were checked as i64"),
+                    _ => unreachable!("all elements were checked as signed integers"),
                 })
                 .collect();
             LiteralBuffer::from_i64_values(values)
@@ -2624,7 +2639,16 @@ impl TensorValue {
         }
 
         if self.rank() == 1 {
-            return Ok(Value::Scalar(self.elements[index]));
+            let literal = self.elements[index];
+            if self.dtype == DType::I32 {
+                let value = literal.as_i64().ok_or(ValueError::ElementDTypeMismatch {
+                    index,
+                    declared: self.dtype,
+                    literal,
+                })?;
+                return Ok(Value::scalar_i32(value as i32));
+            }
+            return Ok(Value::Scalar(literal));
         }
 
         let slice_len = self
@@ -2852,6 +2876,11 @@ fn infer_dtype_from_literals(elements: &[Literal]) -> DType {
     }
     if elements
         .iter()
+        .all(|literal| matches!(literal, Literal::I32(_)))
+    {
+        DType::I32
+    } else if elements
+        .iter()
         .all(|literal| matches!(literal, Literal::I64(_)))
     {
         DType::I64
@@ -2902,6 +2931,7 @@ fn infer_dtype_from_literals(elements: &[Literal]) -> DType {
 
 fn infer_dtype_from_repeated_literal(literal: Literal) -> DType {
     match literal {
+        Literal::I32(_) => DType::I32,
         Literal::I64(_) => DType::I64,
         Literal::U32(_) => DType::U32,
         Literal::U64(_) => DType::U64,
@@ -3339,6 +3369,9 @@ fn write_atom(out: &mut String, atom: &Atom) {
 
 fn write_literal(out: &mut String, lit: Literal) {
     match lit {
+        Literal::I32(value) => {
+            let _ = write!(out, "i32:{value}");
+        }
         Literal::I64(value) => {
             let _ = write!(out, "i64:{value}");
         }

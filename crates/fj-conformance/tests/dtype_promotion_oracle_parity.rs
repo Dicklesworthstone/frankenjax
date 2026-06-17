@@ -94,6 +94,7 @@ fn result_dtype(val: &Value) -> DType {
     match val {
         Value::Scalar(lit) => match lit {
             Literal::Bool(_) => DType::Bool,
+            Literal::I32(_) => DType::I32,
             Literal::I64(_) => DType::I64,
             Literal::U32(_) => DType::U32,
             Literal::U64(_) => DType::U64,

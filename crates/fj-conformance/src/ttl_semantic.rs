@@ -1188,6 +1188,7 @@ fn value_json(value: &Value) -> JsonValue {
 
 fn literal_json(literal: Literal) -> JsonValue {
     match literal {
+        Literal::I32(value) => json!(value),
         Literal::I64(value) => json!(value),
         Literal::U32(value) => json!(value),
         Literal::U64(value) => json!(value),

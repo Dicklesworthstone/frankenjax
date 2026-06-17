@@ -2114,6 +2114,7 @@ fn literal_to_complex_parts(
     literal: Literal,
 ) -> Result<(f64, f64), EvalError> {
     match literal {
+        Literal::I32(v) => Ok((f64::from(v), 0.0)),
         Literal::I64(v) => Ok((v as f64, 0.0)),
         Literal::U32(v) => Ok((v as f64, 0.0)),
         Literal::U64(v) => Ok((v as f64, 0.0)),
@@ -2288,11 +2289,59 @@ fn complex_cbrt(input: (f64, f64)) -> (f64, f64) {
 }
 
 fn complex_asin(input: (f64, f64)) -> (f64, f64) {
+    let (re, im) = input;
+    if re.is_finite() && im.is_finite() {
+        return complex_asin_finite_hft(re, im);
+    }
+
     let input_squared = complex_mul(input, input);
     let sqrt_term = complex_sqrt(complex_sub((1.0, 0.0), input_squared));
-    let i_times_input = (-input.1, input.0);
+    let i_times_input = (-im, re);
     let logged = complex_log(complex_add(i_times_input, sqrt_term));
     (logged.1, -logged.0)
+}
+
+fn complex_asin_finite_hft(re: f64, im: f64) -> (f64, f64) {
+    // Hull-Fairgrieve-Tang/Kahan form used by NumPy and XLA CHLO's complex asin
+    // decomposition. It avoids forming `z*z`, so finite large inputs such as
+    // 1e200+0i produce finite principal-branch values instead of NaN from
+    // `sqrt(1 - z*z)`. The imaginary sign follows JAX/XLA: negative only for
+    // strictly negative imaginary inputs; both +0i and -0i land on the positive
+    // side of the real-axis cut.
+    let scale = re.abs().max(im.abs());
+    let (avg_hypot, real_arg) = if scale > f64::MAX.sqrt() {
+        let inv_scale = 1.0 / scale;
+        let scaled_re = re * inv_scale;
+        let scaled_im = im * inv_scale;
+        let plus = (scaled_re + inv_scale).hypot(scaled_im);
+        let minus = (scaled_re - inv_scale).hypot(scaled_im);
+        let avg_scaled = 0.5 * plus + 0.5 * minus;
+        let real_arg = scaled_re / avg_scaled;
+        let avg = scale * avg_scaled;
+        (avg, real_arg)
+    } else {
+        let plus = (re + 1.0).hypot(im);
+        let minus = (re - 1.0).hypot(im);
+        let avg = 0.5 * plus + 0.5 * minus;
+        (avg, re / avg)
+    };
+
+    let real = real_arg.clamp(-1.0, 1.0).asin();
+    let imag_mag = if avg_hypot <= 1.0 {
+        0.0
+    } else if avg_hypot.is_finite() {
+        avg_hypot.acosh()
+    } else {
+        let inv_scale = 1.0 / scale;
+        let scaled_re = re * inv_scale;
+        let scaled_im = im * inv_scale;
+        let plus = (scaled_re + inv_scale).hypot(scaled_im);
+        let minus = (scaled_re - inv_scale).hypot(scaled_im);
+        let avg_scaled = 0.5 * plus + 0.5 * minus;
+        std::f64::consts::LN_2 + scale.ln() + avg_scaled.ln()
+    };
+    let imag = if im < 0.0 { -imag_mag } else { imag_mag };
+    (real, imag)
 }
 
 fn complex_acos(input: (f64, f64)) -> (f64, f64) {
@@ -2610,7 +2659,11 @@ fn select_literal_as_dtype(
                 primitive,
                 detail: integer_detail,
             })?;
-            Ok(Literal::I64(i_val))
+            if dtype == DType::I32 {
+                Ok(Literal::I32(i_val as i32))
+            } else {
+                Ok(Literal::I64(i_val))
+            }
         }
         DType::U32 => {
             let u_val = value.as_u64().ok_or(EvalError::TypeMismatch {
@@ -2642,6 +2695,7 @@ fn select_literal_as_dtype(
 fn select_bool_condition(primitive: Primitive, value: Literal) -> Result<bool, EvalError> {
     match value {
         Literal::Bool(flag) => Ok(flag),
+        Literal::I32(v) => Ok(v != 0),
         Literal::I64(v) => Ok(v != 0),
         Literal::U32(v) => Ok(v != 0),
         Literal::U64(v) => Ok(v != 0),
@@ -4323,6 +4377,7 @@ fn broadcast_flat_index(multi: &[usize], strides: &[usize]) -> usize {
 
 fn literal_dtype(literal: Literal) -> DType {
     match literal {
+        Literal::I32(_) => DType::I32,
         Literal::I64(_) => DType::I64,
         Literal::U32(_) => DType::U32,
         Literal::U64(_) => DType::U64,
@@ -4345,6 +4400,7 @@ fn operand_dtype(value: &Value) -> DType {
 
 fn literal_to_real_f64(primitive: Primitive, literal: Literal) -> Result<f64, EvalError> {
     match literal {
+        Literal::I32(v) => Ok(f64::from(v)),
         Literal::I64(v) => Ok(v as f64),
         Literal::U32(v) => Ok(v as f64),
         Literal::U64(v) => Ok(v as f64),
@@ -5350,6 +5406,7 @@ pub(crate) fn eval_unary_int_or_float(
 
     match &inputs[0] {
         Value::Scalar(literal) => match *literal {
+            Literal::I32(v) => Ok(Value::scalar_i32(int_op(i64::from(v)) as i32)),
             Literal::I64(v) => Ok(Value::scalar_i64(int_op(v))),
             Literal::U32(v) => Ok(Value::scalar_u32(u32_op(v))),
             Literal::U64(v) => Ok(Value::scalar_u64(u64_op(v))),
@@ -5442,6 +5499,7 @@ pub(crate) fn eval_unary_int_or_float(
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for literal in tensor.elements.iter().copied() {
                 let out = match literal {
+                    Literal::I32(v) => Literal::I32(int_op(i64::from(v)) as i32),
                     Literal::I64(v) => Literal::I64(int_op(v)),
                     Literal::U32(v) => Literal::U32(u32_op(v)),
                     Literal::U64(v) => Literal::U64(u64_op(v)),
@@ -6323,6 +6381,7 @@ pub(crate) fn eval_select_n(primitive: Primitive, inputs: &[Value]) -> Result<Va
                 DType::F64 => dense_select_n!(as_f64_slice, TensorValue::new_f64_values),
                 DType::F32 => dense_select_n!(as_f32_slice, TensorValue::new_f32_values),
                 DType::I64 => dense_select_n!(as_i64_slice, TensorValue::new_i64_values),
+                DType::I32 => dense_select_n!(as_i64_slice, TensorValue::new_i32_values),
                 DType::BF16 | DType::F16 => {
                     let dt = first_operand.dtype;
                     dense_select_n!(as_half_float_slice, |sh, out| {
@@ -6564,6 +6623,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
             _ => {
                 // Mixed types: promote to f64
                 let lof = match lo {
+                    Literal::I32(v) => f64::from(v),
                     Literal::I64(v) => v as f64,
                     Literal::U32(v) => v as f64,
                     Literal::U64(v) => v as f64,
@@ -6577,6 +6637,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                     }
                 };
                 let xf = match x {
+                    Literal::I32(v) => f64::from(v),
                     Literal::I64(v) => v as f64,
                     Literal::U32(v) => v as f64,
                     Literal::U64(v) => v as f64,
@@ -6590,6 +6651,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                     }
                 };
                 let hif = match hi {
+                    Literal::I32(v) => f64::from(v),
                     Literal::I64(v) => v as f64,
                     Literal::U32(v) => v as f64,
                     Literal::U64(v) => v as f64,
@@ -7371,6 +7433,7 @@ pub(crate) fn eval_polygamma(primitive: Primitive, inputs: &[Value]) -> Result<V
 
 fn polygamma_literal_to_i64(lit: Literal, primitive: Primitive) -> Result<i64, EvalError> {
     match lit {
+        Literal::I32(v) => Ok(i64::from(v)),
         Literal::I64(v) => Ok(v),
         Literal::U32(v) => Ok(i64::from(v)),
         Literal::U64(v) => Ok(v as i64),
@@ -10566,6 +10629,7 @@ pub(crate) fn eval_signbit(primitive: Primitive, inputs: &[Value]) -> Result<Val
         Value::Scalar(literal) => {
             let signbit = match *literal {
                 Literal::I64(v) => v < 0,
+                Literal::I32(v) => v < 0,
                 Literal::F64Bits(b) => f64::from_bits(b).is_sign_negative(),
                 Literal::F32Bits(b) => f32::from_bits(b).is_sign_negative(),
                 _ => {
@@ -10586,6 +10650,7 @@ pub(crate) fn eval_signbit(primitive: Primitive, inputs: &[Value]) -> Result<Val
             for literal in &tensor.elements {
                 let signbit = match *literal {
                     Literal::I64(v) => Literal::Bool(v < 0),
+                    Literal::I32(v) => Literal::Bool(v < 0),
                     Literal::F64Bits(b) => Literal::Bool(f64::from_bits(b).is_sign_negative()),
                     Literal::F32Bits(b) => Literal::Bool(f32::from_bits(b).is_sign_negative()),
                     _ => literal
@@ -10681,6 +10746,9 @@ pub(crate) fn eval_integer_pow(
                     DType::I32 => Literal::I64(i64::from((base as i32).wrapping_pow(e))),
                     _ => Literal::I64(base.wrapping_pow(e)),
                 })
+            }
+            Literal::I32(base) if exponent >= 0 => {
+                Ok(Literal::I32(base.wrapping_pow(exponent as u32)))
             }
             Literal::U32(base) if exponent >= 0 => {
                 Ok(Literal::U32(base.wrapping_pow(exponent as u32)))
@@ -11062,6 +11130,73 @@ mod tests {
                 q.0.is_finite() && q.1.is_finite(),
                 "non-finite quotient for ({re},{im}): {q:?}"
             );
+        }
+    }
+
+    #[test]
+    fn complex_asin_hft_matches_jax_real_axis_cut() {
+        let close = |a: (f64, f64), b: (f64, f64), tol: f64| {
+            assert!(
+                (a.0 - b.0).abs() <= tol * (1.0 + b.0.abs())
+                    && (a.1 - b.1).abs() <= tol * (1.0 + b.1.abs()),
+                "got {a:?}, expected {b:?}"
+            );
+        };
+
+        let imag = (2.0_f64 + 3.0_f64.sqrt()).ln();
+        close(
+            complex_asin((2.0, 0.0)),
+            (std::f64::consts::FRAC_PI_2, imag),
+            1e-15,
+        );
+        close(complex_acos((2.0, 0.0)), (0.0, -imag), 1e-15);
+        close(
+            complex_asin((-2.0, -0.0)),
+            (-std::f64::consts::FRAC_PI_2, imag),
+            1e-15,
+        );
+        close(
+            complex_acos((-2.0, -0.0)),
+            (std::f64::consts::PI, -imag),
+            1e-15,
+        );
+    }
+
+    #[test]
+    fn complex_asin_hft_avoids_large_finite_overflow() {
+        let close = |a: (f64, f64), b: (f64, f64), tol: f64| {
+            assert!(
+                a.0.is_finite()
+                    && a.1.is_finite()
+                    && (a.0 - b.0).abs() <= tol * (1.0 + b.0.abs())
+                    && (a.1 - b.1).abs() <= tol * (1.0 + b.1.abs()),
+                "got {a:?}, expected {b:?}"
+            );
+        };
+
+        // JAX 0.10.1 / NumPy-compatible x64 oracle values for large finite
+        // complex inputs. The previous `sqrt(1 - z*z)` formula overflowed in
+        // `z*z` and returned NaN for these cases.
+        let axis_imag = 461.210_165_779_369_1;
+        let diag_imag = 461.556_739_369_649_05;
+        let cases = [
+            ((1e200, 0.0), (std::f64::consts::FRAC_PI_2, axis_imag)),
+            ((-1e200, 0.0), (-std::f64::consts::FRAC_PI_2, axis_imag)),
+            ((0.0, 1e200), (0.0, axis_imag)),
+            ((0.0, -1e200), (0.0, -axis_imag)),
+            ((1e200, 1e200), (std::f64::consts::FRAC_PI_4, diag_imag)),
+            ((-1e200, 1e200), (-std::f64::consts::FRAC_PI_4, diag_imag)),
+            ((1e200, -1e200), (std::f64::consts::FRAC_PI_4, -diag_imag)),
+            ((-1e200, -1e200), (-std::f64::consts::FRAC_PI_4, -diag_imag)),
+        ];
+
+        for (input, expected_asin) in cases {
+            close(complex_asin(input), expected_asin, 1e-13);
+            let expected_acos = (
+                std::f64::consts::FRAC_PI_2 - expected_asin.0,
+                -expected_asin.1,
+            );
+            close(complex_acos(input), expected_acos, 1e-13);
         }
     }
 
@@ -12369,6 +12504,58 @@ mod tests {
         let (dt, v) = extract(&out);
         assert_eq!(dt, DType::I32, "mul must preserve i32 dtype");
         assert_eq!(v, vec![1_410_065_408], "i32 mul must wrap mod 2^32");
+    }
+
+    #[test]
+    fn i32_scalar_binary_ops_preserve_dtype_and_wrap() {
+        let p = BTreeMap::new();
+        let scalar = |v: i32| Value::scalar_i32(v);
+        let extract = |v: Value| -> i32 {
+            let Value::Scalar(Literal::I32(out)) = v else {
+                panic!("expected I32 scalar, got {v:?}");
+            };
+            out
+        };
+
+        let add =
+            crate::eval_primitive(Primitive::Add, &[scalar(i32::MAX), scalar(1)], &p).unwrap();
+        assert_eq!(extract(add), i32::MIN);
+
+        let sub =
+            crate::eval_primitive(Primitive::Sub, &[scalar(i32::MIN), scalar(1)], &p).unwrap();
+        assert_eq!(extract(sub), i32::MAX);
+
+        let mul =
+            crate::eval_primitive(Primitive::Mul, &[scalar(100_000), scalar(100_000)], &p).unwrap();
+        assert_eq!(extract(mul), 1_410_065_408);
+
+        let widened = crate::eval_primitive(
+            Primitive::Add,
+            &[scalar(i32::MAX), Value::scalar_i64(1)],
+            &p,
+        )
+        .unwrap();
+        assert_eq!(widened, Value::scalar_i64(i64::from(i32::MAX) + 1));
+    }
+
+    #[test]
+    fn i32_full_reduce_scalar_chains_into_i32_binary_wrap() {
+        let p = BTreeMap::new();
+        let tensor = Value::Tensor(
+            TensorValue::new(
+                DType::I32,
+                Shape { dims: vec![1] },
+                vec![Literal::I64(i64::from(i32::MAX))],
+            )
+            .unwrap(),
+        );
+
+        let reduced = crate::eval_primitive(Primitive::ReduceSum, &[tensor], &p).unwrap();
+        assert_eq!(reduced, Value::scalar_i32(i32::MAX));
+
+        let chained =
+            crate::eval_primitive(Primitive::Add, &[reduced, Value::scalar_i32(1)], &p).unwrap();
+        assert_eq!(chained, Value::scalar_i32(i32::MIN));
     }
 
     /// Bit-exact parity for the dense-i64 same-shape Add fast path: a dense
@@ -20591,7 +20778,7 @@ mod tests {
         let n = 130usize;
         let t_vals: Vec<f64> = (0..n).map(|i| i as f64 + 0.5).collect();
         let f_vals: Vec<f64> = (0..n).map(|i| -(i as f64) - 0.25).collect();
-        let flag = |i: usize| i % 3 == 0;
+        let flag = |i: usize| i.is_multiple_of(3);
         let mut words = vec![0u64; n.div_ceil(64)];
         for i in 0..n {
             if flag(i) {

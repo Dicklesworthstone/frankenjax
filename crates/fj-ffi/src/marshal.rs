@@ -162,6 +162,7 @@ fn literal_storage_dtype(lit: Literal) -> DType {
         Literal::F16Bits(_) => DType::F16,
         Literal::F32Bits(_) => DType::F32,
         Literal::F64Bits(_) => DType::F64,
+        Literal::I32(_) => DType::I32,
         Literal::I64(_) => DType::I64,
         Literal::U32(_) => DType::U32,
         Literal::U64(_) => DType::U64,
@@ -178,6 +179,7 @@ fn append_literal_as_dtype(data: &mut Vec<u8>, lit: Literal, dtype: DType) -> Re
         (DType::F32, Literal::F32Bits(bits)) => data.extend_from_slice(&bits.to_ne_bytes()),
         (DType::F64, Literal::F64Bits(bits)) => data.extend_from_slice(&bits.to_ne_bytes()),
         (DType::I64, Literal::I64(value)) => data.extend_from_slice(&value.to_ne_bytes()),
+        (DType::I32, Literal::I32(value)) => data.extend_from_slice(&value.to_ne_bytes()),
         (DType::I32, Literal::I64(value)) => {
             let value = i32::try_from(value).map_err(|_| FfiError::UnrepresentableLiteral {
                 dtype,
@@ -241,11 +243,13 @@ fn append_tensor_literals_as_dtype(
         }
         DType::I32 => {
             for &lit in elements {
-                let Literal::I64(value) = lit else {
-                    return Err(unrepresentable_literal(dtype, lit));
+                let value = match lit {
+                    Literal::I32(value) => value,
+                    Literal::I64(value) => {
+                        i32::try_from(value).map_err(|_| unrepresentable_literal(dtype, lit))?
+                    }
+                    _ => return Err(unrepresentable_literal(dtype, lit)),
                 };
-                let value =
-                    i32::try_from(value).map_err(|_| unrepresentable_literal(dtype, lit))?;
                 data.extend_from_slice(&value.to_ne_bytes());
             }
         }
@@ -347,7 +351,7 @@ fn bytes_to_literal(bytes: &[u8], dtype: DType) -> Result<Literal, FfiError> {
                 expected_bytes: 4,
                 actual_bytes: bytes.len(),
             })?;
-            Ok(Literal::I64(i64::from(i32::from_ne_bytes(arr))))
+            Ok(Literal::I32(i32::from_ne_bytes(arr)))
         }
         DType::I64 => {
             let arr: [u8; 8] = bytes.try_into().map_err(|_| FfiError::BufferMismatch {
@@ -632,9 +636,9 @@ mod tests {
     }
 
     #[test]
-    fn buffer_to_value_i32_scalar_uses_i64_literal_storage() -> Result<(), FfiError> {
+    fn buffer_to_value_i32_scalar_preserves_i32_literal() -> Result<(), FfiError> {
         let buf = FfiBuffer::new((-7_i32).to_ne_bytes().to_vec(), vec![], DType::I32)?;
-        assert_eq!(buffer_to_value(&buf)?, Value::Scalar(Literal::I64(-7)));
+        assert_eq!(buffer_to_value(&buf)?, Value::Scalar(Literal::I32(-7)));
         Ok(())
     }
 

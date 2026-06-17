@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
+use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value, ValueError};
 
 use crate::EvalError;
 
@@ -1218,7 +1218,18 @@ pub(crate) fn eval_reduce(
 
             // Full reduction (all elements to scalar)
             if rank == 0 {
-                return Ok(Value::Scalar(tensor.elements[0]));
+                let literal = tensor.elements[0];
+                if tensor.dtype == DType::I32 {
+                    let value = literal.as_i64().ok_or(EvalError::InvalidTensor(
+                        ValueError::ElementDTypeMismatch {
+                            index: 0,
+                            declared: tensor.dtype,
+                            literal,
+                        },
+                    ))?;
+                    return Ok(Value::scalar_i32(value as i32));
+                }
+                return Ok(Value::Scalar(literal));
             }
 
             if let Some(value) =
@@ -1326,7 +1337,11 @@ pub(crate) fn eval_reduce(
                 } else {
                     acc
                 };
-                Ok(Value::scalar_i64(acc))
+                if tensor.dtype == DType::I32 {
+                    Ok(Value::scalar_i32(acc as i32))
+                } else {
+                    Ok(Value::scalar_i64(acc))
+                }
             } else {
                 let mut acc = float_init;
                 for literal in &tensor.elements {
