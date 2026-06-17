@@ -5552,6 +5552,28 @@ fn select_f64_same_shape_fast_path(
                 out,
             )?)));
         }
+        // Bit-packed BoolWords predicate (the mask from an f64 same-shape compare,
+        // e.g. jnp.where(a < b, x, y)): bit-test the packed words directly instead
+        // of letting `cond.elements.iter()` materialize the WHOLE mask as a
+        // Vec<Literal::Bool> (materialize_bool_words: 24 B/elem alloc). Bit-identical:
+        // bit i = (words[i/64] >> (i%64)) & 1 is exactly the Bool that
+        // materialize_bool_words yields, so the selected value matches the
+        // per-Literal path below.
+        if let Some((words, len)) = cond.elements.as_bool_words() {
+            let out: Vec<f64> = (0..len)
+                .map(|i| {
+                    if (words[i / 64] >> (i % 64)) & 1 != 0 {
+                        t[i]
+                    } else {
+                        f[i]
+                    }
+                })
+                .collect();
+            return Ok(Some(Value::Tensor(TensorValue::new_f64_values(
+                cond.shape.clone(),
+                out,
+            )?)));
+        }
         let mut out = Vec::with_capacity(t.len());
         for (i, c) in cond.elements.iter().enumerate() {
             let Literal::Bool(flag) = *c else {
@@ -5623,6 +5645,23 @@ fn select_i64_same_shape_fast_path(
             out,
         )?)));
     }
+    // Bit-packed BoolWords predicate: bit-test directly (no Vec<Literal> mask
+    // materialization). Bit-identical to the per-Literal path below.
+    if let Some((words, len)) = cond.elements.as_bool_words() {
+        let out: Vec<i64> = (0..len)
+            .map(|i| {
+                if (words[i / 64] >> (i % 64)) & 1 != 0 {
+                    true_values[i]
+                } else {
+                    false_values[i]
+                }
+            })
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_i64_values(
+            cond.shape.clone(),
+            out,
+        )?)));
+    }
     let conds = cond.elements.as_slice();
     let mut out = Vec::with_capacity(conds.len());
     for (i, c) in conds.iter().enumerate() {
@@ -5669,6 +5708,23 @@ fn select_f32_same_shape_fast_path(
             .zip(t)
             .zip(f)
             .map(|((&c, &tv), &fv)| if c { tv } else { fv })
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+            cond.shape.clone(),
+            out,
+        )?)));
+    }
+    // Bit-packed BoolWords predicate: bit-test directly (no Vec<Literal> mask
+    // materialization). Bit-identical to the per-Literal path below.
+    if let Some((words, len)) = cond.elements.as_bool_words() {
+        let out: Vec<f32> = (0..len)
+            .map(|i| {
+                if (words[i / 64] >> (i % 64)) & 1 != 0 {
+                    t[i]
+                } else {
+                    f[i]
+                }
+            })
             .collect();
         return Ok(Some(Value::Tensor(TensorValue::new_f32_values(
             cond.shape.clone(),
@@ -5723,6 +5779,24 @@ fn select_half_same_shape_fast_path(
             out,
         )?)));
     }
+    // Bit-packed BoolWords predicate: bit-test directly (no Vec<Literal> mask
+    // materialization). Bit-identical to the per-Literal path below.
+    if let Some((words, len)) = cond.elements.as_bool_words() {
+        let out: Vec<u16> = (0..len)
+            .map(|i| {
+                if (words[i / 64] >> (i % 64)) & 1 != 0 {
+                    t[i]
+                } else {
+                    f[i]
+                }
+            })
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+            dt,
+            cond.shape.clone(),
+            out,
+        )?)));
+    }
     let mut out = Vec::with_capacity(t.len());
     for (i, c) in cond.elements.iter().enumerate() {
         let Literal::Bool(flag) = *c else {
@@ -5766,6 +5840,21 @@ fn select_unsigned_same_shape_fast_path(
                 out,
             )?)));
         }
+        if let Some((words, len)) = cond.elements.as_bool_words() {
+            let out: Vec<u32> = (0..len)
+                .map(|i| {
+                    if (words[i / 64] >> (i % 64)) & 1 != 0 {
+                        t[i]
+                    } else {
+                        f[i]
+                    }
+                })
+                .collect();
+            return Ok(Some(Value::Tensor(TensorValue::new_u32_values(
+                cond.shape.clone(),
+                out,
+            )?)));
+        }
         let mut out = Vec::with_capacity(t.len());
         for (i, c) in cond.elements.iter().enumerate() {
             let Literal::Bool(flag) = *c else {
@@ -5788,6 +5877,21 @@ fn select_unsigned_same_shape_fast_path(
                 .zip(t)
                 .zip(f)
                 .map(|((&c, &tv), &fv)| if c { tv } else { fv })
+                .collect();
+            return Ok(Some(Value::Tensor(TensorValue::new_u64_values(
+                cond.shape.clone(),
+                out,
+            )?)));
+        }
+        if let Some((words, len)) = cond.elements.as_bool_words() {
+            let out: Vec<u64> = (0..len)
+                .map(|i| {
+                    if (words[i / 64] >> (i % 64)) & 1 != 0 {
+                        t[i]
+                    } else {
+                        f[i]
+                    }
+                })
                 .collect();
             return Ok(Some(Value::Tensor(TensorValue::new_u64_values(
                 cond.shape.clone(),
@@ -20446,6 +20550,293 @@ mod tests {
             bx * 1e3,
             dn * 1e3,
             bx / dn
+        );
+    }
+
+    #[test]
+    fn select_f64_boolwords_predicate_matches_boxed_path() {
+        // A BoolWords (bit-packed) predicate — what an f64 same-shape compare emits
+        // for jnp.where(a < b, x, y) — must select identically to a boxed
+        // Vec<Literal::Bool> predicate (the per-Literal reference path), and emit
+        // dense f64 output. n spans >2 words and is not a multiple of 64.
+        let n = 130usize;
+        let t_vals: Vec<f64> = (0..n).map(|i| i as f64 + 0.5).collect();
+        let f_vals: Vec<f64> = (0..n).map(|i| -(i as f64) - 0.25).collect();
+        let flag = |i: usize| i % 3 == 0;
+        let mut words = vec![0u64; n.div_ceil(64)];
+        for i in 0..n {
+            if flag(i) {
+                words[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        let cond_words = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                Shape::vector(n as u32),
+                fj_core::LiteralBuffer::from_bool_words(words, n).unwrap(),
+            )
+            .unwrap(),
+        );
+        assert!(
+            cond_words
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_bool_words()
+                .is_some(),
+            "predicate must be BoolWords-backed"
+        );
+        let cond_boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                Shape::vector(n as u32),
+                fj_core::LiteralBuffer::new((0..n).map(|i| Literal::Bool(flag(i))).collect()),
+            )
+            .unwrap(),
+        );
+        assert!(
+            cond_boxed
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_bool_slice()
+                .is_none()
+                && cond_boxed
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_bool_words()
+                    .is_none(),
+            "boxed predicate must hit the per-Literal path"
+        );
+        let t =
+            Value::Tensor(TensorValue::new_f64_values(Shape::vector(n as u32), t_vals).unwrap());
+        let f =
+            Value::Tensor(TensorValue::new_f64_values(Shape::vector(n as u32), f_vals).unwrap());
+        let p = BTreeMap::new();
+        let r_words =
+            crate::eval_primitive(Primitive::Select, &[cond_words, t.clone(), f.clone()], &p)
+                .unwrap();
+        let r_boxed = crate::eval_primitive(Primitive::Select, &[cond_boxed, t, f], &p).unwrap();
+        assert!(
+            r_words
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .is_some(),
+            "BoolWords select must produce dense f64 output"
+        );
+        let bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F64Bits(b) => *b,
+                    o => panic!("expected F64Bits, got {o:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(
+            bits(&r_words),
+            bits(&r_boxed),
+            "BoolWords select bit-identical"
+        );
+    }
+
+    #[test]
+    fn select_boolwords_predicate_bit_identical_all_dtypes() {
+        // Every dense select fast path (f32/i64/half/u32/u64) must consume a
+        // BoolWords predicate identically to the boxed per-Literal path and emit
+        // dense output. (f64 covered separately.) This is the prerequisite that
+        // makes broadening compares to emit BoolWords safe across dtypes.
+        let n = 100usize;
+        let flag = |i: usize| (i * 7 + 1) % 5 < 2;
+        let mut words = vec![0u64; n.div_ceil(64)];
+        for i in 0..n {
+            if flag(i) {
+                words[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        let mk_cond = || {
+            (
+                Value::Tensor(
+                    TensorValue::new_with_literal_buffer(
+                        DType::Bool,
+                        Shape::vector(n as u32),
+                        fj_core::LiteralBuffer::from_bool_words(words.clone(), n).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                Value::Tensor(
+                    TensorValue::new_with_literal_buffer(
+                        DType::Bool,
+                        Shape::vector(n as u32),
+                        fj_core::LiteralBuffer::new(
+                            (0..n).map(|i| Literal::Bool(flag(i))).collect(),
+                        ),
+                    )
+                    .unwrap(),
+                ),
+            )
+        };
+        let raw_bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F32Bits(b) => u64::from(*b),
+                    Literal::F16Bits(b) | Literal::BF16Bits(b) => u64::from(*b),
+                    Literal::I64(x) => *x as u64,
+                    Literal::U32(x) => u64::from(*x),
+                    Literal::U64(x) => *x,
+                    o => panic!("unexpected {o:?}"),
+                })
+                .collect()
+        };
+        let sh = Shape::vector(n as u32);
+        let branches: Vec<(Value, Value)> = vec![
+            (
+                Value::Tensor(
+                    TensorValue::new_f32_values(
+                        sh.clone(),
+                        (0..n).map(|i| i as f32 + 0.5).collect(),
+                    )
+                    .unwrap(),
+                ),
+                Value::Tensor(
+                    TensorValue::new_f32_values(sh.clone(), (0..n).map(|i| -(i as f32)).collect())
+                        .unwrap(),
+                ),
+            ),
+            (
+                Value::Tensor(
+                    TensorValue::new_i64_values(sh.clone(), (0..n).map(|i| i as i64 * 3).collect())
+                        .unwrap(),
+                ),
+                Value::Tensor(
+                    TensorValue::new_i64_values(sh.clone(), (0..n).map(|i| -(i as i64)).collect())
+                        .unwrap(),
+                ),
+            ),
+            (
+                Value::Tensor(
+                    TensorValue::new_half_float_values(
+                        DType::BF16,
+                        sh.clone(),
+                        (0..n).map(|i| (i as u16).wrapping_mul(37)).collect(),
+                    )
+                    .unwrap(),
+                ),
+                Value::Tensor(
+                    TensorValue::new_half_float_values(
+                        DType::BF16,
+                        sh.clone(),
+                        (0..n).map(|i| (i as u16).wrapping_mul(101)).collect(),
+                    )
+                    .unwrap(),
+                ),
+            ),
+            (
+                Value::Tensor(
+                    TensorValue::new_u32_values(sh.clone(), (0..n).map(|i| i as u32 * 5).collect())
+                        .unwrap(),
+                ),
+                Value::Tensor(
+                    TensorValue::new_u32_values(
+                        sh.clone(),
+                        (0..n).map(|i| u32::MAX - i as u32).collect(),
+                    )
+                    .unwrap(),
+                ),
+            ),
+            (
+                Value::Tensor(
+                    TensorValue::new_u64_values(sh.clone(), (0..n).map(|i| i as u64 * 9).collect())
+                        .unwrap(),
+                ),
+                Value::Tensor(
+                    TensorValue::new_u64_values(
+                        sh.clone(),
+                        (0..n).map(|i| u64::MAX - i as u64).collect(),
+                    )
+                    .unwrap(),
+                ),
+            ),
+        ];
+        let p = BTreeMap::new();
+        for (t, f) in branches {
+            let (cw, cb) = mk_cond();
+            let rw =
+                crate::eval_primitive(Primitive::Select, &[cw, t.clone(), f.clone()], &p).unwrap();
+            let rb = crate::eval_primitive(Primitive::Select, &[cb, t, f], &p).unwrap();
+            let dt = rw.as_tensor().unwrap().dtype;
+            assert_eq!(
+                raw_bits(&rw),
+                raw_bits(&rb),
+                "{dt:?}: BoolWords select bit-identical"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_select_f64_boolwords_mask() {
+        use std::time::Instant;
+        fn best_time(mut f: impl FnMut()) -> f64 {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        }
+        let n = 1usize << 20;
+        let t: Vec<f64> = (0..n).map(|i| (i as f64).sin()).collect();
+        let f: Vec<f64> = (0..n).map(|i| (i as f64).cos()).collect();
+        let mut words = vec![0u64; n.div_ceil(64)];
+        for i in 0..n {
+            if i.wrapping_mul(2_654_435_761) & 0x40 != 0 {
+                words[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        // OLD: cond.elements.iter() on BoolWords materializes the whole mask as
+        // Vec<Literal::Bool> (materialize_bool_words), then per-Literal select.
+        let old = best_time(|| {
+            let lits: Vec<Literal> = (0..n)
+                .map(|i| Literal::Bool((words[i / 64] >> (i % 64)) & 1 != 0))
+                .collect();
+            let mut out = Vec::with_capacity(n);
+            for (i, c) in lits.iter().enumerate() {
+                let Literal::Bool(fl) = *c else {
+                    unreachable!()
+                };
+                out.push(if fl { t[i] } else { f[i] });
+            }
+            std::hint::black_box(out);
+        });
+        // NEW: direct bit-test on the packed words, zero materialization.
+        let new = best_time(|| {
+            let out: Vec<f64> = (0..n)
+                .map(|i| {
+                    if (words[i / 64] >> (i % 64)) & 1 != 0 {
+                        t[i]
+                    } else {
+                        f[i]
+                    }
+                })
+                .collect();
+            std::hint::black_box(out);
+        });
+        println!(
+            "BENCH select f64 BoolWords mask [{n}]: old(materialize+per-literal)={:.3}ms new(bit-test)={:.3}ms speedup={:.2}x",
+            old * 1e3,
+            new * 1e3,
+            old / new
         );
     }
 }
