@@ -4,7 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-asupersync = "0.3.4"
+# test-internals required: asupersync 0.3.4's DetBuildHasher::for_production()
+# (the default in non-test builds) returns a freshly RANDOM-seeded hasher on every
+# build_hasher() call, violating the BuildHasher contract — so every DetHashMap key
+# hashes differently per operation and the RaptorQ DecodingPipeline's block_counts map
+# is corrupt downstream (decode always fails "insufficient symbols", even with all
+# symbols present). The test-internals feature swaps in DetHasher::for_lab() (a stable
+# fixed seed), restoring a correct BuildHasher. Tracked upstream as asupersync-2l21sv.
+asupersync = { version = "0.3.4", features = ["test-internals"] }
 base64 = "0.22.1"
 fj-cache = { path = "../fj-cache" }
 fj-core = { path = "../fj-core" }
