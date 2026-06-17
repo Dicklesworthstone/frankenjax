@@ -2329,7 +2329,7 @@ impl SimpleTraceContext {
 
                 // window_dilation (atrous pooling) IS supported by eval_reduce_window —
                 // infer the dilated output shape (effective window extent (w-1)*d+1).
-                // base_dilation (input dilation) is not implemented; reject it.
+                // base_dilation (input dilation) is unsupported; reject it.
                 if params
                     .get("base_dilation")
                     .is_some_and(|v| v.split(',').any(|p| !matches!(p.trim(), "" | "1")))

@@ -92,6 +92,10 @@ const REVIEWED_EMPTY_SUCCESS_FILES: &[&str] = &[
     "crates/fj-interpreters/src/partial_eval.rs",
     "crates/fj-interpreters/src/staging.rs",
     "crates/fj-lax/src/tensor_ops.rs",
+    // threefry.rs: random_choice returns Ok(Vec::new()) for the n_draws == 0 case
+    // (drawing zero samples yields an empty index vector, matching JAX) — reviewed,
+    // not a stub.
+    "crates/fj-lax/src/threefry.rs",
     "crates/fj-py/src/lib.rs",
     "crates/fj-trace/src/lib.rs",
 ];
