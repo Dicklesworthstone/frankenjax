@@ -5554,8 +5554,57 @@ pub(crate) fn eval_one_hot(
                 ),
             )
         }
-        // Dtypes without dense storage (I32/U32/U64/Complex): still
-        // fill+scatter, but over Literals (matching literal_for exactly).
+        // Dense U32/U64/Complex fill+scatter over the typed backing. The typed
+        // on/off values are the exact payloads `literal_for(...)` builds for that
+        // dtype (`val as u32`/`u64`; complex with a zero imaginary part, f32-narrowed
+        // by new_complex_values for Complex64), so materialization is bit-identical
+        // to the per-Literal path.
+        DType::U32 => TensorValue::new_u32_values(
+            Shape { dims: out_dims },
+            one_hot_scatter(
+                on_value as u32,
+                off_value as u32,
+                total,
+                &indices,
+                nc,
+                input_rank,
+                &input_strides,
+                &in_to_out_stride,
+                class_stride,
+            ),
+        ),
+        DType::U64 => TensorValue::new_u64_values(
+            Shape { dims: out_dims },
+            one_hot_scatter(
+                on_value as u64,
+                off_value as u64,
+                total,
+                &indices,
+                nc,
+                input_rank,
+                &input_strides,
+                &in_to_out_stride,
+                class_stride,
+            ),
+        ),
+        DType::Complex64 | DType::Complex128 => TensorValue::new_complex_values(
+            dtype,
+            Shape { dims: out_dims },
+            one_hot_scatter(
+                (on_value, 0.0),
+                (off_value, 0.0),
+                total,
+                &indices,
+                nc,
+                input_rank,
+                &input_strides,
+                &in_to_out_stride,
+                class_stride,
+            ),
+        ),
+        // I32 shares the i64 dense backing but its output is wrapped mod 2^32 by the
+        // eval_primitive chokepoint; keep it on the per-Literal path (matching
+        // literal_for exactly) so the storage/wrapping contract is unchanged.
         _ => TensorValue::new(
             dtype,
             Shape { dims: out_dims },
@@ -16482,6 +16531,71 @@ mod tests {
                     "{dt} one_hot dense"
                 );
             }
+        }
+    }
+
+    /// Dense U32/U64/Complex64/Complex128 one_hot must keep dense output and place
+    /// `on` (1) at each in-range index, `off` (0) elsewhere — bit-identical to the
+    /// per-Literal `literal_for` payloads. Includes an out-of-range index (row 2,
+    /// idx 5 >= nc=4) that must stay all-off.
+    #[test]
+    fn dense_one_hot_u32_u64_complex_stays_dense_and_correct() {
+        let indices = Value::Tensor(
+            TensorValue::new_i64_values(Shape { dims: vec![3] }, vec![0, 2, 5]).unwrap(),
+        );
+        let nc = "4";
+
+        // U32 / U64
+        for dt in ["u32", "u64"] {
+            let r = eval_one_hot(
+                std::slice::from_ref(&indices),
+                &params(&[("num_classes", nc), ("dtype", dt)]),
+            )
+            .unwrap();
+            assert_eq!(extract_shape(&r), vec![3, 4]);
+            let t = r.as_tensor().unwrap();
+            let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+            // Row0 idx0 -> [1,0,0,0]; Row1 idx2 -> [0,0,1,0]; Row2 idx5(OOB) -> [0,0,0,0]
+            assert_eq!(
+                vals,
+                vec![1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+                "{dt} one_hot values"
+            );
+            if dt == "u32" {
+                assert!(t.elements.as_u32_slice().is_some(), "u32 one_hot dense");
+            } else {
+                assert!(t.elements.as_u64_slice().is_some(), "u64 one_hot dense");
+            }
+        }
+
+        // Complex64 / Complex128
+        for dt in ["complex64", "complex128"] {
+            let r = eval_one_hot(
+                std::slice::from_ref(&indices),
+                &params(&[("num_classes", nc), ("dtype", dt)]),
+            )
+            .unwrap();
+            assert_eq!(extract_shape(&r), vec![3, 4]);
+            let t = r.as_tensor().unwrap();
+            let pairs = t
+                .elements
+                .as_complex_slice()
+                .unwrap_or_else(|| panic!("{dt} one_hot dense"));
+            let expected: Vec<(f64, f64)> = vec![
+                (1.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+            ];
+            assert_eq!(pairs, expected.as_slice(), "{dt} one_hot values");
         }
     }
 
