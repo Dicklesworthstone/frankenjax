@@ -357,6 +357,28 @@ pub(crate) fn eval_binary_elementwise(
                 {
                     return Ok(value);
                 }
+                // Dense F64 same-shape fallback for the f64 binary ops NOT covered by
+                // the expensive (threaded) set or the arithmetic binop set —
+                // heaviside / copysign / nextafter / ldexp / xlog1py / logaddexp2 —
+                // which otherwise boxed a Vec<Literal> output via the generic
+                // fallthrough below. Emit dense f64 (8 vs 16 bytes/elem, no enum tag),
+                // bit-identical to binary_literal_op's (F64,F64) arm, which returns
+                // literal_from_numeric_f64(F64, float_op(a,b)) == F64Bits(float_op(a,b)).
+                if lhs.dtype == DType::F64
+                    && rhs.dtype == DType::F64
+                    && let (Some(la), Some(lb)) =
+                        (lhs.elements.as_f64_slice(), rhs.elements.as_f64_slice())
+                {
+                    let out: Vec<f64> = la
+                        .iter()
+                        .zip(lb.iter())
+                        .map(|(&a, &b)| float_op(a, b))
+                        .collect();
+                    return Ok(Value::Tensor(TensorValue::new_f64_values(
+                        lhs.shape.clone(),
+                        out,
+                    )?));
+                }
                 if lhs.dtype == DType::F32
                     && rhs.dtype == DType::F32
                     && let Some(value) =
@@ -14870,6 +14892,72 @@ mod tests {
     }
 
     /// Isomorphism proof for the heavy binary special functions newly routed onto
+    #[test]
+    fn dense_f64_binary_path_bit_identical_and_dense_output() {
+        // The dense F64 same-shape fallback (heaviside/copysign/ldexp/xlog1py/logaddexp2
+        // etc.) must (1) be HIT for dense f64 inputs — output is dense (as_f64_slice Some,
+        // not boxed Literals) — and (2) equal the element-wise reference bit-for-bit.
+        // De-boxing the Vec<Literal> output to Vec<f64> is 2.79x for cheap ops (CopySign,
+        // 4M dense: 51.6ms boxed -> 18.5ms dense) since the output build dominates them.
+        let n = 4096usize;
+        let a: Vec<f64> = (0..n).map(|i| (i as f64 % 7.0) - 3.0).collect(); // incl. 0, +/-
+        let b: Vec<f64> = (0..n).map(|i| (i as f64 % 5.0) - 2.0 + 0.25).collect();
+        let mk = |d: &[f64]| {
+            Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    d.to_vec(),
+                )
+                .unwrap(),
+            )
+        };
+        type Ref = fn(f64, f64) -> f64;
+        let cases: [(Primitive, Ref); 4] = [
+            (Primitive::CopySign, |x, y| f64::copysign(x, y)),
+            (Primitive::Heaviside, |x, h0| {
+                if x < 0.0 {
+                    0.0
+                } else if x > 0.0 {
+                    1.0
+                } else {
+                    h0
+                }
+            }),
+            (Primitive::XLog1PY, |x, y| {
+                if x == 0.0 { 0.0 } else { x * y.ln_1p() }
+            }),
+            (Primitive::LogAddExp2, |a, b| {
+                let diff = -(a - b).abs();
+                a.max(b) + (1.0 + 2f64.powf(diff)).log2()
+            }),
+        ];
+        for (prim, refop) in cases {
+            let out = crate::eval_primitive(prim, &[mk(&a), mk(&b)], &BTreeMap::new()).unwrap();
+            let t = out.as_tensor().unwrap();
+            // (1) dense output — the de-box path was taken.
+            assert!(
+                t.elements.as_f64_slice().is_some(),
+                "{prim:?} output should be dense f64 (de-boxed), not boxed Literals"
+            );
+            // (2) bit-identical to the element-wise reference.
+            let got: Vec<u64> = t
+                .elements
+                .as_f64_slice()
+                .unwrap()
+                .iter()
+                .map(|v| v.to_bits())
+                .collect();
+            let expect: Vec<u64> = a
+                .iter()
+                .zip(b.iter())
+                .map(|(&x, &y)| refop(x, y).to_bits())
+                .collect();
+            assert_eq!(got, expect, "{prim:?} dense path != element-wise reference");
+        }
+    }
+
     /// the threaded expensive-binary path (Igamma/Igammac/Zeta): a large same-shape
     /// dense-F64 evaluation must equal the element-wise reference bit-for-bit.
     #[test]
