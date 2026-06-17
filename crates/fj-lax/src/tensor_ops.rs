@@ -1620,6 +1620,30 @@ pub(crate) fn eval_pad(
             out,
         )?));
     }
+    // Bool mask pad (padding a variable-length sequence mask) — same generic Copy
+    // pad kernel over the &[bool] backing + bool fill. Bit-identical to the generic
+    // path (new_bool_values stores the same bools).
+    if let (Some(src), Literal::Bool(pad)) = (operand.elements.as_bool_slice(), pad_literal) {
+        let out = if row_copyable {
+            pad_copy_rows(src, pad, out_total, rank, in_dims, &lows, &out_strides)
+        } else {
+            pad_fill_place(
+                src,
+                pad,
+                out_total,
+                rank,
+                in_dims,
+                &lows,
+                &interiors,
+                &out_dims,
+                &out_strides,
+            )
+        };
+        return Ok(Value::Tensor(TensorValue::new_bool_values(
+            Shape { dims: out_dims },
+            out,
+        )?));
+    }
 
     // Generic Literal path.
     let mut out_elements = vec![pad_literal; out_total];
@@ -14808,6 +14832,28 @@ mod tests {
                     "{dtype:?} pad output dense"
                 );
             }
+
+            // bool (padding a sequence mask with `false`)
+            let boold: Vec<bool> = (0..rows * cols).map(|i| (i * 2 + 1) % 3 == 0).collect();
+            let dense = Value::Tensor(
+                TensorValue::new_bool_values(Shape { dims: dims.clone() }, boold.clone()).unwrap(),
+            );
+            let boxed = Value::Tensor(
+                TensorValue::new_with_literal_buffer(
+                    DType::Bool,
+                    Shape { dims: dims.clone() },
+                    LiteralBuffer::new(boold.iter().copied().map(Literal::Bool).collect()),
+                )
+                .unwrap(),
+            );
+            let pv = Value::Scalar(Literal::Bool(false));
+            let d = eval_pad(&[dense, pv.clone()], &p).unwrap();
+            let l = eval_pad(&[boxed, pv], &p).unwrap();
+            assert_eq!(lits(&d), lits(&l), "bool pad values");
+            assert!(
+                d.as_tensor().unwrap().elements.as_bool_slice().is_some(),
+                "bool pad output dense"
+            );
         }
     }
 
