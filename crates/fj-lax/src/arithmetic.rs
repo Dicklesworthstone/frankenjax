@@ -316,6 +316,66 @@ fn eval_same_shape_f32_expensive_parallel(
         .map(Value::Tensor)
 }
 
+/// Dense F64 scalar-tensor de-box: a non-arith / non-expensive f64 binary op with one
+/// scalar operand (heaviside(x, h0_scalar) — the standard heaviside form — copysign(x, s),
+/// ldexp, xlog1py, …) otherwise boxed a Vec<Literal> output via the generic scalar-tensor
+/// fallthrough. Emit dense f64; bit-identical to binary_literal_op's (F64,F64) arm.
+/// `scalar_on_left` mirrors the operand order.
+fn eval_f64_scalar_dense_map(
+    scalar: Literal,
+    tensor: &TensorValue,
+    scalar_on_left: bool,
+    float_op: &impl Fn(f64, f64) -> f64,
+) -> Option<Value> {
+    let Literal::F64Bits(_) = scalar else {
+        return None;
+    };
+    if tensor.dtype != DType::F64 {
+        return None;
+    }
+    let s = scalar.as_f64()?;
+    let src = tensor.elements.as_f64_slice()?;
+    let out: Vec<f64> = if scalar_on_left {
+        src.iter().map(|&x| float_op(s, x)).collect()
+    } else {
+        src.iter().map(|&x| float_op(x, s)).collect()
+    };
+    Some(Value::Tensor(
+        TensorValue::new_f64_values(tensor.shape.clone(), out).ok()?,
+    ))
+}
+
+/// f32 sibling of [`eval_f64_scalar_dense_map`]: promotes f32->f64, applies `float_op`,
+/// rounds back `as f32` — exactly the generic-f32 contract, so bit-identical. f32 is JAX's
+/// default float dtype.
+fn eval_f32_scalar_dense_map(
+    scalar: Literal,
+    tensor: &TensorValue,
+    scalar_on_left: bool,
+    float_op: &impl Fn(f64, f64) -> f64,
+) -> Option<Value> {
+    let Literal::F32Bits(bits) = scalar else {
+        return None;
+    };
+    if tensor.dtype != DType::F32 {
+        return None;
+    }
+    let s = f64::from(f32::from_bits(bits));
+    let src = tensor.elements.as_f32_slice()?;
+    let out: Vec<f32> = if scalar_on_left {
+        src.iter()
+            .map(|&x| float_op(s, f64::from(x)) as f32)
+            .collect()
+    } else {
+        src.iter()
+            .map(|&x| float_op(f64::from(x), s) as f32)
+            .collect()
+    };
+    Some(Value::Tensor(
+        TensorValue::new_f32_values(tensor.shape.clone(), out).ok()?,
+    ))
+}
+
 /// Binary elementwise operation dispatching on int/float paths.
 /// Supports full NumPy broadcasting: scalar-scalar, tensor-tensor (same shape),
 /// scalar-tensor, tensor-scalar, and multi-dim broadcasting.
@@ -473,6 +533,12 @@ pub(crate) fn eval_binary_elementwise(
             if let Some(value) = eval_f32_scalar_broadcast_binop(primitive, *lhs, rhs, true)? {
                 return Ok(value);
             }
+            if let Some(value) = eval_f64_scalar_dense_map(*lhs, rhs, true, &float_op) {
+                return Ok(value);
+            }
+            if let Some(value) = eval_f32_scalar_dense_map(*lhs, rhs, true, &float_op) {
+                return Ok(value);
+            }
             if let Some(value) = eval_half_float_scalar_broadcast_binop(primitive, *lhs, rhs, true)?
             {
                 return Ok(value);
@@ -514,6 +580,12 @@ pub(crate) fn eval_binary_elementwise(
                 return Ok(value);
             }
             if let Some(value) = eval_f32_scalar_broadcast_binop(primitive, *rhs, lhs, false)? {
+                return Ok(value);
+            }
+            if let Some(value) = eval_f64_scalar_dense_map(*rhs, lhs, false, &float_op) {
+                return Ok(value);
+            }
+            if let Some(value) = eval_f32_scalar_dense_map(*rhs, lhs, false, &float_op) {
                 return Ok(value);
             }
             if let Some(value) =
@@ -15037,6 +15109,118 @@ mod tests {
                 .collect();
             assert_eq!(got, expect, "{prim:?} dense f32 path != reference");
         }
+    }
+
+    #[test]
+    fn dense_scalar_tensor_binary_path_bit_identical_and_dense() {
+        // Scalar-tensor de-box: heaviside(x, h0_scalar) (the standard form), copysign with
+        // a scalar — both operand orders, f64 + f32 — must emit dense output bit-identical
+        // to the element-wise reference (NOT boxed).
+        let n = 4096usize;
+        let xs: Vec<f64> = (0..n).map(|i| (i as f64 % 7.0) - 3.0).collect();
+        let dense_f64 = |d: &[f64]| {
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                d.to_vec(),
+            )
+            .unwrap()
+        };
+        let dense_f32 = |d: &[f64]| {
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                d.iter().map(|&v| v as f32).collect(),
+            )
+            .unwrap()
+        };
+        // heaviside(tensor, scalar h0=0.5) — scalar on the RIGHT.
+        let heav = |x: f64, h0: f64| {
+            if x < 0.0 {
+                0.0
+            } else if x > 0.0 {
+                1.0
+            } else {
+                h0
+            }
+        };
+        // f64, scalar-right.
+        let out = crate::eval_primitive(
+            Primitive::Heaviside,
+            &[Value::Tensor(dense_f64(&xs)), Value::scalar_f64(0.5)],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let t = out.as_tensor().unwrap();
+        assert!(
+            t.elements.as_f64_slice().is_some(),
+            "heaviside f64 scalar-right not dense"
+        );
+        let got: Vec<u64> = t
+            .elements
+            .as_f64_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let expect: Vec<u64> = xs.iter().map(|&x| heav(x, 0.5).to_bits()).collect();
+        assert_eq!(got, expect, "heaviside f64 scalar-right");
+
+        // copysign(scalar=-1.0, tensor) — scalar on the LEFT, f64.
+        let out = crate::eval_primitive(
+            Primitive::CopySign,
+            &[Value::scalar_f64(-1.0), Value::Tensor(dense_f64(&xs))],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let t = out.as_tensor().unwrap();
+        assert!(
+            t.elements.as_f64_slice().is_some(),
+            "copysign f64 scalar-left not dense"
+        );
+        let got: Vec<u64> = t
+            .elements
+            .as_f64_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let expect: Vec<u64> = xs
+            .iter()
+            .map(|&x| f64::copysign(-1.0, x).to_bits())
+            .collect();
+        assert_eq!(got, expect, "copysign f64 scalar-left");
+
+        // f32, heaviside scalar-right.
+        let out = crate::eval_primitive(
+            Primitive::Heaviside,
+            &[
+                Value::Tensor(dense_f32(&xs)),
+                Value::Scalar(Literal::from_f32(0.5)),
+            ],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let t = out.as_tensor().unwrap();
+        assert_eq!(t.dtype, DType::F32);
+        assert!(
+            t.elements.as_f32_slice().is_some(),
+            "heaviside f32 scalar-right not dense"
+        );
+        let got: Vec<u32> = t
+            .elements
+            .as_f32_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let expect: Vec<u32> = xs
+            .iter()
+            .map(|&x| (heav(f64::from(x as f32), 0.5) as f32).to_bits())
+            .collect();
+        assert_eq!(got, expect, "heaviside f32 scalar-right");
     }
 
     /// the threaded expensive-binary path (Igamma/Igammac/Zeta): a large same-shape
