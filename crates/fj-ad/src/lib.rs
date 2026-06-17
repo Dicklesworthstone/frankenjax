@@ -19010,11 +19010,16 @@ mod tests {
         let jvp = jvp_rule(Primitive::Sort, &[x], &[dx], &BTreeMap::new()).unwrap();
         let jt = jvp.as_tensor().unwrap();
         assert_eq!(jt.dtype, DType::F32, "sort JVP must keep f32 dtype");
-        let dense = jt
-            .elements
-            .as_f32_slice()
-            .expect("sort JVP tangent must be dense f32 (no dtype/literal mismatch)");
-        assert_eq!(dense, &[20.0_f32, 30.0, 10.0]);
+        // Each literal must be F32Bits, consistent with the declared F32 dtype. The old
+        // path declared F32 but stored F64Bits literals (dtype/literal MISMATCH).
+        for l in jt.elements.iter() {
+            assert!(
+                matches!(l, Literal::F32Bits(_)),
+                "sort JVP literal must be F32Bits under F32 dtype, got {l:?}"
+            );
+        }
+        let vals = tensor_f64_values(&jvp);
+        assert_eq!(vals, vec![20.0, 30.0, 10.0]);
     }
 
     #[test]
