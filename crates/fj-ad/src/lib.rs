@@ -2414,11 +2414,12 @@ fn sort_jvp_value(
         .iter()
         .map(|l| l.as_f64().unwrap_or(0.0))
         .collect();
-    let d_vals: Vec<f64> = dt
-        .elements
-        .iter()
-        .map(|l| l.as_f64().unwrap_or(0.0))
-        .collect();
+    // Carry the tangent's literals VERBATIM through the argsort gather so the output
+    // tangent preserves dt's dtype/values exactly. The old path filled a Vec<f64> via
+    // as_f64() then rebuilt with Literal::from_f64 under a declared `dt.dtype`: for an
+    // f32/half tangent that produced a tensor whose declared dtype disagreed with its
+    // F64Bits literals (dtype-literal MISMATCH), and zeroed complex tangents.
+    let d_lits: Vec<Literal> = dt.elements.iter().copied().collect();
     let dims: Vec<usize> = xt.shape.dims.iter().map(|&d| d as usize).collect();
     let mut strides = vec![1usize; rank];
     for i in (0..rank - 1).rev() {
@@ -2431,7 +2432,7 @@ fn sort_jvp_value(
     let axis_stride = strides[axis];
     let total = x_vals.len();
     let outer_count = total / axis_dim;
-    let mut result = vec![0.0_f64; total];
+    let mut result = vec![zero_literal_for_dtype(dt.dtype); total];
 
     for outer in 0..outer_count {
         let mut base = 0usize;
@@ -2454,17 +2455,13 @@ fn sort_jvp_value(
         }
         // Gather: the k-th sorted position takes the tangent at its original index.
         for (k, &(orig_idx, _)) in indexed.iter().enumerate() {
-            result[base + k * axis_stride] = d_vals[base + orig_idx * axis_stride];
+            result[base + k * axis_stride] = d_lits[base + orig_idx * axis_stride];
         }
     }
 
     Ok(Value::Tensor(
-        TensorValue::new(
-            dt.dtype,
-            xt.shape.clone(),
-            result.into_iter().map(Literal::from_f64).collect(),
-        )
-        .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+        TensorValue::new(dt.dtype, xt.shape.clone(), result)
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?,
     ))
 }
 
@@ -18995,6 +18992,29 @@ mod tests {
         assert_eq!(gt.dtype, DType::F32, "sort grad must keep f32 input dtype");
         let r = tensor_f64_values(&grads[0]);
         assert_eq!(r, vec![30.0, 10.0, 20.0]);
+    }
+
+    #[test]
+    fn sort_jvp_f32_dtype_consistent_and_dense() {
+        // Forward-mode sort tangent must be a CONSISTENT dense-f32 tensor (the old
+        // path declared dt.dtype but filled F64Bits literals -> dtype/literal mismatch
+        // that breaks as_f32_slice). x=[3,1,2], dx=[10,20,30] (f32). Sort ascending
+        // gathers: sorted-pos k takes tangent at its original index ->
+        // pos0<-orig1(20), pos1<-orig2(30), pos2<-orig0(10) => [20,30,10].
+        let x = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![3] }, vec![3.0, 1.0, 2.0]).unwrap(),
+        );
+        let dx = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![3] }, vec![10.0, 20.0, 30.0]).unwrap(),
+        );
+        let jvp = jvp_rule(Primitive::Sort, &[x], &[dx], &BTreeMap::new()).unwrap();
+        let jt = jvp.as_tensor().unwrap();
+        assert_eq!(jt.dtype, DType::F32, "sort JVP must keep f32 dtype");
+        let dense = jt
+            .elements
+            .as_f32_slice()
+            .expect("sort JVP tangent must be dense f32 (no dtype/literal mismatch)");
+        assert_eq!(dense, &[20.0_f32, 30.0, 10.0]);
     }
 
     #[test]
