@@ -11071,7 +11071,11 @@ mod tests {
                     .collect();
                 assert!((l[0] - 2.0).abs() < 1e-5, "L00={}", l[0]);
                 assert!((l[2] - 1.0).abs() < 1e-5, "L10={}", l[2]);
-                assert!((l[3] - std::f32::consts::SQRT_2).abs() < 1e-5, "L11={}", l[3]);
+                assert!(
+                    (l[3] - std::f32::consts::SQRT_2).abs() < 1e-5,
+                    "L11={}",
+                    l[3]
+                );
             }
             other => panic!("expected tensor, got {other:?}"),
         }
@@ -11133,8 +11137,11 @@ mod tests {
         };
 
         // LU of [[2,1],[1,3]] (f32): lu -> F32, pivots/perm -> I32.
-        let lu_out = eval_lu(&[f32_mat(vec![2, 2], &[2.0, 1.0, 1.0, 3.0])], &BTreeMap::new())
-            .expect("lu");
+        let lu_out = eval_lu(
+            &[f32_mat(vec![2, 2], &[2.0, 1.0, 1.0, 3.0])],
+            &BTreeMap::new(),
+        )
+        .expect("lu");
         assert_eq!(lu_out.len(), 3, "lu returns [lu, pivots, perm]");
         let expect_dtype = [DType::F32, DType::I32, DType::I32];
         for (i, v) in lu_out.iter().enumerate() {
@@ -11186,7 +11193,11 @@ mod tests {
         let det = eval_det(&[a()], &BTreeMap::new()).expect("det");
         match det {
             Value::Scalar(Literal::F32Bits(b)) => {
-                assert!((f32::from_bits(b) - 5.0).abs() < 1e-4, "det = {}", f32::from_bits(b));
+                assert!(
+                    (f32::from_bits(b) - 5.0).abs() < 1e-4,
+                    "det = {}",
+                    f32::from_bits(b)
+                );
             }
             other => panic!("det must be an F32 scalar, got {other:?}"),
         }
@@ -11194,7 +11205,11 @@ mod tests {
         assert_eq!(sld.len(), 2);
         match (&sld[0], &sld[1]) {
             (Value::Scalar(Literal::F32Bits(s)), Value::Scalar(Literal::F32Bits(l))) => {
-                assert!((f32::from_bits(*s) - 1.0).abs() < 1e-4, "sign = {}", f32::from_bits(*s));
+                assert!(
+                    (f32::from_bits(*s) - 1.0).abs() < 1e-4,
+                    "sign = {}",
+                    f32::from_bits(*s)
+                );
                 assert!(
                     (f32::from_bits(*l) - 5.0_f32.ln()).abs() < 1e-4,
                     "logabsdet = {}",
