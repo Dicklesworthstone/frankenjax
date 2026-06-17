@@ -561,7 +561,11 @@ pub fn dce_jaxpr(jaxpr: &Jaxpr, used_outputs: &[bool]) -> (Jaxpr, Vec<bool>) {
         let mut retained_count = 0;
         for (eqn_index, eqn) in jaxpr.equations.iter().enumerate().rev() {
             let outputs_needed = eqn.outputs.iter().any(|v| needed[v.0 as usize]);
-            if outputs_needed {
+            // An effectful equation must be retained even when its outputs are dead:
+            // dropping it would discard the side effect. This matches JAX's dce_jaxpr,
+            // which keeps any equation whose effects are non-empty. Its inputs then
+            // become live too (they are needed to perform the effect).
+            if outputs_needed || !eqn.effects.is_empty() {
                 retain_eqn[eqn_index] = true;
                 retained_count += 1;
                 for atom in &eqn.inputs {
@@ -2827,6 +2831,60 @@ mod tests {
                 let (pruned, used_inputs) = dce_jaxpr(&jaxpr, &[true, false]);
                 assert_eq!(pruned.equations.len(), 1);
                 assert_eq!(pruned.equations[0].primitive, Primitive::Neg);
+                assert_eq!(used_inputs, vec![true]);
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_dce_retains_effectful_equation_with_dead_output() {
+        run_logged_test(
+            "test_dce_retains_effectful_equation_with_dead_output",
+            &("dce", "effects", "retains_effectful"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                // eq0 (Neg, effectful) produces VarId(2), which is UNUSED; eq1 (Add)
+                // produces the live output VarId(3). DCE must NOT drop the effectful eq0
+                // even though its output is dead — dropping it would discard the side
+                // effect. Matches JAX dce_jaxpr, which keeps any equation with effects.
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1)],
+                    vec![],
+                    vec![VarId(3)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Neg,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(2)],
+                            params: BTreeMap::new(),
+                            effects: vec!["io".to_owned()],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(3)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+                let (pruned, used_inputs) = dce_jaxpr(&jaxpr, &[true]);
+                assert_eq!(
+                    pruned.equations.len(),
+                    2,
+                    "effectful equation must be retained despite its dead output"
+                );
+                assert!(
+                    pruned
+                        .equations
+                        .iter()
+                        .any(|e| e.primitive == Primitive::Neg && !e.effects.is_empty()),
+                    "the effectful Neg was dropped by DCE"
+                );
+                // The effectful equation's input is live (needed to perform the effect).
                 assert_eq!(used_inputs, vec![true]);
                 Ok(vec![])
             },
