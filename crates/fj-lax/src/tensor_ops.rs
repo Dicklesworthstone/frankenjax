@@ -8165,6 +8165,22 @@ fn conv_real_output_from_f64(
         let values: Vec<f32> = out.iter().map(|&v| v as f32).collect();
         return Ok(Value::Tensor(TensorValue::new_f32_values(shape, values)?));
     }
+    // Dense bf16/f16 conv output: emit dense u16 storage instead of boxed Literals.
+    // Conv output ([N,H,W,C_out]) is large and bf16 conv is common in mixed-precision
+    // CNNs; the boxed Literal construction dominates. Bits come from
+    // conv_float_literal_from_f64 (from_bf16_f64/from_f16_f64) so bit-identical.
+    if matches!(out_dtype, DType::BF16 | DType::F16) {
+        let bits: Vec<u16> = out
+            .iter()
+            .map(|&v| match conv_float_literal_from_f64(out_dtype, v) {
+                Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                _ => unreachable!("half-float conv produced non-half literal"),
+            })
+            .collect();
+        return Ok(Value::Tensor(TensorValue::new_half_float_values(
+            out_dtype, shape, bits,
+        )?));
+    }
     let elements: Vec<Literal> = out
         .iter()
         .map(|&v| conv_float_literal_from_f64(out_dtype, v))
