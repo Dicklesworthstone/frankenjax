@@ -1940,6 +1940,14 @@ pub(crate) fn eval_slice(
                         src[start_offset..end_offset].to_vec(),
                     )?));
                 }
+                // Bool mask slice (cropping a mask) — copy the contiguous bool
+                // sub-range into dense storage instead of boxing each element.
+                if let Some(src) = tensor.elements.as_bool_slice() {
+                    return Ok(Value::Tensor(TensorValue::new_bool_values(
+                        shape,
+                        src[start_offset..end_offset].to_vec(),
+                    )?));
+                }
                 return Ok(Value::Tensor(TensorValue::new(
                     tensor.dtype,
                     shape,
@@ -1990,6 +1998,9 @@ pub(crate) fn eval_slice(
             }
             if let Some(s) = tensor.elements.as_u64_slice() {
                 dense_strided_slice!(s, TensorValue::new_u64_values);
+            }
+            if let Some(s) = tensor.elements.as_bool_slice() {
+                dense_strided_slice!(s, TensorValue::new_bool_values);
             }
 
             // Literal fallback (boxed/other dtypes): the same gather over Literals.
@@ -14966,6 +14977,26 @@ mod tests {
                 d.as_tensor().unwrap().elements.as_i64_slice().is_some(),
                 "i64 strided slice dense"
             );
+
+            let boold: Vec<bool> = (0..rows * cols).map(|i| (i ^ (i >> 1)) & 1 == 0).collect();
+            let dense = Value::Tensor(
+                TensorValue::new_bool_values(Shape { dims: dims.clone() }, boold.clone()).unwrap(),
+            );
+            let boxed = Value::Tensor(
+                TensorValue::new_with_literal_buffer(
+                    DType::Bool,
+                    Shape { dims: dims.clone() },
+                    LiteralBuffer::new(boold.iter().copied().map(Literal::Bool).collect()),
+                )
+                .unwrap(),
+            );
+            let d = eval_slice(std::slice::from_ref(&dense), &p).unwrap();
+            let l = eval_slice(std::slice::from_ref(&boxed), &p).unwrap();
+            assert_eq!(lits(&d), lits(&l), "bool strided slice");
+            assert!(
+                d.as_tensor().unwrap().elements.as_bool_slice().is_some(),
+                "bool strided slice dense"
+            );
         }
     }
 
@@ -15122,6 +15153,27 @@ mod tests {
         assert!(
             d.as_tensor().unwrap().elements.as_i64_slice().is_some(),
             "i64 slice output dense"
+        );
+
+        // bool (mask crop)
+        let boold: Vec<bool> = (0..rows * cols).map(|i| (i * 3 + 1) % 4 < 2).collect();
+        let dense = Value::Tensor(
+            TensorValue::new_bool_values(Shape { dims: dims.clone() }, boold.clone()).unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                Shape { dims: dims.clone() },
+                LiteralBuffer::new(boold.iter().copied().map(Literal::Bool).collect()),
+            )
+            .unwrap(),
+        );
+        let d = eval_slice(&[dense], &p).unwrap();
+        let l = eval_slice(&[boxed], &p).unwrap();
+        assert_eq!(lits(&d), lits(&l), "bool slice");
+        assert!(
+            d.as_tensor().unwrap().elements.as_bool_slice().is_some(),
+            "bool slice output dense"
         );
     }
 
