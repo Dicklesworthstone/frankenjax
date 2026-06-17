@@ -2594,11 +2594,16 @@ pub(crate) fn eval_reduce_bitwise_axes(
                                 }
                             }
                         }
-                        let elements = result.into_iter().map(Literal::Bool).collect();
-                        return Ok(Value::Tensor(TensorValue::new(
-                            DType::Bool,
+                        // Emit dense 1-byte bool storage (not a boxed 24-byte
+                        // Vec<Literal::Bool>) — bit-identical to the odometer
+                        // fallback below, which builds the SAME `result: Vec<bool>`
+                        // and wraps it via `new_bool_values`. This contiguous-block
+                        // path is the HOT case (any/all(mask, axis=-1|0)); boxing
+                        // its already-dense result wasted 24 B/elem + per-element
+                        // TensorValue::new dtype validation.
+                        return Ok(Value::Tensor(TensorValue::new_bool_values(
                             Shape { dims: out_dims },
-                            elements,
+                            result,
                         )?));
                     }
 
@@ -7283,6 +7288,89 @@ mod tests {
                     "{prim:?} axes={axes} shape"
                 );
                 assert_eq!(i64s(&d), i64s(&l), "{prim:?} axes={axes} values");
+            }
+        }
+    }
+
+    #[test]
+    fn dense_bool_bitwise_axis_reduce_is_dense_and_bit_identical() {
+        // The contiguous-block bool fast path (any/all over a contiguous axis
+        // block, the dominant `any/all(mask, axis=-1|0)` idiom) must emit dense
+        // 1-byte bool storage and match the boxed Vec<Literal::Bool> path bit for
+        // bit. Regression for the de-box: that path used to `map(Literal::Bool)`
+        // into a 24 B/elem boxed buffer despite already holding a dense Vec<bool>.
+        let dims = vec![4_u32, 5, 6];
+        let n = (4 * 5 * 6) as usize;
+        let data: Vec<bool> = (0..n)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 3) & 1 == 0)
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new_bool_values(Shape { dims: dims.clone() }, data.clone()).unwrap(),
+        );
+        assert!(
+            dense
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_bool_slice()
+                .is_some()
+                || dense
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_bool_words()
+                    .is_some(),
+            "dense bool operand"
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                Shape { dims: dims.clone() },
+                LiteralBuffer::new(data.iter().copied().map(Literal::Bool).collect()),
+            )
+            .unwrap(),
+        );
+        assert!(
+            boxed
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_bool_slice()
+                .is_none(),
+            "boxed bool operand must not be dense"
+        );
+        let bools = |v: &Value| -> Vec<bool> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| matches!(l, Literal::Bool(true)))
+                .collect()
+        };
+        for prim in [
+            Primitive::ReduceAnd,
+            Primitive::ReduceOr,
+            Primitive::ReduceXor,
+        ] {
+            // "2" -> inner==1, "0" -> outer==1, "1"/"0,1"/"1,2" contiguous blocks
+            // (fast path); "0,2" non-contiguous (odometer fallback). All output
+            // dtype Bool, so the dense ctor applies on every path.
+            for axes in ["0", "1", "2", "0,1", "1,2", "0,2"] {
+                let mut params = BTreeMap::new();
+                params.insert("axes".to_owned(), axes.to_owned());
+                let d = crate::eval_primitive(prim, std::slice::from_ref(&dense), &params).unwrap();
+                let l = crate::eval_primitive(prim, std::slice::from_ref(&boxed), &params).unwrap();
+                let dt = d.as_tensor().unwrap();
+                assert!(
+                    dt.elements.as_bool_slice().is_some() || dt.elements.as_bool_words().is_some(),
+                    "{prim:?} axes={axes}: output must be dense bool storage, not boxed"
+                );
+                assert_eq!(
+                    dt.shape.dims,
+                    l.as_tensor().unwrap().shape.dims,
+                    "{prim:?} axes={axes} shape"
+                );
+                assert_eq!(bools(&d), bools(&l), "{prim:?} axes={axes} values");
             }
         }
     }
