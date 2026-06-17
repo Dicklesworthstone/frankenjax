@@ -3979,7 +3979,10 @@ pub(crate) fn eval_det(
 
     let a_real: Vec<f64> = a.iter().map(|(re, _im)| *re).collect();
     let d = det(&a_real, n);
-    Ok(Value::scalar_f64(d))
+    // det of a real matrix keeps the input's float dtype (JAX: f32 in -> f32 out);
+    // the prior scalar_f64 widened f32/bf16/f16 determinants to f64. Integer inputs
+    // fall through linalg_literal_from_f64's `_ => from_f64` arm (int linalg -> float).
+    Ok(Value::Scalar(linalg_literal_from_f64(dtype, d)))
 }
 
 /// Evaluate sign and log of matrix determinant.
@@ -4036,7 +4039,12 @@ pub(crate) fn eval_slogdet(
 
     let a_real: Vec<f64> = a.iter().map(|(re, _im)| *re).collect();
     let (sign, logabsdet) = slogdet(&a_real, n);
-    Ok(vec![Value::scalar_f64(sign), Value::scalar_f64(logabsdet)])
+    // sign + logabsdet keep the input's float dtype (JAX: f32 in -> f32 out); the prior
+    // scalar_f64 widened f32/bf16/f16 slogdet outputs to f64.
+    Ok(vec![
+        Value::Scalar(linalg_literal_from_f64(dtype, sign)),
+        Value::Scalar(linalg_literal_from_f64(dtype, logabsdet)),
+    ])
 }
 
 // ── General Eigendecomposition (eig) ────────────────────────────────
@@ -11056,6 +11064,48 @@ mod tests {
                 assert!((l[3] - std::f32::consts::SQRT_2).abs() < 1e-5, "L11={}", l[3]);
             }
             other => panic!("expected tensor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_det_slogdet_preserve_f32_dtype() {
+        // det/slogdet of an f32 matrix must return f32 scalars (JAX: f32 in -> f32 out).
+        // The real paths previously hardcoded Value::scalar_f64, widening f32 -> f64.
+        // A = [[2,1],[1,3]] (f32): det = 5, slogdet = (+1, ln 5).
+        let a = || {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F32,
+                    Shape { dims: vec![2, 2] },
+                    vec![
+                        Literal::from_f32(2.0),
+                        Literal::from_f32(1.0),
+                        Literal::from_f32(1.0),
+                        Literal::from_f32(3.0),
+                    ],
+                )
+                .unwrap(),
+            )
+        };
+        let det = eval_det(&[a()], &BTreeMap::new()).expect("det");
+        match det {
+            Value::Scalar(Literal::F32Bits(b)) => {
+                assert!((f32::from_bits(b) - 5.0).abs() < 1e-4, "det = {}", f32::from_bits(b));
+            }
+            other => panic!("det must be an F32 scalar, got {other:?}"),
+        }
+        let sld = eval_slogdet(&[a()], &BTreeMap::new()).expect("slogdet");
+        assert_eq!(sld.len(), 2);
+        match (&sld[0], &sld[1]) {
+            (Value::Scalar(Literal::F32Bits(s)), Value::Scalar(Literal::F32Bits(l))) => {
+                assert!((f32::from_bits(*s) - 1.0).abs() < 1e-4, "sign = {}", f32::from_bits(*s));
+                assert!(
+                    (f32::from_bits(*l) - 5.0_f32.ln()).abs() < 1e-4,
+                    "logabsdet = {}",
+                    f32::from_bits(*l)
+                );
+            }
+            other => panic!("slogdet must be (F32, F32) scalars, got {other:?}"),
         }
     }
 
