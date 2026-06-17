@@ -2713,11 +2713,14 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         }
                     }
 
-                    let elements = result.into_iter().map(Literal::I64).collect();
-                    Ok(Value::Tensor(TensorValue::new(
-                        DType::I64,
+                    // Emit dense i64 storage (not a boxed 24-byte Vec<Literal::I64>)
+                    // — bit-identical: same DType::I64 output, same i64 values, the
+                    // odometer above already built the dense `result`. Mirrors the
+                    // Bool arm's new_bool_values wrap; boxing the already-dense
+                    // accumulator wasted 16 B/elem + per-element new() validation.
+                    Ok(Value::Tensor(TensorValue::new_i64_values(
                         Shape { dims: out_dims },
-                        elements,
+                        result,
                     )?))
                 }
                 _ => Err(EvalError::TypeMismatch {
@@ -7282,6 +7285,10 @@ mod tests {
                 params.insert("axes".to_owned(), axes.to_owned());
                 let d = crate::eval_primitive(prim, std::slice::from_ref(&dense), &params).unwrap();
                 let l = crate::eval_primitive(prim, std::slice::from_ref(&boxed), &params).unwrap();
+                assert!(
+                    d.as_tensor().unwrap().elements.as_i64_slice().is_some(),
+                    "{prim:?} axes={axes}: output must be dense i64 storage, not boxed"
+                );
                 assert_eq!(
                     d.as_tensor().unwrap().shape.dims,
                     l.as_tensor().unwrap().shape.dims,
