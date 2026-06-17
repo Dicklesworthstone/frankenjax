@@ -4,11 +4,53 @@
 
 use fj_core::{DType, Literal, Shape, TensorValue, Value, ValueError};
 
+fn checked_shape_and_size(dims: &[u32]) -> Result<(Shape, usize), ValueError> {
+    let shape = Shape {
+        dims: dims.to_vec(),
+    };
+    let count = shape
+        .element_count()
+        .ok_or_else(|| ValueError::ShapeOverflow {
+            shape: shape.clone(),
+        })?;
+    let size = usize::try_from(count).map_err(|_| ValueError::ShapeOverflow {
+        shape: shape.clone(),
+    })?;
+    Ok((shape, size))
+}
+
+fn linspace_elements(start: f64, stop: f64, num: usize, endpoint: bool) -> Vec<Literal> {
+    if num == 0 {
+        return Vec::new();
+    }
+
+    let step = if num == 1 {
+        0.0
+    } else if endpoint {
+        (stop - start) / (num - 1) as f64
+    } else {
+        (stop - start) / num as f64
+    };
+
+    let mut elements: Vec<Literal> = (0..num)
+        .map(|i| Literal::from_f64(start + step * i as f64))
+        .collect();
+
+    // JAX/NumPy pin the final sample to exactly `stop` when `endpoint=True`,
+    // overriding the `start + step*(num-1)` value (which drifts by up to an ULP).
+    // `jnp.linspace` does `out = out.at[-1].set(stop)`; reproduce it bit-for-bit.
+    if endpoint && num > 1 {
+        elements[num - 1] = Literal::from_f64(stop);
+    }
+
+    elements
+}
+
 /// Create an array filled with zeros.
 ///
 /// Matches `jnp.zeros(shape, dtype)`.
 pub fn zeros(shape: &[u32], dtype: DType) -> Result<Value, ValueError> {
-    let size = shape.iter().map(|&d| d as usize).product();
+    let (shape, size) = checked_shape_and_size(shape)?;
     let elements = match dtype {
         DType::F32 => vec![Literal::from_f32(0.0); size],
         DType::F64 => vec![Literal::from_f64(0.0); size],
@@ -22,13 +64,7 @@ pub fn zeros(shape: &[u32], dtype: DType) -> Result<Value, ValueError> {
         DType::F16 => vec![Literal::from_f16_f32(0.0); size],
         DType::BF16 => vec![Literal::from_bf16_f32(0.0); size],
     };
-    let tensor = TensorValue::new(
-        dtype,
-        Shape {
-            dims: shape.to_vec(),
-        },
-        elements,
-    )?;
+    let tensor = TensorValue::new(dtype, shape, elements)?;
     Ok(Value::Tensor(tensor))
 }
 
@@ -36,7 +72,7 @@ pub fn zeros(shape: &[u32], dtype: DType) -> Result<Value, ValueError> {
 ///
 /// Matches `jnp.ones(shape, dtype)`.
 pub fn ones(shape: &[u32], dtype: DType) -> Result<Value, ValueError> {
-    let size = shape.iter().map(|&d| d as usize).product();
+    let (shape, size) = checked_shape_and_size(shape)?;
     let elements = match dtype {
         DType::F32 => vec![Literal::from_f32(1.0); size],
         DType::F64 => vec![Literal::from_f64(1.0); size],
@@ -50,13 +86,7 @@ pub fn ones(shape: &[u32], dtype: DType) -> Result<Value, ValueError> {
         DType::F16 => vec![Literal::from_f16_f32(1.0); size],
         DType::BF16 => vec![Literal::from_bf16_f32(1.0); size],
     };
-    let tensor = TensorValue::new(
-        dtype,
-        Shape {
-            dims: shape.to_vec(),
-        },
-        elements,
-    )?;
+    let tensor = TensorValue::new(dtype, shape, elements)?;
     Ok(Value::Tensor(tensor))
 }
 
@@ -64,7 +94,7 @@ pub fn ones(shape: &[u32], dtype: DType) -> Result<Value, ValueError> {
 ///
 /// Matches `jnp.full(shape, fill_value, dtype)`.
 pub fn full(shape: &[u32], fill_value: f64, dtype: DType) -> Result<Value, ValueError> {
-    let size = shape.iter().map(|&d| d as usize).product();
+    let (shape, size) = checked_shape_and_size(shape)?;
     let elements = match dtype {
         DType::F32 => vec![Literal::from_f32(fill_value as f32); size],
         DType::F64 => vec![Literal::from_f64(fill_value); size],
@@ -78,13 +108,7 @@ pub fn full(shape: &[u32], fill_value: f64, dtype: DType) -> Result<Value, Value
         DType::F16 => vec![Literal::from_f16_f64(fill_value); size],
         DType::BF16 => vec![Literal::from_bf16_f64(fill_value); size],
     };
-    let tensor = TensorValue::new(
-        dtype,
-        Shape {
-            dims: shape.to_vec(),
-        },
-        elements,
-    )?;
+    let tensor = TensorValue::new(dtype, shape, elements)?;
     Ok(Value::Tensor(tensor))
 }
 
@@ -130,25 +154,7 @@ pub fn linspace(start: f64, stop: f64, num: usize, endpoint: bool) -> Result<Val
         return Ok(Value::Tensor(tensor));
     }
 
-    let step = if num == 1 {
-        0.0
-    } else if endpoint {
-        (stop - start) / (num - 1) as f64
-    } else {
-        (stop - start) / num as f64
-    };
-
-    let mut elements: Vec<Literal> = (0..num)
-        .map(|i| Literal::from_f64(start + step * i as f64))
-        .collect();
-
-    // JAX/NumPy pin the final sample to exactly `stop` when `endpoint=True`,
-    // overriding the `start + step*(num-1)` value (which drifts by up to an ULP).
-    // `jnp.linspace` does `out = out.at[-1].set(stop)`; reproduce it bit-for-bit.
-    if endpoint && num > 1 {
-        elements[num - 1] = Literal::from_f64(stop);
-    }
-
+    let elements = linspace_elements(start, stop, num, endpoint);
     let tensor = TensorValue::new(
         DType::F64,
         Shape {
@@ -203,24 +209,25 @@ pub fn logspace(
     endpoint: bool,
     base: f64,
 ) -> Result<Value, ValueError> {
-    let lin = linspace(start, stop, num, endpoint)?;
-    let Value::Tensor(tensor) = lin else {
-        panic!("linspace returned non-tensor");
-    };
-
-    let elements: Vec<Literal> = tensor
-        .elements
-        .iter()
+    let source = linspace_elements(start, stop, num, endpoint);
+    let elements: Vec<Literal> = source
+        .into_iter()
         .map(|lit| {
             if let Some(v) = lit.as_f64() {
                 Literal::from_f64(base.powf(v))
             } else {
-                *lit
+                lit
             }
         })
         .collect();
 
-    let tensor = TensorValue::new(DType::F64, tensor.shape, elements)?;
+    let tensor = TensorValue::new(
+        DType::F64,
+        Shape {
+            dims: vec![num as u32],
+        },
+        elements,
+    )?;
     Ok(Value::Tensor(tensor))
 }
 
@@ -465,6 +472,23 @@ mod tests {
         let v = full(&[3], 42.0, DType::F64).unwrap();
         let vals = extract_f64(&v);
         assert_eq!(vals, vec![42.0; 3]);
+    }
+
+    #[test]
+    fn array_creation_rejects_shape_overflow_before_allocation() {
+        let huge = [u32::MAX, u32::MAX, 2];
+        assert!(matches!(
+            zeros(&huge, DType::F64),
+            Err(ValueError::ShapeOverflow { .. })
+        ));
+        assert!(matches!(
+            ones(&huge, DType::I32),
+            Err(ValueError::ShapeOverflow { .. })
+        ));
+        assert!(matches!(
+            full(&huge, 7.0, DType::Bool),
+            Err(ValueError::ShapeOverflow { .. })
+        ));
     }
 
     #[test]
