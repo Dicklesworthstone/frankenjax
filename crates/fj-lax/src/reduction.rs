@@ -2645,7 +2645,17 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         result,
                     )?))
                 }
-                DType::I64 => {
+                // I32 (JAX's default int) is dense i64-backed, so it shares the i64
+                // reduce path: as_i64 reads the sign-extended slot, and bitwise
+                // and/or/xor preserve the sign-extension invariant (the i64 result
+                // is exactly the sign-extension of the i32 result for all three
+                // ops), so new_i32_values stores the correct value. Matches the
+                // non-bitwise integer reduce (which also routes I64|I32 here) and
+                // the full-reduce scalar convention (scalar_i64 even for i32, as
+                // sum/prod/max do — there is no i32 scalar repr). Previously i32
+                // hit the `_` arm and erred despite the comment below claiming it
+                // took this branch.
+                DType::I64 | DType::I32 => {
                     if reduce_all_axes {
                         let mut acc = int_init;
                         for literal in &tensor.elements {
@@ -2673,7 +2683,7 @@ pub(crate) fn eval_reduce_bitwise_axes(
                     )?;
                     if out_count == 0 {
                         return Ok(Value::Tensor(TensorValue::new(
-                            DType::I64,
+                            tensor.dtype,
                             Shape { dims: out_dims },
                             vec![],
                         )?));
@@ -2713,15 +2723,20 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         }
                     }
 
-                    // Emit dense i64 storage (not a boxed 24-byte Vec<Literal::I64>)
-                    // — bit-identical: same DType::I64 output, same i64 values, the
-                    // odometer above already built the dense `result`. Mirrors the
-                    // Bool arm's new_bool_values wrap; boxing the already-dense
-                    // accumulator wasted 16 B/elem + per-element new() validation.
-                    Ok(Value::Tensor(TensorValue::new_i64_values(
-                        Shape { dims: out_dims },
-                        result,
-                    )?))
+                    // Emit dense integer storage (not a boxed 24-byte
+                    // Vec<Literal::I64>) — the odometer above already built the
+                    // dense `result`. I32 output is tagged via new_i32_values (the
+                    // i64-backed result is the sign-extension of the i32 bitwise
+                    // result); I64 via new_i64_values. Mirrors the Bool arm's
+                    // new_bool_values wrap and the non-bitwise integer reduce's
+                    // I64/I32 dtype split.
+                    let shape = Shape { dims: out_dims };
+                    let tv = if tensor.dtype == DType::I32 {
+                        TensorValue::new_i32_values(shape, result)
+                    } else {
+                        TensorValue::new_i64_values(shape, result)
+                    };
+                    Ok(Value::Tensor(tv?))
                 }
                 _ => Err(EvalError::TypeMismatch {
                     primitive,
@@ -7297,6 +7312,98 @@ mod tests {
                 assert_eq!(i64s(&d), i64s(&l), "{prim:?} axes={axes} values");
             }
         }
+    }
+
+    #[test]
+    fn i32_bitwise_axis_reduce_works_and_matches_i64_path() {
+        // i32 (JAX's default int) bitwise axis-reduce previously hit the `_` arm
+        // and erred ("expects bool or i64 tensor") despite the code comment
+        // claiming i32 took the i64 branch. It must now (a) succeed, (b) tag its
+        // output I32 (dense), and (c) produce the same values as the i64 path on
+        // the same data — bitwise and/or/xor preserve the sign-extension invariant,
+        // so an i64-backed i32 reduces identically. Include negatives to exercise
+        // sign extension.
+        let dims = vec![3_u32, 4];
+        let data_i32: Vec<i32> = vec![
+            -1,
+            0x0f0f,
+            5,
+            -8,
+            0x7fff_ffff,
+            -16,
+            12,
+            0,
+            i32::MIN,
+            255,
+            -3,
+            9,
+        ];
+        let i32_tensor = Value::Tensor(
+            TensorValue::new_i32_values(
+                Shape { dims: dims.clone() },
+                data_i32.iter().map(|&v| i64::from(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let i64_tensor = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape { dims: dims.clone() },
+                data_i32.iter().map(|&v| i64::from(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let vals = |v: &Value| -> Vec<i64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_i64().unwrap())
+                .collect()
+        };
+        for prim in [
+            Primitive::ReduceAnd,
+            Primitive::ReduceOr,
+            Primitive::ReduceXor,
+        ] {
+            for axes in ["0", "1"] {
+                let mut params = BTreeMap::new();
+                params.insert("axes".to_owned(), axes.to_owned());
+                let out_i32 =
+                    crate::eval_primitive(prim, std::slice::from_ref(&i32_tensor), &params)
+                        .unwrap_or_else(|e| {
+                            panic!("{prim:?} axes={axes} i32 must not error: {e:?}")
+                        });
+                let out_i64 =
+                    crate::eval_primitive(prim, std::slice::from_ref(&i64_tensor), &params)
+                        .unwrap();
+                let t = out_i32.as_tensor().unwrap();
+                assert_eq!(
+                    t.dtype,
+                    DType::I32,
+                    "{prim:?} axes={axes}: output dtype I32"
+                );
+                assert!(
+                    t.elements.as_i64_slice().is_some(),
+                    "{prim:?} axes={axes}: i32 output must be dense"
+                );
+                // Values equal the i64 path (sign-extension preserved across &/|/^).
+                assert_eq!(
+                    vals(&out_i32),
+                    vals(&out_i64),
+                    "{prim:?} axes={axes}: i32 values match i64 path"
+                );
+            }
+        }
+        // Full-reduce (all axes) also succeeds, returning an i64-backed scalar
+        // (the established integer full-reduce convention).
+        let mut all = BTreeMap::new();
+        all.insert("axes".to_owned(), "0,1".to_owned());
+        let s = crate::eval_primitive(Primitive::ReduceOr, std::slice::from_ref(&i32_tensor), &all)
+            .expect("i32 full bitwise-reduce must not error");
+        assert!(
+            matches!(s, Value::Scalar(Literal::I64(_))),
+            "scalar i64 result"
+        );
     }
 
     #[test]
