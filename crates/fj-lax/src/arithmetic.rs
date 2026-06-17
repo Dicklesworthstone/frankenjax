@@ -5922,58 +5922,87 @@ fn select_unsigned_same_shape_fast_path(
 /// pair. Bit-identical: `promote_dtype` of equal dtypes is that dtype, and for an
 /// F64/I64 value `select_literal_as_dtype` is the identity, so the dense buffer
 /// stores exactly the bits the generic path would (incl. F64 NaN payloads).
-fn select_scalar_branches_fast_path(
-    cond: &TensorValue,
+// Build a dense scalar-branch select output from a bool predicate iterator. The
+// iterator is monomorphized per call site (no dyn dispatch), so the bit-test path
+// is as tight as the slice path. Returns None for unsupported scalar dtype pairs.
+fn select_scalar_from_bools(
+    bools: impl Iterator<Item = bool>,
+    shape: Shape,
     on_true: Literal,
     on_false: Literal,
 ) -> Result<Option<Value>, EvalError> {
-    let Some(conds) = cond.elements.as_bool_slice() else {
-        return Ok(None);
-    };
     match (on_true, on_false) {
         (Literal::F64Bits(tb), Literal::F64Bits(fb)) => {
             let t = f64::from_bits(tb);
             let f = f64::from_bits(fb);
-            let out: Vec<f64> = conds.iter().map(|&c| if c { t } else { f }).collect();
+            let out: Vec<f64> = bools.map(|c| if c { t } else { f }).collect();
             Ok(Some(Value::Tensor(TensorValue::new_f64_values(
-                cond.shape.clone(),
-                out,
+                shape, out,
             )?)))
         }
         (Literal::I64(tv), Literal::I64(fv)) => {
-            let out: Vec<i64> = conds.iter().map(|&c| if c { tv } else { fv }).collect();
+            let out: Vec<i64> = bools.map(|c| if c { tv } else { fv }).collect();
             Ok(Some(Value::Tensor(TensorValue::new_i64_values(
-                cond.shape.clone(),
-                out,
+                shape, out,
             )?)))
         }
         (Literal::F32Bits(tb), Literal::F32Bits(fb)) => {
             let t = f32::from_bits(tb);
             let f = f32::from_bits(fb);
-            let out: Vec<f32> = conds.iter().map(|&c| if c { t } else { f }).collect();
+            let out: Vec<f32> = bools.map(|c| if c { t } else { f }).collect();
             Ok(Some(Value::Tensor(TensorValue::new_f32_values(
-                cond.shape.clone(),
-                out,
+                shape, out,
             )?)))
         }
         (Literal::BF16Bits(tb), Literal::BF16Bits(fb)) => {
-            let out: Vec<u16> = conds.iter().map(|&c| if c { tb } else { fb }).collect();
+            let out: Vec<u16> = bools.map(|c| if c { tb } else { fb }).collect();
             Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
                 DType::BF16,
-                cond.shape.clone(),
+                shape,
                 out,
             )?)))
         }
         (Literal::F16Bits(tb), Literal::F16Bits(fb)) => {
-            let out: Vec<u16> = conds.iter().map(|&c| if c { tb } else { fb }).collect();
+            let out: Vec<u16> = bools.map(|c| if c { tb } else { fb }).collect();
             Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
                 DType::F16,
-                cond.shape.clone(),
+                shape,
                 out,
             )?)))
         }
         _ => Ok(None),
     }
+}
+
+fn select_scalar_branches_fast_path(
+    cond: &TensorValue,
+    on_true: Literal,
+    on_false: Literal,
+) -> Result<Option<Value>, EvalError> {
+    // Dense 1-byte Bool predicate.
+    if let Some(conds) = cond.elements.as_bool_slice() {
+        return select_scalar_from_bools(
+            conds.iter().copied(),
+            cond.shape.clone(),
+            on_true,
+            on_false,
+        );
+    }
+    // Bit-packed BoolWords predicate (the mask from a same-shape compare feeding
+    // jnp.where(mask, const_a, const_b) — masking-to-constant, ubiquitous in
+    // attention). Bit-test the packed words instead of letting the caller's
+    // per-Literal fallback materialize the whole mask as Vec<Literal::Bool>.
+    // Bit-identical: bit i = (words[i/64] >> (i%64)) & 1 is the Bool
+    // materialize_bool_words yields.
+    if let Some((words, len)) = cond.elements.as_bool_words() {
+        return select_scalar_from_bools(
+            (0..len).map(move |i| (words[i / 64] >> (i % 64)) & 1 != 0),
+            cond.shape.clone(),
+            on_true,
+            on_false,
+        );
+    }
+    Ok(None)
 }
 
 pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
@@ -20777,6 +20806,80 @@ mod tests {
                 raw_bits(&rw),
                 raw_bits(&rb),
                 "{dt:?}: BoolWords select bit-identical"
+            );
+        }
+    }
+
+    #[test]
+    fn select_scalar_branches_boolwords_predicate_bit_identical() {
+        // jnp.where(mask, const_a, const_b) with a BoolWords mask must match the
+        // boxed per-Literal path bit for bit and emit dense output.
+        let n = 77usize;
+        let flag = |i: usize| (i ^ (i >> 2)) & 1 == 0;
+        let mut words = vec![0u64; n.div_ceil(64)];
+        for i in 0..n {
+            if flag(i) {
+                words[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        let cond_words = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                Shape::vector(n as u32),
+                fj_core::LiteralBuffer::from_bool_words(words, n).unwrap(),
+            )
+            .unwrap(),
+        );
+        let cond_boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                Shape::vector(n as u32),
+                fj_core::LiteralBuffer::new((0..n).map(|i| Literal::Bool(flag(i))).collect()),
+            )
+            .unwrap(),
+        );
+        let pairs = [
+            (Literal::from_f64(3.5), Literal::from_f64(-1.25)),
+            (Literal::from_f32(2.0), Literal::from_f32(9.0)),
+            (Literal::I64(7), Literal::I64(-9)),
+        ];
+        let p = BTreeMap::new();
+        let raw = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F64Bits(b) => *b,
+                    Literal::F32Bits(b) => u64::from(*b),
+                    Literal::I64(x) => *x as u64,
+                    o => panic!("unexpected {o:?}"),
+                })
+                .collect()
+        };
+        for (a, b) in pairs {
+            let rw = crate::eval_primitive(
+                Primitive::Select,
+                &[cond_words.clone(), Value::Scalar(a), Value::Scalar(b)],
+                &p,
+            )
+            .unwrap();
+            let rb = crate::eval_primitive(
+                Primitive::Select,
+                &[cond_boxed.clone(), Value::Scalar(a), Value::Scalar(b)],
+                &p,
+            )
+            .unwrap();
+            assert!(
+                rw.as_tensor().unwrap().elements.as_f64_slice().is_some()
+                    || rw.as_tensor().unwrap().elements.as_f32_slice().is_some()
+                    || rw.as_tensor().unwrap().elements.as_i64_slice().is_some(),
+                "BoolWords scalar-branch select must be dense"
+            );
+            assert_eq!(
+                raw(&rw),
+                raw(&rb),
+                "scalar-branch BoolWords select bit-identical"
             );
         }
     }
