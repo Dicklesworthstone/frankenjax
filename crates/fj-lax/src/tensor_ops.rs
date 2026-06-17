@@ -502,6 +502,7 @@ pub(crate) fn eval_reshape(
             let dims = resolve_reshape_dims(primitive, &shape_spec, 1, Shape::scalar())?;
             Ok(Value::Tensor(TensorValue::new(
                 match lit {
+                    Literal::I32(_) => DType::I32,
                     Literal::I64(_) => DType::I64,
                     Literal::U32(_) => DType::U32,
                     Literal::U64(_) => DType::U64,
@@ -843,6 +844,10 @@ pub(crate) fn eval_broadcast_in_dim(
                 Literal::I64(v) => Ok(Value::Tensor(TensorValue::new_i64_values(
                     shape,
                     vec![*v; total],
+                )?)),
+                Literal::I32(v) => Ok(Value::Tensor(TensorValue::new_i32_values(
+                    shape,
+                    vec![i64::from(*v); total],
                 )?)),
                 Literal::Bool(v) => Ok(Value::Tensor(TensorValue::new_bool_values(
                     shape,
@@ -3319,6 +3324,16 @@ pub(crate) fn eval_scatter(
 
 fn lit_to_usize(lit: &Literal, primitive: Primitive) -> Result<usize, EvalError> {
     match lit {
+        Literal::I32(n) => {
+            if *n >= 0 {
+                Ok(*n as usize)
+            } else {
+                Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!("negative index {n}"),
+                })
+            }
+        }
         Literal::I64(n) => {
             if *n >= 0 {
                 Ok(*n as usize)
@@ -3430,6 +3445,7 @@ pub(crate) fn eval_dynamic_slice(
         let start_val = match &inputs[1 + ax] {
             Value::Scalar(lit) => {
                 let raw = match lit {
+                    Literal::I32(v) => i64::from(*v),
                     Literal::I64(v) => *v,
                     Literal::U32(v) => i64::from(*v),
                     Literal::U64(v) => i64::try_from(*v).unwrap_or(i64::MAX),
@@ -3723,6 +3739,7 @@ pub(crate) fn eval_dynamic_update_slice(
         let start_val = match &inputs[2 + ax] {
             Value::Scalar(lit) => {
                 let raw = match lit {
+                    Literal::I32(v) => i64::from(*v),
                     Literal::I64(v) => *v,
                     Literal::U32(v) => i64::from(*v),
                     Literal::U64(v) => i64::try_from(*v).unwrap_or(i64::MAX),
@@ -4510,6 +4527,7 @@ fn convert_literal(lit: Literal, target: DType) -> Result<Literal, EvalError> {
             Literal::F32Bits(bits) => Some(f64::from(f32::from_bits(bits))),
             Literal::F16Bits(_) => lit.as_f16_f32().map(f64::from),
             Literal::BF16Bits(_) => lit.as_bf16_f32().map(f64::from),
+            Literal::I32(v) => Some(f64::from(v)),
             Literal::I64(v) => Some(v as f64),
             Literal::U32(v) => Some(v as f64),
             Literal::U64(v) => Some(v as f64),
@@ -4521,6 +4539,7 @@ fn convert_literal(lit: Literal, target: DType) -> Result<Literal, EvalError> {
 
     let i64_val = || -> Option<i64> {
         match lit {
+            Literal::I32(v) => Some(i64::from(v)),
             Literal::I64(v) => Some(v),
             Literal::U32(v) => Some(i64::from(v)),
             Literal::U64(v) => i64::try_from(v).ok(),
@@ -4538,6 +4557,7 @@ fn convert_literal(lit: Literal, target: DType) -> Result<Literal, EvalError> {
         match lit {
             Literal::U64(v) => Some(v),
             Literal::U32(v) => Some(u64::from(v)),
+            Literal::I32(v) => u64::try_from(v).ok(),
             Literal::I64(v) => u64::try_from(v).ok(),
             Literal::Bool(b) => Some(if b { 1 } else { 0 }),
             Literal::F64Bits(bits) => Some(f64::from_bits(bits) as u64),
@@ -4552,6 +4572,7 @@ fn convert_literal(lit: Literal, target: DType) -> Result<Literal, EvalError> {
     let bool_val = || -> bool {
         match lit {
             Literal::Bool(b) => b,
+            Literal::I32(v) => v != 0,
             Literal::I64(v) => v != 0,
             Literal::U32(v) => v != 0,
             Literal::U64(v) => v != 0,
@@ -5235,6 +5256,67 @@ pub(crate) fn eval_reduce_precision(
             mantissa_bits,
         )?)),
         Value::Tensor(tensor) => {
+            // Dense de-box fast paths. reduce_precision is dtype-preserving and
+            // arithmetic-light (a bit-twiddle round), so building the 24-B-per-elem
+            // `Vec<Literal>` output dominates. Read the dense typed backing and write
+            // dense typed storage. Bit-for-bit identical to the per-`Literal` loop
+            // below: F64 applies the exact `quantize_f64` `reduce_precision_literal`
+            // does and `new_f64_values` stores the same `F64Bits` `from_f64` would;
+            // BF16/F16 route each element through the SAME `as_*_f32` / `quantize_f32`
+            // / `from_*_f32` conversion and store the resulting half bits. (F32's
+            // per-Literal path stores `F64Bits` in an F32 tensor — left untouched here
+            // so semantics are unchanged.)
+            if source_dtype == DType::F64
+                && let Some(src) = tensor.elements.as_f64_slice()
+            {
+                let out: Vec<f64> = src
+                    .iter()
+                    .map(|&v| quantize_f64(v, exponent_bits, mantissa_bits))
+                    .collect();
+                return Ok(Value::Tensor(TensorValue::new_f64_values(
+                    tensor.shape.clone(),
+                    out,
+                )?));
+            }
+            if matches!(source_dtype, DType::BF16 | DType::F16)
+                && let Some(src) = tensor.elements.as_half_float_slice()
+            {
+                let dt = source_dtype;
+                let eb = exponent_bits.min(8);
+                let mb = mantissa_bits.min(23);
+                let out: Vec<u16> = src
+                    .iter()
+                    .map(|&bits| {
+                        let lit = if dt == DType::BF16 {
+                            Literal::BF16Bits(bits)
+                        } else {
+                            Literal::F16Bits(bits)
+                        };
+                        // Guard guarantees a valid half payload; unwrap_or is unreachable.
+                        let value = if dt == DType::BF16 {
+                            lit.as_bf16_f32().unwrap_or(0.0)
+                        } else {
+                            lit.as_f16_f32().unwrap_or(0.0)
+                        };
+                        let q = quantize_f32(value, eb, mb);
+                        let out_lit = if dt == DType::BF16 {
+                            Literal::from_bf16_f32(q)
+                        } else {
+                            Literal::from_f16_f32(q)
+                        };
+                        match out_lit {
+                            Literal::BF16Bits(x) | Literal::F16Bits(x) => x,
+                            _ => 0,
+                        }
+                    })
+                    .collect();
+                return Ok(Value::Tensor(TensorValue::new_half_float_values(
+                    dt,
+                    tensor.shape.clone(),
+                    out,
+                )?));
+            }
+
             let mut out = Vec::with_capacity(tensor.elements.len());
             for literal in &tensor.elements {
                 out.push(reduce_precision_literal(
@@ -7837,6 +7919,7 @@ fn arg_extreme_f32_contiguous_simd(values: &[f32], find_max: bool) -> usize {
 fn sort_key(literal: Literal) -> Result<SortKey, String> {
     match literal {
         Literal::Bool(value) => Ok(SortKey::Bool(value)),
+        Literal::I32(value) => Ok(SortKey::Signed(i64::from(value))),
         Literal::I64(value) => Ok(SortKey::Signed(value)),
         Literal::U32(value) => Ok(SortKey::Unsigned(u64::from(value))),
         Literal::U64(value) => Ok(SortKey::Unsigned(value)),
@@ -10859,6 +10942,7 @@ pub(crate) fn eval_expand_dims(
             Ok(Value::Tensor(
                 TensorValue::new(
                     match lit {
+                        Literal::I32(_) => DType::I32,
                         Literal::I64(_) => DType::I64,
                         Literal::U32(_) => DType::U32,
                         Literal::U64(_) => DType::U64,
@@ -10948,6 +11032,7 @@ pub(crate) fn eval_tile(
                 return Ok(inputs[0].clone());
             }
             let dtype = match lit {
+                Literal::I32(_) => DType::I32,
                 Literal::I64(_) => DType::I64,
                 Literal::U32(_) => DType::U32,
                 Literal::U64(_) => DType::U64,
@@ -11195,6 +11280,93 @@ mod tests {
             .iter()
             .map(|&(k, v)| (k.to_owned(), v.to_owned()))
             .collect()
+    }
+
+    #[test]
+    fn reduce_precision_dense_matches_boxed_bit_for_bit() {
+        // The dense de-box fast paths (F64 via new_f64_values, BF16/F16 via
+        // new_half_float_values) must be bit-for-bit identical to the per-Literal
+        // fallback, and must return dense-backed storage. Compare full Literal
+        // bit patterns (not f64 ==) and assert the output is dense.
+        let data: Vec<f64> = (0..64)
+            .map(|i| (i as f64 - 32.0) * 0.123_456_789 + 1e-3)
+            .collect();
+        let shape = Shape { dims: vec![8, 8] };
+
+        let lits = |v: &Value| -> Vec<Literal> {
+            v.as_tensor().unwrap().elements.iter().copied().collect()
+        };
+
+        // ---- F64 ----
+        let p = params(&[("exponent_bits", "8"), ("mantissa_bits", "10")]);
+        let dense =
+            Value::Tensor(TensorValue::new_f64_values(shape.clone(), data.clone()).unwrap());
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::F64,
+                shape.clone(),
+                LiteralBuffer::new(data.iter().map(|&v| Literal::from_f64(v)).collect()),
+            )
+            .unwrap(),
+        );
+        let d = eval_reduce_precision(&[dense], &p).unwrap();
+        let b = eval_reduce_precision(&[boxed], &p).unwrap();
+        assert_eq!(lits(&d), lits(&b), "F64 reduce_precision dense vs boxed");
+        assert!(
+            d.as_tensor().unwrap().elements.as_f64_slice().is_some(),
+            "F64 reduce_precision dense output"
+        );
+
+        // ---- BF16 / F16 ----
+        let ph = params(&[("exponent_bits", "5"), ("mantissa_bits", "4")]);
+        for dt in [DType::BF16, DType::F16] {
+            let halfbits: Vec<u16> = data
+                .iter()
+                .map(|&v| {
+                    let lit = if dt == DType::BF16 {
+                        Literal::from_bf16_f32(v as f32)
+                    } else {
+                        Literal::from_f16_f32(v as f32)
+                    };
+                    match lit {
+                        Literal::BF16Bits(x) | Literal::F16Bits(x) => x,
+                        _ => 0,
+                    }
+                })
+                .collect();
+            let dense = Value::Tensor(
+                TensorValue::new_half_float_values(dt, shape.clone(), halfbits.clone()).unwrap(),
+            );
+            let boxed_lits: Vec<Literal> = halfbits
+                .iter()
+                .map(|&b| {
+                    if dt == DType::BF16 {
+                        Literal::BF16Bits(b)
+                    } else {
+                        Literal::F16Bits(b)
+                    }
+                })
+                .collect();
+            let boxed = Value::Tensor(
+                TensorValue::new_with_literal_buffer(
+                    dt,
+                    shape.clone(),
+                    LiteralBuffer::new(boxed_lits),
+                )
+                .unwrap(),
+            );
+            let d = eval_reduce_precision(&[dense], &ph).unwrap();
+            let b = eval_reduce_precision(&[boxed], &ph).unwrap();
+            assert_eq!(lits(&d), lits(&b), "{dt:?} reduce_precision dense vs boxed");
+            assert!(
+                d.as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_half_float_slice()
+                    .is_some(),
+                "{dt:?} reduce_precision dense output"
+            );
+        }
     }
 
     #[test]
