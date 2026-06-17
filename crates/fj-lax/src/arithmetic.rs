@@ -10870,6 +10870,59 @@ mod tests {
         assert_eq!(complex_sqrt((0.0, 0.0)), (0.0, 0.0));
     }
 
+    #[test]
+    fn complex_inverse_invariants_hold_across_magnitudes() {
+        // Defining-inverse invariants for the clean-branch complex elementwise ops,
+        // swept across a magnitude grid spanning the regimes where catastrophic
+        // cancellation or overflow (in re*re+im*im or |z|-re) would surface — exactly
+        // the class the complex_sqrt out_im cancellation bug fell into (it survived
+        // multiple prior audits because they grepped for re*re+im*im rather than
+        // checking the defining invariant). JAX-oracle-independent because the
+        // principal branch is pinned (sqrt: Re(w) >= 0):
+        //   sqrt:       w*w == z and Re(w) >= 0
+        //   reciprocal: z * (1/z) == 1
+        // Magnitude-relative tolerance (compare |a-b| against |z|) so near-zero
+        // components on the real/imaginary axes are not over-constrained.
+        let cabs = |p: (f64, f64)| (p.0 * p.0 + p.1 * p.1).sqrt();
+        let rel_mag = |a: (f64, f64), b: (f64, f64), tol: f64| {
+            cabs((a.0 - b.0, a.1 - b.1)) <= tol * (cabs(b) + 1.0)
+        };
+        // Tiny .. large; stay below the ~1.3e154 |z|^2 overflow edge so the invariants
+        // are exactly checkable (the >1e154 overflow tail is tracked in frankenjax-r6kan).
+        let mags = [1e-100, 1e-30, 1e-6, 0.3, 1.0, 3.0, 1e6, 1e30, 1e100];
+        // A spread of phases incl. axis-aligned and the re>>|im| / re<<-|im| corners
+        // (where the old sqrt form dropped the imaginary part).
+        let dirs = [
+            (1.0, 0.0),
+            (-1.0, 0.0),
+            (0.0, 1.0),
+            (0.0, -1.0),
+            (1.0, 1e-9),
+            (-1.0, 1e-9),
+            (1.0, -1.0),
+            (-0.6, 0.8),
+        ];
+        for &m in &mags {
+            for &(dr, di) in &dirs {
+                let z = (m * dr, m * di);
+                if z.0 == 0.0 && z.1 == 0.0 {
+                    continue;
+                }
+                let w = complex_sqrt(z);
+                assert!(w.0 >= 0.0, "sqrt principal branch Re>=0 for {z:?}: {w:?}");
+                assert!(
+                    rel_mag(complex_mul(w, w), z, 1e-12),
+                    "sqrt(z)^2 != z for {z:?}: w={w:?}"
+                );
+                let r = complex_reciprocal(z);
+                assert!(
+                    rel_mag(complex_mul(z, r), (1.0, 0.0), 1e-12),
+                    "z*(1/z) != 1 for {z:?}: r={r:?}"
+                );
+            }
+        }
+    }
+
     /// Isomorphism + golden proof for threading Sinc: the parallel path must be
     /// BIT-FOR-BIT identical to the serial map (each element independent), and the
     /// same-binary A/B speedup is printed.
