@@ -12952,6 +12952,136 @@ fn tensor_from_f64_values(shape: Shape, values: Vec<f64>) -> Result<Value, AdErr
         .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
+struct SeparableSumDerivatives {
+    sum: f64,
+    first: Vec<f64>,
+    second: Vec<f64>,
+    used_equations: Vec<usize>,
+}
+
+fn separable_sum_derivatives_from_reduce(
+    jaxpr: &Jaxpr,
+    producer_by_output: &BTreeMap<VarId, usize>,
+    reduce_index: usize,
+    input_var: VarId,
+    input_tensor: &TensorValue,
+    input_dim: usize,
+) -> Result<Option<SeparableSumDerivatives>, AdError> {
+    let reduce_eq = &jaxpr.equations[reduce_index];
+    if reduce_eq.primitive != Primitive::ReduceSum
+        || !reduce_eq.params.is_empty()
+        || !reduce_eq.effects.is_empty()
+        || !reduce_eq.sub_jaxprs.is_empty()
+        || reduce_eq.inputs.len() != 1
+        || reduce_eq.outputs.len() != 1
+        || lookup_custom_vjp(Primitive::ReduceSum).is_some()
+        || lookup_custom_jvp(Primitive::ReduceSum).is_some()
+    {
+        return Ok(None);
+    }
+
+    let mut backward_indices = Vec::new();
+    let mut backward_primitives = Vec::new();
+    let mut current = reduce_eq.inputs[0].clone();
+    for _ in 0..jaxpr.equations.len() {
+        let Atom::Var(current_var) = current else {
+            return Ok(None);
+        };
+        if current_var == input_var {
+            break;
+        }
+        let Some(&producer_index) = producer_by_output.get(&current_var) else {
+            return Ok(None);
+        };
+        let producer = &jaxpr.equations[producer_index];
+        if producer.outputs.len() != 1
+            || producer.outputs[0] != current_var
+            || producer.inputs.len() != 1
+            || !producer.params.is_empty()
+            || !producer.effects.is_empty()
+            || !producer.sub_jaxprs.is_empty()
+            || unary_first_second_derivative(producer.primitive, 0.0).is_none()
+            || lookup_custom_vjp(producer.primitive).is_some()
+            || lookup_custom_jvp(producer.primitive).is_some()
+        {
+            return Ok(None);
+        }
+        backward_indices.push(producer_index);
+        backward_primitives.push(producer.primitive);
+        current = producer.inputs[0].clone();
+    }
+    if !matches!(current, Atom::Var(var) if var == input_var) {
+        return Ok(None);
+    }
+
+    let shape = input_tensor.shape.clone();
+    let mut values = input_tensor
+        .to_f64_vec()
+        .ok_or_else(|| AdError::EvalFailed("expected f64 Hessian input".to_owned()))?;
+    if values.len() != input_dim || values.iter().any(|v| !v.is_finite()) {
+        return Ok(None);
+    }
+    let mut first = vec![1.0_f64; values.len()];
+    let mut second = vec![0.0_f64; values.len()];
+
+    for primitive in backward_primitives.iter().rev().copied() {
+        let mut next_first = Vec::with_capacity(values.len());
+        let mut next_second = Vec::with_capacity(values.len());
+        for ((&x, &dx), &d2x) in values.iter().zip(first.iter()).zip(second.iter()) {
+            let Some((df, d2f)) = unary_first_second_derivative(primitive, x) else {
+                return Ok(None);
+            };
+            if !df.is_finite() || !d2f.is_finite() {
+                return Ok(None);
+            }
+            next_first.push(df * dx);
+            next_second.push(d2f * dx * dx + df * d2x);
+        }
+
+        let primal = tensor_from_f64_values(shape.clone(), values)?;
+        let out = match eval_primitive(primitive, &[primal], &BTreeMap::new()) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        let Some(out_tensor) = out.as_tensor() else {
+            return Ok(None);
+        };
+        if out_tensor.dtype != DType::F64
+            || out_tensor.shape != shape
+            || out_tensor.len() != input_dim
+        {
+            return Ok(None);
+        }
+        values = out_tensor
+            .to_f64_vec()
+            .ok_or_else(|| AdError::EvalFailed("expected f64 unary Hessian value".to_owned()))?;
+        if values.iter().any(|v| !v.is_finite()) {
+            return Ok(None);
+        }
+        first = next_first;
+        second = next_second;
+    }
+
+    let reduce_input = tensor_from_f64_values(shape, values)?;
+    let sum_value = match eval_primitive(Primitive::ReduceSum, &[reduce_input], &reduce_eq.params) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let sum_values = flatten_value_to_f64(&sum_value)?;
+    if sum_values.len() != 1 || !sum_values[0].is_finite() {
+        return Ok(None);
+    }
+
+    let mut used_equations = backward_indices;
+    used_equations.push(reduce_index);
+    Ok(Some(SeparableSumDerivatives {
+        sum: sum_values[0],
+        first,
+        second,
+        used_equations,
+    }))
+}
+
 /// Exact fast path for `f(x) = square(reduce_sum(g(x)))`, including the
 /// equivalent `mul(sum, sum)` spelling, where `g` is a single-input unary
 /// elementwise chain. If `s = sum_i g_i(x_i)`, then
@@ -13099,6 +13229,121 @@ fn hessian_square_of_separable_sum(
     matrix_value(input_dim, input_dim, hessian).map(Some)
 }
 
+/// Exact fast path for `f(x) = reduce_sum(g(x)) * reduce_sum(h(x))`, where
+/// `g` and `h` are independent unary elementwise chains over one dense F64
+/// tensor input.
+fn hessian_product_of_separable_sums(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    input_dim: usize,
+) -> Result<Option<Value>, AdError> {
+    if args.len() != 1
+        || jaxpr.invars.len() != 1
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() < 5
+        || lookup_custom_jaxpr_jvp(jaxpr).is_some()
+        || lookup_custom_jaxpr_vjp(jaxpr).is_some()
+    {
+        return Ok(None);
+    }
+
+    let input_tensor = match &args[0] {
+        Value::Tensor(tensor) if tensor.dtype == DType::F64 && tensor.len() == input_dim => tensor,
+        _ => return Ok(None),
+    };
+
+    let final_index = jaxpr.equations.len() - 1;
+    let final_eq = &jaxpr.equations[final_index];
+    if final_eq.primitive != Primitive::Mul
+        || !final_eq.params.is_empty()
+        || !final_eq.effects.is_empty()
+        || !final_eq.sub_jaxprs.is_empty()
+        || final_eq.outputs.as_slice() != jaxpr.outvars.as_slice()
+        || final_eq.inputs.len() != 2
+        || lookup_custom_vjp(Primitive::Mul).is_some()
+        || lookup_custom_jvp(Primitive::Mul).is_some()
+    {
+        return Ok(None);
+    }
+    let [Atom::Var(left_sum_var), Atom::Var(right_sum_var)] = final_eq.inputs.as_slice() else {
+        return Ok(None);
+    };
+    if left_sum_var == right_sum_var {
+        return Ok(None);
+    }
+
+    let mut producer_by_output = BTreeMap::new();
+    for (index, eq) in jaxpr.equations[..final_index].iter().enumerate() {
+        if eq.outputs.len() != 1 {
+            return Ok(None);
+        }
+        if producer_by_output.insert(eq.outputs[0], index).is_some() {
+            return Ok(None);
+        }
+    }
+    let Some(&left_reduce_index) = producer_by_output.get(left_sum_var) else {
+        return Ok(None);
+    };
+    let Some(&right_reduce_index) = producer_by_output.get(right_sum_var) else {
+        return Ok(None);
+    };
+    if left_reduce_index == right_reduce_index {
+        return Ok(None);
+    }
+
+    let input_var = jaxpr.invars[0];
+    let Some(left) = separable_sum_derivatives_from_reduce(
+        jaxpr,
+        &producer_by_output,
+        left_reduce_index,
+        input_var,
+        input_tensor,
+        input_dim,
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(right) = separable_sum_derivatives_from_reduce(
+        jaxpr,
+        &producer_by_output,
+        right_reduce_index,
+        input_var,
+        input_tensor,
+        input_dim,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let mut used = vec![false; jaxpr.equations.len()];
+    used[final_index] = true;
+    for index in left
+        .used_equations
+        .iter()
+        .chain(right.used_equations.iter())
+    {
+        if used[*index] {
+            return Ok(None);
+        }
+        used[*index] = true;
+    }
+    if used.iter().any(|seen| !seen) {
+        return Ok(None);
+    }
+
+    let mut hessian = vec![0.0_f64; input_dim * input_dim];
+    for row in 0..input_dim {
+        for col in 0..input_dim {
+            let mut value = left.first[row] * right.first[col] + right.first[row] * left.first[col];
+            if row == col {
+                value += right.sum * left.second[row] + left.sum * right.second[row];
+            }
+            hessian[row * input_dim + col] = value;
+        }
+    }
+    matrix_value(input_dim, input_dim, hessian).map(Some)
+}
+
 pub fn hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
     if args.is_empty() {
         return Err(AdError::InputArity {
@@ -13156,6 +13401,9 @@ pub fn hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
     }
 
     if let Some(exact) = hessian_square_of_separable_sum(jaxpr, args, input_dim)? {
+        return Ok(exact);
+    }
+    if let Some(exact) = hessian_product_of_separable_sums(jaxpr, args, input_dim)? {
         return Ok(exact);
     }
 
@@ -25045,20 +25293,114 @@ mod tests {
     }
 
     #[test]
+    fn hessian_product_of_separable_sums_matches_closed_form_and_golden() {
+        use fj_core::{Jaxpr, Shape, TensorValue, VarId};
+        use smallvec::smallvec;
+
+        let n = 12usize;
+        let (x, sin_x, sin_sum, cos_x, cos_sum, out) =
+            (VarId(0), VarId(1), VarId(2), VarId(3), VarId(4), VarId(5));
+        let jaxpr = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![sin_x],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(sin_x)],
+                    outputs: smallvec![sin_sum],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Cos,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![cos_x],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(cos_x)],
+                    outputs: smallvec![cos_sum],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(sin_sum), Atom::Var(cos_sum)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let xv: Vec<f64> = (0..n).map(|i| (i as f64) * 0.13 - 0.8).collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
+        )];
+
+        let hessian = hessian_jaxpr(&jaxpr, &args).expect("hessian");
+        let tensor = hessian.as_tensor().expect("tensor");
+        assert_eq!(tensor.shape.dims, vec![n as u32, n as u32]);
+        let got = tensor.to_f64_vec().expect("f64");
+        let sin_sum_value = xv.iter().map(|x| x.sin()).sum::<f64>();
+        let cos_sum_value = xv.iter().map(|x| x.cos()).sum::<f64>();
+        for (row, &x_row) in xv.iter().enumerate() {
+            for (col, &x_col) in xv.iter().enumerate() {
+                let mut want = x_row.cos() * -x_col.sin() + -x_row.sin() * x_col.cos();
+                if row == col {
+                    want += cos_sum_value * -x_row.sin() + sin_sum_value * -x_row.cos();
+                }
+                assert!(
+                    (got[row * n + col] - want).abs() <= 1e-12,
+                    "entry ({row},{col}) got {} want {want}",
+                    got[row * n + col]
+                );
+            }
+        }
+        let bits: Vec<u64> = got.iter().map(|v| v.to_bits()).collect();
+        let sha = fj_test_utils::fixture_id_from_json(&(
+            "frankenjax-hessian-product-separable-sums-exact",
+            &bits,
+        ))
+        .expect("digest");
+        assert_eq!(
+            sha,
+            "dde9f0a7db4485d9dc9b6aaee09b7d179772c978ebbde7b024feff64deef46ad"
+        );
+    }
+
+    #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_hessian_general_parallel_vs_serial() {
         use fj_core::{Jaxpr, Shape, TensorValue, VarId};
         use smallvec::smallvec;
         use std::time::Instant;
-        // COMPUTE-HEAVY body: a deep chain of transcendental elementwise ops,
-        // then ReduceSum, then Mul(sum, sum). This is algebraically the same as
-        // Square(sum) but historically stayed on the central-difference fallback.
-        // The deep chain makes each grad_jaxpr call expensive enough that the
-        // per-column compute dominates malloc/thread overhead, the regime where
-        // fanning the 2·n independent central-difference grad calls across
-        // threads pays off.
+        // COMPUTE-HEAVY body: two independent transcendental elementwise chains,
+        // each reduced to a scalar, then multiplied. This remains on the
+        // central-difference fallback after the self-mul exact slice and is the
+        // next profile-backed arbitrary-Hessian spelling.
         let n = 192usize;
-        let chain: &[Primitive] = &[
+        let left_chain: &[Primitive] = &[
             Primitive::Sin,
             Primitive::Cos,
             Primitive::Tanh,
@@ -25070,10 +25412,22 @@ mod tests {
             Primitive::Asinh,
             Primitive::Sin,
         ];
+        let right_chain: &[Primitive] = &[
+            Primitive::Cos,
+            Primitive::Tanh,
+            Primitive::Sin,
+            Primitive::Atan,
+            Primitive::Exp,
+            Primitive::Log1p,
+            Primitive::Cosh,
+            Primitive::Asinh,
+            Primitive::Erf,
+            Primitive::Cos,
+        ];
         let mut equations = Vec::new();
         let mut cur = VarId(0);
         let mut next = 1u32;
-        for &p in chain {
+        for &p in left_chain {
             let out_v = VarId(next);
             next += 1;
             equations.push(Equation {
@@ -25096,10 +25450,35 @@ mod tests {
             sub_jaxprs: vec![],
             effects: vec![],
         });
+        let left_sum = summed;
+        let mut cur = VarId(0);
+        for &p in right_chain {
+            let out_v = VarId(next);
+            next += 1;
+            equations.push(Equation {
+                primitive: p,
+                inputs: smallvec![Atom::Var(cur)],
+                outputs: smallvec![out_v],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            });
+            cur = out_v;
+        }
+        let right_sum = VarId(next);
+        next += 1;
+        equations.push(Equation {
+            primitive: Primitive::ReduceSum,
+            inputs: smallvec![Atom::Var(cur)],
+            outputs: smallvec![right_sum],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        });
         let out = VarId(next);
         equations.push(Equation {
             primitive: Primitive::Mul,
-            inputs: smallvec![Atom::Var(summed), Atom::Var(summed)],
+            inputs: smallvec![Atom::Var(left_sum), Atom::Var(right_sum)],
             outputs: smallvec![out],
             params: BTreeMap::new(),
             sub_jaxprs: vec![],
