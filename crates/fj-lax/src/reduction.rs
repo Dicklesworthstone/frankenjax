@@ -2413,6 +2413,26 @@ pub(crate) fn eval_reduce_axes(
                             f32s,
                         )?))
                     }
+                    DType::BF16 | DType::F16 => {
+                        // Half-float reduce output: de-box to dense u16 storage. For a large
+                        // output the boxed Literal construction dominates here too (the fold
+                        // is cheap), so this is the same ~14x class — and bf16/f16 reductions
+                        // are common in mixed-precision ML. Bits come straight from
+                        // reduce_real_literal so the value is bit-identical by construction
+                        // (from_bf16_f64/from_f16_f64), just stored densely.
+                        let bits: Vec<u16> = result
+                            .into_iter()
+                            .map(|v| match reduce_real_literal(out_dtype, v) {
+                                Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                                _ => unreachable!("half-float reduce produced non-half literal"),
+                            })
+                            .collect();
+                        Ok(Value::Tensor(TensorValue::new_half_float_values(
+                            out_dtype,
+                            Shape { dims: out_dims },
+                            bits,
+                        )?))
+                    }
                     _ => {
                         let elements: Vec<Literal> = result
                             .into_iter()
@@ -3578,6 +3598,30 @@ mod tests {
             let expect: i64 = (0..f).map(|r| idata[r * n + j]).sum();
             assert_eq!(g, expect, "i64 reduce[{j}]");
         }
+        // BF16 sum — half-float axis-reduce output must also be dense (u16 backing).
+        let bf16data: Vec<u16> = (0..f * n)
+            .map(|i| match Literal::from_bf16_f64((i as f64) * 0.5) {
+                Literal::BF16Bits(b) => b,
+                _ => unreachable!(),
+            })
+            .collect();
+        let vbf = Value::Tensor(
+            TensorValue::new_half_float_values(
+                DType::BF16,
+                Shape {
+                    dims: vec![f as u32, n as u32],
+                },
+                bf16data,
+            )
+            .unwrap(),
+        );
+        let out = crate::eval_primitive(Primitive::ReduceSum, &[vbf], &params).unwrap();
+        let t = out.as_tensor().unwrap();
+        assert_eq!(t.dtype, DType::BF16);
+        assert!(
+            t.elements.as_half_float_slice().is_some(),
+            "bf16 reduce output must be dense u16"
+        );
     }
 
     fn s_f64(v: f64) -> Value {
