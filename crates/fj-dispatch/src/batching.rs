@@ -15103,6 +15103,74 @@ mod tests {
     }
 
     #[test]
+    fn batch_reshape_broadcast_match_per_slice() {
+        // vmap-vs-loop for the shape-emitting rules reshape (incl. the -1 INFER form,
+        // whose inferred dim must scale with the batch) and broadcast_in_dim (batch maps
+        // to output position 0, other broadcast dims shift +1). Both must be
+        // element-identical to the per-slice ground truth. I64 -> bit-exact.
+        let extract = |t: &BatchTracer| -> (Option<usize>, Vec<u32>, Vec<i64>) {
+            let tensor = t.value.as_tensor().unwrap();
+            (
+                t.batch_dim,
+                tensor.shape.dims.clone(),
+                tensor
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::I64(v) => *v,
+                        other => panic!("expected I64, got {other:?}"),
+                    })
+                    .collect(),
+            )
+        };
+        // reshape: per-element [6] -> various shapes (front-batched [B=3, 6]).
+        let rdata: Vec<i64> = (0..18).map(|i| i - 9).collect();
+        let make_reshape = || -> BatchTracer {
+            let t = TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![3, 6] },
+                rdata.iter().copied().map(Literal::I64).collect(),
+            )
+            .unwrap();
+            BatchTracer::batched(Value::Tensor(t), 0)
+        };
+        for ns in ["2,3", "-1,3", "-1", "3,2", "6"] {
+            let params = BTreeMap::from([("new_shape".to_owned(), ns.to_owned())]);
+            let fast = apply_batch_rule(Primitive::Reshape, &[make_reshape()], &params).unwrap();
+            let slow =
+                batch_passthrough_leading(Primitive::Reshape, &[make_reshape()], &params).unwrap();
+            assert_eq!(
+                extract(&fast),
+                extract(&slow),
+                "reshape new_shape={ns}: single-call != per-slice"
+            );
+        }
+        // broadcast_in_dim: per-element [3] -> [2,3] with the [3] mapped to output axis 1.
+        let bdata: Vec<i64> = (0..9).map(|i| i * 3 - 4).collect();
+        let make_bcast = || -> BatchTracer {
+            let t = TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![3, 3] },
+                bdata.iter().copied().map(Literal::I64).collect(),
+            )
+            .unwrap();
+            BatchTracer::batched(Value::Tensor(t), 0)
+        };
+        let params = BTreeMap::from([
+            ("shape".to_owned(), "2,3".to_owned()),
+            ("broadcast_dimensions".to_owned(), "1".to_owned()),
+        ]);
+        let fast = apply_batch_rule(Primitive::BroadcastInDim, &[make_bcast()], &params).unwrap();
+        let slow =
+            batch_passthrough_leading(Primitive::BroadcastInDim, &[make_bcast()], &params).unwrap();
+        assert_eq!(
+            extract(&fast),
+            extract(&slow),
+            "broadcast_in_dim [3]->[2,3] dims=1: single-call != per-slice"
+        );
+    }
+
+    #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_batch_argmax_single_call_vs_per_slice() {
         use std::time::Instant;
