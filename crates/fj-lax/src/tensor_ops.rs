@@ -3861,6 +3861,78 @@ pub(crate) fn eval_copy(inputs: &[Value]) -> Result<Value, EvalError> {
 ///
 /// Constraint:
 /// - Source and destination element widths must match.
+// Dense bool-source convert: a Bool mask -> numeric/bool target without the
+// per-Literal path, and — for a BoolWords (bit-packed) source — without first
+// materializing the whole mask as Vec<Literal::Bool> (materialize_bool_words).
+// `get(i)` reads bit i from whichever bool storage and is monomorphized per call
+// site. Bit-identical to convert_literal on a Literal::Bool: every numeric target
+// maps false->0 / true->1 (1.0 for floats; bf16/f16 via from_*_f64 so the bits
+// match), Bool is identity, complex gets im=0. Covers exactly convert_literal's
+// DType arms (the cast itself for jnp astype on a comparison mask, e.g.
+// mask.astype(int32).sum() to count True, or mask.astype(float) to weight).
+fn convert_bool_source_dense(
+    len: usize,
+    get: impl Fn(usize) -> bool,
+    target: DType,
+    shape: Shape,
+) -> Result<Option<Value>, EvalError> {
+    let tv = match target {
+        DType::F64 => TensorValue::new_f64_values(
+            shape,
+            (0..len).map(|i| if get(i) { 1.0 } else { 0.0 }).collect(),
+        ),
+        DType::F32 => TensorValue::new_f32_values(
+            shape,
+            (0..len)
+                .map(|i| if get(i) { 1.0f32 } else { 0.0 })
+                .collect(),
+        ),
+        DType::F16 => {
+            let one = match Literal::from_f16_f64(1.0) {
+                Literal::F16Bits(b) => b,
+                _ => 0,
+            };
+            TensorValue::new_half_float_values(
+                DType::F16,
+                shape,
+                (0..len).map(|i| if get(i) { one } else { 0 }).collect(),
+            )
+        }
+        DType::BF16 => {
+            let one = match Literal::from_bf16_f64(1.0) {
+                Literal::BF16Bits(b) => b,
+                _ => 0,
+            };
+            TensorValue::new_half_float_values(
+                DType::BF16,
+                shape,
+                (0..len).map(|i| if get(i) { one } else { 0 }).collect(),
+            )
+        }
+        DType::I64 => {
+            TensorValue::new_i64_values(shape, (0..len).map(|i| i64::from(get(i))).collect())
+        }
+        DType::I32 => {
+            TensorValue::new_i32_values(shape, (0..len).map(|i| i64::from(get(i))).collect())
+        }
+        DType::U32 => {
+            TensorValue::new_u32_values(shape, (0..len).map(|i| u32::from(get(i))).collect())
+        }
+        DType::U64 => {
+            TensorValue::new_u64_values(shape, (0..len).map(|i| u64::from(get(i))).collect())
+        }
+        DType::Bool => TensorValue::new_bool_values(shape, (0..len).map(get).collect()),
+        DType::Complex64 | DType::Complex128 => TensorValue::new_complex_values(
+            target,
+            shape,
+            (0..len)
+                .map(|i| (if get(i) { 1.0 } else { 0.0 }, 0.0))
+                .collect(),
+        ),
+    };
+    Ok(Some(Value::Tensor(tv.map_err(EvalError::InvalidTensor)?)))
+}
+
 pub(crate) fn eval_convert_element_type(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -4254,6 +4326,27 @@ pub(crate) fn eval_convert_element_type(
                 };
                 if let Some(t) = dense {
                     return Ok(Value::Tensor(t.map_err(EvalError::InvalidTensor)?));
+                }
+            } else if let Some(values) = tensor.elements.as_bool_slice() {
+                // Dense 1-byte Bool mask -> numeric target (mask.astype(int|float)).
+                if let Some(v) = convert_bool_source_dense(
+                    values.len(),
+                    |i| values[i],
+                    target_dtype,
+                    shape.clone(),
+                )? {
+                    return Ok(v);
+                }
+            } else if let Some((words, len)) = tensor.elements.as_bool_words() {
+                // Bit-packed BoolWords mask (from a same-shape compare) -> numeric
+                // target: bit-test directly, no Vec<Literal> materialization.
+                if let Some(v) = convert_bool_source_dense(
+                    len,
+                    |i| (words[i / 64] >> (i % 64)) & 1 != 0,
+                    target_dtype,
+                    shape.clone(),
+                )? {
+                    return Ok(v);
                 }
             }
 
@@ -18619,6 +18712,100 @@ mod tests {
     }
 
     #[test]
+    fn convert_bool_source_dense_matches_generic_all_targets() {
+        // A Bool mask (both dense 1-byte and bit-packed BoolWords storage) converted
+        // to every target must match the boxed per-Literal path bit for bit
+        // (mask.astype(int|float) — counting/weighting comparison masks).
+        let targets = [
+            "f64",
+            "f32",
+            "f16",
+            "bf16",
+            "i64",
+            "i32",
+            "u64",
+            "u32",
+            "bool",
+            "complex64",
+            "complex128",
+        ];
+        let n = 70usize;
+        let flag = |i: usize| (i * 5 + 3) % 7 < 3;
+        let bools: Vec<bool> = (0..n).map(flag).collect();
+        let dense = Value::Tensor(
+            TensorValue::new_bool_values(Shape::vector(n as u32), bools.clone()).unwrap(),
+        );
+        let mut words = vec![0u64; n.div_ceil(64)];
+        for i in 0..n {
+            if flag(i) {
+                words[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        let bw = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                Shape::vector(n as u32),
+                LiteralBuffer::from_bool_words(words, n).unwrap(),
+            )
+            .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                Shape::vector(n as u32),
+                LiteralBuffer::new(bools.iter().copied().map(Literal::Bool).collect()),
+            )
+            .unwrap(),
+        );
+        assert!(
+            dense
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_bool_slice()
+                .is_some()
+        );
+        assert!(bw.as_tensor().unwrap().elements.as_bool_words().is_some());
+        assert!(
+            boxed
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_bool_slice()
+                .is_none()
+                && boxed
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_bool_words()
+                    .is_none(),
+            "boxed Bool source must hit the per-Literal path"
+        );
+        let lits = |v: &Value| {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .copied()
+                .collect::<Vec<Literal>>()
+        };
+        for t in targets {
+            let p = params(&[("new_dtype", t)]);
+            let r_box = lits(&eval_convert_element_type(std::slice::from_ref(&boxed), &p).unwrap());
+            assert_eq!(
+                lits(&eval_convert_element_type(std::slice::from_ref(&dense), &p).unwrap()),
+                r_box,
+                "bool(dense 1-byte) -> {t}"
+            );
+            assert_eq!(
+                lits(&eval_convert_element_type(std::slice::from_ref(&bw), &p).unwrap()),
+                r_box,
+                "bool(BoolWords) -> {t}"
+            );
+        }
+    }
+
+    #[test]
     fn dense_int_to_f32_and_i32_convert_matches_generic() {
         // int→f32 (F32 is JAX's default float) and i64→i32 narrowing previously fell to
         // the per-Literal convert path. Dense (densified i64/i32 source) must match the
@@ -18915,6 +19102,61 @@ mod tests {
         let dense_t = best(&dense);
         println!(
             "BENCH convert u32->f32 [{n}]: generic={:.2}ms dense={:.2}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_convert_bool_to_i32_dense_vs_generic() {
+        use std::time::Instant;
+        // mask.astype(int32) — counting/weighting a comparison mask. NEW path reads
+        // a bit-packed BoolWords mask directly; generic materializes Vec<Literal>.
+        let n = 1usize << 20;
+        let mut words = vec![0u64; n.div_ceil(64)];
+        for i in 0..n {
+            if i.wrapping_mul(2_654_435_761) & 0x20 != 0 {
+                words[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        let dense = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                Shape::vector(n as u32),
+                fj_core::LiteralBuffer::from_bool_words(words.clone(), n).unwrap(),
+            )
+            .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                Shape::vector(n as u32),
+                fj_core::LiteralBuffer::new(
+                    (0..n)
+                        .map(|i| Literal::Bool((words[i / 64] >> (i % 64)) & 1 != 0))
+                        .collect(),
+                ),
+            )
+            .unwrap(),
+        );
+        let p = params(&[("new_dtype", "i32")]);
+        let best = |v: &Value| {
+            let _ = eval_convert_element_type(std::slice::from_ref(v), &p).unwrap();
+            let mut b = f64::MAX;
+            for _ in 0..7 {
+                let t = Instant::now();
+                let o = eval_convert_element_type(std::slice::from_ref(v), &p).unwrap();
+                std::hint::black_box(o.as_tensor().unwrap().elements.len());
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let generic = best(&boxed);
+        let dense_t = best(&dense);
+        println!(
+            "BENCH convert bool(BoolWords)->i32 [{n}]: generic={:.2}ms dense={:.2}ms speedup={:.2}x",
             generic * 1e3,
             dense_t * 1e3,
             generic / dense_t
