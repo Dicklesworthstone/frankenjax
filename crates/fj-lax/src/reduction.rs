@@ -2170,19 +2170,30 @@ pub(crate) fn eval_reduce_axes(
                 // chokepoint, applied here so the reduce is self-correct
                 // regardless of caller. int64 reductions are unchanged.
                 let out_dtype = tensor.dtype;
-                let elements: Vec<Literal> = if out_dtype == DType::I32 {
-                    result
-                        .into_iter()
-                        .map(|v| Literal::I64(i64::from(v as i32)))
-                        .collect()
-                } else {
-                    result.into_iter().map(Literal::I64).collect()
-                };
-                Ok(Value::Tensor(TensorValue::new(
-                    out_dtype,
-                    Shape { dims: out_dims },
-                    elements,
-                )?))
+                // De-box the dense `Vec<i64> result` directly (8 vs 24-byte boxed Literal
+                // stride + per-element TensorValue::new validation; the boxing dominated
+                // large integer-reduce outputs). Bit-identical: new_i64_values stores
+                // Literal::I64(v); for I32, new_i32_values stores the i32-wrapped value
+                // exactly as the boxed Literal::I64(i64::from(v as i32)) did (same ctor
+                // convert_element_type uses for f->i32). i32 is JAX's default int.
+                match out_dtype {
+                    DType::I64 => Ok(Value::Tensor(TensorValue::new_i64_values(
+                        Shape { dims: out_dims },
+                        result,
+                    )?)),
+                    DType::I32 => Ok(Value::Tensor(TensorValue::new_i32_values(
+                        Shape { dims: out_dims },
+                        result.into_iter().map(|v| i64::from(v as i32)).collect(),
+                    )?)),
+                    _ => {
+                        let elements: Vec<Literal> = result.into_iter().map(Literal::I64).collect();
+                        Ok(Value::Tensor(TensorValue::new(
+                            out_dtype,
+                            Shape { dims: out_dims },
+                            elements,
+                        )?))
+                    }
+                }
             } else {
                 // SIMD ReduceMax/ReduceMin axis path (F64/F32, trailing-axes `inner==1`
                 // contiguous block — the `jnp.max(x, axis=-1)` case): each output cell
@@ -3542,6 +3553,29 @@ mod tests {
             out.as_tensor().unwrap().elements.as_f64_slice().is_some(),
             "f64 max reduce output must be dense"
         );
+        // I64 sum — integer axis-reduce output must also be dense + correct.
+        let idata: Vec<i64> = (0..f * n).map(|i| i as i64 - 6).collect();
+        let vi = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![f as u32, n as u32],
+                },
+                idata.clone(),
+            )
+            .unwrap(),
+        );
+        let out = crate::eval_primitive(Primitive::ReduceSum, &[vi], &params).unwrap();
+        let t = out.as_tensor().unwrap();
+        assert_eq!(t.dtype, DType::I64);
+        assert!(
+            t.elements.as_i64_slice().is_some(),
+            "i64 reduce output must be dense"
+        );
+        let got = t.elements.as_i64_slice().unwrap();
+        for (j, &g) in got.iter().enumerate() {
+            let expect: i64 = (0..f).map(|r| idata[r * n + j]).sum();
+            assert_eq!(g, expect, "i64 reduce[{j}]");
+        }
     }
 
     fn s_f64(v: f64) -> Value {
