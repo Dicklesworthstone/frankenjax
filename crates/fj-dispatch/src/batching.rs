@@ -3430,13 +3430,13 @@ fn batch_reduce_window(
     // An absent dilation defaults to all-1 against the batched rank in eval, so only a
     // present, non-empty list needs the prepend.
     for key in ["window_dilation", "base_dilation"] {
-        if let Some(raw) = params.get(key) {
-            if !is_empty_list(raw) {
-                let dils = parse_usize_list(raw, key)?;
-                let mut new_dils = vec![1_usize];
-                new_dils.extend_from_slice(&dils);
-                new_params.insert((*key).to_owned(), format_csv(&new_dils));
-            }
+        if let Some(raw) = params.get(key)
+            && !is_empty_list(raw)
+        {
+            let dils = parse_usize_list(raw, key)?;
+            let mut new_dils = vec![1_usize];
+            new_dils.extend_from_slice(&dils);
+            new_params.insert((*key).to_owned(), format_csv(&new_dils));
         }
     }
 
