@@ -2090,16 +2090,18 @@ pub(crate) fn eval_reduce_axes(
                     }
                 }
 
-                let elements: Vec<Literal> = result_re
-                    .into_iter()
-                    .zip(result_im)
-                    .map(|(re, im)| complex_literal_from_parts(tensor.dtype, re, im))
-                    .collect();
-
-                Ok(Value::Tensor(TensorValue::new(
+                // De-box: wrap the dense (re, im) pairs directly via new_complex_values
+                // (dense Complex storage) instead of mapping through
+                // complex_literal_from_parts into a boxed Vec<Literal>. Bit-identical:
+                // new_complex_values(Complex64, (re,im)) rounds re/im to f32 exactly as
+                // from_complex64(re as f32, im as f32), and Complex128 stores f64 as-is —
+                // the same values complex_literal_from_parts produced. Keeps complex reduce
+                // output on the dense Complex fast path (FFT post-processing chains).
+                let out: Vec<(f64, f64)> = result_re.into_iter().zip(result_im).collect();
+                Ok(Value::Tensor(TensorValue::new_complex_values(
                     tensor.dtype,
                     Shape { dims: out_dims },
-                    elements,
+                    out,
                 )?))
             } else if is_integral {
                 let mut result = try_filled_vec(
