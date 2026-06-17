@@ -3409,6 +3409,25 @@ fn batch_reduce_window(
         new_params.insert("padding".to_owned(), new_padding);
     }
 
+    // Dilations: prepend a no-dilation (1) entry for the prepended batch axis. Both
+    // window_dilation (atrous pooling) and base_dilation (operand dilation) are
+    // per-spatial-axis params that eval_reduce_window parses against the FULL (batched)
+    // rank and REJECTS on a length mismatch ("must match tensor rank"). Without this,
+    // vmap(reduce_window) with either dilation set failed closed on input that works
+    // un-batched, because only window_dimensions/strides/padding got the batch entry.
+    // An absent dilation defaults to all-1 against the batched rank in eval, so only a
+    // present, non-empty list needs the prepend.
+    for key in ["window_dilation", "base_dilation"] {
+        if let Some(raw) = params.get(key) {
+            if !is_empty_list(raw) {
+                let dils = parse_usize_list(raw, key)?;
+                let mut new_dils = vec![1_usize];
+                new_dils.extend_from_slice(&dils);
+                new_params.insert((*key).to_owned(), format_csv(&new_dils));
+            }
+        }
+    }
+
     let result = eval_primitive(Primitive::ReduceWindow, &[value], &new_params)
         .map_err(|e| BatchError::EvalError(e.to_string()))?;
     Ok(BatchTracer::batched(result, 0))
@@ -12967,6 +12986,45 @@ mod tests {
             extract_f64_vec(&result.value),
             vec![3.0, 5.0, 7.0, 9.0, 30.0, 50.0, 70.0, 90.0]
         );
+    }
+
+    #[test]
+    fn batch_reduce_window_prepends_batch_dilation_entries() {
+        // vmap(reduce_window) with window_dilation / base_dilation set must prepend a
+        // no-dilation (1) entry for the prepended batch axis: eval_reduce_window parses
+        // these per-spatial-axis params against the FULL batched rank and REJECTS a
+        // length mismatch ("must match tensor rank"), so before the fix the fast batch
+        // rule errored on a dilated reduce_window that works un-batched (only
+        // window_dimensions/strides/padding had been getting the batch entry). Validate
+        // element-identity against batch_passthrough_leading (the per-slice ground truth).
+        let data: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0];
+        let make = || BatchTracer::batched(make_f64_matrix(2, 5, &data), 0);
+        for (key, val) in [("window_dilation", "2"), ("base_dilation", "2")] {
+            for op in ["sum", "max"] {
+                let params = BTreeMap::from([
+                    ("reduce_op".to_owned(), op.to_owned()),
+                    ("window_dimensions".to_owned(), "2".to_owned()),
+                    (key.to_owned(), val.to_owned()),
+                ]);
+                let fast = apply_batch_rule(Primitive::ReduceWindow, &[make()], &params)
+                    .unwrap_or_else(|e| {
+                        panic!("vmap(reduce_window {key}={val} op={op}) errored: {e:?}")
+                    });
+                let slow =
+                    batch_passthrough_leading(Primitive::ReduceWindow, &[make()], &params).unwrap();
+                assert_eq!(fast.batch_dim, slow.batch_dim, "{key}={val} op={op} batch_dim");
+                assert_eq!(
+                    fast.value.as_tensor().unwrap().shape.dims,
+                    slow.value.as_tensor().unwrap().shape.dims,
+                    "{key}={val} op={op} shape"
+                );
+                assert_eq!(
+                    extract_f64_vec(&fast.value),
+                    extract_f64_vec(&slow.value),
+                    "{key}={val} op={op} values"
+                );
+            }
+        }
     }
 
     #[test]
