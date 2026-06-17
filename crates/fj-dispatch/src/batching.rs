@@ -14952,6 +14952,99 @@ mod tests {
     }
 
     #[test]
+    fn batch_shape_dim_rules_match_per_slice() {
+        // Completes the vmap-vs-loop coverage of the dim-param family with the
+        // shape-CHANGING rules: expand_dims (reads "axis") and squeeze (reads
+        // "dimensions"). Each batch rule must shift the SAME param key its eval reads
+        // (the param-key-mismatch class) and stay element-identical to the per-slice
+        // ground truth. I64 data -> bit-exact.
+        let extract = |t: &BatchTracer| -> (Option<usize>, Vec<u32>, Vec<i64>) {
+            let tensor = t.value.as_tensor().unwrap();
+            (
+                t.batch_dim,
+                tensor.shape.dims.clone(),
+                tensor
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::I64(v) => *v,
+                        other => panic!("expected I64, got {other:?}"),
+                    })
+                    .collect(),
+            )
+        };
+        // Build a batched tensor of logical shape [B=3, dims...] with the batch axis
+        // placed at `bd` (0 = front, 1 = second position) by an explicit reindex.
+        let make = |bd: usize, per_elem: &[usize], flat: &[i64]| -> BatchTracer {
+            let b = 3usize;
+            let pe_len: usize = per_elem.iter().product();
+            assert_eq!(flat.len(), b * pe_len);
+            if bd == 0 {
+                let mut dims = vec![b as u32];
+                dims.extend(per_elem.iter().map(|&d| d as u32));
+                let t = TensorValue::new(
+                    DType::I64,
+                    Shape { dims },
+                    flat.iter().copied().map(Literal::I64).collect(),
+                )
+                .unwrap();
+                BatchTracer::batched(Value::Tensor(t), 0)
+            } else {
+                // physical shape [per_elem[0], B, per_elem[1..]] for a rank-2 per-elem.
+                assert_eq!(per_elem.len(), 2);
+                let (d0, d1) = (per_elem[0], per_elem[1]);
+                let mut out = vec![0i64; b * d0 * d1];
+                for bi in 0..b {
+                    for i in 0..d0 {
+                        for j in 0..d1 {
+                            out[(i * b + bi) * d1 + j] = flat[(bi * d0 + i) * d1 + j];
+                        }
+                    }
+                }
+                let t = TensorValue::new(
+                    DType::I64,
+                    Shape { dims: vec![d0 as u32, b as u32, d1 as u32] },
+                    out.into_iter().map(Literal::I64).collect(),
+                )
+                .unwrap();
+                BatchTracer::batched(Value::Tensor(t), 1)
+            }
+        };
+
+        // expand_dims: per-element [R=2, C=4]; insert a new axis at 0/1/2.
+        let ed: Vec<i64> = (0..24).map(|i| i - 12).collect();
+        for bd in [0usize, 1] {
+            for ax in ["0", "1", "2"] {
+                let params = BTreeMap::from([("axis".to_owned(), ax.to_owned())]);
+                let fast = batch_expand_dims(&[make(bd, &[2, 4], &ed)], &params).unwrap();
+                let slow =
+                    batch_passthrough_leading(Primitive::ExpandDims, &[make(bd, &[2, 4], &ed)], &params)
+                        .unwrap();
+                assert_eq!(
+                    extract(&fast),
+                    extract(&slow),
+                    "expand_dims bd={bd} axis={ax}: single-call != per-slice"
+                );
+            }
+        }
+
+        // squeeze: per-element [1, C=4]; remove the size-1 per-element axis 0.
+        let sq: Vec<i64> = (0..12).map(|i| i * 2 - 6).collect();
+        for bd in [0usize, 1] {
+            let params = BTreeMap::from([("dimensions".to_owned(), "0".to_owned())]);
+            let fast = batch_squeeze(&[make(bd, &[1, 4], &sq)], &params).unwrap();
+            let slow =
+                batch_passthrough_leading(Primitive::Squeeze, &[make(bd, &[1, 4], &sq)], &params)
+                    .unwrap();
+            assert_eq!(
+                extract(&fast),
+                extract(&slow),
+                "squeeze bd={bd} dims=0: single-call != per-slice"
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_batch_argmax_single_call_vs_per_slice() {
         use std::time::Instant;
