@@ -950,6 +950,63 @@ fn infer_broadcast_in_dim_shape(
     Ok(Shape { dims: target_dims })
 }
 
+/// Strict squeeze shape inference matching fj-trace + JAX lax._compute_squeeze_shape.
+/// The previous inline fallback used filter_map (silent-drop of malformed tokens),
+/// clamped out-of-range axes, and skipped both the uniqueness and size-1 checks — so it
+/// staged avals for squeezes that eval/JAX reject. Fail closed instead.
+fn infer_squeeze_shape(eqn: &Equation, input: &AbstractValue) -> Result<Shape, PartialEvalError> {
+    let rank = input.shape.rank();
+    let dims_in = &input.shape.dims;
+    let squeeze_dims: Vec<usize> = match eqn.params.get("dimensions") {
+        Some(s) if !s.trim().is_empty() => {
+            let mut out = Vec::new();
+            for tok in s.split(',') {
+                let raw: i64 = tok.trim().parse().map_err(|_| PartialEvalError::ShapeInference {
+                    primitive: eqn.primitive,
+                    detail: format!("invalid squeeze dimension token: '{}'", tok.trim()),
+                })?;
+                let norm = if raw < 0 { raw + rank as i64 } else { raw };
+                if norm < 0 || norm >= rank as i64 {
+                    return Err(PartialEvalError::ShapeInference {
+                        primitive: eqn.primitive,
+                        detail: format!("squeeze dimension {raw} out of range for rank {rank}"),
+                    });
+                }
+                out.push(norm as usize);
+            }
+            out
+        }
+        _ => dims_in
+            .iter()
+            .enumerate()
+            .filter(|&(_, &d)| d == 1)
+            .map(|(i, _)| i)
+            .collect(),
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for &d in &squeeze_dims {
+        if !seen.insert(d) {
+            return Err(PartialEvalError::ShapeInference {
+                primitive: eqn.primitive,
+                detail: format!("squeeze dimensions are not unique: duplicate {d}"),
+            });
+        }
+        if dims_in[d] != 1 {
+            return Err(PartialEvalError::ShapeInference {
+                primitive: eqn.primitive,
+                detail: format!("cannot squeeze dimension {d} with size {} (must be 1)", dims_in[d]),
+            });
+        }
+    }
+    let dims: Vec<u32> = dims_in
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !squeeze_dims.contains(i))
+        .map(|(_, &d)| d)
+        .collect();
+    Ok(Shape { dims })
+}
+
 fn infer_slice_shape(eqn: &Equation, input: &AbstractValue) -> Result<Shape, PartialEvalError> {
     let rank = input.shape.rank();
     let starts = parse_required_u32_list_param(eqn, "start_indices")?;
@@ -1497,36 +1554,10 @@ fn infer_equation_output_aval(
         }
         // Squeeze: drop the listed dims (negative-normalized against rank), or all
         // size-1 dims if unspecified. Catch-all previously kept the input shape.
-        Squeeze => {
-            let rank = first_input.shape.rank() as i64;
-            let drop: Vec<usize> = match eqn.params.get("dimensions") {
-                Some(s) if !s.trim().is_empty() => s
-                    .split(',')
-                    .filter_map(|d| d.trim().parse::<i64>().ok())
-                    .map(|d| (if d < 0 { d + rank } else { d }).clamp(0, rank.max(0)) as usize)
-                    .collect(),
-                _ => first_input
-                    .shape
-                    .dims
-                    .iter()
-                    .enumerate()
-                    .filter(|&(_, &d)| d == 1)
-                    .map(|(i, _)| i)
-                    .collect(),
-            };
-            let dims: Vec<u32> = first_input
-                .shape
-                .dims
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !drop.contains(i))
-                .map(|(_, &d)| d)
-                .collect();
-            AbstractValue {
-                dtype: first_input.dtype,
-                shape: Shape { dims },
-            }
-        }
+        Squeeze => AbstractValue {
+            dtype: first_input.dtype,
+            shape: infer_squeeze_shape(eqn, first_input)?,
+        },
         // Argmax/Argmin: drop the reduced axis; output is ALWAYS I64 indices. The
         // catch-all kept the input shape AND dtype — wrong on both counts.
         Argmax | Argmin => {
