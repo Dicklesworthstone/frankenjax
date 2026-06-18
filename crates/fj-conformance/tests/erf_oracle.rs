@@ -539,28 +539,20 @@ fn oracle_erf_complex64_purely_imaginary() {
 }
 
 #[test]
-fn oracle_erf_complex64_large_real_uses_asymptotic_branch() {
-    // The complex erf tests above use |z| < 4 (Maclaurin series); |z| >= 4 switches to
-    // the asymptotic erfc expansion, which was untested for complex inputs. On the real
-    // axis erf(4) and erf(5) are both ~0.99999998+ (they round toward 1.0 in f32), with
-    // imag ~ 0. The point is to exercise the asymptotic branch and confirm finiteness +
-    // saturation toward 1, not full precision.
+fn oracle_erf_rejects_complex_operands_even_large() {
+    // CORRECTION of a previously-wrong test: JAX erf is standard_unop(_float), so erf
+    // REJECTS complex operands at the eval level (complex_unary_elementwise returns None
+    // -> "complex operands" error), consistent with complex_ops_oracle's float-vs-complex
+    // boundary guard. (The complex_erf function exists and is exercised by its own fj-lax
+    // lib test, but it is NOT wired into the eval dispatch — erf(complex) fails closed.)
+    // Confirm rejection holds for large real-axis complex inputs too, not just small ones.
     let input = make_complex64_tensor(&[2], vec![(4.0, 0.0), (5.0, 0.0)]);
-    let result = eval_primitive(Primitive::Erf, &[input], &no_params())
-        .expect("erf complex64 large should succeed");
-    let vals = extract_complex64_vec(&result);
+    let err = eval_primitive(Primitive::Erf, &[input], &no_params())
+        .expect_err("JAX erf is float-only and must reject complex operands");
     assert!(
-        (vals[0].0 as f64 - 0.999_999_984_582_742_1).abs() < 1e-6,
-        "erf(4) ≈ 0.99999998, got {}",
-        vals[0].0
+        err.to_string().contains("complex"),
+        "unexpected complex erf error: {err}"
     );
-    assert!(vals[0].1.abs() < 1e-6, "erf(4) imag ~ 0");
-    assert!(
-        (vals[1].0 as f64 - 0.999_999_999_998_462_5).abs() < 1e-6,
-        "erf(5) ≈ 1.0, got {}",
-        vals[1].0
-    );
-    assert!(vals[1].1.abs() < 1e-6, "erf(5) imag ~ 0");
 }
 
 #[test]
