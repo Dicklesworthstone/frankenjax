@@ -311,6 +311,25 @@ fn convert_element_type_f32_to_i32_truncates_toward_zero() {
 }
 
 #[test]
+fn convert_element_type_f64_to_f16_overflows_to_signed_infinity() {
+    // f16's max finite is 65504; a larger magnitude overflows to signed infinity
+    // (IEEE round-to-nearest), matching JAX/XLA — not a saturation to f16::MAX.
+    // Checked by widening the f16 result back to f64 (exact for 1.0 and ±inf).
+    let input = f64_tensor(&[3], &[1.0, 70000.0, -70000.0]);
+    let half = convert(input, "f16").expect("f64 to f16 conversion should succeed");
+    assert_eq!(half.dtype(), DType::F16);
+    let back = convert(half, "f64").expect("f16 to f64 conversion should succeed");
+    let vals: Vec<f64> = back
+        .as_tensor()
+        .expect("expected tensor")
+        .elements
+        .iter()
+        .map(|l| l.as_f64().expect("expected f64"))
+        .collect();
+    assert_eq!(vals, vec![1.0, f64::INFINITY, f64::NEG_INFINITY]);
+}
+
+#[test]
 fn convert_element_type_f64_to_f32_overflows_to_signed_infinity() {
     // A finite f64 magnitude beyond f32::MAX (~3.4e38) narrows to signed infinity
     // (IEEE round-to-nearest overflow), matching JAX/XLA convert_element_type —
