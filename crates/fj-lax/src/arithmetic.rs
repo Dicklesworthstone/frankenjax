@@ -4779,6 +4779,25 @@ fn eval_unary_complex_map(
                 }
             }
 
+            // Dense serial path: a dense-complex operand that skipped the threaded
+            // block above (below the parallel threshold, or single-core) still
+            // materialized a Vec<Literal> through TensorValue::new, which does NOT
+            // densify complex — boxing the output. Read the packed (re,im) slice and
+            // write dense complex storage instead. Bit-for-bit identical to the
+            // Literal loop: the same `op`, and new_complex_values applies the same
+            // out_dtype narrowing complex_literal_from_f64_parts does (the threaded
+            // path above relies on the identical equivalence).
+            if matches!(tensor.dtype, DType::Complex64 | DType::Complex128)
+                && let Some(dense) = tensor.elements.as_complex_slice()
+            {
+                let out: Vec<(f64, f64)> = dense.iter().map(|&(re, im)| op(re, im)).collect();
+                return Ok(Value::Tensor(TensorValue::new_complex_values(
+                    tensor.dtype,
+                    tensor.shape.clone(),
+                    out,
+                )?));
+            }
+
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for lit in tensor.elements.iter().copied() {
                 elements.push(map_literal(lit)?);
@@ -20189,6 +20208,44 @@ mod tests {
                 i1c.0
             );
         }
+    }
+
+    /// The serial (small / single-core) path of eval_unary_complex_map must return
+    /// DENSE complex storage and be bit-for-bit identical to the boxed-input path
+    /// (TensorValue::new does not densify complex, so the fallback used to box the
+    /// output). Exercised via complex Exp on a sub-threshold tensor.
+    #[test]
+    fn complex_unary_map_serial_dense_matches_boxed_bit_for_bit() {
+        let pairs: Vec<(f64, f64)> = (0..64)
+            .map(|i| (i as f64 * 0.07 - 2.0, -(i as f64) * 0.03 + 1.0))
+            .collect();
+        let shape = Shape { dims: vec![8, 8] };
+        let dense = Value::Tensor(
+            TensorValue::new_complex_values(DType::Complex128, shape.clone(), pairs.clone())
+                .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Complex128,
+                shape.clone(),
+                fj_core::LiteralBuffer::new(
+                    pairs
+                        .iter()
+                        .map(|&(re, im)| Literal::from_complex128(re, im))
+                        .collect(),
+                ),
+            )
+            .unwrap(),
+        );
+        let d = eval_exp(Primitive::Exp, std::slice::from_ref(&dense)).unwrap();
+        let b = eval_exp(Primitive::Exp, std::slice::from_ref(&boxed)).unwrap();
+        let dl: Vec<Literal> = d.as_tensor().unwrap().elements.iter().copied().collect();
+        let bl: Vec<Literal> = b.as_tensor().unwrap().elements.iter().copied().collect();
+        assert_eq!(dl, bl, "complex Exp dense-serial vs boxed");
+        assert!(
+            d.as_tensor().unwrap().elements.as_complex_slice().is_some(),
+            "complex Exp serial path returns dense storage"
+        );
     }
 
     // ---- dense u32/u64 elementwise arithmetic (frankenjax-crrx7) ----
