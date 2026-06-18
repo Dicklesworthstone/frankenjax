@@ -360,6 +360,29 @@ fn convert_element_type_i64_to_f32_rounds_to_nearest_even() {
 }
 
 #[test]
+fn convert_element_type_i64_to_f64_rounds_at_2_pow_53_boundary() {
+    // f64 has a 53-bit mantissa; integers above 2^53 are not all representable
+    // (the step is 2 there). i64 -> f64 rounds to nearest-even (IEEE), matching
+    // JAX/XLA: 2^53 = 9007199254740992 is exact, and 2^53+1 = 9007199254740993 is
+    // exactly halfway between 2^53 and 2^53+2, so it rounds to the even 2^53.
+    let input = i64_tensor(&[2], &[9_007_199_254_740_992, 9_007_199_254_740_993]);
+    let result = convert(input, "f64").expect("i64 to f64 conversion should succeed");
+    assert_eq!(result.dtype(), DType::F64);
+    let vals: Vec<f64> = result
+        .as_tensor()
+        .expect("expected tensor")
+        .elements
+        .iter()
+        .map(|l| l.as_f64().expect("expected f64"))
+        .collect();
+    assert_eq!(
+        vals,
+        vec![9_007_199_254_740_992.0, 9_007_199_254_740_992.0],
+        "i64 -> f64 must round to nearest-even at the 2^53 mantissa boundary"
+    );
+}
+
+#[test]
 fn convert_element_type_empty_tensor() {
     let input =
         Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap());
