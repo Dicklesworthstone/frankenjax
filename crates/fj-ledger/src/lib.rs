@@ -188,7 +188,7 @@ impl ConformalPredictor {
     }
 
     pub fn observe(&mut self, score: f64) {
-        if score.is_finite() {
+        if score.is_finite() && score >= 0.0 {
             self.calibration_scores.push(score);
         }
     }
@@ -547,6 +547,27 @@ mod tests {
         assert!(estimate.used_conformal);
         assert!(estimate.lower.is_finite());
         assert!(estimate.upper.is_finite());
+    }
+
+    #[test]
+    fn conformal_predictor_ignores_negative_scores() {
+        let mut cp = super::ConformalPredictor::new(0.8, 2);
+        cp.observe(-1.0);
+        cp.observe(-0.25);
+        assert_eq!(cp.calibration_size(), 0);
+        assert!(!cp.is_calibrated());
+
+        cp.observe(0.0);
+        cp.observe(0.1);
+        let threshold = cp
+            .prediction_threshold()
+            .expect("non-negative scores should calibrate");
+        assert!(threshold >= 0.0);
+
+        let estimate = cp.calibrated_posterior(0.5);
+        assert!(estimate.used_conformal);
+        assert!(estimate.lower <= estimate.point);
+        assert!(estimate.point <= estimate.upper);
     }
 
     #[test]
