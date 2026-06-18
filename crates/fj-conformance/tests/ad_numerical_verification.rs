@@ -4427,6 +4427,31 @@ fn expand_dims_vjp_squeezes_the_inserted_axis() {
 }
 
 #[test]
+fn squeeze_vjp_restores_the_removed_axis() {
+    // squeeze removes a size-1 axis; its VJP reshapes the cotangent back to the input
+    // shape (values unchanged). input [1,3] -> output [3]; grad of g=[10,20,30] is the
+    // same values reshaped to [1,3].
+    let input = make_f64_matrix(1, 3, &[1.0, 2.0, 3.0]);
+    let mut params = BTreeMap::new();
+    params.insert("dimensions".to_string(), "0".to_string());
+    let out = eval_primitive(Primitive::Squeeze, std::slice::from_ref(&input), &params).unwrap();
+    let g = make_f64_vector(&[10.0, 20.0, 30.0]);
+    let vjp = fj_ad::vjp(
+        Primitive::Squeeze,
+        std::slice::from_ref(&input),
+        std::slice::from_ref(&g),
+        std::slice::from_ref(&out),
+        &params,
+    )
+    .unwrap();
+    assert_eq!(
+        extract_f64_vec(&vjp[0]),
+        vec![10.0, 20.0, 30.0],
+        "squeeze VJP restores the removed axis with values unchanged"
+    );
+}
+
+#[test]
 fn igamma_igammac_vjp_numerical() {
     // igamma(a, x): grad w.r.t. a (igamma_grad_a's dedicated series — the most error-prone)
     // AND x (x^(a-1)·e^{-x}/Gamma(a)). igammac = 1 - igamma, so its grads are negated.
