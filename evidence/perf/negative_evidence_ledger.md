@@ -81,6 +81,35 @@ ends are not rediscovered without new evidence.
   OneHot, SelectN/iota, or peer-owned fj-core dense-storage lanes without fresh
   same-worker benchmark evidence and ownership check.
 
+## frankenjax-mcqr.101 - Dense Signed/Unsigned Same-Width Bitcast Pairs
+
+- Date: 2026-06-18
+- Agent: cod-a / TopazOrchid
+- Lever: route dense `BitcastConvertType` F32->I32, I32->F32, F64->U64, and
+  U64->F64 through packed typed slices instead of per-`Literal` byte
+  conversion.
+- Status: batch-test pending.
+- Benchmark guard: `eval/bitcast_f32_i32_dense_1m`,
+  `eval/bitcast_f32_i32_literal_ref_1m`,
+  `eval/bitcast_i32_f32_dense_1m`,
+  `eval/bitcast_i32_f32_literal_ref_1m`,
+  `eval/bitcast_f64_u64_dense_1m`,
+  `eval/bitcast_f64_u64_literal_ref_1m`,
+  `eval/bitcast_u64_f64_dense_1m`,
+  `eval/bitcast_u64_f64_literal_ref_1m`.
+- Conformance guard: dense and literal-backed signed/unsigned same-width
+  bitcasts produce the same shapes, dtypes, exact integer bit lanes, packed
+  storage, and round-trip float bit patterns across NaN, infinities, signed
+  zero, normals, and custom NaN payloads.
+- Retry predicate: do not retry the already committed F32<->U32, F64<->I64,
+  F64<->U32, U32<->F64, F32<->BF16/F16, BF16/F16->F32, or these signed/
+  unsigned same-width bitcast pairs without focused criterion evidence showing
+  the dense rows are still slower than the literal-backed reference or the
+  original per-`Literal` path remains a top-five fj-lax bottleneck. Do not
+  revisit FMA/SIMD exp, GEMM, QR, SVD, cumsum, OneHot, SelectN/iota, or
+  peer-owned fj-core dense-storage lanes without fresh same-worker benchmark
+  evidence and ownership check.
+
 ## frankenjax-co009 - Stream Dense LiteralBuffer Serialization
 
 - Date: 2026-06-18
