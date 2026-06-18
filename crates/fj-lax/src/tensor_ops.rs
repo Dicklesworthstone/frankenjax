@@ -11549,20 +11549,38 @@ fn rev_gather<T: Copy>(
     total: usize,
 ) -> Vec<T> {
     let rank = dims.len();
+    // The trailing run of NON-reversed axes is copied as a contiguous source block:
+    // those axes are row-major contiguous and use the output coordinate directly, so
+    // traversing them in row-major order visits `src[base..base+block_len]`. Replicate
+    // that block via extend_from_slice (memcpy) and decode only the OUTER axes (which
+    // include the reversed ones). Common: rev over a leading axis (flip batch/time)
+    // leaves the whole inner image contiguous. Bit-identical; strict generalization —
+    // block_len==1 when the innermost axis is reversed, reproducing the per-element loop.
+    let mut block_len = 1_usize;
+    let mut block_start = rank;
+    for ax in (0..rank).rev() {
+        if reversed[ax] {
+            break;
+        }
+        block_len *= dims[ax] as usize;
+        block_start = ax;
+    }
+
     let mut out = Vec::with_capacity(total);
-    let mut coords = vec![0_usize; rank];
-    for _ in 0..total {
-        let mut src_flat = 0_usize;
-        for ax in 0..rank {
+    let outer_total = total / block_len.max(1);
+    let mut coords = vec![0_usize; block_start];
+    for _ in 0..outer_total {
+        let mut base = 0_usize;
+        for ax in 0..block_start {
             let c = if reversed[ax] {
                 dims[ax] as usize - 1 - coords[ax]
             } else {
                 coords[ax]
             };
-            src_flat += c * strides[ax];
+            base += c * strides[ax];
         }
-        out.push(src[src_flat]);
-        for ax in (0..rank).rev() {
+        out.extend_from_slice(&src[base..base + block_len]);
+        for ax in (0..block_start).rev() {
             coords[ax] += 1;
             if coords[ax] < dims[ax] as usize {
                 break;
