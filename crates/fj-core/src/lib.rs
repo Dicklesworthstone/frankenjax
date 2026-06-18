@@ -2769,8 +2769,15 @@ impl TensorValue {
                 let total_len = first.elements.len().checked_mul(slices.len()).ok_or_else(|| {
                     axis0_shape_overflow(slices.len(), &first.shape.dims)
                 })?;
-                let mut elements = Vec::with_capacity(total_len);
-                elements.extend_from_slice(&first.elements);
+
+                let mut parts = if first.elements.is_empty() {
+                    Vec::new()
+                } else {
+                    Vec::with_capacity(slices.len())
+                };
+                if !first.elements.is_empty() {
+                    parts.push((first.elements.clone(), 0, first.elements.len()));
+                }
                 for value in &slices[1..] {
                     let Value::Tensor(tensor) = value else {
                         return Err(ValueError::MixedAxisStackKinds);
@@ -2787,13 +2794,22 @@ impl TensorValue {
                             actual: tensor.shape.clone(),
                         });
                     }
-                    elements.extend_from_slice(&tensor.elements);
+                    if !tensor.elements.is_empty() {
+                        parts.push((tensor.elements.clone(), 0, tensor.elements.len()));
+                    }
                 }
 
                 let mut dims = Vec::with_capacity(first.shape.rank() + 1);
                 dims.push(axis_dim);
                 dims.extend_from_slice(&first.shape.dims);
-                TensorValue::new(first.dtype, Shape { dims }, elements)
+                let shape = Shape { dims };
+                let elements =
+                    LiteralBuffer::from_concat_slices(parts).ok_or(ValueError::ShapeOverflow {
+                        shape: shape.clone(),
+                    })?;
+                debug_assert_eq!(elements.len(), total_len);
+
+                TensorValue::new_with_literal_buffer(first.dtype, shape, elements)
             }
         }
     }
@@ -6405,6 +6421,143 @@ mod tests {
         assert_eq!(
             complex_repeat.elements.as_complex_slice(),
             Some(&[(1.0, -0.0), (2.5, 3.25), (1.0, -0.0), (2.5, 3.25)][..])
+        );
+    }
+
+    #[test]
+    fn stack_axis0_tensor_uses_concat_dense_storage() {
+        let f64_nan = f64::from_bits(0x7ff8_0000_0000_0042);
+        let f64_left = Value::Tensor(
+            TensorValue::new_f64_values(Shape::vector(2), vec![-0.0, f64_nan])
+                .expect("dense f64 tensor"),
+        );
+        let f64_right = Value::Tensor(
+            TensorValue::new_f64_values(Shape::vector(2), vec![1.5, -2.25])
+                .expect("dense f64 tensor"),
+        );
+        let f64_stack = TensorValue::stack_axis0(&[f64_left, f64_right])
+            .expect("dense f64 tensor stack");
+        assert_eq!(f64_stack.shape, Shape { dims: vec![2, 2] });
+        assert_eq!(
+            f64_stack
+                .elements
+                .as_f64_slice()
+                .expect("dense f64 stacked tensor")
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            vec![
+                (-0.0_f64).to_bits(),
+                f64_nan.to_bits(),
+                1.5_f64.to_bits(),
+                (-2.25_f64).to_bits(),
+            ]
+        );
+
+        let f32_left = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape::vector(2),
+                vec![1.25, f32::from_bits(0x7fc0_0001)],
+            )
+            .expect("dense f32 tensor"),
+        );
+        let f32_right = Value::Tensor(
+            TensorValue::new_f32_values(Shape::vector(2), vec![-0.0, 8.0])
+                .expect("dense f32 tensor"),
+        );
+        let f32_stack = TensorValue::stack_axis0(&[f32_left, f32_right])
+            .expect("dense f32 tensor stack");
+        assert_eq!(
+            f32_stack
+                .elements
+                .as_f32_slice()
+                .expect("dense f32 stacked tensor")
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            vec![
+                1.25_f32.to_bits(),
+                0x7fc0_0001,
+                (-0.0_f32).to_bits(),
+                8.0_f32.to_bits()
+            ]
+        );
+
+        let i64_left =
+            Value::Tensor(TensorValue::new_i64_values(Shape::vector(2), vec![7, -3]).unwrap());
+        let i64_right =
+            Value::Tensor(TensorValue::new_i64_values(Shape::vector(2), vec![10, -11]).unwrap());
+        let i64_stack =
+            TensorValue::stack_axis0(&[i64_left, i64_right]).expect("dense i64 tensor stack");
+        assert_eq!(
+            i64_stack.elements.as_i64_slice(),
+            Some(&[7, -3, 10, -11][..])
+        );
+
+        let u32_left = Value::Tensor(
+            TensorValue::new_u32_values(Shape::vector(2), vec![10, u32::MAX]).unwrap(),
+        );
+        let u32_right = Value::Tensor(
+            TensorValue::new_u32_values(Shape::vector(2), vec![0, 42]).unwrap(),
+        );
+        let u32_stack =
+            TensorValue::stack_axis0(&[u32_left, u32_right]).expect("dense u32 tensor stack");
+        assert_eq!(
+            u32_stack.elements.as_u32_slice(),
+            Some(&[10, u32::MAX, 0, 42][..])
+        );
+
+        let bool_left = Value::Tensor(
+            TensorValue::new_bool_values(Shape::vector(2), vec![true, false]).unwrap(),
+        );
+        let bool_right = Value::Tensor(
+            TensorValue::new_bool_values(Shape::vector(2), vec![false, true]).unwrap(),
+        );
+        let bool_stack =
+            TensorValue::stack_axis0(&[bool_left, bool_right]).expect("dense bool tensor stack");
+        assert_eq!(
+            bool_stack.elements.as_bool_slice(),
+            Some(&[true, false, false, true][..])
+        );
+
+        let half_left = Value::Tensor(
+            TensorValue::new_half_float_values(DType::BF16, Shape::vector(2), vec![1, 0x7fc1])
+                .unwrap(),
+        );
+        let half_right = Value::Tensor(
+            TensorValue::new_half_float_values(DType::BF16, Shape::vector(2), vec![0x3f80, 0])
+                .unwrap(),
+        );
+        let half_stack =
+            TensorValue::stack_axis0(&[half_left, half_right]).expect("dense bf16 tensor stack");
+        assert_eq!(half_stack.dtype, DType::BF16);
+        assert_eq!(
+            half_stack.elements.as_half_float_slice(),
+            Some(&[1, 0x7fc1, 0x3f80, 0][..])
+        );
+
+        let complex_left = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex64,
+                Shape::vector(2),
+                vec![(1.0, -0.0), (2.5, 3.25)],
+            )
+            .unwrap(),
+        );
+        let complex_right = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex64,
+                Shape::vector(2),
+                vec![(-3.0, 4.0), (0.0, -1.0)],
+            )
+            .unwrap(),
+        );
+        let complex_stack = TensorValue::stack_axis0(&[complex_left, complex_right])
+            .expect("dense complex64 tensor stack");
+        assert_eq!(complex_stack.dtype, DType::Complex64);
+        assert_eq!(
+            complex_stack.elements.as_complex_slice(),
+            Some(&[(1.0, -0.0), (2.5, 3.25), (-3.0, 4.0), (0.0, -1.0)][..])
         );
     }
 

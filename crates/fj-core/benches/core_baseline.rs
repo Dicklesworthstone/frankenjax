@@ -142,6 +142,39 @@ fn bench_tensor_repeat_axis0(c: &mut Criterion) {
     });
 }
 
+fn bench_tensor_stack_axis0(c: &mut Criterion) {
+    let shape = Shape::vector(1024);
+    let dense_slices: Vec<Value> = (0..64)
+        .map(|slice| {
+            let values = (0..1024)
+                .map(|index| f64::from(slice * 1024 + index))
+                .collect();
+            Value::Tensor(
+                TensorValue::new_f64_values(shape.clone(), values)
+                    .expect("valid dense f64 tensor"),
+            )
+        })
+        .collect();
+    let literal_slices: Vec<Value> = (0..64)
+        .map(|slice| {
+            let elements = (0..1024)
+                .map(|index| Literal::from_f64(f64::from(slice * 1024 + index)))
+                .collect();
+            Value::Tensor(
+                TensorValue::new(DType::F64, shape.clone(), elements)
+                    .expect("valid literal-backed f64 tensor"),
+            )
+        })
+        .collect();
+
+    c.bench_function("core/tensor_stack_axis0_dense_f64_64x1k", |b| {
+        b.iter(|| TensorValue::stack_axis0(black_box(dense_slices.as_slice())))
+    });
+    c.bench_function("core/tensor_stack_axis0_literal_f64_64x1k", |b| {
+        b.iter(|| TensorValue::stack_axis0(black_box(literal_slices.as_slice())))
+    });
+}
+
 fn bench_value_scalar_f64(c: &mut Criterion) {
     c.bench_function("core/value_scalar_f64", |b| {
         b.iter(|| Value::scalar_f64(std::f64::consts::PI))
@@ -175,6 +208,7 @@ criterion_group!(
     bench_tensor_value_new,
     bench_tensor_to_i64_vec,
     bench_tensor_repeat_axis0,
+    bench_tensor_stack_axis0,
     bench_value_scalar_f64,
     bench_value_vector_f64,
     bench_shape_element_count,
