@@ -31,6 +31,39 @@ fn extract_f64_values(v: &Value) -> Vec<f64> {
     }
 }
 
+fn scalar_dtypes() -> [DType; 11] {
+    [
+        DType::Bool,
+        DType::I32,
+        DType::I64,
+        DType::U32,
+        DType::U64,
+        DType::BF16,
+        DType::F16,
+        DType::F32,
+        DType::F64,
+        DType::Complex64,
+        DType::Complex128,
+    ]
+}
+
+fn assert_tensor_dtype_consistent(result: &Value, dtype: DType, dims: &[u32], label: &str) {
+    assert!(
+        matches!(result, Value::Tensor(_)),
+        "{label} should produce a tensor"
+    );
+    let Value::Tensor(tensor) = result else {
+        return;
+    };
+    assert_eq!(tensor.shape.dims.as_slice(), dims, "{label} shape");
+    assert_eq!(tensor.dtype, dtype, "{label} dtype");
+    let consistency = tensor.validate_dtype_consistency();
+    assert!(
+        consistency.is_ok(),
+        "{label} should be dtype-consistent: {consistency:?}"
+    );
+}
+
 // JAX reference: jnp.zeros((2, 3))
 #[test]
 fn test_zeros_2x3() {
@@ -57,6 +90,17 @@ fn test_full_pi() {
     let values = extract_f64_values(&result);
     assert_eq!(values.len(), 4);
     assert!(values.iter().all(|&v| approx_eq(v, fill_value, 1e-10)));
+}
+
+#[test]
+fn test_zeros_ones_all_scalar_dtypes_are_dtype_consistent() {
+    for dtype in scalar_dtypes() {
+        let zeros_result = zeros(&[2, 3], dtype).unwrap();
+        assert_tensor_dtype_consistent(&zeros_result, dtype, &[2, 3], "zeros");
+
+        let ones_result = ones(&[2, 3], dtype).unwrap();
+        assert_tensor_dtype_consistent(&ones_result, dtype, &[2, 3], "ones");
+    }
 }
 
 // JAX reference: jnp.eye(3)
@@ -94,34 +138,9 @@ fn test_eye_diagonal_offset() {
 
 #[test]
 fn test_eye_all_scalar_dtypes_are_dtype_consistent() {
-    for dtype in [
-        DType::Bool,
-        DType::I32,
-        DType::I64,
-        DType::U32,
-        DType::U64,
-        DType::BF16,
-        DType::F16,
-        DType::F32,
-        DType::F64,
-        DType::Complex64,
-        DType::Complex128,
-    ] {
+    for dtype in scalar_dtypes() {
         let result = eye(2, Some(3), 0, dtype).unwrap();
-        assert!(
-            matches!(result, Value::Tensor(_)),
-            "{dtype:?} eye should produce a tensor"
-        );
-        let Value::Tensor(tensor) = &result else {
-            return;
-        };
-        assert_eq!(tensor.shape.dims, vec![2, 3], "{dtype:?} eye shape");
-        assert_eq!(tensor.dtype, dtype, "{dtype:?} eye dtype");
-        let consistency = tensor.validate_dtype_consistency();
-        assert!(
-            consistency.is_ok(),
-            "{dtype:?} eye should be dtype-consistent: {consistency:?}"
-        );
+        assert_tensor_dtype_consistent(&result, dtype, &[2, 3], "eye");
     }
 }
 
