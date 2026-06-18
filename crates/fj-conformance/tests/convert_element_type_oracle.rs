@@ -267,6 +267,35 @@ fn convert_element_type_rejects_wrong_arity() {
 }
 
 #[test]
+fn convert_element_type_f16_to_i32_truncates_toward_zero() {
+    // Half-float source -> int truncates toward zero like f64/f32 -> int (negatives
+    // toward zero too). The oracle had no f16 convert coverage. f16(2.7) rounds to a
+    // value in (2,3) and truncates to 2; f16(-2.7) -> -2; f16(0.9) -> 0.
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::F16,
+            Shape { dims: vec![3] },
+            vec![
+                Literal::from_f16_f64(2.7),
+                Literal::from_f16_f64(-2.7),
+                Literal::from_f16_f64(0.9),
+            ],
+        )
+        .unwrap(),
+    );
+    let result = convert(input, "i32").expect("f16 to i32 conversion should succeed");
+    assert_eq!(result.dtype(), DType::I32);
+    let values: Vec<i64> = result
+        .as_tensor()
+        .expect("expected tensor")
+        .elements
+        .iter()
+        .map(|l| l.as_i64().expect("expected i32 stored as i64"))
+        .collect();
+    assert_eq!(values, vec![2, -2, 0]);
+}
+
+#[test]
 fn convert_element_type_f64_to_i32() {
     let input = f64_tensor(&[3], &[1.5, -2.7, 100.9]);
     let result = convert(input, "i32").expect("f64 to i32 conversion should succeed");
