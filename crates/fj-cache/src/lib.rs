@@ -376,6 +376,24 @@ impl CacheManager {
     pub fn clear(&mut self) {
         self.backend.clear();
     }
+
+    /// Return cumulative backend put failures hidden by the infallible put API.
+    #[must_use]
+    pub fn put_failure_count(&self) -> u64 {
+        self.backend.put_failure_count()
+    }
+
+    /// Return cumulative backend evict failures other than normal cache misses.
+    #[must_use]
+    pub fn evict_failure_count(&self) -> u64 {
+        self.backend.evict_failure_count()
+    }
+
+    /// Return cumulative backend clear failures.
+    #[must_use]
+    pub fn clear_failure_count(&self) -> u64 {
+        self.backend.clear_failure_count()
+    }
 }
 
 pub fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -1127,12 +1145,23 @@ mod tests {
         let key = build_cache_key(&baseline_input()).unwrap();
 
         let mut manager = CacheManager::file_backed(missing_dir);
+        assert_eq!(manager.put_failure_count(), 0);
+        assert_eq!(manager.evict_failure_count(), 0);
+        assert_eq!(manager.clear_failure_count(), 0);
+
         manager.put(&key, b"should not be stored".to_vec());
         assert_eq!(
             manager.get(&key),
             CacheLookup::Miss,
             "failed file cache writes must not become readable stale hits"
         );
+        assert_eq!(
+            manager.put_failure_count(),
+            1,
+            "CacheManager must expose file-backed put failures"
+        );
+        assert_eq!(manager.evict_failure_count(), 0);
+        assert_eq!(manager.clear_failure_count(), 0);
 
         let _ = std::fs::remove_file(&parent_file);
     }
