@@ -1,7 +1,11 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use fj_core::{Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
+use fj_core::{
+    Atom, DType, Equation, Jaxpr, Literal, LiteralBuffer, Primitive, Shape, TensorValue, Value,
+    VarId,
+};
 use smallvec::smallvec;
 use std::collections::BTreeMap;
+use std::hint::black_box;
 
 fn build_simple_jaxpr() -> Jaxpr {
     Jaxpr::new(
@@ -96,6 +100,27 @@ fn bench_tensor_value_new(c: &mut Criterion) {
     });
 }
 
+fn bench_tensor_to_i64_vec(c: &mut Criterion) {
+    let values: Vec<i64> = (0..4096).map(|i| i as i64 - 2048).collect();
+    let shape = Shape::vector(values.len() as u32);
+    let dense = TensorValue::new_i64_values(shape.clone(), values.clone())
+        .expect("valid dense i64 tensor");
+    let literal_elements = values.iter().copied().map(Literal::I64).collect();
+    let literal = TensorValue::new_with_literal_buffer(
+        DType::I64,
+        shape,
+        LiteralBuffer::new(literal_elements),
+    )
+    .expect("valid literal-backed i64 tensor");
+
+    c.bench_function("core/tensor_to_i64_vec_dense_4k", |b| {
+        b.iter(|| black_box(&dense).to_i64_vec())
+    });
+    c.bench_function("core/tensor_to_i64_vec_literal_4k", |b| {
+        b.iter(|| black_box(&literal).to_i64_vec())
+    });
+}
+
 fn bench_value_scalar_f64(c: &mut Criterion) {
     c.bench_function("core/value_scalar_f64", |b| {
         b.iter(|| Value::scalar_f64(std::f64::consts::PI))
@@ -127,6 +152,7 @@ criterion_group!(
     bench_jaxpr_validate_simple,
     bench_jaxpr_validate_large,
     bench_tensor_value_new,
+    bench_tensor_to_i64_vec,
     bench_value_scalar_f64,
     bench_value_vector_f64,
     bench_shape_element_count,

@@ -2839,6 +2839,10 @@ impl TensorValue {
     }
 
     pub fn to_i64_vec(&self) -> Option<Vec<i64>> {
+        if let Some(values) = self.elements.as_i64_slice() {
+            return Some(values.to_vec());
+        }
+
         self.elements.iter().copied().map(Literal::as_i64).collect()
     }
 }
@@ -7143,7 +7147,38 @@ mod tests {
             vec![Literal::I64(10), Literal::I64(20), Literal::I64(30)],
         )
         .unwrap();
+        assert_eq!(t.elements.as_i64_slice(), Some(&[10, 20, 30][..]));
         assert_eq!(t.to_i64_vec(), Some(vec![10, 20, 30]));
+    }
+
+    #[test]
+    fn tensor_to_i64_vec_literal_fallback_preserves_values() {
+        let t = TensorValue::new_with_literal_buffer(
+            DType::I64,
+            Shape::vector(3),
+            LiteralBuffer::new(vec![Literal::I64(10), Literal::I64(20), Literal::I64(30)]),
+        )
+        .unwrap();
+
+        assert!(
+            t.elements.as_i64_slice().is_none(),
+            "guard the literal fallback path separately from dense storage"
+        );
+        assert_eq!(t.to_i64_vec(), Some(vec![10, 20, 30]));
+    }
+
+    #[test]
+    fn tensor_to_i64_vec_concat_dense_storage() {
+        let buffer = LiteralBuffer::from_concat_slices(vec![
+            (LiteralBuffer::from_i64_values(vec![1, 2, 3, 4]), 1, 2),
+            (LiteralBuffer::from_i64_values(vec![5]), 0, 1),
+        ])
+        .expect("valid i64 concat buffer");
+        let t =
+            TensorValue::new_with_literal_buffer(DType::I64, Shape::vector(3), buffer).unwrap();
+
+        assert_eq!(t.elements.as_i64_slice(), Some(&[2, 3, 5][..]));
+        assert_eq!(t.to_i64_vec(), Some(vec![2, 3, 5]));
     }
 
     #[test]
