@@ -1260,31 +1260,43 @@ pub(crate) fn eval_reduce(
                     Primitive::ReduceMax | Primitive::ReduceMin => (float_init, float_init),
                     _ => (0.0_f64, 0.0_f64),
                 };
-                for literal in &tensor.elements {
-                    let (re, im) = literal_to_complex_parts(primitive, *literal)?;
-                    match primitive {
-                        Primitive::ReduceProd => {
-                            let new_re = re_acc * re - im_acc * im;
-                            let new_im = re_acc * im + im_acc * re;
-                            re_acc = new_re;
-                            im_acc = new_im;
+                // Per-element fold step shared by the dense and boxed paths.
+                let fold = |re_acc: &mut f64, im_acc: &mut f64, re: f64, im: f64| match primitive {
+                    Primitive::ReduceProd => {
+                        let new_re = *re_acc * re - *im_acc * im;
+                        let new_im = *re_acc * im + *im_acc * re;
+                        *re_acc = new_re;
+                        *im_acc = new_im;
+                    }
+                    Primitive::ReduceMax => {
+                        if complex_lex_cmp((re, im), (*re_acc, *im_acc)).is_gt() {
+                            *re_acc = re;
+                            *im_acc = im;
                         }
-                        Primitive::ReduceMax => {
-                            if complex_lex_cmp((re, im), (re_acc, im_acc)).is_gt() {
-                                re_acc = re;
-                                im_acc = im;
-                            }
+                    }
+                    Primitive::ReduceMin => {
+                        if complex_lex_cmp((re, im), (*re_acc, *im_acc)).is_lt() {
+                            *re_acc = re;
+                            *im_acc = im;
                         }
-                        Primitive::ReduceMin => {
-                            if complex_lex_cmp((re, im), (re_acc, im_acc)).is_lt() {
-                                re_acc = re;
-                                im_acc = im;
-                            }
-                        }
-                        _ => {
-                            re_acc += re;
-                            im_acc += im;
-                        }
+                    }
+                    _ => {
+                        *re_acc += re;
+                        *im_acc += im;
+                    }
+                };
+                // Dense fast path: fold the packed (re, im) backing directly — bit-
+                // identical to the boxed loop (as_complex_slice yields exactly what
+                // literal_to_complex_parts returns for dense complex), skipping the
+                // per-element 24-byte Literal reconstruction.
+                if let Some(src) = tensor.elements.as_complex_slice() {
+                    for &(re, im) in src {
+                        fold(&mut re_acc, &mut im_acc, re, im);
+                    }
+                } else {
+                    for literal in &tensor.elements {
+                        let (re, im) = literal_to_complex_parts(primitive, *literal)?;
+                        fold(&mut re_acc, &mut im_acc, re, im);
                     }
                 }
                 return Ok(Value::Scalar(complex_literal_from_parts(
