@@ -1927,6 +1927,21 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
         (Value::Scalar(fj_core::Literal::I64(scalar)), Value::Tensor(tensor))
             if tensor.dtype == fj_core::DType::I64 =>
         {
+            // Dense I64 fast path (sibling of the I32/U32/U64 arms): map the typed
+            // i64 slice straight into dense output, skipping the per-element 24-byte
+            // Literal reconstruction + boxed build + densify rescan. `as_i64_slice`
+            // is Some for I64 and I32, but this arm is gated to I64. Bit-identical:
+            // same apply_bitwise_binary_i64(scalar, v), same I64 dense storage.
+            if let Some(vals) = tensor.elements.as_i64_slice() {
+                let out: Vec<i64> = vals
+                    .iter()
+                    .map(|&v| apply_bitwise_binary_i64(primitive, *scalar, v))
+                    .collect();
+                return Ok(Value::Tensor(
+                    TensorValue::new_i64_values(tensor.shape.clone(), out)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
+            }
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for el in tensor.elements.iter() {
                 match el {
@@ -2147,6 +2162,18 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
         (Value::Tensor(tensor), Value::Scalar(fj_core::Literal::I64(scalar)))
             if tensor.dtype == fj_core::DType::I64 =>
         {
+            // Dense I64 fast path (tensor⊗scalar direction): same as above with the
+            // scalar as the rhs of apply_bitwise_binary_i64. Bit-identical.
+            if let Some(vals) = tensor.elements.as_i64_slice() {
+                let out: Vec<i64> = vals
+                    .iter()
+                    .map(|&v| apply_bitwise_binary_i64(primitive, v, *scalar))
+                    .collect();
+                return Ok(Value::Tensor(
+                    TensorValue::new_i64_values(tensor.shape.clone(), out)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
+            }
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for el in tensor.elements.iter() {
                 match el {
