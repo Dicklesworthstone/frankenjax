@@ -645,6 +645,40 @@ mod tests {
     }
 
     #[test]
+    fn lru_byte_budget_failed_evict_restores_oldest_order_key() {
+        let config = LruConfig {
+            max_entries: 100,
+            max_bytes: 5,
+        };
+        let mut cache = LruCache::new(FailingEvictBackend::default(), config);
+        let oldest = test_key("oldest");
+        let newest = test_key("newest");
+
+        cache.put(&oldest, test_artifact(b"12345"));
+        cache.inner.fail_next_evict = true;
+        cache.put(&newest, test_artifact(b"67890"));
+
+        assert_eq!(cache.evict_failure_count(), 1);
+        assert_eq!(
+            cache.stats().total_bytes,
+            10,
+            "backend keeps both entries because byte-budget eviction failed"
+        );
+        {
+            let order = cache.order.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(
+                order.len(),
+                2,
+                "failed byte-budget eviction must not drop LRU tracking"
+            );
+            assert_eq!(order.front(), Some(&oldest));
+            assert_eq!(order.back(), Some(&newest));
+        }
+        assert!(cache.get(&oldest).is_some());
+        assert!(cache.get(&newest).is_some());
+    }
+
+    #[test]
     fn lru_releases_order_lock_before_backend_budget_calls() {
         let config = LruConfig {
             max_entries: 1,
