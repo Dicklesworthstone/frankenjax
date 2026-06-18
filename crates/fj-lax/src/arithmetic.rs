@@ -6204,6 +6204,34 @@ fn select_scalar_from_bools(
                 out,
             )?)))
         }
+        (Literal::U32(tv), Literal::U32(fv)) => {
+            let out: Vec<u32> = bools.map(|c| if c { tv } else { fv }).collect();
+            Ok(Some(Value::Tensor(TensorValue::new_u32_values(shape, out)?)))
+        }
+        (Literal::U64(tv), Literal::U64(fv)) => {
+            let out: Vec<u64> = bools.map(|c| if c { tv } else { fv }).collect();
+            Ok(Some(Value::Tensor(TensorValue::new_u64_values(shape, out)?)))
+        }
+        (Literal::Complex128Bits(tre, tim), Literal::Complex128Bits(fre, fim)) => {
+            let t = (f64::from_bits(tre), f64::from_bits(tim));
+            let f = (f64::from_bits(fre), f64::from_bits(fim));
+            let out: Vec<(f64, f64)> = bools.map(|c| if c { t } else { f }).collect();
+            Ok(Some(Value::Tensor(TensorValue::new_complex_values(
+                DType::Complex128,
+                shape,
+                out,
+            )?)))
+        }
+        (Literal::Complex64Bits(tre, tim), Literal::Complex64Bits(fre, fim)) => {
+            let t = (f64::from(f32::from_bits(tre)), f64::from(f32::from_bits(tim)));
+            let f = (f64::from(f32::from_bits(fre)), f64::from(f32::from_bits(fim)));
+            let out: Vec<(f64, f64)> = bools.map(|c| if c { t } else { f }).collect();
+            Ok(Some(Value::Tensor(TensorValue::new_complex_values(
+                DType::Complex64,
+                shape,
+                out,
+            )?)))
+        }
         _ => Ok(None),
     }
 }
