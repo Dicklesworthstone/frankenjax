@@ -3891,22 +3891,20 @@ pub(crate) fn eval_dynamic_slice(
         )?));
     }
 
-    let mut elements = Vec::with_capacity(total);
-    let mut out_coords = vec![0_usize; rank];
-    for _ in 0..total {
-        let mut in_flat = 0_usize;
-        for ax in 0..rank {
-            in_flat += (out_coords[ax] + starts[ax]) * in_strides[ax];
-        }
-        elements.push(tensor.elements[in_flat]);
-        for ax in (0..rank).rev() {
-            out_coords[ax] += 1;
-            if out_coords[ax] < slice_sizes[ax] {
-                break;
-            }
-            out_coords[ax] = 0;
-        }
-    }
+    // Generic Literal fallback (boxed/other dtypes): the same kernel over the
+    // materialized Literal slice — gets the trailing-block memcpy too, and dedups
+    // what was a hand-rolled copy of the dynamic_slice_dense odometer. contig_range
+    // was already consumed by the dense paths' early returns above.
+    let elements = dynamic_slice_dense(
+        tensor.elements.as_slice(),
+        rank,
+        total,
+        &slice_sizes,
+        &starts,
+        &in_strides,
+        &tensor.shape.dims,
+        contig_range,
+    );
 
     Ok(Value::Tensor(TensorValue::new(
         tensor.dtype,
