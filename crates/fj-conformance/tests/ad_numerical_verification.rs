@@ -4262,6 +4262,54 @@ fn binary_elementwise_vjps_hypot_logaddexp() {
 }
 
 #[test]
+fn clamp_vjp_routes_gradient_to_active_branch() {
+    // clamp(min, operand, max) gradient (verified to match JAX's defjvp): the cotangent
+    // flows entirely to whichever input is the output — operand when min<x<max, min when
+    // x<min, max when x>max. The 3-input clamp gradient had no AD coverage.
+    let vjp_clamp = |mn: f64, x: f64, mx: f64| -> (f64, f64, f64) {
+        let inputs = [
+            Value::scalar_f64(mn),
+            Value::scalar_f64(x),
+            Value::scalar_f64(mx),
+        ];
+        let g = Value::scalar_f64(1.0);
+        let params = BTreeMap::new();
+        let out = eval_primitive(Primitive::Clamp, &inputs, &params).unwrap();
+        let vjp = fj_ad::vjp(
+            Primitive::Clamp,
+            &inputs,
+            std::slice::from_ref(&g),
+            std::slice::from_ref(&out),
+            &params,
+        )
+        .unwrap();
+        (
+            extract_f64_scalar(&vjp[0]),
+            extract_f64_scalar(&vjp[1]),
+            extract_f64_scalar(&vjp[2]),
+        )
+    };
+    // min < x < max -> gradient to operand
+    assert_eq!(
+        vjp_clamp(0.0, 0.5, 1.0),
+        (0.0, 1.0, 0.0),
+        "in-range: grad flows to operand"
+    );
+    // x < min -> gradient to min (clamp output is min)
+    assert_eq!(
+        vjp_clamp(0.0, -0.5, 1.0),
+        (1.0, 0.0, 0.0),
+        "below min: grad flows to min"
+    );
+    // x > max -> gradient to max (clamp output is max)
+    assert_eq!(
+        vjp_clamp(0.0, 1.5, 1.0),
+        (0.0, 0.0, 1.0),
+        "above max: grad flows to max"
+    );
+}
+
+#[test]
 fn igamma_igammac_vjp_numerical() {
     // igamma(a, x): grad w.r.t. a (igamma_grad_a's dedicated series — the most error-prone)
     // AND x (x^(a-1)·e^{-x}/Gamma(a)). igammac = 1 - igamma, so its grads are negated.
