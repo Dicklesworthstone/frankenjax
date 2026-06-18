@@ -2169,13 +2169,27 @@ fn parse_index_mode(
 /// Resolve a flat axis-0 index against `dim` under an [`IndexMode`]. Returns
 /// `Some(in_bounds_index)` to read/write, or `None` to fill (gather) / drop (scatter).
 /// `dim` is guaranteed `>= 1` by the slice-size checks in the callers.
-fn resolve_axis0_index(idx: usize, dim: usize, mode: IndexMode) -> Option<usize> {
-    if idx < dim {
-        Some(idx)
-    } else {
+fn resolve_axis0_index(idx: i64, dim: usize, mode: IndexMode) -> Option<usize> {
+    if idx < 0 {
         match mode {
             IndexMode::FillOrDrop => None,
-            IndexMode::Clip | IndexMode::PromiseInBounds => Some(dim - 1),
+            IndexMode::Clip | IndexMode::PromiseInBounds => Some(0),
+        }
+    } else {
+        let Ok(idx) = usize::try_from(idx) else {
+            return match mode {
+                IndexMode::FillOrDrop => None,
+                IndexMode::Clip | IndexMode::PromiseInBounds => Some(dim - 1),
+            };
+        };
+
+        if idx < dim {
+            Some(idx)
+        } else {
+            match mode {
+                IndexMode::FillOrDrop => None,
+                IndexMode::Clip | IndexMode::PromiseInBounds => Some(dim - 1),
+            }
         }
     }
 }
@@ -2252,12 +2266,12 @@ pub(crate) fn eval_gather(
     }
 
     // Extract indices as flat i64 values + capture indices shape
-    let (index_vals, index_shape): (Vec<usize>, Vec<u32>) = match &inputs[1] {
-        Value::Scalar(lit) => (vec![lit_to_usize(lit, primitive)?], Vec::new()),
+    let (index_vals, index_shape): (Vec<i64>, Vec<u32>) = match &inputs[1] {
+        Value::Scalar(lit) => (vec![lit_to_i64(lit, primitive)?], Vec::new()),
         Value::Tensor(t) => (
             t.elements
                 .iter()
-                .map(|lit| lit_to_usize(lit, primitive))
+                .map(|lit| lit_to_i64(lit, primitive))
                 .collect::<Result<_, _>>()?,
             t.shape.dims.clone(),
         ),
@@ -2783,7 +2797,7 @@ fn complex_lex_ge_scatter(lhs: (f64, f64), rhs: (f64, f64)) -> bool {
 fn eval_scatter_dense(
     operand: &TensorValue,
     updates: &TensorValue,
-    index_vals: &[usize],
+    index_vals: &[i64],
     slice_elems: usize,
     dim0: usize,
     index_mode: IndexMode,
@@ -3098,12 +3112,12 @@ pub(crate) fn eval_scatter(
         });
     }
 
-    let (index_vals, index_shape): (Vec<usize>, Vec<u32>) = match &inputs[1] {
-        Value::Scalar(lit) => (vec![lit_to_usize(lit, primitive)?], Vec::new()),
+    let (index_vals, index_shape): (Vec<i64>, Vec<u32>) = match &inputs[1] {
+        Value::Scalar(lit) => (vec![lit_to_i64(lit, primitive)?], Vec::new()),
         Value::Tensor(t) => (
             t.elements
                 .iter()
-                .map(|lit| lit_to_usize(lit, primitive))
+                .map(|lit| lit_to_i64(lit, primitive))
                 .collect::<Result<_, _>>()?,
             t.shape.dims.clone(),
         ),
@@ -3322,32 +3336,14 @@ pub(crate) fn eval_scatter(
     )?))
 }
 
-fn lit_to_usize(lit: &Literal, primitive: Primitive) -> Result<usize, EvalError> {
+fn lit_to_i64(lit: &Literal, primitive: Primitive) -> Result<i64, EvalError> {
     match lit {
-        Literal::I32(n) => {
-            if *n >= 0 {
-                Ok(*n as usize)
-            } else {
-                Err(EvalError::Unsupported {
-                    primitive,
-                    detail: format!("negative index {n}"),
-                })
-            }
-        }
-        Literal::I64(n) => {
-            if *n >= 0 {
-                Ok(*n as usize)
-            } else {
-                Err(EvalError::Unsupported {
-                    primitive,
-                    detail: format!("negative index {n}"),
-                })
-            }
-        }
-        Literal::U32(n) => Ok(*n as usize),
-        Literal::U64(n) => usize::try_from(*n).map_err(|_| EvalError::Unsupported {
+        Literal::I32(n) => Ok(i64::from(*n)),
+        Literal::I64(n) => Ok(*n),
+        Literal::U32(n) => Ok(i64::from(*n)),
+        Literal::U64(n) => i64::try_from(*n).map_err(|_| EvalError::Unsupported {
             primitive,
-            detail: format!("index {n} exceeds usize range"),
+            detail: format!("index {n} exceeds i64 range"),
         }),
         Literal::Bool(b) => Ok(if *b { 1 } else { 0 }),
         Literal::BF16Bits(_) | Literal::F16Bits(_) | Literal::F32Bits(_) => {

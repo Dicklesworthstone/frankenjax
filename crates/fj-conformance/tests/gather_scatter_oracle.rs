@@ -244,6 +244,15 @@ fn oracle_gather_out_of_bounds_clips_by_default() {
 }
 
 #[test]
+fn oracle_gather_negative_index_clips_by_default() {
+    let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
+    let indices = make_i64_tensor(&[1], vec![-1]);
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![10]);
+}
+
+#[test]
 fn oracle_gather_out_of_bounds_fill_or_drop() {
     // FILL_OR_DROP substitutes the default fill value (iinfo.min for signed ints) for
     // the out-of-bounds gathered slice.
@@ -257,6 +266,16 @@ fn oracle_gather_out_of_bounds_fill_or_drop() {
 }
 
 #[test]
+fn oracle_gather_negative_index_fill_or_drop() {
+    let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
+    let indices = make_i64_tensor(&[2], vec![-1, 2]);
+    let mut params = gather_params(&[1]);
+    params.insert("index_mode".to_string(), "fill_or_drop".to_string());
+    let result = eval_primitive(Primitive::Gather, &[operand, indices], &params).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![i64::MIN, 30]);
+}
+
+#[test]
 fn oracle_gather_out_of_bounds_promise_clamps_defensively() {
     // PROMISE_IN_BOUNDS is UB in JAX for OOB; we clamp defensively to stay panic-free.
     let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
@@ -265,6 +284,16 @@ fn oracle_gather_out_of_bounds_promise_clamps_defensively() {
     params.insert("index_mode".to_string(), "promise_in_bounds".to_string());
     let result = eval_primitive(Primitive::Gather, &[operand, indices], &params).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![40]);
+}
+
+#[test]
+fn oracle_gather_negative_index_promise_clamps_defensively() {
+    let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
+    let indices = make_i64_tensor(&[1], vec![-100]);
+    let mut params = gather_params(&[1]);
+    params.insert("index_mode".to_string(), "promise_in_bounds".to_string());
+    let result = eval_primitive(Primitive::Gather, &[operand, indices], &params).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![10]);
 }
 
 #[test]
@@ -543,6 +572,20 @@ fn oracle_scatter_out_of_bounds_drops_by_default() {
 }
 
 #[test]
+fn oracle_scatter_negative_index_drops_by_default() {
+    let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
+    let indices = make_i64_tensor(&[1], vec![-1]);
+    let updates = make_i64_tensor(&[1], vec![99]);
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![0, 0, 0, 0]);
+}
+
+#[test]
 fn oracle_scatter_out_of_bounds_drops_only_oob() {
     // A mix of in-bounds and out-of-bounds indices: the in-bounds update lands, the
     // out-of-bounds one is dropped.
@@ -568,6 +611,17 @@ fn oracle_scatter_out_of_bounds_clip_mode() {
     params.insert("index_mode".to_string(), "clip".to_string());
     let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &params).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![0, 0, 0, 99]);
+}
+
+#[test]
+fn oracle_scatter_negative_index_clip_mode() {
+    let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
+    let indices = make_i64_tensor(&[1], vec![-1]);
+    let updates = make_i64_tensor(&[1], vec![99]);
+    let mut params = scatter_params();
+    params.insert("index_mode".to_string(), "clip".to_string());
+    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &params).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![99, 0, 0, 0]);
 }
 
 #[test]
