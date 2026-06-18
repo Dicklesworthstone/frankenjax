@@ -255,6 +255,21 @@ fn oracle_transpose_4d_reverse() {
 }
 
 #[test]
+fn oracle_transpose_4d_reverse_preserves_row_major_values() {
+    // Default permutation reverses axes: [a, b, c, d] -> [d, c, b, a].
+    let input = make_i64_tensor(&[2, 2, 3, 2], (1..=24).collect());
+    let result = eval_primitive(Primitive::Transpose, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3, 2, 2]);
+    assert_eq!(
+        extract_i64_vec(&result),
+        vec![
+            1, 13, 7, 19, 3, 15, 9, 21, 5, 17, 11, 23, 2, 14, 8, 20, 4, 16, 10, 22, 6,
+            18, 12, 24,
+        ]
+    );
+}
+
+#[test]
 fn oracle_transpose_4d_swap_middle() {
     // Permutation (0, 2, 1, 3): swap middle two axes
     // Shape [2, 3, 4, 5] -> [2, 4, 3, 5]
