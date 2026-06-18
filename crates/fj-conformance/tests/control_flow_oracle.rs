@@ -207,6 +207,40 @@ fn oracle_switch_index_2() {
 }
 
 #[test]
+fn oracle_switch_negative_index_clamps_to_first_branch() {
+    // JAX lax.switch clamps the index into [0, num_branches-1], so a negative
+    // index selects the FIRST branch (parity-gate coverage of the clamp edge that
+    // the index 0/1/2 tests above don't exercise).
+    let index = Value::scalar_i64(-5);
+    let branch0 = Value::Scalar(Literal::from_f64(10.0));
+    let branch1 = Value::Scalar(Literal::from_f64(20.0));
+    let branch2 = Value::Scalar(Literal::from_f64(30.0));
+    let result = eval_primitive(
+        Primitive::Switch,
+        &[index, branch0, branch1, branch2],
+        &switch_params(3),
+    )
+    .unwrap();
+    assert!((extract_f64_vec(&result)[0] - 10.0).abs() < 1e-10);
+}
+
+#[test]
+fn oracle_switch_out_of_range_index_clamps_to_last_branch() {
+    // Symmetric upper clamp: an index >= num_branches selects the LAST branch.
+    let index = Value::scalar_i64(99);
+    let branch0 = Value::Scalar(Literal::from_f64(10.0));
+    let branch1 = Value::Scalar(Literal::from_f64(20.0));
+    let branch2 = Value::Scalar(Literal::from_f64(30.0));
+    let result = eval_primitive(
+        Primitive::Switch,
+        &[index, branch0, branch1, branch2],
+        &switch_params(3),
+    )
+    .unwrap();
+    assert!((extract_f64_vec(&result)[0] - 30.0).abs() < 1e-10);
+}
+
+#[test]
 fn oracle_switch_tensor_branches() {
     let index = Value::scalar_i64(1);
     let branch0 = make_f64_tensor(&[2], vec![1.0, 2.0]);
