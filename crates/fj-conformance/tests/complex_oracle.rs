@@ -514,3 +514,34 @@ fn metamorphic_complex_hyperbolic_identity() {
     let ones: Vec<(f64, f64)> = pts.iter().map(|_| (1.0, 0.0)).collect();
     assert_complex_close(&diff, &ones, 1e-9, "cosh(z)^2 - sinh(z)^2 == 1");
 }
+
+#[test]
+fn metamorphic_complex_tan_equals_sin_over_cos() {
+    // tan(z) == sin(z) / cos(z). complex_tan SATURATES for |Im(z)| > 20; these
+    // moderate points stay in the standard branch, so it must match the ratio of
+    // the independently-implemented complex sin and cos. Catches divergence between
+    // complex_tan and its definition in the normal regime.
+    let pts = [(1.5, 0.7), (-0.8, 1.2), (2.0, -1.0), (0.3, 0.4)];
+    let z = complex_from_pairs(&pts);
+    let tan = unary(Primitive::Tan, &z);
+    let s = unary(Primitive::Sin, &z);
+    let c = unary(Primitive::Cos, &z);
+    let ratio = eval_primitive(Primitive::Div, &[s, c], &no_params()).unwrap();
+    let expected = extract_complex_vec(&ratio);
+    assert_complex_close(&tan, &expected, 1e-9, "tan(z) == sin(z)/cos(z)");
+}
+
+#[test]
+fn metamorphic_complex_tanh_equals_sinh_over_cosh() {
+    // tanh(z) == sinh(z) / cosh(z). complex_tanh SATURATES for large |Re(z)|; these
+    // moderate points stay in the standard branch, so it must match the ratio of the
+    // independently-implemented complex sinh and cosh.
+    let pts = [(0.7, 1.5), (1.2, -0.8), (-1.0, 2.0), (0.4, 0.3)];
+    let z = complex_from_pairs(&pts);
+    let tanh = unary(Primitive::Tanh, &z);
+    let sh = unary(Primitive::Sinh, &z);
+    let ch = unary(Primitive::Cosh, &z);
+    let ratio = eval_primitive(Primitive::Div, &[sh, ch], &no_params()).unwrap();
+    let expected = extract_complex_vec(&ratio);
+    assert_complex_close(&tanh, &expected, 1e-9, "tanh(z) == sinh(z)/cosh(z)");
+}
