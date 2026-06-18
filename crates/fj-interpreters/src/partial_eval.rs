@@ -1045,6 +1045,55 @@ fn infer_expand_dims_shape(
     Ok(Shape { dims })
 }
 
+/// Strict one_hot shape/dtype inference matching fj-trace, which REQUIRES num_classes and
+/// rejects an out-of-bounds axis. The previous inline fallback defaulted num_classes to 0
+/// (unwrap_or(0)) and clamped an out-of-range axis into range, staging a residual aval
+/// (wrong rank/size) for a configuration eval/JAX reject. Fail closed instead.
+fn infer_one_hot_shape(
+    eqn: &Equation,
+    input: &AbstractValue,
+) -> Result<(DType, Shape), PartialEvalError> {
+    let num_classes: u32 = eqn
+        .params
+        .get("num_classes")
+        .and_then(|s| s.trim().parse().ok())
+        .ok_or_else(|| PartialEvalError::ShapeInference {
+            primitive: eqn.primitive,
+            detail: "one_hot requires a valid 'num_classes' param".to_owned(),
+        })?;
+    let dtype = eqn
+        .params
+        .get("dtype")
+        .and_then(|s| dtype_from_name(s))
+        .unwrap_or(DType::F64);
+    let mut out_dims = input.shape.dims.clone();
+    let output_rank = out_dims.len() + 1;
+    // Default axis is the last output position; negative normalizes against output rank.
+    let raw_axis: i64 = match eqn.params.get("axis") {
+        Some(s) => s
+            .trim()
+            .parse()
+            .map_err(|_| PartialEvalError::ShapeInference {
+                primitive: eqn.primitive,
+                detail: format!("invalid one_hot axis: '{s}'"),
+            })?,
+        None => (output_rank - 1) as i64,
+    };
+    let norm = if raw_axis < 0 {
+        raw_axis + output_rank as i64
+    } else {
+        raw_axis
+    };
+    if norm < 0 || norm >= output_rank as i64 {
+        return Err(PartialEvalError::ShapeInference {
+            primitive: eqn.primitive,
+            detail: format!("one_hot axis {raw_axis} out of range for output rank {output_rank}"),
+        });
+    }
+    out_dims.insert(norm as usize, num_classes);
+    Ok((dtype, Shape { dims: out_dims }))
+}
+
 fn infer_slice_shape(eqn: &Equation, input: &AbstractValue) -> Result<Shape, PartialEvalError> {
     let rank = input.shape.rank();
     let starts = parse_required_u32_list_param(eqn, "start_indices")?;
@@ -1649,34 +1698,8 @@ fn infer_equation_output_aval(
         // against the output rank); output dtype from "dtype" (default F64). The
         // catch-all kept the index shape AND its integer dtype.
         OneHot => {
-            let num_classes: u32 = eqn
-                .params
-                .get("num_classes")
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(0);
-            let dtype = eqn
-                .params
-                .get("dtype")
-                .and_then(|s| dtype_from_name(s))
-                .unwrap_or(DType::F64);
-            let mut out_dims = first_input.shape.dims.clone();
-            let output_rank = out_dims.len() + 1;
-            let raw_axis: i64 = eqn
-                .params
-                .get("axis")
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or((output_rank - 1) as i64);
-            let norm = if raw_axis < 0 {
-                raw_axis + output_rank as i64
-            } else {
-                raw_axis
-            };
-            let axis = norm.clamp(0, (output_rank - 1) as i64) as usize;
-            out_dims.insert(axis, num_classes);
-            AbstractValue {
-                dtype,
-                shape: Shape { dims: out_dims },
-            }
+            let (dtype, shape) = infer_one_hot_shape(eqn, first_input)?;
+            AbstractValue { dtype, shape }
         }
         // Split: mirror fj-trace's single-output rule — an EVEN split packs a
         // [num_sections, section_size] pair at the split axis; an UNEVEN split is
