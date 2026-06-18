@@ -16,6 +16,10 @@ fn checked_shape_and_size(dims: &[u32]) -> Result<(Shape, usize), ValueError> {
     let size = usize::try_from(count).map_err(|_| ValueError::ShapeOverflow {
         shape: shape.clone(),
     })?;
+    let max_literal_count = (isize::MAX as usize) / std::mem::size_of::<Literal>();
+    if size > max_literal_count {
+        return Err(ValueError::ShapeOverflow { shape });
+    }
     Ok((shape, size))
 }
 
@@ -118,7 +122,7 @@ pub fn full(shape: &[u32], fill_value: f64, dtype: DType) -> Result<Value, Value
 /// Supports F64, F32, I64, I32 dtypes.
 pub fn eye(n: u32, m: Option<u32>, k: i32, dtype: DType) -> Result<Value, ValueError> {
     let m = m.unwrap_or(n);
-    let size = (n as usize) * (m as usize);
+    let (shape, size) = checked_shape_and_size(&[n, m])?;
 
     let (zero_lit, one_lit) = match dtype {
         DType::F64 => (Literal::from_f64(0.0), Literal::from_f64(1.0)),
@@ -132,16 +136,26 @@ pub fn eye(n: u32, m: Option<u32>, k: i32, dtype: DType) -> Result<Value, ValueE
     };
 
     let mut elements = vec![zero_lit; size];
+    let overflow = || ValueError::ShapeOverflow {
+        shape: shape.clone(),
+    };
+    let columns = usize::try_from(m).map_err(|_| overflow())?;
 
-    for i in 0..n as i32 {
-        let j = i + k;
-        if j >= 0 && j < m as i32 {
-            let idx = (i as usize) * (m as usize) + (j as usize);
-            elements[idx] = one_lit;
+    for row in 0..n {
+        let column = i64::from(row) + i64::from(k);
+        if (0..i64::from(m)).contains(&column) {
+            let row_index = usize::try_from(row).map_err(|_| overflow())?;
+            let column_index = usize::try_from(column).map_err(|_| overflow())?;
+            let idx = row_index
+                .checked_mul(columns)
+                .and_then(|base| base.checked_add(column_index))
+                .ok_or_else(overflow)?;
+            let element = elements.get_mut(idx).ok_or_else(overflow)?;
+            *element = one_lit;
         }
     }
 
-    let tensor = TensorValue::new(dtype, Shape { dims: vec![n, m] }, elements)?;
+    let tensor = TensorValue::new(dtype, shape, elements)?;
     Ok(Value::Tensor(tensor))
 }
 
@@ -521,6 +535,21 @@ mod tests {
         let v = eye(3, None, -1, DType::F64).unwrap();
         let vals = extract_f64(&v);
         assert_eq!(vals, vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn eye_rejects_shape_overflow_before_allocation() {
+        assert!(matches!(
+            eye(u32::MAX, Some(u32::MAX), 0, DType::F64),
+            Err(ValueError::ShapeOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn eye_extreme_positive_offset_yields_zero_matrix() {
+        let v = eye(3, Some(3), i32::MAX, DType::F64).unwrap();
+        let vals = extract_f64(&v);
+        assert_eq!(vals, vec![0.0; 9]);
     }
 
     #[test]
