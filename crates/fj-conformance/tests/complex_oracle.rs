@@ -712,3 +712,29 @@ fn complex_inverse_hyperbolic_returns_principal_branch() {
         );
     }
 }
+
+#[test]
+fn metamorphic_complex_pow_matches_sqrt_recip_square() {
+    // Complex pow is otherwise tested only with integer exponents (repeated-multiply
+    // path). The fractional-exponent path pow(z, w) = exp(w * log(z)) is
+    // branch-sensitive via the principal log, so pow(z, 0.5) must equal the principal
+    // sqrt(z). Cross-validate against sqrt / reciprocal / square at generic off-axis
+    // points incl. the left half-plane (same branch-pinning idea that caught the
+    // complex_acosh bug).
+    let pts = [(1.5, 0.7), (-0.8, 0.6), (1.2, -0.4), (-2.0, 0.5)];
+    let z = complex_from_pairs(&pts);
+    let mk_exp = |v: f64| complex_from_pairs(&pts.iter().map(|_| (v, 0.0)).collect::<Vec<_>>());
+    let powp = |e: f64| {
+        eval_primitive(Primitive::Pow, &[z.clone(), mk_exp(e)], &no_params()).unwrap()
+    };
+
+    let sqrt = extract_complex_vec(&unary(Primitive::Sqrt, &z));
+    assert_complex_close(&powp(0.5), &sqrt, 1e-9, "pow(z, 0.5) == sqrt(z)");
+
+    let recip = extract_complex_vec(&unary(Primitive::Reciprocal, &z));
+    assert_complex_close(&powp(-1.0), &recip, 1e-9, "pow(z, -1) == 1/z");
+
+    let square =
+        extract_complex_vec(&eval_primitive(Primitive::Mul, &[z.clone(), z.clone()], &no_params()).unwrap());
+    assert_complex_close(&powp(2.0), &square, 1e-9, "pow(z, 2) == z*z");
+}
