@@ -295,6 +295,9 @@ impl LogDomainPosterior {
 /// Numerically stable log-sum-exp: log(exp(a) + exp(b))
 #[must_use]
 pub fn log_sum_exp(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        return f64::NAN;
+    }
     let max = a.max(b);
     if max == f64::INFINITY {
         return f64::INFINITY;
@@ -771,6 +774,13 @@ mod tests {
             super::log_sum_exp(f64::INFINITY, f64::INFINITY),
             f64::INFINITY
         );
+    }
+
+    #[test]
+    fn log_sum_exp_propagates_nan_inputs() {
+        assert!(super::log_sum_exp(f64::NAN, 0.0).is_nan());
+        assert!(super::log_sum_exp(0.0, f64::NAN).is_nan());
+        assert!(super::log_sum_exp(f64::NAN, f64::NAN).is_nan());
     }
 
     // ── Extended ledger tests (frankenjax-o9j) ──────────────────
