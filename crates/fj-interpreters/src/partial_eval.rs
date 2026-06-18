@@ -1312,30 +1312,43 @@ fn infer_complex_aval(input_avals: &[AbstractValue]) -> AbstractValue {
 /// the single-input catch-all previously typed a residual matmul with the LHS
 /// shape, one rank-pair too wide. Falls back to the first input aval when the
 /// arity is wrong (best-effort: staging must not panic on a malformed residual).
-fn infer_dot_general_aval(eqn: &Equation, input_avals: &[AbstractValue]) -> AbstractValue {
+fn infer_dot_general_aval(
+    eqn: &Equation,
+    input_avals: &[AbstractValue],
+) -> Result<AbstractValue, PartialEvalError> {
     let (Some(lhs), Some(rhs)) = (input_avals.first(), input_avals.get(1)) else {
-        return input_avals.first().cloned().unwrap_or(AbstractValue {
+        return Ok(input_avals.first().cloned().unwrap_or(AbstractValue {
             dtype: DType::F64,
             shape: Shape::scalar(),
-        });
+        }));
     };
 
-    let parse_dims = |key: &str| -> Vec<usize> {
-        eqn.params
-            .get(key)
-            .map(|s| {
-                s.trim_matches(|c| c == '[' || c == ']')
-                    .split(',')
-                    .filter(|x| !x.trim().is_empty())
-                    .filter_map(|x| x.trim().parse::<usize>().ok())
-                    .collect()
-            })
-            .unwrap_or_default()
+    // Strict-parse the dimension_numbers: the previous filter_map silently dropped
+    // malformed tokens (e.g. "0,bad" -> [0]), staging a wrong residual matmul shape.
+    // Valid dot_general never reaches this fallback (fj-trace handles it), so this only
+    // changes malformed-residual behavior to fail closed.
+    let parse_dims = |key: &str| -> Result<Vec<usize>, PartialEvalError> {
+        match eqn.params.get(key) {
+            Some(s) => s
+                .trim_matches(|c| c == '[' || c == ']')
+                .split(',')
+                .map(str::trim)
+                .filter(|x| !x.is_empty())
+                .map(|x| {
+                    x.parse::<usize>()
+                        .map_err(|_| PartialEvalError::ShapeInference {
+                            primitive: eqn.primitive,
+                            detail: format!("invalid {key} token: '{x}'"),
+                        })
+                })
+                .collect(),
+            None => Ok(Vec::new()),
+        }
     };
-    let lhs_contracting = parse_dims("lhs_contracting_dims");
-    let rhs_contracting = parse_dims("rhs_contracting_dims");
-    let lhs_batch = parse_dims("lhs_batch_dims");
-    let rhs_batch = parse_dims("rhs_batch_dims");
+    let lhs_contracting = parse_dims("lhs_contracting_dims")?;
+    let rhs_contracting = parse_dims("rhs_contracting_dims")?;
+    let lhs_batch = parse_dims("lhs_batch_dims")?;
+    let rhs_batch = parse_dims("rhs_batch_dims")?;
 
     let mut out_dims: Vec<u32> = Vec::new();
     for &b in &lhs_batch {
@@ -1355,10 +1368,10 @@ fn infer_dot_general_aval(eqn: &Equation, input_avals: &[AbstractValue]) -> Abst
     }
 
     let dtype = fj_lax::promote_dtype_public(lhs.dtype, rhs.dtype);
-    AbstractValue {
+    Ok(AbstractValue {
         dtype,
         shape: Shape { dims: out_dims },
-    }
+    })
 }
 
 fn infer_equation_output_avals(
@@ -1403,7 +1416,7 @@ fn infer_equation_output_avals(
         // contracting/batch dimension_numbers params), so it likewise needs the
         // multi-input path. The catch-all typed a residual matmul as the LHS.
         DotGeneral => Ok(vec![
-            infer_dot_general_aval(eqn, input_avals);
+            infer_dot_general_aval(eqn, input_avals)?;
             eqn.outputs.len()
         ]),
         _ => {
