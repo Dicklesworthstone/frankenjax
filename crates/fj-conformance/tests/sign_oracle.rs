@@ -39,6 +39,19 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
     )
 }
 
+fn make_f32_bits_tensor(shape: &[u32], bits: Vec<u32>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            bits.into_iter().map(Literal::F32Bits).collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_i64_vec(v: &Value) -> Vec<i64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
@@ -49,6 +62,20 @@ fn extract_i64_vec(v: &Value) -> Vec<i64> {
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+fn extract_f32_bits_vec(v: &Value) -> Vec<u32> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::F32Bits(bits) => *bits,
+                other => panic!("expected F32Bits, got {other:?}"),
+            })
+            .collect(),
         _ => unreachable!("expected tensor"),
     }
 }
@@ -305,6 +332,35 @@ fn oracle_sign_f64_1d_mixed_special() {
     assert_eq!(vals[3], 1.0);
     assert_eq!(vals[4], 1.0);
     assert!(vals[5].is_nan());
+}
+
+#[test]
+fn oracle_sign_f32_bit_patterns() {
+    let input = make_f32_bits_tensor(
+        &[8],
+        vec![
+            0.0_f32.to_bits(),
+            (-0.0_f32).to_bits(),
+            2.5_f32.to_bits(),
+            (-2.5_f32).to_bits(),
+            f32::INFINITY.to_bits(),
+            f32::NEG_INFINITY.to_bits(),
+            0x7fc0_0001,
+            0xffc0_0001,
+        ],
+    );
+    let result = eval_primitive(Primitive::Sign, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![8]);
+
+    let bits = extract_f32_bits_vec(&result);
+    assert_eq!(bits[0], 0.0_f32.to_bits(), "sign(+0.0f32)");
+    assert_eq!(bits[1], (-0.0_f32).to_bits(), "sign(-0.0f32)");
+    assert_eq!(bits[2], 1.0_f32.to_bits(), "sign(+finite f32)");
+    assert_eq!(bits[3], (-1.0_f32).to_bits(), "sign(-finite f32)");
+    assert_eq!(bits[4], 1.0_f32.to_bits(), "sign(+inf f32)");
+    assert_eq!(bits[5], (-1.0_f32).to_bits(), "sign(-inf f32)");
+    assert!(f32::from_bits(bits[6]).is_nan(), "sign(+NaN f32)");
+    assert!(f32::from_bits(bits[7]).is_nan(), "sign(-NaN f32)");
 }
 
 // ======================== 2D Tensor ========================
