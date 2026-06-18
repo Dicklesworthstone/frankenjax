@@ -76,6 +76,29 @@ fn oracle_sort_1d_i64_ascending() {
 }
 
 #[test]
+fn sort_extremes_equal_reduce_min_max() {
+    // Cross-validate Sort against ReduceMin/ReduceMax on finite data: an ascending
+    // sort puts the minimum first and the maximum last. i64 so it is exact.
+    // Oracle-free — catches a disagreement between the ordering and reduction paths.
+    let data = vec![3_i64, 1, 4, 1, 5, 9, 2];
+    let input = make_i64_tensor(&[data.len() as u32], data.clone());
+    let sorted = extract_i64_vec(
+        &eval_primitive(Primitive::Sort, &[input.clone()], &no_params()).unwrap(),
+    );
+    let axes = BTreeMap::from([("axes".to_string(), "0".to_string())]);
+    let scalar = |v: &Value| -> i64 {
+        match v {
+            Value::Scalar(l) => l.as_i64().unwrap(),
+            Value::Tensor(t) => t.elements[0].as_i64().unwrap(),
+        }
+    };
+    let rmin = scalar(&eval_primitive(Primitive::ReduceMin, &[input.clone()], &axes).unwrap());
+    let rmax = scalar(&eval_primitive(Primitive::ReduceMax, &[input], &axes).unwrap());
+    assert_eq!(*sorted.first().unwrap(), rmin, "sort[0] must equal reduce_min");
+    assert_eq!(*sorted.last().unwrap(), rmax, "sort[-1] must equal reduce_max");
+}
+
+#[test]
 fn oracle_sort_1d_f64_ascending() {
     // JAX: jax.lax.sort(jnp.array([3.5, 1.2, 4.8, 1.1])) => [1.1, 1.2, 3.5, 4.8]
     let input = make_f64_tensor(&[4u32], vec![3.5, 1.2, 4.8, 1.1]);
