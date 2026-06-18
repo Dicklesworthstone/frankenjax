@@ -11056,11 +11056,11 @@ pub(crate) fn eval_integer_pow(
                 let result = complex_powi(z, exponent);
                 Ok(Literal::from_complex128(result.0, result.1))
             }
-            // Integer bases with a non-negative exponent use EXACT wrapping integer
-            // power (two's-complement, per dtype width), matching XLA/`lax.integer_
-            // pow`. The old f64 `powi` round-trip lost precision above 2^53 and
-            // saturated on overflow instead of wrapping. (Negative exponents on an
-            // integer base — a TypeError in JAX — fall through to the float path.)
+            // Integer bases use exact wrapping integer power for non-negative
+            // exponents, matching XLA/`lax.integer_pow`. The old f64 `powi`
+            // round-trip lost precision above 2^53 and saturated on overflow
+            // instead of wrapping. Negative exponents on integer bases fail
+            // closed instead of silently converting through floating point.
             Literal::I64(base) if exponent >= 0 => {
                 let e = exponent as u32;
                 Ok(match dtype {
@@ -11076,6 +11076,9 @@ pub(crate) fn eval_integer_pow(
             }
             Literal::U64(base) if exponent >= 0 => {
                 Ok(Literal::U64(base.wrapping_pow(exponent as u32)))
+            }
+            Literal::I32(_) | Literal::I64(_) | Literal::U32(_) | Literal::U64(_) => {
+                Err("integer_pow with integer base requires non-negative exponent")
             }
             _ => {
                 let value = literal.as_f64().ok_or("expected numeric")?;
@@ -18859,6 +18862,69 @@ mod tests {
         assert_eq!(r.as_i64_scalar().unwrap(), 49);
         let r = eval_integer_pow(Primitive::IntegerPow, &[s_i64(-3)], &p("3")).unwrap();
         assert_eq!(r.as_i64_scalar().unwrap(), -27);
+    }
+
+    #[test]
+    fn integer_pow_i32_and_unsigned_exact_and_wrapping() {
+        let mut params = BTreeMap::new();
+        params.insert("exponent".to_owned(), "2".to_owned());
+
+        let r =
+            eval_integer_pow(Primitive::IntegerPow, &[Value::scalar_i32(100_000)], &params).unwrap();
+        assert_eq!(r, Value::scalar_i32(1_410_065_408));
+
+        let tensor = Value::Tensor(
+            TensorValue::new(
+                DType::I32,
+                Shape { dims: vec![2] },
+                vec![Literal::I32(100_000), Literal::I32(i32::MIN)],
+            )
+            .unwrap(),
+        );
+        let r = eval_integer_pow(Primitive::IntegerPow, &[tensor], &params).unwrap();
+        let tensor = r.as_tensor().expect("i32 tensor result");
+        assert_eq!(tensor.dtype, DType::I32);
+        assert_eq!(
+            tensor.elements.iter().map(|lit| lit.as_i64().unwrap()).collect::<Vec<_>>(),
+            vec![1_410_065_408, 0],
+            "i32 tensor integer_pow must wrap in i32 width"
+        );
+
+        let r =
+            eval_integer_pow(Primitive::IntegerPow, &[Value::scalar_u32(u32::MAX)], &params)
+                .unwrap();
+        assert_eq!(r, Value::scalar_u32(1));
+
+        let r =
+            eval_integer_pow(Primitive::IntegerPow, &[Value::scalar_u64(u64::MAX)], &params)
+                .unwrap();
+        assert_eq!(r, Value::scalar_u64(1));
+    }
+
+    #[test]
+    fn integer_pow_integer_negative_exponent_fails_closed() {
+        let mut params = BTreeMap::new();
+        params.insert("exponent".to_owned(), "-1".to_owned());
+
+        for value in [
+            Value::scalar_i32(2),
+            Value::scalar_i64(2),
+            Value::scalar_u32(2),
+            Value::scalar_u64(2),
+        ] {
+            assert!(
+                eval_integer_pow(Primitive::IntegerPow, &[value], &params).is_err(),
+                "integer base with negative exponent must fail closed"
+            );
+        }
+
+        let tensor = Value::Tensor(
+            TensorValue::new_u32_values(Shape { dims: vec![2] }, vec![2, 3]).unwrap(),
+        );
+        assert!(
+            eval_integer_pow(Primitive::IntegerPow, &[tensor], &params).is_err(),
+            "unsigned integer tensors must also reject negative exponents"
+        );
     }
 
     // ── Nextafter ──
