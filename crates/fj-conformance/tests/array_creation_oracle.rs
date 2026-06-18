@@ -93,6 +93,14 @@ fn test_full_pi() {
 }
 
 #[test]
+fn test_full_all_scalar_dtypes_are_dtype_consistent() {
+    for dtype in scalar_dtypes() {
+        let result = full(&[2, 3], 1.0, dtype).unwrap();
+        assert_tensor_dtype_consistent(&result, dtype, &[2, 3], "full");
+    }
+}
+
+#[test]
 fn test_zeros_ones_all_scalar_dtypes_are_dtype_consistent() {
     for dtype in scalar_dtypes() {
         let zeros_result = zeros(&[2, 3], dtype).unwrap();
