@@ -291,6 +291,35 @@ fn convert_element_type_i64_to_f16_rounds_at_2_pow_11_boundary() {
 }
 
 #[test]
+fn convert_element_type_bf16_to_i32_truncates_toward_zero() {
+    // bf16 is a distinct half-float type from f16 (8-bit mantissa, f32 exponent
+    // range) with its own storage/convert path. bf16 -> int truncates toward zero
+    // like f16/f32/f64 -> int: bf16(2.7) -> 2, bf16(-2.7) -> -2, bf16(0.9) -> 0.
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::BF16,
+            Shape { dims: vec![3] },
+            vec![
+                Literal::from_bf16_f64(2.7),
+                Literal::from_bf16_f64(-2.7),
+                Literal::from_bf16_f64(0.9),
+            ],
+        )
+        .unwrap(),
+    );
+    let result = convert(input, "i32").expect("bf16 to i32 conversion should succeed");
+    assert_eq!(result.dtype(), DType::I32);
+    let values: Vec<i64> = result
+        .as_tensor()
+        .expect("expected tensor")
+        .elements
+        .iter()
+        .map(|l| l.as_i64().expect("expected i32 stored as i64"))
+        .collect();
+    assert_eq!(values, vec![2, -2, 0]);
+}
+
+#[test]
 fn convert_element_type_f16_to_f32_widens_exactly() {
     // f16 is a strict subset of f32, so widening f16 -> f32 is exact (no rounding).
     // Use values exactly representable in f16 (1.5, -0.5, 256.0) — they must appear
