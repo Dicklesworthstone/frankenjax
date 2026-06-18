@@ -88,6 +88,30 @@ fn oracle_concat_1d_three_arrays() {
 }
 
 #[test]
+fn metamorphic_concat_associative() {
+    // Concatenation is associative: concat([a,b,c]) == concat([concat([a,b]), c])
+    // == concat([a, concat([b,c])]). Oracle-free (only Concatenate, all sides via
+    // eval_primitive) — exercises nested Concatenate, which the flat tests don't.
+    let a = make_i64_tensor(&[2], vec![1, 2]);
+    let b = make_i64_tensor(&[1], vec![3]);
+    let c = make_i64_tensor(&[2], vec![4, 5]);
+    let cat = |xs: &[Value]| eval_primitive(Primitive::Concatenate, xs, &no_params()).unwrap();
+    let flat = cat(&[a.clone(), b.clone(), c.clone()]);
+    let left = cat(&[cat(&[a.clone(), b.clone()]), c.clone()]);
+    let right = cat(&[a.clone(), cat(&[b.clone(), c.clone()])]);
+    assert_eq!(
+        extract_i64_vec(&flat),
+        extract_i64_vec(&left),
+        "left-associated concat must equal the flat concat"
+    );
+    assert_eq!(
+        extract_i64_vec(&flat),
+        extract_i64_vec(&right),
+        "right-associated concat must equal the flat concat"
+    );
+}
+
+#[test]
 fn oracle_concat_1d_different_sizes() {
     let a = make_i64_tensor(&[1], vec![1]);
     let b = make_i64_tensor(&[4], vec![2, 3, 4, 5]);
