@@ -22,9 +22,34 @@ const NR: usize = 8;
 const MR: usize = 4;
 type F64s = Simd<f64, NR>;
 
+#[track_caller]
+fn assert_tiled_matmul_inputs(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) {
+    assert_eq!(
+        a.len(),
+        m.checked_mul(k).expect("FMA evidence lhs shape overflow"),
+        "FMA evidence lhs length must equal m*k"
+    );
+    assert_eq!(
+        b.len(),
+        k.checked_mul(n).expect("FMA evidence rhs shape overflow"),
+        "FMA evidence rhs length must equal k*n"
+    );
+    assert_eq!(
+        m % MR,
+        0,
+        "FMA evidence kernels require m to be a multiple of MR"
+    );
+    assert_eq!(
+        n % NR,
+        0,
+        "FMA evidence kernels require n to be a multiple of NR"
+    );
+}
+
 /// Register-tiled `[m,k]@[k,n]` f64 GEMM, NON-FMA accumulation (`c += a*b`) — mirrors the
 /// production kernel's arithmetic exactly (bit-identical to `matmul_2d_row_block`).
 pub fn matmul_muladd_free(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64> {
+    assert_tiled_matmul_inputs(a, m, k, b, n);
     let mut c = vec![0.0_f64; m * n];
     let full_rows = m / MR * MR;
     let full_cols = n / NR * NR;
@@ -53,6 +78,7 @@ pub fn matmul_muladd_free(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) ->
 /// instruction under `+fma`. Different rounding ⇒ different bits ⇒ would break the
 /// bit-exact-to-ijk self-golden (but stays within JAX tolerance).
 pub fn matmul_fma(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64> {
+    assert_tiled_matmul_inputs(a, m, k, b, n);
     let mut c = vec![0.0_f64; m * n];
     let full_rows = m / MR * MR;
     let full_cols = n / NR * NR;
@@ -106,6 +132,21 @@ mod tests {
         assert!(
             max_rel < 1e-12,
             "FMA vs non-FMA relative delta {max_rel:e} exceeds 1e-12 (should be within XLA tol)"
+        );
+    }
+
+    #[test]
+    fn fma_evidence_kernels_reject_non_tiled_shapes() {
+        let (m, k, n) = (5usize, 3usize, 9usize);
+        let a = mk(m * k, 0.013);
+        let b = mk(k * n, 0.019);
+        assert!(
+            std::panic::catch_unwind(|| matmul_muladd_free(&a, m, k, &b, n)).is_err(),
+            "non-FMA evidence kernel must reject shapes that would leave zeroed tail cells"
+        );
+        assert!(
+            std::panic::catch_unwind(|| matmul_fma(&a, m, k, &b, n)).is_err(),
+            "FMA evidence kernel must reject shapes that would leave zeroed tail cells"
         );
     }
 
