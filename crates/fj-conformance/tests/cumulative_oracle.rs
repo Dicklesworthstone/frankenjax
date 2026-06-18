@@ -87,6 +87,29 @@ fn oracle_cumsum_1d_i64() {
 }
 
 #[test]
+fn cumsum_last_element_equals_reduce_sum() {
+    // Cross-validate Cumsum against ReduceSum: the final prefix sum must equal the
+    // total. i64 so summation order is irrelevant (exact, no FP reassociation).
+    // Oracle-free. (Cumsum reads the "axis" param; ReduceSum reads "axes".)
+    let data = vec![1_i64, 2, 3, 4, 5, 6];
+    let input = make_i64_tensor(&[data.len() as u32], data.clone());
+    let cum = extract_i64_vec(
+        &eval_primitive(Primitive::Cumsum, &[input.clone()], &axis_params(0)).unwrap(),
+    );
+    let reduce_axes = BTreeMap::from([("axes".to_string(), "0".to_string())]);
+    let total = extract_i64_scalar(
+        &eval_primitive(Primitive::ReduceSum, &[input], &reduce_axes).unwrap(),
+    )
+    .expect("reduce_sum should produce an i64 scalar");
+    assert_eq!(
+        *cum.last().unwrap(),
+        total,
+        "cumsum's last element must equal reduce_sum"
+    );
+    assert_eq!(total, data.iter().sum::<i64>(), "and both equal the host sum");
+}
+
+#[test]
 fn oracle_cumsum_1d_f64() {
     // JAX: jnp.cumsum(jnp.array([1.0, 2.0, 3.0])) => [1.0, 3.0, 6.0]
     let input = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
