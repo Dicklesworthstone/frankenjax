@@ -4403,6 +4403,30 @@ fn rev_vjp_reverses_the_cotangent() {
 }
 
 #[test]
+fn expand_dims_vjp_squeezes_the_inserted_axis() {
+    // expand_dims inserts a size-1 axis; its VJP removes that axis (reshape back to the
+    // input shape). input [3] -> output [1,3]; grad of g=[[10,20,30]] is [10,20,30].
+    let input = make_f64_vector(&[1.0, 2.0, 3.0]);
+    let mut params = BTreeMap::new();
+    params.insert("axis".to_string(), "0".to_string());
+    let out = eval_primitive(Primitive::ExpandDims, std::slice::from_ref(&input), &params).unwrap();
+    let g = make_f64_matrix(1, 3, &[10.0, 20.0, 30.0]);
+    let vjp = fj_ad::vjp(
+        Primitive::ExpandDims,
+        std::slice::from_ref(&input),
+        std::slice::from_ref(&g),
+        std::slice::from_ref(&out),
+        &params,
+    )
+    .unwrap();
+    assert_eq!(
+        extract_f64_vec(&vjp[0]),
+        vec![10.0, 20.0, 30.0],
+        "expand_dims VJP squeezes the inserted axis back to the input shape"
+    );
+}
+
+#[test]
 fn igamma_igammac_vjp_numerical() {
     // igamma(a, x): grad w.r.t. a (igamma_grad_a's dedicated series — the most error-prone)
     // AND x (x^(a-1)·e^{-x}/Gamma(a)). igammac = 1 - igamma, so its grads are negated.
