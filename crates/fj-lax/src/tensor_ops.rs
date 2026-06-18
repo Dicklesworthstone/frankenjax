@@ -469,6 +469,61 @@ fn dense_same_width_bitcast_tensor(
     }
 }
 
+fn dense_width_changing_bitcast_tensor(
+    primitive: Primitive,
+    tensor: &TensorValue,
+    target_dtype: DType,
+) -> Result<Option<Value>, EvalError> {
+    match (tensor.dtype, target_dtype) {
+        (DType::F64, DType::U32) => {
+            let Some(values) = tensor.elements.as_f64_slice() else {
+                return Ok(None);
+            };
+            let out_len = values.len().checked_mul(2).ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast narrowing output size overflow".to_owned(),
+            })?;
+            let mut out = Vec::with_capacity(out_len);
+            for value in values {
+                let bytes = value.to_bits().to_le_bytes();
+                out.push(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+                out.push(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]));
+            }
+            let mut dims = tensor.shape.dims.clone();
+            dims.push(2);
+            Ok(Some(Value::Tensor(TensorValue::new_u32_values(
+                Shape { dims },
+                out,
+            )?)))
+        }
+        (DType::U32, DType::F64) => {
+            let Some(values) = tensor.elements.as_u32_slice() else {
+                return Ok(None);
+            };
+            let mut dims = tensor.shape.dims.clone();
+            let Some(last_dim) = dims.pop() else {
+                return Ok(None);
+            };
+            if last_dim != 2 {
+                return Ok(None);
+            }
+            let mut out = Vec::with_capacity(values.len() / 2);
+            for chunk in values.chunks_exact(2) {
+                let low = chunk[0].to_le_bytes();
+                let high = chunk[1].to_le_bytes();
+                out.push(f64::from_bits(u64::from_le_bytes([
+                    low[0], low[1], low[2], low[3], high[0], high[1], high[2], high[3],
+                ])));
+            }
+            Ok(Some(Value::Tensor(TensorValue::new_f64_values(
+                Shape { dims },
+                out,
+            )?)))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Reshape: change the shape of a tensor without changing its data.
 /// Params: `new_shape` (comma-separated dims, -1 for a single inferred axis).
 fn resolve_reshape_dims(
@@ -4755,6 +4810,12 @@ pub(crate) fn eval_bitcast_convert_type(
                     )?))
                 }
                 std::cmp::Ordering::Greater => {
+                    if let Some(dense) =
+                        dense_width_changing_bitcast_tensor(primitive, tensor, target_dtype)?
+                    {
+                        return Ok(dense);
+                    }
+
                     let ratio = source_bytes / target_bytes;
                     let out_len = tensor.elements.len().checked_mul(ratio).ok_or_else(|| {
                         EvalError::Unsupported {
@@ -4778,6 +4839,12 @@ pub(crate) fn eval_bitcast_convert_type(
                     )?))
                 }
                 std::cmp::Ordering::Less => {
+                    if let Some(dense) =
+                        dense_width_changing_bitcast_tensor(primitive, tensor, target_dtype)?
+                    {
+                        return Ok(dense);
+                    }
+
                     let ratio = target_bytes / source_bytes;
                     let mut dims = tensor.shape.dims.clone();
                     let Some(last_dim) = dims.pop() else {

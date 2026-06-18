@@ -600,6 +600,100 @@ fn oracle_dense_same_width_bitcast_matches_literal_backing_exact_bits() {
 }
 
 #[test]
+fn oracle_dense_width_changing_bitcast_matches_literal_backing_exact_bits() {
+    let f64_values = [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        -0.0_f64,
+        1.5_f64,
+        -2.75_f64,
+        f64::from_bits(0x7ff8_0000_0000_1234),
+    ];
+    let f64_shape = [f64_values.len() as u32];
+    let dense_f64 = Value::Tensor(
+        TensorValue::new_f64_values(Shape { dims: f64_shape.to_vec() }, f64_values.to_vec())
+            .unwrap(),
+    );
+    let literal_f64 = make_literal_backed_tensor(
+        DType::F64,
+        &f64_shape,
+        f64_values
+            .iter()
+            .map(|value| Literal::from_f64(*value))
+            .collect(),
+    );
+
+    let dense_u32 = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&dense_f64),
+        &bitcast_params("u32"),
+    )
+    .unwrap();
+    let literal_u32 = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&literal_f64),
+        &bitcast_params("u32"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&dense_u32), vec![f64_values.len() as u32, 2]);
+    assert_eq!(extract_shape(&dense_u32), extract_shape(&literal_u32));
+    assert_eq!(dense_u32.dtype(), literal_u32.dtype());
+    assert_eq!(extract_u32_vec(&dense_u32), extract_u32_vec(&literal_u32));
+    assert!(
+        dense_u32
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_u32_slice()
+            .is_some(),
+        "dense f64->u32 narrowing output should stay packed"
+    );
+
+    let literal_u32_input = make_literal_backed_tensor(
+        DType::U32,
+        &[f64_values.len() as u32, 2],
+        f64_values
+            .iter()
+            .flat_map(|value| f64_to_u32_chunks(*value))
+            .map(Literal::U32)
+            .collect(),
+    );
+    let dense_f64_roundtrip = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&dense_u32),
+        &bitcast_params("f64"),
+    )
+    .unwrap();
+    let literal_f64_roundtrip = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&literal_u32_input),
+        &bitcast_params("f64"),
+    )
+    .unwrap();
+    let dense_f64_bits: Vec<u64> = extract_f64_vec(&dense_f64_roundtrip)
+        .iter()
+        .map(|value| value.to_bits())
+        .collect();
+    let literal_f64_bits: Vec<u64> = extract_f64_vec(&literal_f64_roundtrip)
+        .iter()
+        .map(|value| value.to_bits())
+        .collect();
+    let original_bits: Vec<u64> = f64_values.iter().map(|value| value.to_bits()).collect();
+    assert_eq!(dense_f64_bits, literal_f64_bits);
+    assert_eq!(dense_f64_bits, original_bits);
+    assert!(
+        dense_f64_roundtrip
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f64_slice()
+            .is_some(),
+        "dense u32->f64 widening output should stay packed"
+    );
+}
+
+#[test]
 fn oracle_bitcast_f64_i64_roundtrip_preserves_special_value_bits() {
     // Round-trip bitcast f64 -> i64 -> f64 must preserve EXACT bits for NaN/+-inf/-0.0
     // with no canonicalization on either leg. Sibling of the f32<->u32 round-trip,
