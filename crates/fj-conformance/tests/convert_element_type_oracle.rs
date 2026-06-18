@@ -294,6 +294,22 @@ fn convert_element_type_f32_to_i32_truncates_toward_zero() {
 }
 
 #[test]
+fn convert_element_type_i64_to_f32_rounds_to_nearest_even() {
+    // f32 has a 24-bit mantissa, so not every integer above 2^24 is representable
+    // (the step is 2 there). i64 -> f32 rounds to nearest-even (IEEE), matching
+    // JAX/XLA: 2^24 = 16777216 is exact, and 2^24+1 = 16777217 is exactly halfway
+    // between 16777216 and 16777218, so it rounds to the even 16777216.
+    let input = i64_tensor(&[2], &[16_777_216, 16_777_217]);
+    let result = convert(input, "f32").expect("i64 to f32 conversion should succeed");
+    assert_eq!(result.dtype(), DType::F32);
+    assert_eq!(
+        f32_values(&result),
+        vec![Some(16_777_216.0), Some(16_777_216.0)],
+        "i64 -> f32 must round to nearest-even, not truncate or round up"
+    );
+}
+
+#[test]
 fn convert_element_type_empty_tensor() {
     let input =
         Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap());
