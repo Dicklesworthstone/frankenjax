@@ -10845,11 +10845,21 @@ pub(crate) fn eval_rev(
             let dims = &tensor.shape.dims;
             let rank = dims.len();
 
+            // JAX (lax._rev_shape_rule) requires rev dimensions to be unique
+            // ("rev dimensions must be unique"); reject duplicates fail-closed rather
+            // than silently reversing an axis once via the contains() mask below.
+            let mut seen = std::collections::BTreeSet::new();
             for &a in &axes {
                 if a >= rank {
                     return Err(EvalError::Unsupported {
                         primitive,
                         detail: format!("axis {a} out of range for rank {rank}"),
+                    });
+                }
+                if !seen.insert(a) {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: format!("rev dimensions must be unique: duplicate {a}"),
                     });
                 }
             }

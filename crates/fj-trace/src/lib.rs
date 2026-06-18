@@ -995,11 +995,20 @@ impl SimpleTraceContext {
                 }
                 let axes = parse_usize_list(primitive, "axes", raw_axes)?;
                 let rank = inputs[0].shape.rank();
+                // JAX (lax._rev_shape_rule) requires rev dimensions to be unique
+                // ("rev dimensions must be unique"); reject duplicates fail-closed.
+                let mut seen = BTreeSet::new();
                 for &axis in &axes {
                     if axis >= rank {
                         return Err(TraceError::ShapeInferenceFailed {
                             primitive,
                             detail: format!("axis {axis} out of range for rank {rank}"),
+                        });
+                    }
+                    if !seen.insert(axis) {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!("rev dimensions must be unique: duplicate {axis}"),
                         });
                     }
                 }

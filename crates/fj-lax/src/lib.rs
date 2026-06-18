@@ -6945,6 +6945,18 @@ mod tests {
     }
 
     #[test]
+    fn rev_rejects_duplicate_axes() {
+        // rev axes=[0,0]: axis 0 is in range but duplicated. JAX (lax._rev_shape_rule)
+        // requires rev dimensions unique, so this must fail closed (frankenjax-wsuwr
+        // sibling). Without the check the contains()-mask would silently reverse once.
+        let input = Value::vector_i64(&[1, 2, 3]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("axes".into(), "0,0".into());
+        let result = eval_primitive(Primitive::Rev, &[input], &params);
+        assert!(result.is_err(), "duplicate rev axes must be rejected");
+    }
+
+    #[test]
     fn broadcast_in_dim_rejects_incompatible_dim() {
         let input = Value::vector_i64(&[1, 2]).unwrap();
         let mut params = BTreeMap::new();
