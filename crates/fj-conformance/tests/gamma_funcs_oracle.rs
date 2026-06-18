@@ -425,6 +425,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     )
 }
 
+// lgamma/digamma no longer compute complex (float-only per w8u0a); retained for
+// potential future complex coverage but currently unused by the rejection tests.
+#[allow(dead_code)]
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
         Value::Tensor(t) => t
@@ -436,49 +439,57 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     }
 }
 
+// lgamma/digamma are JAX standard_unop(_float): they REJECT complex operands (w8u0a
+// float-only decision; complex_unary_elementwise returns None for them, matching
+// complex_ops_oracle's float-vs-complex boundary guard + the fail-closed VJP at
+// ad_numerical_verification:1301). These tests previously asserted complex VALUES /
+// dtype preservation, which became stale after w8u0a — rewritten to assert rejection.
 #[test]
-fn oracle_lgamma_complex64_positive_real() {
-    // lgamma on positive real axis should match real lgamma
-    // lgamma(1) = 0, lgamma(2) = 0
+fn oracle_lgamma_complex64_rejected() {
     let input = make_complex64_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]);
-    let result = eval_primitive(Primitive::Lgamma, &[input], &no_params())
-        .expect("lgamma complex64 should succeed");
-    let vals = extract_complex64_vec(&result);
-    assert!(vals[0].0.abs() < 1e-5, "lgamma(1) = 0");
-    assert!(vals[1].0.abs() < 1e-5, "lgamma(2) = 0");
-}
-
-#[test]
-fn oracle_lgamma_complex128_preserves_dtype() {
-    let input = make_complex128_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]);
-    let result = eval_primitive(Primitive::Lgamma, &[input], &no_params())
-        .expect("lgamma complex128 should succeed");
-    assert_eq!(result.dtype(), DType::Complex128);
-}
-
-#[test]
-fn oracle_digamma_complex64_positive_real() {
-    // digamma(1) = -gamma (Euler-Mascheroni) ≈ -0.5772
-    let input = make_complex64_tensor(&[1], vec![(1.0, 0.0)]);
-    let result = eval_primitive(Primitive::Digamma, &[input], &no_params())
-        .expect("digamma complex64 should succeed");
-    let vals = extract_complex64_vec(&result);
+    let err = eval_primitive(Primitive::Lgamma, &[input], &no_params())
+        .expect_err("lgamma is float-only and must reject complex64");
     assert!(
-        (vals[0].0 - (-0.5772156649015329)).abs() < 1e-10,
-        "digamma(1) ≈ -0.5772"
+        err.to_string().contains("complex"),
+        "unexpected complex lgamma error: {err}"
     );
 }
 
 #[test]
-fn oracle_digamma_complex128_preserves_dtype() {
-    let input = make_complex128_tensor(&[1], vec![(1.0, 0.0)]);
-    let result = eval_primitive(Primitive::Digamma, &[input], &no_params())
-        .expect("digamma complex128 should succeed");
-    assert_eq!(result.dtype(), DType::Complex128);
+fn oracle_lgamma_complex128_rejected() {
+    let input = make_complex128_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]);
+    let err = eval_primitive(Primitive::Lgamma, &[input], &no_params())
+        .expect_err("lgamma is float-only and must reject complex128");
+    assert!(
+        err.to_string().contains("complex"),
+        "unexpected complex lgamma error: {err}"
+    );
 }
 
 #[test]
-fn property_gamma_funcs_preserves_complex_dtypes() {
+fn oracle_digamma_complex64_rejected() {
+    let input = make_complex64_tensor(&[1], vec![(1.0, 0.0)]);
+    let err = eval_primitive(Primitive::Digamma, &[input], &no_params())
+        .expect_err("digamma is float-only and must reject complex64");
+    assert!(
+        err.to_string().contains("complex"),
+        "unexpected complex digamma error: {err}"
+    );
+}
+
+#[test]
+fn oracle_digamma_complex128_rejected() {
+    let input = make_complex128_tensor(&[1], vec![(1.0, 0.0)]);
+    let err = eval_primitive(Primitive::Digamma, &[input], &no_params())
+        .expect_err("digamma is float-only and must reject complex128");
+    assert!(
+        err.to_string().contains("complex"),
+        "unexpected complex digamma error: {err}"
+    );
+}
+
+#[test]
+fn property_gamma_funcs_reject_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let input = match dtype {
             DType::Complex64 => make_complex64_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]),
@@ -486,12 +497,11 @@ fn property_gamma_funcs_preserves_complex_dtypes() {
             _ => unreachable!(),
         };
         for primitive in [Primitive::Lgamma, Primitive::Digamma] {
-            let result = eval_primitive(primitive, std::slice::from_ref(&input), &no_params())
-                .expect("gamma func should succeed for complex dtype");
-            assert_eq!(
-                result.dtype(),
-                dtype,
-                "{primitive:?} {dtype:?}: dtype mismatch"
+            let err = eval_primitive(primitive, std::slice::from_ref(&input), &no_params())
+                .expect_err("gamma func is float-only and must reject complex");
+            assert!(
+                err.to_string().contains("complex"),
+                "{primitive:?} {dtype:?}: unexpected error {err}"
             );
         }
     }
