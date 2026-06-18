@@ -118,6 +118,20 @@ fn oracle_reduce_or_bool_all_false() {
 }
 
 #[test]
+fn oracle_reduce_or_empty_returns_identity_false() {
+    // Empty OR reduction returns the identity (false), matching the reduce_and /
+    // reduce_xor empty-identity tests. OR's identity is false (0): no element can
+    // flip it true.
+    let input = make_bool_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
+    assert_eq!(extract_shape(&result), Vec::<u32>::new());
+    assert!(
+        !extract_bool_scalar(&result),
+        "empty OR reduction must be the identity false"
+    );
+}
+
+#[test]
 fn oracle_reduce_or_bool_all_true() {
     // OR of all true = true
     let input = make_bool_tensor(&[4], vec![true, true, true, true]);
