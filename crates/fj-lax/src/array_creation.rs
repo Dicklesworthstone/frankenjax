@@ -121,35 +121,17 @@ pub fn eye(n: u32, m: Option<u32>, k: i32, dtype: DType) -> Result<Value, ValueE
     let m = m.unwrap_or(n);
     let (shape, size) = checked_shape_and_size(&[n, m])?;
 
-    let (zero_lit, one_lit) = match dtype {
-        DType::F64 => (Literal::from_f64(0.0), Literal::from_f64(1.0)),
-        DType::F32 => (Literal::from_f32(0.0), Literal::from_f32(1.0)),
-        DType::I64 => (Literal::I64(0), Literal::I64(1)),
-        DType::I32 => (Literal::I64(0), Literal::I64(1)),
-        DType::U64 => (Literal::U64(0), Literal::U64(1)),
-        DType::U32 => (Literal::U32(0), Literal::U32(1)),
-        DType::Bool => (Literal::Bool(false), Literal::Bool(true)),
-        DType::Complex64 => (
-            Literal::from_complex64(0.0, 0.0),
-            Literal::from_complex64(1.0, 0.0),
-        ),
-        DType::Complex128 => (
-            Literal::from_complex128(0.0, 0.0),
-            Literal::from_complex128(1.0, 0.0),
-        ),
-        DType::F16 => (Literal::from_f16_f32(0.0), Literal::from_f16_f32(1.0)),
-        DType::BF16 => (
-            Literal::from_bf16_f32(0.0),
-            Literal::from_bf16_f32(1.0),
-        ),
-    };
-
-    let mut elements = vec![zero_lit; size];
     let overflow = || ValueError::ShapeOverflow {
         shape: shape.clone(),
     };
     let columns = usize::try_from(m).map_err(|_| overflow())?;
 
+    // Gather the diagonal's flat indices once (dtype-independent), then fill dense
+    // typed storage directly — skipping the size-element Vec<Literal> (24 B/elem)
+    // build + densify rescan that TensorValue::new performed (identity matrices are
+    // mostly the zero fill). Same dense storage TensorValue::new would produce, so
+    // bit-identical and no boxed-vs-dense representation change.
+    let mut diag_indices = Vec::new();
     for row in 0..n {
         let column = i64::from(row) + i64::from(k);
         if (0..i64::from(m)).contains(&column) {
@@ -159,12 +141,49 @@ pub fn eye(n: u32, m: Option<u32>, k: i32, dtype: DType) -> Result<Value, ValueE
                 .checked_mul(columns)
                 .and_then(|base| base.checked_add(column_index))
                 .ok_or_else(overflow)?;
-            let element = elements.get_mut(idx).ok_or_else(overflow)?;
-            *element = one_lit;
+            if idx >= size {
+                return Err(overflow());
+            }
+            diag_indices.push(idx);
         }
     }
 
-    let tensor = TensorValue::new(dtype, shape, elements)?;
+    let half_one = |dt: DType| -> u16 {
+        match (dt, Literal::from_f16_f64(1.0), Literal::from_bf16_f64(1.0)) {
+            (DType::F16, Literal::F16Bits(b), _) => b,
+            (DType::BF16, _, Literal::BF16Bits(b)) => b,
+            _ => 0,
+        }
+    };
+
+    macro_rules! build {
+        ($zero:expr, $one:expr, $ctor:expr) => {{
+            let mut v = vec![$zero; size];
+            for &i in &diag_indices {
+                v[i] = $one;
+            }
+            $ctor(v)?
+        }};
+    }
+
+    let tensor = match dtype {
+        DType::F64 => build!(0.0_f64, 1.0_f64, |v| TensorValue::new_f64_values(shape, v)),
+        DType::F32 => build!(0.0_f32, 1.0_f32, |v| TensorValue::new_f32_values(shape, v)),
+        DType::I64 => build!(0_i64, 1_i64, |v| TensorValue::new_i64_values(shape, v)),
+        DType::I32 => build!(0_i64, 1_i64, |v| TensorValue::new_i32_values(shape, v)),
+        DType::U32 => build!(0_u32, 1_u32, |v| TensorValue::new_u32_values(shape, v)),
+        DType::U64 => build!(0_u64, 1_u64, |v| TensorValue::new_u64_values(shape, v)),
+        DType::Bool => build!(false, true, |v| TensorValue::new_bool_values(shape, v)),
+        DType::Complex64 | DType::Complex128 => build!((0.0_f64, 0.0_f64), (1.0_f64, 0.0_f64), |v| {
+            TensorValue::new_complex_values(dtype, shape, v)
+        }),
+        DType::F16 => build!(0_u16, half_one(DType::F16), |v| {
+            TensorValue::new_half_float_values(DType::F16, shape, v)
+        }),
+        DType::BF16 => build!(0_u16, half_one(DType::BF16), |v| {
+            TensorValue::new_half_float_values(DType::BF16, shape, v)
+        }),
+    };
     Ok(Value::Tensor(tensor))
 }
 
