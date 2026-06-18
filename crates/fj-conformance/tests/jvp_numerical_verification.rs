@@ -2046,3 +2046,48 @@ fn ifft_jvp_complex64_preserves_dtype() {
         "IFFT JVP should preserve Complex64 dtype"
     );
 }
+
+#[test]
+fn hypot_logaddexp_jvp_numerical() {
+    // Forward-mode duals of the (previously untested) Hypot/LogAddExp/LogAddExp2 VJPs.
+    verify_binary_scalar_jvp(Primitive::Hypot, 3.0, 4.0, 1.0, 0.0, 1e-4, "hypot JVP d/dx @ (3,4)");
+    verify_binary_scalar_jvp(Primitive::Hypot, 3.0, 4.0, 0.0, 1.0, 1e-4, "hypot JVP d/dy @ (3,4)");
+    verify_binary_scalar_jvp(Primitive::LogAddExp, 1.0, 0.0, 1.0, 0.0, 1e-4, "logaddexp JVP d/dx");
+    verify_binary_scalar_jvp(Primitive::LogAddExp, 1.0, 0.0, 0.0, 1.0, 1e-4, "logaddexp JVP d/dy");
+    verify_binary_scalar_jvp(
+        Primitive::LogAddExp2,
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+        1e-4,
+        "logaddexp2 JVP d/dx",
+    );
+}
+
+#[test]
+fn integer_pow_jvp_zero_exponent_and_general() {
+    // Dual of the IntegerPow VJP test (the JVP rule had no forward-mode coverage).
+    // x^0 is constant -> tangent 0 even at x=0 (the n==0 guard avoids 0*inf=NaN, matching
+    // JAX's _integer_pow_jvp); general tangent = n*x^(n-1)*dx.
+    let jvp_ip = |x: f64, exp: i64, dx: f64| -> f64 {
+        let mut params = BTreeMap::new();
+        params.insert("exponent".to_string(), exp.to_string());
+        let jaxpr = make_single_input_jaxpr(Primitive::IntegerPow, params);
+        let r = fj_ad::jvp(&jaxpr, &[Value::scalar_f64(x)], &[Value::scalar_f64(dx)]).unwrap();
+        extract_f64_scalar(&r.tangents[0])
+    };
+    assert_eq!(jvp_ip(0.0, 0, 1.0), 0.0, "d(x^0) = 0 at x=0 (n==0 guard)");
+    assert!(
+        (jvp_ip(2.0, 3, 1.0) - 12.0).abs() < 1e-9,
+        "d(x^3) = 3x^2 = 12 at x=2"
+    );
+    assert!(
+        (jvp_ip(2.0, 3, 0.5) - 6.0).abs() < 1e-9,
+        "tangent scaling: 12 * 0.5 = 6"
+    );
+    assert!(
+        (jvp_ip(2.0, -1, 1.0) + 0.25).abs() < 1e-9,
+        "d(x^-1) = -1/x^2 = -0.25 at x=2"
+    );
+}
