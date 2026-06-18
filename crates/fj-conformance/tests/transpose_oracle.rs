@@ -184,6 +184,13 @@ fn oracle_transpose_3d_rotate_left() {
     )
     .unwrap();
     assert_eq!(extract_shape(&result), vec![3, 4, 2]);
+    assert_eq!(
+        extract_i64_vec(&result),
+        vec![
+            1, 13, 2, 14, 3, 15, 4, 16, 5, 17, 6, 18, 7, 19, 8, 20, 9, 21, 10, 22, 11,
+            23, 12, 24,
+        ]
+    );
 }
 
 #[test]
