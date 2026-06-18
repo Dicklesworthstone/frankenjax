@@ -4150,6 +4150,32 @@ fn bessel_i0e_i1e_vjp_numerical() {
 }
 
 #[test]
+fn bessel_i1e_vjp_at_zero_is_one_half_matching_jax_guard() {
+    // i1e'(x) = i0e(x) - i1e(x)*(sign(x) + 1/x) is 0*inf = NaN at x=0; the limit is 1/2
+    // (since I1e(x)/x -> 1/2). JAX's _bessel_i1e_jvp guards this with
+    // select(|x| > eps, formula, 0.5), and frankenjax's bessel_i1e_deriv mirrors it
+    // exactly. The existing bessel VJP test deliberately stays away from this x=0 kink,
+    // so pin the guarded limit directly (FD-free, to avoid kink noise).
+    let x = Value::scalar_f64(0.0);
+    let g = Value::scalar_f64(1.0);
+    let params = BTreeMap::new();
+    let out = eval_primitive(Primitive::BesselI1e, std::slice::from_ref(&x), &params).unwrap();
+    let vjp = fj_ad::vjp(
+        Primitive::BesselI1e,
+        std::slice::from_ref(&x),
+        std::slice::from_ref(&g),
+        std::slice::from_ref(&out),
+        &params,
+    )
+    .unwrap();
+    let grad = extract_f64_scalar(&vjp[0]);
+    assert!(
+        (grad - 0.5).abs() < 1e-12,
+        "bessel_i1e'(0) must be 0.5 (JAX select-guard limit), got {grad}"
+    );
+}
+
+#[test]
 fn igamma_igammac_vjp_numerical() {
     // igamma(a, x): grad w.r.t. a (igamma_grad_a's dedicated series — the most error-prone)
     // AND x (x^(a-1)·e^{-x}/Gamma(a)). igammac = 1 - igamma, so its grads are negated.
