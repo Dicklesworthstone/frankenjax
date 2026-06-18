@@ -45,6 +45,65 @@ fn vector_bool(values: &[bool]) -> Value {
     )
 }
 
+fn vector_for_dtype(dtype: DType, values: &[u32]) -> Value {
+    let len = u32::try_from(values.len()).expect("test vector length fits u32");
+    let shape = Shape::vector(len);
+    let tensor = match dtype {
+        DType::F64 => TensorValue::new_f64_values(
+            shape,
+            values.iter().copied().map(f64::from).collect(),
+        )
+        .unwrap(),
+        DType::F32 => TensorValue::new_f32_values(
+            shape,
+            values.iter().copied().map(|v| v as f32).collect(),
+        )
+        .unwrap(),
+        DType::I64 => TensorValue::new_i64_values(
+            shape,
+            values.iter().copied().map(i64::from).collect(),
+        )
+        .unwrap(),
+        DType::I32 => TensorValue::new_i32_values(
+            shape,
+            values.iter().copied().map(i64::from).collect(),
+        )
+        .unwrap(),
+        DType::U64 => TensorValue::new_u64_values(
+            shape,
+            values.iter().copied().map(u64::from).collect(),
+        )
+        .unwrap(),
+        DType::U32 => TensorValue::new_u32_values(shape, values.to_vec()).unwrap(),
+        DType::Bool => TensorValue::new_bool_values(
+            shape,
+            values.iter().copied().map(|v| v % 2 == 1).collect(),
+        )
+        .unwrap(),
+        DType::Complex64 | DType::Complex128 => TensorValue::new_complex_values(
+            dtype,
+            shape,
+            values
+                .iter()
+                .copied()
+                .map(|v| (f64::from(v), -f64::from(v)))
+                .collect(),
+        )
+        .unwrap(),
+        DType::F16 | DType::BF16 => TensorValue::new_half_float_values(
+            dtype,
+            shape,
+            values
+                .iter()
+                .copied()
+                .map(|v| u16::try_from(v).expect("test value fits u16"))
+                .collect(),
+        )
+        .unwrap(),
+    };
+    Value::Tensor(tensor)
+}
+
 fn select_n(inputs: Vec<Value>) -> Result<Value, fj_lax::EvalError> {
     eval_primitive(Primitive::SelectN, &inputs, &no_params())
 }
@@ -430,6 +489,59 @@ fn property_select_n_preserves_dtype() {
     );
 }
 
+#[test]
+fn property_select_n_preserves_all_scalar_tensor_dtypes() {
+    let choices = [0_usize, 1, 0, 1];
+    let dtypes = [
+        DType::Bool,
+        DType::I32,
+        DType::I64,
+        DType::U32,
+        DType::U64,
+        DType::F16,
+        DType::BF16,
+        DType::F32,
+        DType::F64,
+        DType::Complex64,
+        DType::Complex128,
+    ];
+
+    for dtype in dtypes {
+        let case0 = vector_for_dtype(dtype, &[1, 2, 3, 4]);
+        let case1 = vector_for_dtype(dtype, &[10, 20, 30, 40]);
+        let expected = {
+            let case0_tensor = case0.as_tensor().expect("case0 tensor");
+            let case1_tensor = case1.as_tensor().expect("case1 tensor");
+            choices
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(i, choice)| {
+                    let case = if choice == 0 {
+                        case0_tensor
+                    } else {
+                        case1_tensor
+                    };
+                    *case.elements.get(i).expect("choice index in range")
+                })
+                .collect::<Vec<_>>()
+        };
+        let result = select_n(vec![vector_i64(&[0, 1, 0, 1]), case0, case1])
+            .expect("select_n should preserve scalar tensor dtypes");
+
+        let tensor = result
+            .as_tensor()
+            .expect("select_n with tensor index should return a tensor");
+        assert_eq!(tensor.dtype, dtype, "select_n {dtype:?}: output dtype");
+        assert_eq!(tensor.shape, Shape::vector(4), "select_n {dtype:?}: shape");
+        tensor
+            .validate_dtype_consistency()
+            .expect("select_n output dtype/literal consistency");
+        let got = tensor.elements.iter().copied().collect::<Vec<_>>();
+        assert_eq!(got, expected, "select_n {dtype:?}: elements");
+    }
+}
+
 // ======================== Complex Type Tests ========================
 
 fn scalar_complex64(re: f32, im: f32) -> Value {
@@ -456,8 +568,13 @@ fn vector_complex64(data: Vec<(f32, f32)>) -> Value {
 fn extract_complex64(v: &Value) -> (f32, f32) {
     match v {
         Value::Scalar(l) => l.as_complex64().unwrap(),
-        Value::Tensor(t) if t.shape.dims.is_empty() => t.elements[0].as_complex64().unwrap(),
-        _ => panic!("expected scalar complex64"),
+        Value::Tensor(t) if t.shape.dims.is_empty() => t
+            .elements
+            .first()
+            .expect("scalar tensor has one element")
+            .as_complex64()
+            .unwrap(),
+        _ => unreachable!("expected scalar complex64"),
     }
 }
 
