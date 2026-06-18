@@ -316,6 +316,27 @@ fn oracle_det_singular_is_zero() {
 }
 
 #[test]
+fn oracle_det_identity_and_triangular() {
+    // det(I) = 1, and det of a triangular matrix = the product of its diagonal.
+    let scalar = |v: &Value| -> f64 {
+        match v {
+            Value::Scalar(l) => l.as_f64().unwrap(),
+            Value::Tensor(t) => t.elements[0].as_f64().unwrap(),
+        }
+    };
+    let det = |m: &Value| -> f64 {
+        scalar(&eval_primitive_multi(Primitive::Det, std::slice::from_ref(m), &no_params()).unwrap()[0])
+    };
+    let i3 = make_f64_matrix(3, 3, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    assert!((det(&i3) - 1.0).abs() < 1e-12, "det(I3) = 1");
+    let upper = make_f64_matrix(2, 2, &[2.0, 5.0, 0.0, 3.0]); // upper-triangular
+    assert!((det(&upper) - 6.0).abs() < 1e-12, "det upper-triangular = 2*3 = 6");
+    // lower-triangular, diagonal 2,3,4
+    let lower = make_f64_matrix(3, 3, &[2.0, 0.0, 0.0, 1.0, 3.0, 0.0, 4.0, 5.0, 4.0]);
+    assert!((det(&lower) - 24.0).abs() < 1e-12, "det lower-triangular = 2*3*4 = 24");
+}
+
+#[test]
 fn oracle_cholesky_2x2_identity() {
     // Cholesky of I₂ = I₂
     let a = make_f64_matrix(2, 2, &[1.0, 0.0, 0.0, 1.0]);
