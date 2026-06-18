@@ -1154,4 +1154,46 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn differential_piecewise_activations_match_raw_f64_definitions() {
+        // Piecewise / closed-form activations vs raw-f64 references (non-circular),
+        // across a range. Distinct from the silu/mish batch.
+        let xs = [-5.0_f64, -2.0, -0.5, 0.0, 0.5, 2.0, 5.0, 7.0];
+        for &x in &xs {
+            // relu6(x) = min(max(x,0), 6)
+            assert!(
+                approx_eq(relu6(&[x])[0], x.max(0.0).min(6.0), 1e-12),
+                "relu6({x})"
+            );
+            // leaky_relu(x, s) = x if x>=0 else s*x
+            let s = 0.1;
+            let lr_ref = if x >= 0.0 { x } else { s * x };
+            assert!(
+                approx_eq(leaky_relu(&[x], s)[0], lr_ref, 1e-12),
+                "leaky_relu({x})"
+            );
+            // elu(x, a) = x if x>0 else a*expm1(x)  (nn.rs uses expm1 on the neg branch)
+            let a = 1.0;
+            let elu_ref = if x > 0.0 { x } else { a * x.exp_m1() };
+            assert!(approx_eq(elu(&[x], a)[0], elu_ref, 1e-12), "elu({x})");
+            // hard_tanh(x) = clamp(x, -1, 1)
+            assert!(
+                approx_eq(hard_tanh(&[x])[0], x.max(-1.0).min(1.0), 1e-12),
+                "hard_tanh({x})"
+            );
+            // softsign(x) = x / (1 + |x|)
+            assert!(
+                approx_eq(softsign(&[x])[0], x / (1.0 + x.abs()), 1e-12),
+                "softsign({x})"
+            );
+            // squareplus(x, b) = (x + sqrt(x^2 + b)) / 2
+            let b = 4.0;
+            let sp_ref = (x + (x * x + b).sqrt()) / 2.0;
+            assert!(
+                approx_eq(squareplus(&[x], b)[0], sp_ref, 1e-12),
+                "squareplus({x})"
+            );
+        }
+    }
 }
