@@ -65,13 +65,24 @@ fn test_tree_flatten_nested() {
 
 #[test]
 fn test_tree_flatten_dict() {
-    let tree = make_dict_tree();
-    let (leaves, _def) = tree_flatten(&tree);
-    assert_eq!(leaves.len(), 2);
-    // Dict leaves contain 1.0 and 2.0 (order depends on HashMap iteration)
-    let mut sorted_leaves = leaves.clone();
-    sorted_leaves.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    assert!(vec_approx_eq(&sorted_leaves, &[1.0, 2.0], 1e-10));
+    let mut map = HashMap::new();
+    map.insert("delta".to_string(), TreeNode::Leaf(4.0));
+    map.insert("alpha".to_string(), TreeNode::Leaf(1.0));
+    map.insert("charlie".to_string(), TreeNode::Leaf(3.0));
+    map.insert("bravo".to_string(), TreeNode::Leaf(2.0));
+    let tree = TreeNode::Dict(map);
+
+    let (leaves, def) = tree_flatten(&tree);
+    let TreeDef::Dict(items) = &def else {
+        panic!("expected dict treedef");
+    };
+    let keys: Vec<&str> = items.iter().map(|(key, _)| key.as_str()).collect();
+    assert_eq!(keys, vec!["alpha", "bravo", "charlie", "delta"]);
+    assert!(vec_approx_eq(&leaves, &[1.0, 2.0, 3.0, 4.0], 1e-10));
+
+    let (reconstructed, consumed) = tree_unflatten(&def, &leaves);
+    assert_eq!(consumed, leaves.len());
+    assert_eq!(reconstructed, tree);
 }
 
 #[test]
