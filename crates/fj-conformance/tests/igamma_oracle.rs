@@ -178,6 +178,10 @@ fn scalar_f64(v: f64) -> Value {
     Value::Scalar(Literal::from_f64(v))
 }
 
+fn scalar_i64(v: i64) -> Value {
+    Value::Scalar(Literal::I64(v))
+}
+
 #[test]
 fn oracle_igamma_scalar_a_tensor_x_broadcast() {
     // scalar a with tensor x
@@ -311,6 +315,36 @@ fn oracle_igammac_incompatible_shapes_error() {
     let x = make_f64_tensor(&[3], vec![0.0, 1.0, 2.0]);
     let result = eval_primitive(Primitive::Igammac, &[a, x], &no_params());
     assert!(result.is_err(), "incompatible shapes should error");
+}
+
+#[test]
+fn oracle_igamma_rejects_integer_operands() {
+    let err = eval_primitive(
+        Primitive::Igamma,
+        &[scalar_i64(2), scalar_f64(1.0)],
+        &no_params(),
+    )
+    .expect_err("JAX igamma is float-only and must reject integer operands");
+
+    assert!(
+        err.to_string().contains("floating operands"),
+        "unexpected igamma integer operand error: {err}"
+    );
+}
+
+#[test]
+fn oracle_igammac_rejects_integer_operands() {
+    let err = eval_primitive(
+        Primitive::Igammac,
+        &[scalar_f64(2.0), scalar_i64(1)],
+        &no_params(),
+    )
+    .expect_err("JAX igammac is float-only and must reject integer operands");
+
+    assert!(
+        err.to_string().contains("floating operands"),
+        "unexpected igammac integer operand error: {err}"
+    );
 }
 
 #[test]

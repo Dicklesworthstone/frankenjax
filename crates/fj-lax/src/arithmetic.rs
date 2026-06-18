@@ -7958,6 +7958,7 @@ pub(crate) fn eval_igamma(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             actual: inputs.len(),
         });
     }
+    ensure_float_binary_operands(primitive, inputs)?;
     eval_binary_elementwise(
         primitive,
         inputs,
@@ -7974,6 +7975,7 @@ pub(crate) fn eval_igammac(primitive: Primitive, inputs: &[Value]) -> Result<Val
             actual: inputs.len(),
         });
     }
+    ensure_float_binary_operands(primitive, inputs)?;
     eval_binary_elementwise(
         primitive,
         inputs,
@@ -8282,7 +8284,26 @@ pub(crate) fn eval_zeta(primitive: Primitive, inputs: &[Value]) -> Result<Value,
             actual: inputs.len(),
         });
     }
+    ensure_float_binary_operands(primitive, inputs)?;
     eval_binary_elementwise(primitive, inputs, |_, _| 0, hurwitz_zeta_approx)
+}
+
+fn ensure_float_binary_operands(primitive: Primitive, inputs: &[Value]) -> Result<(), EvalError> {
+    fn is_float_dtype(dtype: DType) -> bool {
+        matches!(
+            dtype,
+            DType::BF16 | DType::F16 | DType::F32 | DType::F64
+        )
+    }
+
+    if inputs.iter().all(|value| is_float_dtype(value.dtype())) {
+        Ok(())
+    } else {
+        Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "expected floating operands",
+        })
+    }
 }
 
 /// Evaluate a Chebyshev series at `x` using Clenshaw recurrence — the Cephes

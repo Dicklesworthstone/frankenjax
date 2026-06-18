@@ -39,6 +39,10 @@ fn scalar_f64(v: f64) -> Value {
     Value::Scalar(Literal::from_f64(v))
 }
 
+fn scalar_i64(v: i64) -> Value {
+    Value::Scalar(Literal::I64(v))
+}
+
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
@@ -354,6 +358,21 @@ fn oracle_zeta_incompatible_shapes_error() {
     let q = make_f64_tensor(&[3], vec![1.0, 1.0, 1.0]);
     let result = eval_primitive(Primitive::Zeta, &[x, q], &no_params());
     assert!(result.is_err(), "incompatible shapes should error");
+}
+
+#[test]
+fn oracle_zeta_rejects_integer_operands() {
+    let err = eval_primitive(
+        Primitive::Zeta,
+        &[scalar_i64(2), scalar_f64(1.0)],
+        &no_params(),
+    )
+    .expect_err("JAX zeta is float-only and must reject integer operands");
+
+    assert!(
+        err.to_string().contains("floating operands"),
+        "unexpected zeta integer operand error: {err}"
+    );
 }
 
 // ======================== Arity error ========================
