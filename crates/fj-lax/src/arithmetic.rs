@@ -11673,6 +11673,90 @@ pub(crate) fn eval_integer_pow(
             }),
         Value::Tensor(tensor) => {
             let out_dtype = tensor.dtype;
+            // Dense fast paths: x**exponent straight from the typed backing into dense
+            // output, skipping the per-element 24-byte Literal reconstruction + boxed
+            // build + densify. Bit-identical to integer_pow_literal. Integer dtypes
+            // take the dense path only for exponent >= 0; a negative exponent falls
+            // through to the boxed loop, which returns the same fail-closed error.
+            // The square/cube idiom (variance, norms, polynomial features) is a hot path.
+            let shape = tensor.shape.clone();
+            match out_dtype {
+                DType::F64 => {
+                    if let Some(xs) = tensor.elements.as_f64_slice() {
+                        let out: Vec<f64> = xs.iter().map(|&v| v.powi(exponent)).collect();
+                        return Ok(Value::Tensor(
+                            TensorValue::new_f64_values(shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
+                }
+                DType::F32 => {
+                    if let Some(xs) = tensor.elements.as_f32_slice() {
+                        let out: Vec<f32> = xs
+                            .iter()
+                            .map(|&v| (f64::from(v).powi(exponent)) as f32)
+                            .collect();
+                        return Ok(Value::Tensor(
+                            TensorValue::new_f32_values(shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
+                }
+                DType::I64 if exponent >= 0 => {
+                    if let Some(xs) = tensor.elements.as_i64_slice() {
+                        let e = exponent as u32;
+                        let out: Vec<i64> = xs.iter().map(|&v| v.wrapping_pow(e)).collect();
+                        return Ok(Value::Tensor(
+                            TensorValue::new_i64_values(shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
+                }
+                DType::I32 if exponent >= 0 => {
+                    if let Some(xs) = tensor.elements.as_i64_slice() {
+                        let e = exponent as u32;
+                        let out: Vec<i64> = xs
+                            .iter()
+                            .map(|&v| i64::from((v as i32).wrapping_pow(e)))
+                            .collect();
+                        return Ok(Value::Tensor(
+                            TensorValue::new_i32_values(shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
+                }
+                DType::U32 if exponent >= 0 => {
+                    if let Some(xs) = tensor.elements.as_u32_slice() {
+                        let e = exponent as u32;
+                        let out: Vec<u32> = xs.iter().map(|&v| v.wrapping_pow(e)).collect();
+                        return Ok(Value::Tensor(
+                            TensorValue::new_u32_values(shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
+                }
+                DType::U64 if exponent >= 0 => {
+                    if let Some(xs) = tensor.elements.as_u64_slice() {
+                        let e = exponent as u32;
+                        let out: Vec<u64> = xs.iter().map(|&v| v.wrapping_pow(e)).collect();
+                        return Ok(Value::Tensor(
+                            TensorValue::new_u64_values(shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
+                }
+                DType::Complex64 | DType::Complex128 => {
+                    if let Some(xs) = tensor.elements.as_complex_slice() {
+                        let out: Vec<(f64, f64)> =
+                            xs.iter().map(|&z| complex_powi(z, exponent)).collect();
+                        return Ok(Value::Tensor(
+                            TensorValue::new_complex_values(out_dtype, shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
+                }
+                _ => {}
+            }
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for literal in &tensor.elements {
                 elements.push(
