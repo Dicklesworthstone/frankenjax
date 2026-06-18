@@ -5175,6 +5175,10 @@ pub(crate) fn eval_tanh(primitive: Primitive, inputs: &[Value]) -> Result<Value,
 }
 
 pub(crate) fn eval_asinh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    // JAX asinh_p = standard_unop(_float | _complex): reject integer operands.
+    if let Some(input) = inputs.first() {
+        ensure_jax_float_unary_operand(primitive, input)?;
+    }
     if inputs.first().is_some_and(value_contains_complex) {
         eval_unary_complex_map(primitive, inputs, |a, b| {
             // asinh(z) = -i·asin(i·z). Routing through the robust (Hull-Fairgrieve-Tang)
@@ -5191,6 +5195,10 @@ pub(crate) fn eval_asinh(primitive: Primitive, inputs: &[Value]) -> Result<Value
 }
 
 pub(crate) fn eval_acosh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    // JAX acosh_p = standard_unop(_float | _complex): reject integer operands.
+    if let Some(input) = inputs.first() {
+        ensure_jax_float_unary_operand(primitive, input)?;
+    }
     if inputs.first().is_some_and(value_contains_complex) {
         eval_unary_complex_map(primitive, inputs, |a, b| {
             // Principal acosh(z) = log(z + sqrt(z+1)·sqrt(z-1)). Using the PRODUCT of
@@ -5210,6 +5218,10 @@ pub(crate) fn eval_acosh(primitive: Primitive, inputs: &[Value]) -> Result<Value
 }
 
 pub(crate) fn eval_atanh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    // JAX atanh_p = standard_unop(_float | _complex): reject integer operands.
+    if let Some(input) = inputs.first() {
+        ensure_jax_float_unary_operand(primitive, input)?;
+    }
     if inputs.first().is_some_and(value_contains_complex) {
         eval_unary_complex_map(primitive, inputs, |a, b| {
             let numer = (1.0 + a, b);

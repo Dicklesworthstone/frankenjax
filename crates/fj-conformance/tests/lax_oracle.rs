@@ -1330,6 +1330,32 @@ fn oracle_elementwise_transcendentals_reject_integer_operands() {
 }
 
 #[test]
+fn oracle_inverse_hyperbolic_reject_integer_operands() {
+    // asinh/acosh/atanh = standard_unop(_float | _complex): integer operands are rejected
+    // at the lax level. Float operands use per-op valid domains (acosh needs x >= 1,
+    // atanh needs |x| < 1).
+    let int_scalar = Value::scalar_i64(2);
+    for (primitive, valid) in [
+        (Primitive::Asinh, 0.5_f64),
+        (Primitive::Acosh, 2.0),
+        (Primitive::Atanh, 0.5),
+    ] {
+        let err = eval_primitive(primitive, std::slice::from_ref(&int_scalar), &no_params())
+            .expect_err("inverse-hyperbolic unop must reject integer operands");
+        assert!(
+            matches!(
+                &err,
+                EvalError::TypeMismatch { primitive: got, detail }
+                    if *got == primitive && detail.contains("floating")
+            ),
+            "{primitive:?} integer input returned unexpected error: {err:?}"
+        );
+        eval_primitive(primitive, &[Value::scalar_f64(valid)], &no_params())
+            .unwrap_or_else(|e| panic!("{primitive:?} float operand should evaluate: {e:?}"));
+    }
+}
+
+#[test]
 fn oracle_atan2() {
     // atan2(0, 1) = 0, atan2(1, 0) = pi/2, atan2(1, 1) = pi/4
     assert_f64_close(
