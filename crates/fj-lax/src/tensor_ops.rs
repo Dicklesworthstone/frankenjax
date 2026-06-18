@@ -785,12 +785,36 @@ fn transpose_general<T: Copy>(
     rank: usize,
     total: usize,
 ) -> Vec<T> {
+    // Largest trailing run of output axes that is CONTIGUOUS in src: `step[axis]`
+    // equals the row-major stride of the inner output dims, which happens exactly
+    // when the permutation FIXES those trailing axes (identity-mapped suffix). That
+    // run copies verbatim as `src[base..base+block_len]` for a base fixed by the
+    // outer (permuted) axes, so replicate it via extend_from_slice (memcpy) and walk
+    // only the outer axes. Common in attention transposes ([B,S,H,D]->[B,H,S,D]
+    // keeps the [D] feature vector contiguous). Bit-identical (same flat indices,
+    // same row-major order); strict generalization — block_len==1 (innermost axis
+    // moved) reproduces the per-element walk. NOTE: this is pure memcpy of an
+    // identity-mapped suffix, NOT cache-tiling of the strided walk (which regressed).
+    let mut block_len = 1_usize;
+    let mut block_start = rank;
+    let mut expected = 1_usize;
+    for axis in (0..rank).rev() {
+        if step[axis] != expected {
+            break;
+        }
+        block_len *= new_extent[axis];
+        expected *= new_extent[axis];
+        block_start = axis;
+    }
+    let block_len = block_len.max(1);
+
     let mut out = Vec::with_capacity(total);
-    let mut coord = vec![0_usize; rank];
+    let outer_total = total / block_len;
+    let mut coord = vec![0_usize; block_start];
     let mut old_flat = 0_usize;
-    for _ in 0..total {
-        out.push(src[old_flat]);
-        let mut axis = rank;
+    for _ in 0..outer_total {
+        out.extend_from_slice(&src[old_flat..old_flat + block_len]);
+        let mut axis = block_start;
         while axis > 0 {
             axis -= 1;
             coord[axis] += 1;
@@ -971,29 +995,11 @@ pub(crate) fn eval_transpose(
 
             dense_transpose!(transpose_general(&step, &new_extent, rank, total));
 
-            let mut new_elements = Vec::with_capacity(total);
-
-            // Odometer walk over the new layout in row-major order, maintaining
-            // the source flat index incrementally instead of recomputing a full
-            // multi-index (with division) for every element. Produces exactly
-            // the same permutation as the prior code, so output bits are
-            // identical (transpose is pure data movement, no arithmetic).
-            let mut coord = vec![0_usize; rank];
-            let mut old_flat = 0_usize;
-            for _ in 0..total {
-                new_elements.push(tensor.elements[old_flat]);
-                let mut axis = rank;
-                while axis > 0 {
-                    axis -= 1;
-                    coord[axis] += 1;
-                    old_flat += step[axis];
-                    if coord[axis] < new_extent[axis] {
-                        break;
-                    }
-                    coord[axis] = 0;
-                    old_flat -= step[axis] * new_extent[axis];
-                }
-            }
+            // Generic Literal fallback (boxed/other dtypes): the same kernel over the
+            // materialized Literal slice — gets the trailing-block memcpy too, and
+            // dedups what was a hand-rolled copy of the transpose_general odometer.
+            let new_elements =
+                transpose_general(tensor.elements.as_slice(), &step, &new_extent, rank, total);
 
             Ok(Value::Tensor(TensorValue::new(
                 tensor.dtype,
