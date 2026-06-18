@@ -975,20 +975,39 @@ fn permute_copy_f64(src: &[f64], src_shape: &[usize], perm: &[usize]) -> Vec<f64
     let out_shape: Vec<usize> = perm.iter().map(|&p| src_shape[p]).collect();
     let perm_strides: Vec<usize> = perm.iter().map(|&p| src_strides[p]).collect();
     let total: usize = out_shape.iter().product();
-    let mut out = Vec::with_capacity(total);
-    let mut coord = vec![0usize; rank];
-    for _ in 0..total {
-        let mut idx = 0usize;
-        for ax in 0..rank {
-            idx += coord[ax] * perm_strides[ax];
+
+    // Trailing run of output axes that is contiguous in src (perm fixes an
+    // identity-mapped suffix — perm_strides match the inner output row-major
+    // stride). That run copies verbatim as src[base..base+block_len]; replicate via
+    // extend_from_slice and decode only the outer axes. Bit-identical; strict
+    // generalization (block_len==1 when the innermost axis moves = per-element walk).
+    let mut block_len = 1usize;
+    let mut block_start = rank;
+    let mut expected = 1usize;
+    for ax in (0..rank).rev() {
+        if perm_strides[ax] != expected {
+            break;
         }
-        out.push(src[idx]);
-        for ax in (0..rank).rev() {
+        block_len *= out_shape[ax];
+        expected *= out_shape[ax];
+        block_start = ax;
+    }
+    let block_len = block_len.max(1);
+
+    let mut out = Vec::with_capacity(total);
+    let outer_total = total / block_len;
+    let mut coord = vec![0usize; block_start];
+    let mut idx = 0usize;
+    for _ in 0..outer_total {
+        out.extend_from_slice(&src[idx..idx + block_len]);
+        for ax in (0..block_start).rev() {
             coord[ax] += 1;
+            idx += perm_strides[ax];
             if coord[ax] < out_shape[ax] {
                 break;
             }
             coord[ax] = 0;
+            idx -= perm_strides[ax] * out_shape[ax];
         }
     }
     out
