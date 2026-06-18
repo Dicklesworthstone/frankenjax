@@ -123,6 +123,31 @@ fn oracle_argmax_argmin_first_nan_wins_sign_agnostic() {
 }
 
 #[test]
+fn argmax_index_holds_the_reduce_max_value() {
+    // Cross-validate Argmax against ReduceMax: the element at argmax's index must
+    // equal the reduce_max value. Catches a disagreement between the two extremum
+    // code paths (e.g. divergent float ordering / total_cmp). Oracle-free.
+    // NOTE: argmax reads the "axis" param; reduce_max reads "axes".
+    let data = vec![3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0];
+    let input = make_f64_tensor(&[data.len() as u32], data.clone());
+    let idx = extract_i64_scalar(
+        &eval_primitive(Primitive::Argmax, &[input.clone()], &axis_params(0)).unwrap(),
+    ) as usize;
+    let reduce_axes = BTreeMap::from([("axes".to_string(), "0".to_string())]);
+    let max_result = eval_primitive(Primitive::ReduceMax, &[input], &reduce_axes).unwrap();
+    let max_val = match &max_result {
+        Value::Scalar(lit) => lit.as_f64().unwrap(),
+        Value::Tensor(t) => t.elements[0].as_f64().unwrap(),
+    };
+    assert!(
+        (data[idx] - max_val).abs() < 1e-12,
+        "x[argmax]={} must equal reduce_max={}",
+        data[idx],
+        max_val
+    );
+}
+
+#[test]
 fn oracle_argmin_2d_axis0_reduces_rows() {
     // JAX: jnp.argmin([[1, 4, 2], [3, 0, 5]], axis=0) == [0, 1, 0]
     let input = make_f64_tensor(&[2, 3], vec![1.0, 4.0, 2.0, 3.0, 0.0, 5.0]);
