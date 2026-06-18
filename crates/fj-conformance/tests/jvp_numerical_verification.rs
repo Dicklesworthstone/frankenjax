@@ -2211,3 +2211,52 @@ fn squeeze_jvp_squeezes_the_tangent() {
         "squeeze JVP removes the axis from the tangent"
     );
 }
+
+#[test]
+fn select_jvp_routes_tangent_per_predicate() {
+    // Forward-mode dual of the Select VJP. The predicate is built via Gt INSIDE the
+    // jaxpr (so all inputs are float — no bool tangent to construct); the JVP routes the
+    // tangent through the selected branch, with the (discrete) predicate's tangent zero.
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1), VarId(2), VarId(3), VarId(4)],
+        vec![],
+        vec![VarId(6)],
+        vec![
+            Equation {
+                primitive: Primitive::Gt,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(5)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Select,
+                inputs: smallvec![Atom::Var(VarId(5)), Atom::Var(VarId(3)), Atom::Var(VarId(4))],
+                outputs: smallvec![VarId(6)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    );
+    // tangents: d_on_true=100, d_on_false=200 — the result reveals the selected branch.
+    let jvp = |a: f64, b: f64| -> f64 {
+        let primals = [
+            Value::scalar_f64(a),
+            Value::scalar_f64(b),
+            Value::scalar_f64(10.0),
+            Value::scalar_f64(20.0),
+        ];
+        let tangents = [
+            Value::scalar_f64(0.0),
+            Value::scalar_f64(0.0),
+            Value::scalar_f64(100.0),
+            Value::scalar_f64(200.0),
+        ];
+        let r = fj_ad::jvp(&jaxpr, &primals, &tangents).unwrap();
+        extract_f64_scalar(&r.tangents[0])
+    };
+    assert_eq!(jvp(3.0, 2.0), 100.0, "pred true -> tangent from on_true");
+    assert_eq!(jvp(1.0, 2.0), 200.0, "pred false -> tangent from on_false");
+}
