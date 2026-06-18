@@ -738,3 +738,52 @@ fn metamorphic_complex_pow_matches_sqrt_recip_square() {
         extract_complex_vec(&eval_primitive(Primitive::Mul, &[z.clone(), z.clone()], &no_params()).unwrap());
     assert_complex_close(&powp(2.0), &square, 1e-9, "pow(z, 2) == z*z");
 }
+
+#[test]
+fn complex_unary_matches_real_on_real_axis() {
+    // The complex and real implementations of each transcendental are INDEPENDENT
+    // code paths; on a real-axis input within the op's real domain they must agree:
+    // complex_f(x + 0i) == (real_f(x), 0). Cross-validates the two paths (the
+    // divergence class that bit complex bessel). Non-circular.
+    let extract_real = |v: &Value| -> Vec<f64> {
+        v.as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect()
+    };
+    let any: &[f64] = &[-1.5, -0.5, 0.3, 1.2, 2.5];
+    let pos: &[f64] = &[0.3, 0.7, 1.5, 2.0, 4.0];
+    let cases: &[(Primitive, &[f64])] = &[
+        (Primitive::Exp, any),
+        (Primitive::Sin, any),
+        (Primitive::Cos, any),
+        (Primitive::Sinh, any),
+        (Primitive::Cosh, any),
+        (Primitive::Tanh, any),
+        (Primitive::Sqrt, pos),
+        (Primitive::Log, pos),
+    ];
+    for &(prim, xs) in cases {
+        let real_in = make_f64_tensor(&[xs.len() as u32], xs.to_vec());
+        let real_out =
+            extract_real(&eval_primitive(prim, std::slice::from_ref(&real_in), &no_params()).unwrap());
+        let cplx_in = complex_from_pairs(&xs.iter().map(|&x| (x, 0.0)).collect::<Vec<_>>());
+        let cplx_out = extract_complex_vec(
+            &eval_primitive(prim, std::slice::from_ref(&cplx_in), &no_params()).unwrap(),
+        );
+        for (i, ((cre, cim), r)) in cplx_out.iter().zip(&real_out).enumerate() {
+            assert!(
+                (cre - r).abs() < 1e-9,
+                "{prim:?} real-axis re mismatch at x={}: complex {cre} vs real {r}",
+                xs[i]
+            );
+            assert!(
+                cim.abs() < 1e-9,
+                "{prim:?} real-axis imag must vanish at x={}: {cim}",
+                xs[i]
+            );
+        }
+    }
+}
