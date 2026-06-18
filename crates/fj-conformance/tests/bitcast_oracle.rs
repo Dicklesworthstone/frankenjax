@@ -7,7 +7,7 @@
 
 #![allow(dead_code, clippy::approx_constant)]
 
-use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
+use fj_core::{DType, Literal, LiteralBuffer, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
 
@@ -60,6 +60,19 @@ fn make_f32_tensor(shape: &[u32], data: Vec<f32>) -> Value {
             data.into_iter()
                 .map(|x| Literal::F32Bits(x.to_bits()))
                 .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_literal_backed_tensor(dtype: DType, shape: &[u32], elements: Vec<Literal>) -> Value {
+    Value::Tensor(
+        TensorValue::new_with_literal_buffer(
+            dtype,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            LiteralBuffer::new(elements),
         )
         .unwrap(),
     )
@@ -422,6 +435,167 @@ fn oracle_bitcast_f32_u32_roundtrip_preserves_special_value_bits() {
     assert_eq!(
         got_bits, want_bits,
         "f32->u32->f32 round-trip must preserve exact special-value bits"
+    );
+}
+
+#[test]
+fn oracle_dense_same_width_bitcast_matches_literal_backing_exact_bits() {
+    let f32_values = [
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        -0.0_f32,
+        1.5_f32,
+        -2.75_f32,
+        f32::from_bits(0x7fc0_1234),
+    ];
+    let f32_shape = [f32_values.len() as u32];
+    let dense_f32 = Value::Tensor(
+        TensorValue::new_f32_values(Shape { dims: f32_shape.to_vec() }, f32_values.to_vec())
+            .unwrap(),
+    );
+    let literal_f32 = make_literal_backed_tensor(
+        DType::F32,
+        &f32_shape,
+        f32_values
+            .iter()
+            .map(|value| Literal::from_f32(*value))
+            .collect(),
+    );
+
+    let dense_u32 = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&dense_f32),
+        &bitcast_params("u32"),
+    )
+    .unwrap();
+    let literal_u32 = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&literal_f32),
+        &bitcast_params("u32"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&dense_u32), extract_shape(&literal_u32));
+    assert_eq!(dense_u32.dtype(), literal_u32.dtype());
+    assert_eq!(extract_u32_vec(&dense_u32), extract_u32_vec(&literal_u32));
+    assert!(
+        dense_u32
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_u32_slice()
+            .is_some(),
+        "dense f32->u32 output should stay packed"
+    );
+
+    let dense_f32_roundtrip = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&dense_u32),
+        &bitcast_params("f32"),
+    )
+    .unwrap();
+    let literal_f32_roundtrip = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&literal_u32),
+        &bitcast_params("f32"),
+    )
+    .unwrap();
+    let dense_f32_bits: Vec<u32> = extract_f32_vec(&dense_f32_roundtrip)
+        .iter()
+        .map(|value| value.to_bits())
+        .collect();
+    let literal_f32_bits: Vec<u32> = extract_f32_vec(&literal_f32_roundtrip)
+        .iter()
+        .map(|value| value.to_bits())
+        .collect();
+    assert_eq!(dense_f32_bits, literal_f32_bits);
+    assert!(
+        dense_f32_roundtrip
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f32_slice()
+            .is_some(),
+        "dense u32->f32 output should stay packed"
+    );
+
+    let f64_values = [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        -0.0_f64,
+        1.5_f64,
+        -2.75_f64,
+        f64::from_bits(0x7ff8_0000_0000_1234),
+    ];
+    let f64_shape = [f64_values.len() as u32];
+    let dense_f64 = Value::Tensor(
+        TensorValue::new_f64_values(Shape { dims: f64_shape.to_vec() }, f64_values.to_vec())
+            .unwrap(),
+    );
+    let literal_f64 = make_literal_backed_tensor(
+        DType::F64,
+        &f64_shape,
+        f64_values
+            .iter()
+            .map(|value| Literal::from_f64(*value))
+            .collect(),
+    );
+
+    let dense_i64 = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&dense_f64),
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    let literal_i64 = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&literal_f64),
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&dense_i64), extract_shape(&literal_i64));
+    assert_eq!(dense_i64.dtype(), literal_i64.dtype());
+    assert_eq!(extract_i64_vec(&dense_i64), extract_i64_vec(&literal_i64));
+    assert!(
+        dense_i64
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_i64_slice()
+            .is_some(),
+        "dense f64->i64 output should stay packed"
+    );
+
+    let dense_f64_roundtrip = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&dense_i64),
+        &bitcast_params("f64"),
+    )
+    .unwrap();
+    let literal_f64_roundtrip = eval_primitive(
+        Primitive::BitcastConvertType,
+        std::slice::from_ref(&literal_i64),
+        &bitcast_params("f64"),
+    )
+    .unwrap();
+    let dense_f64_bits: Vec<u64> = extract_f64_vec(&dense_f64_roundtrip)
+        .iter()
+        .map(|value| value.to_bits())
+        .collect();
+    let literal_f64_bits: Vec<u64> = extract_f64_vec(&literal_f64_roundtrip)
+        .iter()
+        .map(|value| value.to_bits())
+        .collect();
+    assert_eq!(dense_f64_bits, literal_f64_bits);
+    assert!(
+        dense_f64_roundtrip
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f64_slice()
+            .is_some(),
+        "dense i64->f64 output should stay packed"
     );
 }
 

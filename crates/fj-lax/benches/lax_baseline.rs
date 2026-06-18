@@ -120,6 +120,18 @@ fn real_matrix(rows: usize, cols: usize) -> Value {
     })
 }
 
+fn literal_backed_vector(dtype: DType, elements: Vec<Literal>) -> Value {
+    let len = elements.len() as u32;
+    Value::Tensor(
+        TensorValue::new_with_literal_buffer(
+            dtype,
+            Shape { dims: vec![len] },
+            fj_core::LiteralBuffer::new(elements),
+        )
+        .unwrap(),
+    )
+}
+
 fn bench_random_uniform_1m(c: &mut Criterion) {
     let key = random_key(0x1234_5678_9ABC_DEF0);
     c.bench_function("random/uniform_1m_f64", |bencher| {
@@ -2547,6 +2559,91 @@ fn bench_convert_64k_f64_to_i64(c: &mut Criterion) {
             eval_primitive(
                 Primitive::ConvertElementType,
                 std::slice::from_ref(&input),
+                &p,
+            )
+        })
+    });
+}
+
+// Same-width bitcast over 1M dense f32 words: realistic RNG/mantissa workloads
+// reinterpret contiguous XLA buffers. The literal reference keeps the old
+// per-element Literal -> bytes -> Literal path in the same Criterion process.
+fn bench_bitcast_f32_u32_dense_1m(c: &mut Criterion) {
+    let data: Vec<f32> = (0..LARGE_RANDOM_LEN)
+        .map(|i| ((i as f32) * 0.000_017_3).sin() + ((i % 97) as f32 * 0.125))
+        .collect();
+    let dense = Value::Tensor(
+        TensorValue::new_f32_values(
+            Shape {
+                dims: vec![LARGE_RANDOM_LEN as u32],
+            },
+            data.clone(),
+        )
+        .unwrap(),
+    );
+    let literal = literal_backed_vector(
+        DType::F32,
+        data.iter().copied().map(Literal::from_f32).collect(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("new_dtype".to_owned(), "u32".to_owned());
+
+    c.bench_function("eval/bitcast_f32_u32_dense_1m", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::BitcastConvertType,
+                std::slice::from_ref(&dense),
+                &p,
+            )
+        })
+    });
+    c.bench_function("eval/bitcast_f32_u32_literal_ref_1m", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::BitcastConvertType,
+                std::slice::from_ref(&literal),
+                &p,
+            )
+        })
+    });
+}
+
+// Same-width bitcast over 1M dense f64 words: a wider version of the
+// reinterpret path, covering i64-backed downstream bit manipulation.
+fn bench_bitcast_f64_i64_dense_1m(c: &mut Criterion) {
+    let data: Vec<f64> = (0..LARGE_RANDOM_LEN)
+        .map(|i| ((i as f64) * 0.000_017_3).sin() + ((i % 97) as f64 * 0.125))
+        .collect();
+    let dense = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![LARGE_RANDOM_LEN as u32],
+            },
+            data.clone(),
+        )
+        .unwrap(),
+    );
+    let literal = literal_backed_vector(
+        DType::F64,
+        data.iter().copied().map(Literal::from_f64).collect(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("new_dtype".to_owned(), "i64".to_owned());
+
+    c.bench_function("eval/bitcast_f64_i64_dense_1m", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::BitcastConvertType,
+                std::slice::from_ref(&dense),
+                &p,
+            )
+        })
+    });
+    c.bench_function("eval/bitcast_f64_i64_literal_ref_1m", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::BitcastConvertType,
+                std::slice::from_ref(&literal),
                 &p,
             )
         })
@@ -5820,6 +5917,8 @@ criterion_group!(
     bench_argmax_64k_f64,
     bench_sort_64k_f64_descending,
     bench_convert_64k_f64_to_i64,
+    bench_bitcast_f32_u32_dense_1m,
+    bench_bitcast_f64_i64_dense_1m,
     bench_broadcast_256_to_256x256_f64,
     bench_pad_256x256_to_258x258_f64,
     bench_rev_256x256_f64,

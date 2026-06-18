@@ -414,6 +414,61 @@ fn bytes_to_literal(
     }
 }
 
+fn dense_same_width_bitcast_tensor(
+    tensor: &TensorValue,
+    target_dtype: DType,
+) -> Result<Option<TensorValue>, EvalError> {
+    match (tensor.dtype, target_dtype) {
+        (DType::F32, DType::U32) => {
+            let Some(values) = tensor.elements.as_f32_slice() else {
+                return Ok(None);
+            };
+            let out: Vec<u32> = values.iter().map(|value| value.to_bits()).collect();
+            Ok(Some(TensorValue::new_u32_values(
+                tensor.shape.clone(),
+                out,
+            )?))
+        }
+        (DType::U32, DType::F32) => {
+            let Some(values) = tensor.elements.as_u32_slice() else {
+                return Ok(None);
+            };
+            let out: Vec<f32> = values.iter().map(|&bits| f32::from_bits(bits)).collect();
+            Ok(Some(TensorValue::new_f32_values(
+                tensor.shape.clone(),
+                out,
+            )?))
+        }
+        (DType::F64, DType::I64) => {
+            let Some(values) = tensor.elements.as_f64_slice() else {
+                return Ok(None);
+            };
+            let out: Vec<i64> = values
+                .iter()
+                .map(|value| i64::from_le_bytes(value.to_bits().to_le_bytes()))
+                .collect();
+            Ok(Some(TensorValue::new_i64_values(
+                tensor.shape.clone(),
+                out,
+            )?))
+        }
+        (DType::I64, DType::F64) => {
+            let Some(values) = tensor.elements.as_i64_slice() else {
+                return Ok(None);
+            };
+            let out: Vec<f64> = values
+                .iter()
+                .map(|value| f64::from_bits(u64::from_le_bytes(value.to_le_bytes())))
+                .collect();
+            Ok(Some(TensorValue::new_f64_values(
+                tensor.shape.clone(),
+                out,
+            )?))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Reshape: change the shape of a tensor without changing its data.
 /// Params: `new_shape` (comma-separated dims, -1 for a single inferred axis).
 fn resolve_reshape_dims(
@@ -4684,6 +4739,10 @@ pub(crate) fn eval_bitcast_convert_type(
         Value::Tensor(tensor) => {
             match source_bytes.cmp(&target_bytes) {
                 std::cmp::Ordering::Equal => {
+                    if let Some(dense) = dense_same_width_bitcast_tensor(tensor, target_dtype)? {
+                        return Ok(Value::Tensor(dense));
+                    }
+
                     let mut out = Vec::with_capacity(tensor.elements.len());
                     for literal in &tensor.elements {
                         let raw = literal_to_bytes(primitive, source_dtype, *literal)?;
