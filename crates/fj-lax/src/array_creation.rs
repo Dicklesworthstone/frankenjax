@@ -265,30 +265,49 @@ pub fn logspace(
 ///
 /// Matches `jnp.diag(v, k)` for 1D input.
 pub fn diag(v: &[f64], k: i32) -> Result<Value, ValueError> {
-    let n = v.len();
-    let size = n as i32 + k.abs();
-    let mat_size = (size as usize) * (size as usize);
+    let n = u32::try_from(v.len()).map_err(|_| ValueError::ShapeOverflow {
+        shape: Shape {
+            dims: vec![u32::MAX],
+        },
+    })?;
+    let offset = k.unsigned_abs();
+    let size = n.checked_add(offset).ok_or_else(|| ValueError::ShapeOverflow {
+        shape: Shape {
+            dims: vec![n, offset],
+        },
+    })?;
+    let (shape, mat_size) = checked_shape_and_size(&[size, size])?;
+    let size_usize = usize::try_from(size).map_err(|_| ValueError::ShapeOverflow {
+        shape: shape.clone(),
+    })?;
+    let offset_usize = usize::try_from(offset).map_err(|_| ValueError::ShapeOverflow {
+        shape: shape.clone(),
+    })?;
     let mut elements = vec![Literal::from_f64(0.0); mat_size];
 
     for (i, &val) in v.iter().enumerate() {
         let row = if k >= 0 {
             i
         } else {
-            i + k.unsigned_abs() as usize
+            i.checked_add(offset_usize)
+                .ok_or_else(|| ValueError::ShapeOverflow {
+                    shape: shape.clone(),
+                })?
         };
-        let col = if k >= 0 { i + k as usize } else { i };
-        if row < size as usize && col < size as usize {
-            elements[row * (size as usize) + col] = Literal::from_f64(val);
+        let col = if k >= 0 {
+            i.checked_add(offset_usize)
+                .ok_or_else(|| ValueError::ShapeOverflow {
+                    shape: shape.clone(),
+                })?
+        } else {
+            i
+        };
+        if row < size_usize && col < size_usize {
+            elements[row * size_usize + col] = Literal::from_f64(val);
         }
     }
 
-    let tensor = TensorValue::new(
-        DType::F64,
-        Shape {
-            dims: vec![size as u32, size as u32],
-        },
-        elements,
-    )?;
+    let tensor = TensorValue::new(DType::F64, shape, elements)?;
     Ok(Value::Tensor(tensor))
 }
 
@@ -723,6 +742,18 @@ mod tests {
         assert_eq!(vals.len(), 9);
         assert!((vals[1] - 1.0).abs() < 1e-10);
         assert!((vals[5] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn diag_rejects_extreme_offsets_before_allocation() {
+        assert!(matches!(
+            diag(&[1.0], i32::MIN),
+            Err(ValueError::ShapeOverflow { .. })
+        ));
+        assert!(matches!(
+            diag(&[1.0], i32::MAX),
+            Err(ValueError::ShapeOverflow { .. })
+        ));
     }
 
     #[test]
