@@ -295,6 +295,14 @@ fn oracle_reshape_large_tensor() {
 }
 
 #[test]
+fn oracle_reshape_empty_to_zero_sized_2d() {
+    let input = make_i64_tensor(&[0], Vec::new());
+    let result = eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[0, 3])).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+    assert!(extract_i64_vec(&result).is_empty());
+}
+
+#[test]
 fn oracle_reshape_to_single_row() {
     // Reshape 2D matrix to single row
     let input = make_i64_tensor(&[3, 4], (1..=12).collect());

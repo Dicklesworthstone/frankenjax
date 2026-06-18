@@ -3469,10 +3469,10 @@ fn infer_reshape(
             dims.push(0_u32);
             continue;
         }
-        if *dim <= 0 {
+        if *dim < 0 {
             return Err(TraceError::ShapeInferenceFailed {
                 primitive,
-                detail: format!("reshape dimension must be positive, got {}", dim),
+                detail: format!("reshape dimension must be non-negative, got {}", dim),
             });
         }
         let dim_u32 = u32::try_from(*dim).map_err(|_| TraceError::ShapeInferenceFailed {
@@ -4838,6 +4838,38 @@ mod tests {
                 assert_eq!(closed.jaxpr.constvars.len(), 1);
                 assert_eq!(closed.const_values, vec![Value::scalar_f64(10.0)]);
                 assert_eq!(closed.jaxpr.equations.len(), 2);
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn infer_reshape_allows_zero_sized_target_dims() {
+        run_logged_test(
+            "infer_reshape_allows_zero_sized_target_dims",
+            fj_test_utils::fixture_id_from_json(&("reshape-zero-sized", [0_u32, 3_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![0] },
+                }]);
+
+                let mut reshape_params = BTreeMap::new();
+                reshape_params.insert("new_shape".to_owned(), "0,3".to_owned());
+                let reshaped = ctx
+                    .process_primitive(Primitive::Reshape, &[TracerId(1)], reshape_params)
+                    .expect("zero-sized reshape inference should succeed");
+
+                let aval = ctx.tracer_aval(reshaped[0]).expect("aval present");
+                assert_eq!(
+                    aval.shape,
+                    Shape {
+                        dims: vec![0, 3]
+                    }
+                );
+                assert_eq!(aval.dtype, DType::F64);
                 Ok(Vec::new())
             },
         );
