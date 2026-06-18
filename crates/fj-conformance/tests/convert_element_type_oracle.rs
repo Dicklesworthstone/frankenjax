@@ -267,6 +267,30 @@ fn convert_element_type_rejects_wrong_arity() {
 }
 
 #[test]
+fn convert_element_type_i64_to_f16_rounds_at_2_pow_11_boundary() {
+    // f16 has a 10-bit mantissa, so integers above 2^11 = 2048 are not all
+    // representable (the step is 2 there). i64 -> f16 rounds to nearest-even (IEEE):
+    // 2048 is exact, 2049 is halfway between 2048 and 2050 and rounds to the even
+    // 2048. Verified by widening the f16 result back to f64 (exact for these).
+    let input = i64_tensor(&[2], &[2048, 2049]);
+    let half = convert(input, "f16").expect("i64 to f16 conversion should succeed");
+    assert_eq!(half.dtype(), DType::F16);
+    let back = convert(half, "f64").expect("f16 to f64 conversion should succeed");
+    let vals: Vec<f64> = back
+        .as_tensor()
+        .expect("expected tensor")
+        .elements
+        .iter()
+        .map(|l| l.as_f64().expect("expected f64"))
+        .collect();
+    assert_eq!(
+        vals,
+        vec![2048.0, 2048.0],
+        "i64 -> f16 must round to nearest-even at the 2^11 mantissa boundary"
+    );
+}
+
+#[test]
 fn convert_element_type_f16_to_f32_widens_exactly() {
     // f16 is a strict subset of f32, so widening f16 -> f32 is exact (no rounding).
     // Use values exactly representable in f16 (1.5, -0.5, 256.0) — they must appear
