@@ -329,6 +329,51 @@ fn oracle_integer_pow_integer_tensors_preserve_dtype_and_wrap() {
 }
 
 #[test]
+fn oracle_integer_pow_integer_scalars_preserve_dtype_and_wrap() {
+    let i32_result = eval_primitive(
+        Primitive::IntegerPow,
+        &[Value::Scalar(Literal::I32(100_000))],
+        &pow_params(2),
+    )
+    .unwrap();
+    assert_eq!(i32_result.dtype(), DType::I32);
+    assert_eq!(
+        extract_i64_vec(&i32_result),
+        vec![100_000_i32.wrapping_pow(2).into()]
+    );
+
+    let i64_result = eval_primitive(
+        Primitive::IntegerPow,
+        &[Value::Scalar(Literal::I64(3))],
+        &pow_params(39),
+    )
+    .unwrap();
+    assert_eq!(i64_result.dtype(), DType::I64);
+    assert_eq!(extract_i64_vec(&i64_result), vec![3_i64.wrapping_pow(39)]);
+
+    let u32_result = eval_primitive(
+        Primitive::IntegerPow,
+        &[Value::Scalar(Literal::U32(u32::MAX))],
+        &pow_params(2),
+    )
+    .unwrap();
+    assert_eq!(u32_result.dtype(), DType::U32);
+    assert_eq!(
+        extract_u64_vec(&u32_result),
+        vec![u32::MAX.wrapping_pow(2).into()]
+    );
+
+    let u64_result = eval_primitive(
+        Primitive::IntegerPow,
+        &[Value::Scalar(Literal::U64(u64::MAX))],
+        &pow_params(2),
+    )
+    .unwrap();
+    assert_eq!(u64_result.dtype(), DType::U64);
+    assert_eq!(extract_u64_vec(&u64_result), vec![u64::MAX.wrapping_pow(2)]);
+}
+
+#[test]
 fn oracle_integer_pow_integer_negative_exponent_fails_closed() {
     for input in [
         Value::Scalar(Literal::I32(2)),
