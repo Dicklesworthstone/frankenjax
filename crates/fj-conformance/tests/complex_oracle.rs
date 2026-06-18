@@ -884,3 +884,43 @@ fn complex_remaining_unary_matches_real_on_real_axis() {
         }
     }
 }
+
+#[test]
+fn complex_binary_matches_real_on_real_axis() {
+    // Binary sibling of the unary real-axis tests: complex add/sub/mul/div on
+    // real-axis inputs ((x,0) op (y,0)) must equal (real_op(x,y), 0). Reference is
+    // the real eval path (non-circular path-consistency).
+    let extract_real = |v: &Value| -> Vec<f64> {
+        v.as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect()
+    };
+    let xs: &[f64] = &[1.5, -2.0, 0.5, 3.0];
+    let ys: &[f64] = &[4.0, 0.5, -1.0, 2.0];
+    for prim in [
+        Primitive::Add,
+        Primitive::Sub,
+        Primitive::Mul,
+        Primitive::Div,
+    ] {
+        let rx = make_f64_tensor(&[xs.len() as u32], xs.to_vec());
+        let ry = make_f64_tensor(&[ys.len() as u32], ys.to_vec());
+        let real_out = extract_real(&eval_primitive(prim, &[rx, ry], &no_params()).unwrap());
+        let cx = complex_from_pairs(&xs.iter().map(|&x| (x, 0.0)).collect::<Vec<_>>());
+        let cy = complex_from_pairs(&ys.iter().map(|&y| (y, 0.0)).collect::<Vec<_>>());
+        let cplx_out = extract_complex_vec(&eval_primitive(prim, &[cx, cy], &no_params()).unwrap());
+        for (i, ((cre, cim), r)) in cplx_out.iter().zip(&real_out).enumerate() {
+            assert!(
+                (cre - r).abs() < 1e-9,
+                "{prim:?} real-axis re mismatch at {i}: complex {cre} vs real {r}"
+            );
+            assert!(
+                cim.abs() < 1e-9,
+                "{prim:?} real-axis imag must vanish at {i}: {cim}"
+            );
+        }
+    }
+}
