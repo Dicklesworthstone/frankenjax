@@ -438,6 +438,43 @@ fn convert_element_type_i64_to_f64_rounds_at_2_pow_53_boundary() {
 }
 
 #[test]
+fn convert_element_type_u64_to_f64_rounds_at_2_pow_53_boundary() {
+    // u64 source path (distinct from i64) — and u64 commonly exceeds 2^53. Same
+    // nearest-even rounding at the f64 mantissa boundary: 2^53 is exact, 2^53+1
+    // rounds to the even 2^53. 2^63 is an exact power of two.
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::U64,
+            Shape { dims: vec![3] },
+            vec![
+                Literal::U64(9_007_199_254_740_992),
+                Literal::U64(9_007_199_254_740_993),
+                Literal::U64(9_223_372_036_854_775_808),
+            ],
+        )
+        .unwrap(),
+    );
+    let result = convert(input, "f64").expect("u64 to f64 conversion should succeed");
+    assert_eq!(result.dtype(), DType::F64);
+    let vals: Vec<f64> = result
+        .as_tensor()
+        .expect("expected tensor")
+        .elements
+        .iter()
+        .map(|l| l.as_f64().expect("expected f64"))
+        .collect();
+    assert_eq!(
+        vals,
+        vec![
+            9_007_199_254_740_992.0,
+            9_007_199_254_740_992.0,
+            9_223_372_036_854_775_808.0,
+        ],
+        "u64 -> f64 must round to nearest-even at the 2^53 boundary; 2^63 is exact"
+    );
+}
+
+#[test]
 fn convert_element_type_empty_tensor() {
     let input =
         Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap());
