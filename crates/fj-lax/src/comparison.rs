@@ -416,6 +416,35 @@ pub(crate) fn eval_comparison(
                 return Ok(Value::Tensor(TensorValue::new_bool_values(out_shape, out)?));
             }
 
+            // Complex broadcast Eq/Ne — the broadcast sibling of
+            // eval_same_shape_complex_compare. Only Eq/Ne (ordered comparisons skip
+            // this and fall through to compare_literals below, which raises the
+            // correct "ordered comparison is not supported for complex operands"
+            // error). Component equality (re == re && im == im, negated for Ne) over
+            // the packed (re, im) backings — bit-for-bit identical to compare_literals'
+            // complex arm, into dense Bool.
+            if matches!(primitive, Primitive::Eq | Primitive::Ne)
+                && let (Some(left), Some(right)) = (
+                    lhs.elements.as_complex_slice(),
+                    rhs.elements.as_complex_slice(),
+                )
+            {
+                let is_eq = primitive == Primitive::Eq;
+                let mut out = Vec::with_capacity(out_count);
+                crate::arithmetic::broadcast_visit_row_major(
+                    &out_shape.dims,
+                    &lhs_strides,
+                    &rhs_strides,
+                    |li, ri| {
+                        let (lre, lim) = left[li];
+                        let (rre, rim) = right[ri];
+                        let equal = lre == rre && lim == rim;
+                        out.push(if is_eq { equal } else { !equal });
+                    },
+                );
+                return Ok(Value::Tensor(TensorValue::new_bool_values(out_shape, out)?));
+            }
+
             let mut elements = Vec::with_capacity(out_count);
             for flat_idx in 0..out_count {
                 let multi = flat_to_multi(flat_idx, &out_strides);
@@ -2194,6 +2223,76 @@ mod tests {
                 |a: f64, b: f64| a < b,
             );
             assert!(r.is_err(), "{prim:?} on complex must error");
+        }
+    }
+
+    #[test]
+    fn complex_eq_ne_broadcast_matches_boxed() {
+        // lhs [3,4] complex vs rhs [4] complex (broadcasts over rows).
+        let a: Vec<(f64, f64)> = (0..12)
+            .map(|i| ((i % 4) as f64 - 1.0, (i / 4) as f64))
+            .collect();
+        let b: Vec<(f64, f64)> = (0..4).map(|i| (i as f64 - 1.0, 0.0)).collect();
+        let sa = Shape {
+            dims: vec![3, 4],
+        };
+        let sb = Shape::vector(4);
+        let mk = |pairs: &[(f64, f64)], shape: &Shape, dense: bool| -> Value {
+            if dense {
+                Value::Tensor(
+                    TensorValue::new_complex_values(DType::Complex128, shape.clone(), pairs.to_vec())
+                        .unwrap(),
+                )
+            } else {
+                Value::Tensor(
+                    TensorValue::new_with_literal_buffer(
+                        DType::Complex128,
+                        shape.clone(),
+                        fj_core::LiteralBuffer::new(
+                            pairs
+                                .iter()
+                                .map(|&(re, im)| Literal::from_complex128(re, im))
+                                .collect(),
+                        ),
+                    )
+                    .unwrap(),
+                )
+            }
+        };
+        let bools = |v: &Value| -> Vec<bool> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::Bool(x) => *x,
+                    other => panic!("expected Bool, got {other:?}"),
+                })
+                .collect()
+        };
+        for &prim in &[Primitive::Eq, Primitive::Ne] {
+            let int_cmp = move |x: i128, y: i128| if prim == Primitive::Eq { x == y } else { x != y };
+            let float_cmp = move |x: f64, y: f64| if prim == Primitive::Eq { x == y } else { x != y };
+            let d = eval_comparison(
+                prim,
+                &[mk(&a, &sa, true), mk(&b, &sb, true)],
+                int_cmp,
+                float_cmp,
+            )
+            .unwrap();
+            let bx = eval_comparison(
+                prim,
+                &[mk(&a, &sa, false), mk(&b, &sb, false)],
+                int_cmp,
+                float_cmp,
+            )
+            .unwrap();
+            assert_eq!(bools(&d), bools(&bx), "{prim:?} broadcast dense vs boxed");
+            assert_eq!(d.as_tensor().unwrap().shape.dims, vec![3, 4]);
+            assert!(
+                d.as_tensor().unwrap().elements.as_bool_slice().is_some(),
+                "{prim:?} broadcast dense bool output"
+            );
         }
     }
 
