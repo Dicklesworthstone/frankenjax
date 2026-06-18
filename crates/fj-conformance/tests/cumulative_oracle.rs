@@ -178,6 +178,33 @@ fn oracle_cumprod_1d_i64() {
 }
 
 #[test]
+fn cumprod_last_element_equals_reduce_prod() {
+    // Cross-validate Cumprod against ReduceProd: cumprod(x)[-1] == reduce_prod(x).
+    // Small i64 values so the product is exact and does not overflow. Oracle-free.
+    // (Cumprod reads the "axis" param; ReduceProd reads "axes".)
+    let data = vec![1_i64, 2, 3, 4, 5];
+    let input = make_i64_tensor(&[data.len() as u32], data.clone());
+    let cum = extract_i64_vec(
+        &eval_primitive(Primitive::Cumprod, &[input.clone()], &axis_params(0)).unwrap(),
+    );
+    let reduce_axes = BTreeMap::from([("axes".to_string(), "0".to_string())]);
+    let total = extract_i64_scalar(
+        &eval_primitive(Primitive::ReduceProd, &[input], &reduce_axes).unwrap(),
+    )
+    .expect("reduce_prod should produce an i64 scalar");
+    assert_eq!(
+        *cum.last().unwrap(),
+        total,
+        "cumprod's last element must equal reduce_prod"
+    );
+    assert_eq!(
+        total,
+        data.iter().product::<i64>(),
+        "and both equal the host product"
+    );
+}
+
+#[test]
 fn oracle_cumprod_1d_f64() {
     // JAX: jnp.cumprod(jnp.array([1.0, 2.0, 3.0])) => [1.0, 2.0, 6.0]
     let input = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
