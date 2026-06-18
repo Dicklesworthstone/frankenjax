@@ -1967,7 +1967,7 @@ impl Clone for LiteralBuffer {
 
 impl PartialEq for LiteralBuffer {
     fn eq(&self, other: &Self) -> bool {
-        self.as_slice() == other.as_slice()
+        self.len() == other.len() && literal_buffer_range_eq(self, 0, other, 0, self.len())
     }
 }
 
@@ -2247,13 +2247,13 @@ where
 
 impl PartialEq<Vec<Literal>> for LiteralBuffer {
     fn eq(&self, other: &Vec<Literal>) -> bool {
-        self.as_slice() == other.as_slice()
+        self.len() == other.len() && literal_buffer_range_eq_slice(self, 0, other.as_slice())
     }
 }
 
 impl PartialEq<LiteralBuffer> for Vec<Literal> {
     fn eq(&self, other: &LiteralBuffer) -> bool {
-        self.as_slice() == other.as_slice()
+        other == self
     }
 }
 
@@ -2337,6 +2337,312 @@ fn materialize_concat_slices(parts: &[LiteralBufferSlice], len: usize) -> Vec<Li
         elements.extend_from_slice(&part.buffer.as_slice()[part.start..end]);
     }
     elements
+}
+
+fn literal_buffer_range_eq(
+    left: &LiteralBuffer,
+    left_start: usize,
+    right: &LiteralBuffer,
+    right_start: usize,
+    len: usize,
+) -> bool {
+    if len == 0 {
+        return true;
+    }
+
+    if let Some(equal) = literal_buffer_fast_range_eq(left, left_start, right, right_start, len) {
+        return equal;
+    }
+
+    if let LiteralBufferStorage::Concat { parts, .. } = &left.storage {
+        return literal_buffer_concat_range_eq_left(parts, left_start, right, right_start, len);
+    }
+    if let LiteralBufferStorage::Concat { parts, .. } = &right.storage {
+        return literal_buffer_concat_range_eq_right(left, left_start, parts, right_start, len);
+    }
+
+    (0..len).all(|offset| {
+        literal_buffer_literal_at(left, left_start + offset)
+            == literal_buffer_literal_at(right, right_start + offset)
+    })
+}
+
+fn literal_buffer_fast_range_eq(
+    left: &LiteralBuffer,
+    left_start: usize,
+    right: &LiteralBuffer,
+    right_start: usize,
+    len: usize,
+) -> Option<bool> {
+    let left_end = left_start + len;
+    let right_end = right_start + len;
+    match (&left.storage, &right.storage) {
+        (LiteralBufferStorage::Literals(left), LiteralBufferStorage::Literals(right)) => {
+            Some(left[left_start..left_end] == right[right_start..right_end])
+        }
+        (
+            LiteralBufferStorage::F64 { values: left, .. },
+            LiteralBufferStorage::F64 { values: right, .. },
+        ) => Some(
+            left[left_start..left_end]
+                .iter()
+                .zip(&right[right_start..right_end])
+                .all(|(&left, &right)| left.to_bits() == right.to_bits()),
+        ),
+        (
+            LiteralBufferStorage::F64OnePlusXPlusX {
+                base: left_base,
+                values: left_values,
+                ..
+            },
+            LiteralBufferStorage::F64OnePlusXPlusX {
+                base: right_base,
+                values: right_values,
+                ..
+            },
+        ) => {
+            let left =
+                left_values.get_or_init(|| Arc::new(materialize_f64_one_plus_x_plus_x(left_base)));
+            let right = right_values
+                .get_or_init(|| Arc::new(materialize_f64_one_plus_x_plus_x(right_base)));
+            Some(
+                left[left_start..left_end]
+                    .iter()
+                    .zip(&right[right_start..right_end])
+                    .all(|(&left, &right)| left.to_bits() == right.to_bits()),
+            )
+        }
+        (
+            LiteralBufferStorage::F32 { values: left, .. },
+            LiteralBufferStorage::F32 { values: right, .. },
+        ) => Some(
+            left[left_start..left_end]
+                .iter()
+                .zip(&right[right_start..right_end])
+                .all(|(&left, &right)| left.to_bits() == right.to_bits()),
+        ),
+        (
+            LiteralBufferStorage::I64 { values: left, .. },
+            LiteralBufferStorage::I64 { values: right, .. },
+        ) => Some(left[left_start..left_end] == right[right_start..right_end]),
+        (
+            LiteralBufferStorage::U32 { values: left, .. },
+            LiteralBufferStorage::U32 { values: right, .. },
+        ) => Some(left[left_start..left_end] == right[right_start..right_end]),
+        (
+            LiteralBufferStorage::U64 { values: left, .. },
+            LiteralBufferStorage::U64 { values: right, .. },
+        ) => Some(left[left_start..left_end] == right[right_start..right_end]),
+        (
+            LiteralBufferStorage::Bool { values: left, .. },
+            LiteralBufferStorage::Bool { values: right, .. },
+        ) => Some(left[left_start..left_end] == right[right_start..right_end]),
+        (
+            LiteralBufferStorage::BoolWords {
+                words: left,
+                len: left_len,
+                ..
+            },
+            LiteralBufferStorage::BoolWords {
+                words: right,
+                len: right_len,
+                ..
+            },
+        ) => {
+            debug_assert!(left_end <= *left_len);
+            debug_assert!(right_end <= *right_len);
+            Some((0..len).all(|offset| {
+                bool_word_at(left, left_start + offset) == bool_word_at(right, right_start + offset)
+            }))
+        }
+        (
+            LiteralBufferStorage::HalfFloat {
+                values: left,
+                dtype: left_dtype,
+                ..
+            },
+            LiteralBufferStorage::HalfFloat {
+                values: right,
+                dtype: right_dtype,
+                ..
+            },
+        ) => {
+            if left_dtype != right_dtype {
+                return Some(false);
+            }
+            Some(left[left_start..left_end] == right[right_start..right_end])
+        }
+        (
+            LiteralBufferStorage::Complex {
+                values: left,
+                dtype: left_dtype,
+                ..
+            },
+            LiteralBufferStorage::Complex {
+                values: right,
+                dtype: right_dtype,
+                ..
+            },
+        ) => {
+            if left_dtype != right_dtype {
+                return Some(false);
+            }
+            Some(
+                left[left_start..left_end]
+                    .iter()
+                    .zip(&right[right_start..right_end])
+                    .all(
+                        |(&(left_re, left_im), &(right_re, right_im))| match left_dtype {
+                            DType::Complex64 => {
+                                (left_re as f32).to_bits() == (right_re as f32).to_bits()
+                                    && (left_im as f32).to_bits() == (right_im as f32).to_bits()
+                            }
+                            _ => {
+                                left_re.to_bits() == right_re.to_bits()
+                                    && left_im.to_bits() == right_im.to_bits()
+                            }
+                        },
+                    ),
+            )
+        }
+        _ => None,
+    }
+}
+
+fn literal_buffer_concat_range_eq_left(
+    parts: &[LiteralBufferSlice],
+    mut left_start: usize,
+    right: &LiteralBuffer,
+    mut right_start: usize,
+    len: usize,
+) -> bool {
+    let mut remaining = len;
+    for part in parts {
+        if remaining == 0 {
+            return true;
+        }
+        if left_start >= part.len {
+            left_start -= part.len;
+            continue;
+        }
+
+        let part_offset = left_start;
+        let take_len = (part.len - part_offset).min(remaining);
+        if !literal_buffer_range_eq(
+            &part.buffer,
+            part.start + part_offset,
+            right,
+            right_start,
+            take_len,
+        ) {
+            return false;
+        }
+        remaining -= take_len;
+        right_start += take_len;
+        left_start = 0;
+    }
+    remaining == 0
+}
+
+fn literal_buffer_concat_range_eq_right(
+    left: &LiteralBuffer,
+    mut left_start: usize,
+    parts: &[LiteralBufferSlice],
+    mut right_start: usize,
+    len: usize,
+) -> bool {
+    let mut remaining = len;
+    for part in parts {
+        if remaining == 0 {
+            return true;
+        }
+        if right_start >= part.len {
+            right_start -= part.len;
+            continue;
+        }
+
+        let part_offset = right_start;
+        let take_len = (part.len - part_offset).min(remaining);
+        if !literal_buffer_range_eq(
+            left,
+            left_start,
+            &part.buffer,
+            part.start + part_offset,
+            take_len,
+        ) {
+            return false;
+        }
+        remaining -= take_len;
+        left_start += take_len;
+        right_start = 0;
+    }
+    remaining == 0
+}
+
+fn literal_buffer_range_eq_slice(buffer: &LiteralBuffer, start: usize, other: &[Literal]) -> bool {
+    other
+        .iter()
+        .enumerate()
+        .all(|(offset, literal)| literal_buffer_literal_at(buffer, start + offset) == *literal)
+}
+
+fn literal_buffer_literal_at(buffer: &LiteralBuffer, index: usize) -> Literal {
+    match &buffer.storage {
+        LiteralBufferStorage::Literals(elements) => elements[index],
+        LiteralBufferStorage::F64 { values, .. } => Literal::from_f64(values[index]),
+        LiteralBufferStorage::F64OnePlusXPlusX { base, values, .. } => {
+            let values = values.get_or_init(|| Arc::new(materialize_f64_one_plus_x_plus_x(base)));
+            Literal::from_f64(values[index])
+        }
+        LiteralBufferStorage::F32 { values, .. } => Literal::from_f32(values[index]),
+        LiteralBufferStorage::I64 { values, .. } => Literal::I64(values[index]),
+        LiteralBufferStorage::Bool { values, .. } => Literal::Bool(values[index]),
+        LiteralBufferStorage::BoolWords { words, len, .. } => {
+            debug_assert!(index < *len);
+            Literal::Bool(bool_word_at(words, index))
+        }
+        LiteralBufferStorage::Complex { values, dtype, .. } => {
+            let (re, im) = values[index];
+            complex_pair_to_literal(re, im, *dtype)
+        }
+        LiteralBufferStorage::HalfFloat { values, dtype, .. } => {
+            half_bits_to_literal(values[index], *dtype)
+        }
+        LiteralBufferStorage::U32 { values, .. } => Literal::U32(values[index]),
+        LiteralBufferStorage::U64 { values, .. } => Literal::U64(values[index]),
+        LiteralBufferStorage::RepeatedPatches {
+            base,
+            repeats,
+            patches,
+            ..
+        } => {
+            debug_assert!(index < base.len() * repeats);
+            let mut literal = base[index % base.len()];
+            for &(patch_index, patched) in patches.iter() {
+                if patch_index == index {
+                    literal = patched;
+                }
+            }
+            literal
+        }
+        LiteralBufferStorage::Concat { parts, len, .. } => {
+            debug_assert!(index < *len);
+            let mut skipped = index;
+            for part in parts.iter() {
+                if skipped < part.len {
+                    return literal_buffer_literal_at(&part.buffer, part.start + skipped);
+                }
+                skipped -= part.len;
+            }
+            unreachable!("concat index was bounds checked")
+        }
+    }
+}
+
+fn bool_word_at(words: &[u64], index: usize) -> bool {
+    let word = words[index / u64::BITS as usize];
+    let bit = (word >> (index % u64::BITS as usize)) & 1;
+    bit != 0
 }
 
 fn serialize_literal_buffer_range<Seq>(
@@ -9406,6 +9712,107 @@ mod tests {
                 (LiteralBuffer::new(vec![Literal::from_f64(4.0)]), 0, 1),
             ])
             .expect("valid concat slices"),
+        );
+    }
+
+    #[test]
+    fn literal_buffer_storage_direct_equality_matches_materialized_vec() {
+        fn assert_direct_eq_matches_materialized(left: LiteralBuffer, right: LiteralBuffer) {
+            let left_vec = left.to_vec();
+            let right_vec = right.to_vec();
+            let expected = left_vec == right_vec;
+
+            assert_eq!(left == right, expected);
+            assert_eq!(left == right_vec, expected);
+            assert_eq!(left_vec == right, expected);
+        }
+
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_f64_values(vec![1.0, -0.0, f64::from_bits(0x7ff8_0000_0000_0042)]),
+            LiteralBuffer::from_f64_values(vec![1.0, -0.0, f64::from_bits(0x7ff8_0000_0000_0042)]),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_f64_values(vec![1.0, -0.0]),
+            LiteralBuffer::from_f64_values(vec![1.0, 0.0]),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_f64_one_plus_x_plus_x(std::sync::Arc::new(vec![0.25, -0.5])),
+            LiteralBuffer::from_f64_one_plus_x_plus_x(std::sync::Arc::new(vec![0.25, -0.5])),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_f32_values(vec![1.0, -0.0, f32::from_bits(0x7fc0_0042)]),
+            LiteralBuffer::from_f32_values(vec![1.0, -0.0, f32::from_bits(0x7fc0_0042)]),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_i64_values(vec![i64::MIN, -1, 0, 7]),
+            LiteralBuffer::from_i64_values(vec![i64::MIN, -1, 0, 8]),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_u32_values(vec![0, 17, u32::MAX]),
+            LiteralBuffer::from_u32_values(vec![0, 17, u32::MAX]),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_u64_values(vec![0, 17, u64::MAX]),
+            LiteralBuffer::from_u64_values(vec![0, 18, u64::MAX]),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_bool_values(vec![true, false, true]),
+            LiteralBuffer::from_bool_words(vec![0b101], 3).expect("valid bool words"),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_bool_words(vec![0b1011], 4).expect("valid bool words"),
+            LiteralBuffer::from_bool_words(vec![0b1001], 4).expect("valid bool words"),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_half_float_values(vec![0x3c00, 0xbc00, 0x7e00], DType::F16),
+            LiteralBuffer::from_half_float_values(vec![0x3c00, 0xbc00, 0x7e00], DType::F16),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_half_float_values(vec![0x3c00], DType::F16),
+            LiteralBuffer::from_half_float_values(vec![0x3c00], DType::BF16),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_complex_values(vec![(1.0, -2.0), (3.5, 4.25)], DType::Complex64),
+            LiteralBuffer::from_complex_values(vec![(1.0, -2.0), (3.5, 4.25)], DType::Complex64),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_complex_values(vec![(1.0, -2.0), (3.5, 4.25)], DType::Complex128),
+            LiteralBuffer::from_complex_values(vec![(1.0, -2.0), (3.5, 4.5)], DType::Complex128),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_repeated_with_patches(
+                vec![Literal::I64(1), Literal::I64(2)],
+                3,
+                vec![(1, Literal::I64(99)), (4, Literal::I64(-5))],
+            )
+            .expect("valid repeated patches"),
+            LiteralBuffer::new(vec![
+                Literal::I64(1),
+                Literal::I64(99),
+                Literal::I64(1),
+                Literal::I64(2),
+                Literal::I64(-5),
+                Literal::I64(2),
+            ]),
+        );
+        assert_direct_eq_matches_materialized(
+            LiteralBuffer::from_concat_slices(vec![
+                (LiteralBuffer::from_f64_values(vec![1.0, 2.0, 3.0]), 1, 2),
+                (
+                    LiteralBuffer::from_bool_words(vec![0b1011], 4).expect("valid bool words"),
+                    1,
+                    2,
+                ),
+                (LiteralBuffer::new(vec![Literal::from_f64(4.0)]), 0, 1),
+            ])
+            .expect("valid concat slices"),
+            LiteralBuffer::new(vec![
+                Literal::from_f64(2.0),
+                Literal::from_f64(3.0),
+                Literal::Bool(true),
+                Literal::Bool(false),
+                Literal::from_f64(4.0),
+            ]),
         );
     }
 

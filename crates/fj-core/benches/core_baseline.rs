@@ -177,6 +177,27 @@ fn bench_literal_buffer_serialize(c: &mut Criterion) {
     });
 }
 
+fn bench_literal_buffer_eq(c: &mut Criterion) {
+    let values: Vec<f64> = (0..65_536).map(|i| i as f64 + 0.25).collect();
+    let dense = LiteralBuffer::from_f64_values(values.clone());
+    let dense_same = LiteralBuffer::from_f64_values(values.clone());
+    let mut mismatch_values = values.clone();
+    mismatch_values[65_535] = -1.25;
+    let dense_mismatch = LiteralBuffer::from_f64_values(mismatch_values);
+    let literal = LiteralBuffer::new(values.iter().copied().map(Literal::from_f64).collect());
+    let literal_same = LiteralBuffer::new(values.into_iter().map(Literal::from_f64).collect());
+
+    c.bench_function("core/literal_buffer_eq_dense_f64_64k_equal", |b| {
+        b.iter(|| black_box(&dense) == black_box(&dense_same))
+    });
+    c.bench_function("core/literal_buffer_eq_dense_f64_64k_mismatch", |b| {
+        b.iter(|| black_box(&dense) == black_box(&dense_mismatch))
+    });
+    c.bench_function("core/literal_buffer_eq_literal_f64_64k_equal", |b| {
+        b.iter(|| black_box(&literal) == black_box(&literal_same))
+    });
+}
+
 fn bench_literal_buffer_index_mut(c: &mut Criterion) {
     let values: Vec<f64> = (0..65_536).map(|i| i as f64 + 0.25).collect();
     let dense = LiteralBuffer::from_f64_values(values.clone());
@@ -284,6 +305,7 @@ criterion_group!(
     bench_tensor_to_i64_vec,
     bench_literal_buffer_to_vec,
     bench_literal_buffer_serialize,
+    bench_literal_buffer_eq,
     bench_literal_buffer_index_mut,
     bench_tensor_repeat_axis0,
     bench_tensor_stack_axis0,

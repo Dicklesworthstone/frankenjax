@@ -100,3 +100,26 @@ ends are not rediscovered without new evidence.
   showing it remains a top-five fj-core bottleneck. Do not revisit FMA/SIMD exp,
   GEMM, QR, SVD, cumsum, OneHot, SelectN/iota, or eager concat without fresh
   same-worker benchmark evidence and ownership check.
+
+## frankenjax-mcqr.102 - Storage-Direct LiteralBuffer Equality
+
+- Date: 2026-06-18
+- Agent: cod-b / WildForge
+- Lever: make `LiteralBuffer` equality compare storage-direct typed ranges and
+  recursively compare concat slices instead of forcing `as_slice()` on both
+  operands and caching full materialized literal vectors for dense packed
+  buffers.
+- Status: batch-test pending.
+- Benchmark guard: `core/literal_buffer_eq_dense_f64_64k_equal`,
+  `core/literal_buffer_eq_dense_f64_64k_mismatch`,
+  `core/literal_buffer_eq_literal_f64_64k_equal`.
+- Conformance guard: storage-direct equality matches materialized
+  `Vec<Literal>` equality across F64/F64OnePlusX/F32/I64/U32/U64/Bool/
+  BoolWords/Half/Complex, repeated-patches, concat, mixed dense/literal concat,
+  and the `LiteralBuffer`/`Vec<Literal>` cross-`PartialEq` impls.
+- Retry predicate: do not retry the already committed stack/repeat/slice/to_i64,
+  `TensorValue::new`, `LiteralBuffer::to_vec`, dense COW mutation,
+  serialization streaming, or this equality family without fresh focused
+  criterion evidence showing comparison remains a top-five fj-core bottleneck.
+  Do not revisit FMA/SIMD exp, GEMM, QR, SVD, cumsum, OneHot, SelectN/iota, or
+  eager concat without fresh same-worker benchmark evidence and ownership check.
