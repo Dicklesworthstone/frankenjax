@@ -269,6 +269,33 @@ fn oracle_det_value_and_multiplicativity() {
 }
 
 #[test]
+fn oracle_slogdet_reconstructs_det() {
+    // slogdet(A) = (sign, log|det A|); sign * exp(log|det A|) must reconstruct det(A).
+    // Cross-validates Slogdet against Det — slogdet forward value is otherwise untested
+    // at the conformance layer. JAX/impl output order is (sign, logabsdet).
+    let scalar = |v: &Value| -> f64 {
+        match v {
+            Value::Scalar(l) => l.as_f64().unwrap(),
+            Value::Tensor(t) => t.elements[0].as_f64().unwrap(),
+        }
+    };
+    let a = make_f64_matrix(2, 2, &[1.0, 2.0, 3.0, 4.0]); // det = -2
+    let sl = eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&a), &no_params()).unwrap();
+    assert_eq!(sl.len(), 2, "slogdet returns (sign, logabsdet)");
+    let sign = scalar(&sl[0]);
+    let logabsdet = scalar(&sl[1]);
+    let det = scalar(
+        &eval_primitive_multi(Primitive::Det, std::slice::from_ref(&a), &no_params()).unwrap()[0],
+    );
+    assert!((det + 2.0).abs() < 1e-10, "det([[1,2],[3,4]]) = -2");
+    assert!(
+        (sign * logabsdet.exp() - det).abs() < 1e-9,
+        "sign*exp(logabsdet)={} must reconstruct det={det}",
+        sign * logabsdet.exp()
+    );
+}
+
+#[test]
 fn oracle_cholesky_2x2_identity() {
     // Cholesky of I₂ = I₂
     let a = make_f64_matrix(2, 2, &[1.0, 0.0, 0.0, 1.0]);
