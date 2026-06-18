@@ -1219,6 +1219,41 @@ mod tests {
     }
 
     #[test]
+    fn cache_manager_lru_file_backed_put_failure_counter_surfaces_backend_failure() {
+        use super::backend::FileCache;
+        use super::eviction::{LruCache, LruConfig};
+        use super::{CacheLookup, CacheManager};
+
+        let parent_file =
+            std::env::temp_dir().join(format!("fj-cache-lru-manager-file-{}", std::process::id()));
+        std::fs::write(&parent_file, b"not a directory").expect("parent marker should write");
+        let missing_dir = parent_file.join("cache");
+        let key = build_cache_key(&baseline_input()).unwrap();
+
+        let mut manager = CacheManager::new(Box::new(LruCache::new(
+            FileCache::new(missing_dir),
+            LruConfig::default(),
+        )));
+        assert_eq!(manager.put_failure_count(), 0);
+
+        manager.put(&key, b"should not be stored".to_vec());
+        assert_eq!(
+            manager.get(&key),
+            CacheLookup::Miss,
+            "failed LRU file-cache writes must not become readable hits"
+        );
+        assert_eq!(
+            manager.put_failure_count(),
+            1,
+            "CacheManager must expose put failures through LruCache"
+        );
+        assert_eq!(manager.evict_failure_count(), 0);
+        assert_eq!(manager.clear_failure_count(), 0);
+
+        let _ = std::fs::remove_file(&parent_file);
+    }
+
+    #[test]
     fn key_determinism_multiple_calls() {
         let input = baseline_input();
         let keys: Vec<String> = (0..10).map(|_| key_hex(&input)).collect();
