@@ -802,12 +802,15 @@ mod tests {
     fn lru_cache_delegates_failure_counts_to_inner_file_cache() {
         use crate::backend::FileCache;
 
-        // Point at a parent dir that does NOT exist so put() fails at the
-        // temp-write step and bumps the inner FileCache's put_failures.
-        let dir = std::env::temp_dir().join(format!(
-            "fj-cache-lru-delegation-{}/never_created",
+        // Point the cache under a regular file. FileCache::new creates normal
+        // missing directories, but this path cannot become a directory.
+        let parent_file = std::env::temp_dir().join(format!(
+            "fj-cache-lru-delegation-parent-{}",
             std::process::id()
         ));
+        std::fs::write(&parent_file, b"not a directory").expect("parent marker should write");
+        let dir = parent_file.join("never_created");
+
         let inner = FileCache::new(dir);
         let mut cache = LruCache::new(inner, LruConfig::default());
 
@@ -827,6 +830,8 @@ mod tests {
             1,
             "LruCache::put_failure_count must forward to inner FileCache"
         );
+
+        let _ = std::fs::remove_file(&parent_file);
     }
 
     #[test]
