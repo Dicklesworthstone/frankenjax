@@ -107,6 +107,15 @@ fn normalize_probability(probability: f64) -> Option<f64> {
     probability.is_finite().then(|| probability.clamp(0.0, 1.0))
 }
 
+#[inline]
+fn sanitize_coverage(coverage: f64) -> f64 {
+    if coverage.is_finite() {
+        coverage.clamp(0.5, 0.999)
+    } else {
+        0.9
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LedgerEntry {
     pub decision_id: String,
@@ -173,7 +182,7 @@ impl ConformalPredictor {
     pub fn new(target_coverage: f64, min_calibration_size: usize) -> Self {
         Self {
             calibration_scores: Vec::new(),
-            target_coverage: target_coverage.clamp(0.5, 0.999),
+            target_coverage: sanitize_coverage(target_coverage),
             min_calibration_size: min_calibration_size.max(2),
         }
     }
@@ -480,6 +489,34 @@ mod tests {
         let estimate = cp.calibrated_posterior(0.5);
         assert!(estimate.used_conformal);
         assert!((estimate.coverage - 0.9).abs() < 1e-10);
+    }
+
+    #[test]
+    fn conformal_predictor_sanitizes_coverage() {
+        for coverage in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut cp = super::ConformalPredictor::new(coverage, 2);
+            cp.observe(0.1);
+            cp.observe(0.2);
+            let estimate = cp.calibrated_posterior(0.5);
+            assert!(estimate.used_conformal);
+            assert_eq!(estimate.coverage.to_bits(), 0.9_f64.to_bits());
+        }
+
+        let mut low = super::ConformalPredictor::new(0.1, 2);
+        low.observe(0.1);
+        low.observe(0.2);
+        assert_eq!(
+            low.calibrated_posterior(0.5).coverage.to_bits(),
+            0.5_f64.to_bits()
+        );
+
+        let mut high = super::ConformalPredictor::new(2.0, 2);
+        high.observe(0.1);
+        high.observe(0.2);
+        assert_eq!(
+            high.calibrated_posterior(0.5).coverage.to_bits(),
+            0.999_f64.to_bits()
+        );
     }
 
     #[test]
