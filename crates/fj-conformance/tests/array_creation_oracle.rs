@@ -92,6 +92,39 @@ fn test_eye_diagonal_offset() {
     assert!(vec_approx_eq(&values, &expected, 1e-10));
 }
 
+#[test]
+fn test_eye_all_scalar_dtypes_are_dtype_consistent() {
+    for dtype in [
+        DType::Bool,
+        DType::I32,
+        DType::I64,
+        DType::U32,
+        DType::U64,
+        DType::BF16,
+        DType::F16,
+        DType::F32,
+        DType::F64,
+        DType::Complex64,
+        DType::Complex128,
+    ] {
+        let result = eye(2, Some(3), 0, dtype).unwrap();
+        assert!(
+            matches!(result, Value::Tensor(_)),
+            "{dtype:?} eye should produce a tensor"
+        );
+        let Value::Tensor(tensor) = &result else {
+            return;
+        };
+        assert_eq!(tensor.shape.dims, vec![2, 3], "{dtype:?} eye shape");
+        assert_eq!(tensor.dtype, dtype, "{dtype:?} eye dtype");
+        let consistency = tensor.validate_dtype_consistency();
+        assert!(
+            consistency.is_ok(),
+            "{dtype:?} eye should be dtype-consistent: {consistency:?}"
+        );
+    }
+}
+
 // JAX reference: jnp.linspace(0, 1, 5)
 // [0.0, 0.25, 0.5, 0.75, 1.0]
 #[test]
