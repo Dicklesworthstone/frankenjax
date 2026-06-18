@@ -307,6 +307,9 @@ impl CalibrationReport {
     }
 
     pub fn observe(&mut self, predicted: f64, observed: bool) {
+        if !predicted.is_finite() {
+            return;
+        }
         let clamped = predicted.clamp(0.0, 1.0);
         let bin_idx = ((clamped * self.num_bins as f64) as usize).min(self.num_bins - 1);
         let bin = &mut self.bins[bin_idx];
@@ -586,6 +589,20 @@ mod tests {
     fn calibration_report_empty_returns_zero_ece() {
         let report = super::CalibrationReport::new(10);
         assert!((report.compute_ece()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn calibration_report_ignores_non_finite_predictions() {
+        let mut report = super::CalibrationReport::new(10);
+        report.observe(f64::NAN, true);
+        report.observe(f64::INFINITY, true);
+        report.observe(f64::NEG_INFINITY, false);
+        assert_eq!(report.compute_ece().to_bits(), 0.0_f64.to_bits());
+
+        report.observe(0.75, true);
+        let ece = report.compute_ece();
+        assert!(ece.is_finite());
+        assert!(ece < 0.3, "finite prediction should drive finite ECE: {ece}");
     }
 
     #[test]
