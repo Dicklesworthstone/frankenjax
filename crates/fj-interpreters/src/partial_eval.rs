@@ -946,19 +946,16 @@ fn infer_equation_output_aval(
         },
         // associative_scan is a prefix scan in place: same shape and dtype.
         AssociativeScan => first_input.clone(),
-        // Reshape: parse "new_shape" param
+        // Reshape: parse "new_shape" param, including JAX/NumPy's single
+        // inferred -1 dimension. Invalid fallback params should not silently
+        // drop dimensions by filtering failed u32 parses.
         Reshape => {
-            let shape = eqn
-                .params
-                .get("new_shape")
-                .map(|s| {
-                    let dims: Vec<u32> = s
-                        .split(',')
-                        .filter_map(|d| d.trim().parse::<u32>().ok())
-                        .collect();
-                    Shape { dims }
-                })
-                .unwrap_or_else(|| first_input.shape.clone());
+            let shape = match eqn.params.get("new_shape") {
+                Some(raw_shape) => {
+                    infer_reshape_shape(eqn.primitive, &first_input.shape, raw_shape)?
+                }
+                None => first_input.shape.clone(),
+            };
             AbstractValue {
                 dtype: first_input.dtype,
                 shape,
@@ -1387,6 +1384,93 @@ fn infer_equation_output_aval(
         _ => first_input.clone(),
     };
     Ok(out_aval)
+}
+
+fn infer_reshape_shape(
+    primitive: Primitive,
+    input_shape: &Shape,
+    raw_shape: &str,
+) -> Result<Shape, PartialEvalError> {
+    let mut inferred_axis = None;
+    let mut known_product = 1_u64;
+    let mut dims = Vec::new();
+
+    for (idx, piece) in raw_shape
+        .split(',')
+        .map(str::trim)
+        .filter(|piece| !piece.is_empty())
+        .enumerate()
+    {
+        let dim = piece
+            .parse::<i64>()
+            .map_err(|_| PartialEvalError::ShapeInference {
+                primitive,
+                detail: format!("invalid reshape dimension: {piece}"),
+            })?;
+        if dim == -1 {
+            if inferred_axis.is_some() {
+                return Err(PartialEvalError::ShapeInference {
+                    primitive,
+                    detail: "only one -1 inferred axis allowed".to_owned(),
+                });
+            }
+            inferred_axis = Some(idx);
+            dims.push(0);
+            continue;
+        }
+        if dim < 0 {
+            return Err(PartialEvalError::ShapeInference {
+                primitive,
+                detail: format!("reshape dimension must be non-negative, got {dim}"),
+            });
+        }
+
+        let dim_u32 = u32::try_from(dim).map_err(|_| PartialEvalError::ShapeInference {
+            primitive,
+            detail: format!("reshape dimension out of range: {dim}"),
+        })?;
+        known_product = known_product
+            .checked_mul(u64::from(dim_u32))
+            .ok_or_else(|| PartialEvalError::ShapeInference {
+                primitive,
+                detail: "reshape target element count overflow".to_owned(),
+            })?;
+        dims.push(dim_u32);
+    }
+
+    let input_elements =
+        input_shape
+            .element_count()
+            .ok_or_else(|| PartialEvalError::ShapeInference {
+                primitive,
+                detail: "input shape overflow".to_owned(),
+            })?;
+
+    if let Some(infer_idx) = inferred_axis {
+        if known_product == 0 || !input_elements.is_multiple_of(known_product) {
+            return Err(PartialEvalError::ShapeInference {
+                primitive,
+                detail: format!(
+                    "cannot infer reshape dimension: input elements {input_elements} not divisible by {known_product}"
+                ),
+            });
+        }
+        let inferred = input_elements / known_product;
+        dims[infer_idx] =
+            u32::try_from(inferred).map_err(|_| PartialEvalError::ShapeInference {
+                primitive,
+                detail: format!("inferred reshape dimension out of range: {inferred}"),
+            })?;
+    } else if known_product != input_elements {
+        return Err(PartialEvalError::ShapeInference {
+            primitive,
+            detail: format!(
+                "reshape element mismatch: input={input_elements} target={known_product}"
+            ),
+        });
+    }
+
+    Ok(Shape { dims })
 }
 
 fn reduction_shape_from_axes(
@@ -4840,6 +4924,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.shape.dims, vec![0, 6]);
+
+        // Reshape fallback honors inferred dimensions and zero-sized shapes
+        // instead of dropping non-u32 tokens like "-1".
+        let out = infer_equation_output_aval(
+            &eqn(Primitive::Reshape, &[("new_shape", "2,-1")]),
+            &av(&[2, 3], DType::F64),
+        )
+        .unwrap();
+        assert_eq!(out.shape.dims, vec![2, 3]);
+        let out = infer_equation_output_aval(
+            &eqn(Primitive::Reshape, &[("new_shape", "0,3")]),
+            &av(&[0], DType::F64),
+        )
+        .unwrap();
+        assert_eq!(out.shape.dims, vec![0, 3]);
+        let err = infer_equation_output_aval(
+            &eqn(Primitive::Reshape, &[("new_shape", "2,-1,-1")]),
+            &av(&[2, 3], DType::F64),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            PartialEvalError::ShapeInference {
+                primitive: Primitive::Reshape,
+                ..
+            }
+        ));
+        let err = infer_equation_output_aval(
+            &eqn(Primitive::Reshape, &[("new_shape", "4,2")]),
+            &av(&[2, 3], DType::F64),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            PartialEvalError::ShapeInference {
+                primitive: Primitive::Reshape,
+                ..
+            }
+        ));
 
         // OneHot [2] num_classes=5 default axis -> [2,5] dtype F64 (catch-all kept
         // the [2] index shape and its dtype).
