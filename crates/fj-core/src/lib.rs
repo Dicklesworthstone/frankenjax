@@ -1509,6 +1509,7 @@ impl LiteralBuffer {
     pub fn half_float_dtype(&self) -> Option<DType> {
         match &self.storage {
             LiteralBufferStorage::HalfFloat { dtype, .. } => Some(*dtype),
+            LiteralBufferStorage::Concat { parts, .. } => uniform_concat_half_dtype(parts),
             _ => None,
         }
     }
@@ -1563,6 +1564,7 @@ impl LiteralBuffer {
     pub fn complex_dtype(&self) -> Option<DType> {
         match &self.storage {
             LiteralBufferStorage::Complex { dtype, .. } => Some(*dtype),
+            LiteralBufferStorage::Concat { parts, .. } => uniform_concat_complex_dtype(parts),
             _ => None,
         }
     }
@@ -2250,6 +2252,7 @@ fn materialize_concat_i64_slices(parts: &[LiteralBufferSlice], len: usize) -> Op
 }
 
 fn materialize_concat_half_slices(parts: &[LiteralBufferSlice], len: usize) -> Option<Vec<u16>> {
+    uniform_concat_half_dtype(parts)?;
     let mut values = Vec::with_capacity(len);
     for part in parts {
         let source = part.buffer.as_half_float_slice()?;
@@ -2263,6 +2266,7 @@ fn materialize_concat_complex_slices(
     parts: &[LiteralBufferSlice],
     len: usize,
 ) -> Option<Vec<(f64, f64)>> {
+    uniform_concat_complex_dtype(parts)?;
     let mut values = Vec::with_capacity(len);
     for part in parts {
         let source = part.buffer.as_complex_slice()?;
@@ -2270,6 +2274,32 @@ fn materialize_concat_complex_slices(
         values.extend_from_slice(source.get(part.start..end)?);
     }
     Some(values)
+}
+
+fn uniform_concat_half_dtype(parts: &[LiteralBufferSlice]) -> Option<DType> {
+    let mut dtype = None;
+    for part in parts {
+        let part_dtype = part.buffer.half_float_dtype()?;
+        match dtype {
+            Some(existing) if existing != part_dtype => return None,
+            Some(_) => {}
+            None => dtype = Some(part_dtype),
+        }
+    }
+    dtype
+}
+
+fn uniform_concat_complex_dtype(parts: &[LiteralBufferSlice]) -> Option<DType> {
+    let mut dtype = None;
+    for part in parts {
+        let part_dtype = part.buffer.complex_dtype()?;
+        match dtype {
+            Some(existing) if existing != part_dtype => return None,
+            Some(_) => {}
+            None => dtype = Some(part_dtype),
+        }
+    }
+    dtype
 }
 
 fn materialize_concat_bool_slices(parts: &[LiteralBufferSlice], len: usize) -> Option<Vec<bool>> {
@@ -7705,6 +7735,30 @@ mod tests {
                 .expect("dense half concat"),
             &[0x3c00, 0xbc00, 0x7e00]
         );
+        assert_eq!(half_concat.half_float_dtype(), Some(DType::F16));
+
+        let mixed_half_concat = LiteralBuffer::from_concat_slices(vec![
+            (
+                LiteralBuffer::from_half_float_values(vec![0x3c00], DType::F16),
+                0,
+                1,
+            ),
+            (
+                LiteralBuffer::from_half_float_values(vec![0x3f80], DType::BF16),
+                0,
+                1,
+            ),
+        ])
+        .ok_or_else(|| "valid mixed half concat slices should construct".to_owned())?;
+        assert!(
+            mixed_half_concat.as_half_float_slice().is_none(),
+            "mixed F16/BF16 concat must not expose a single dense half lane"
+        );
+        assert_eq!(mixed_half_concat.half_float_dtype(), None);
+        assert_eq!(
+            mixed_half_concat.as_slice(),
+            &[Literal::F16Bits(0x3c00), Literal::BF16Bits(0x3f80)]
+        );
 
         // Complex concat (FFT/signal pipelines): as_complex_slice materializes the
         // contiguous (re,im) backing in slice order, and as_slice (the per-Literal
@@ -7737,6 +7791,33 @@ mod tests {
                 Literal::from_complex128(1.0, 2.0),
                 Literal::from_complex128(3.0, -4.0),
                 Literal::from_complex128(5.0, 6.0),
+            ]
+        );
+        assert_eq!(complex_concat.complex_dtype(), Some(DType::Complex128));
+
+        let mixed_complex_concat = LiteralBuffer::from_concat_slices(vec![
+            (
+                LiteralBuffer::from_complex_values(vec![(1.0, 2.0)], DType::Complex64),
+                0,
+                1,
+            ),
+            (
+                LiteralBuffer::from_complex_values(vec![(3.0, 4.0)], DType::Complex128),
+                0,
+                1,
+            ),
+        ])
+        .ok_or_else(|| "valid mixed complex concat slices should construct".to_owned())?;
+        assert!(
+            mixed_complex_concat.as_complex_slice().is_none(),
+            "mixed Complex64/Complex128 concat must not expose a single dense complex lane"
+        );
+        assert_eq!(mixed_complex_concat.complex_dtype(), None);
+        assert_eq!(
+            mixed_complex_concat.as_slice(),
+            &[
+                Literal::from_complex64(1.0, 2.0),
+                Literal::from_complex128(3.0, 4.0),
             ]
         );
 
