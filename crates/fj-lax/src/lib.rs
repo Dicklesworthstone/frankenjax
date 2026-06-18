@@ -191,11 +191,31 @@ fn narrow_i32_tensor_result(value: Value) -> Value {
     let Value::Tensor(t) = &value else {
         return value;
     };
-    if t.dtype != fj_core::DType::I32
-        || !t
-            .elements
-            .iter()
-            .any(|l| matches!(l, Literal::I64(v) if *v != i64::from(*v as i32)))
+    if t.dtype != fj_core::DType::I32 {
+        return value;
+    }
+    // Dense i64-backed I32 (the common dense path): scan AND narrow directly on the
+    // typed i64 slice, with no per-element 24-byte `Literal` reconstruction. This
+    // chokepoint runs after EVERY i32 primitive eval, so the detection scan alone
+    // (the no-overflow common case) otherwise materialized a Literal per element
+    // every time. Bit-identical: the boxed condition is `Literal::I64(v) if v !=
+    // i64::from(v as i32)` and dense I32 elements are all I64(v), so the slice scan
+    // and `i64::from(v as i32)` narrowing produce the same I32 dense storage.
+    if let Some(slice) = t.elements.as_i64_slice() {
+        if !slice.iter().any(|&v| v != i64::from(v as i32)) {
+            return value;
+        }
+        let shape = t.shape.clone();
+        let narrowed: Vec<i64> = slice.iter().map(|&v| i64::from(v as i32)).collect();
+        return TensorValue::new_i32_values(shape, narrowed)
+            .map(Value::Tensor)
+            .unwrap_or(value);
+    }
+    // Boxed/other backing fallback: scan + narrow over the materialized Literals.
+    if !t
+        .elements
+        .iter()
+        .any(|l| matches!(l, Literal::I64(v) if *v != i64::from(*v as i32)))
     {
         return value;
     }
