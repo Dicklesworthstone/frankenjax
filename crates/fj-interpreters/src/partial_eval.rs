@@ -936,6 +936,17 @@ fn infer_broadcast_in_dim_shape(
         }
     }
 
+    // JAX (lax._broadcast_in_dim_shape_rule) requires broadcast_dimensions to be STRICTLY
+    // INCREASING, not merely unique. fj-trace's primary rule rejects non-monotonic orders
+    // like [2, 0]; mirror that here so the partial-eval fallback (reached when trace
+    // rejects) does not silently stage an aval for a configuration eval rejects (gnie5).
+    if broadcast_dims.windows(2).any(|w| w[0] >= w[1]) {
+        return Err(PartialEvalError::ShapeInference {
+            primitive: eqn.primitive,
+            detail: "broadcast_dimensions must be strictly increasing".to_owned(),
+        });
+    }
+
     Ok(Shape { dims: target_dims })
 }
 
