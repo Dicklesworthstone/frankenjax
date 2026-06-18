@@ -291,7 +291,12 @@ impl<B: CacheBackend> CacheBackend for TtlLruCache<B> {
     }
 
     fn put(&mut self, key: &CacheKey, artifact: CachedArtifact) {
+        let put_failures_before = self.inner.put_failure_count();
         self.inner.put(key, artifact);
+        if self.inner.put_failure_count() != put_failures_before {
+            return;
+        }
+
         if self.ttl_secs > 0 {
             self.insert_times
                 .insert(key.clone(), std::time::Instant::now());
@@ -675,6 +680,28 @@ mod tests {
         cache.put(&test_key("a"), test_artifact(b"hello"));
         assert!(cache.get(&test_key("a")).is_some());
         assert_eq!(cache.stats().entry_count, 1);
+    }
+
+    #[test]
+    fn ttl_lru_failed_put_does_not_record_timestamp() {
+        let config = TtlLruConfig {
+            lru: LruConfig::default(),
+            ttl_secs: 3600,
+        };
+        let mut cache = TtlLruCache::new(FailingPutBackend::default(), config);
+        let key = test_key("failed");
+
+        cache.inner.inner.fail_next_put = true;
+        cache.put(&key, test_artifact(b"not stored"));
+
+        assert_eq!(cache.put_failure_count(), 1);
+        assert!(
+            !cache.insert_times.contains_key(&key),
+            "failed put must not create TTL metadata for a missing artifact"
+        );
+        assert_eq!(cache.expired_count(), 0);
+        assert_eq!(cache.stats().entry_count, 0);
+        assert!(cache.get(&key).is_none());
     }
 
     #[test]
