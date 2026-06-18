@@ -59,7 +59,10 @@ fn is_complex_dtype(dtype: DType) -> bool {
 fn is_jax_float_only_unary(primitive: Primitive) -> bool {
     matches!(
         primitive,
-        Primitive::Cbrt
+        Primitive::Floor
+            | Primitive::Ceil
+            | Primitive::Round
+            | Primitive::Cbrt
             | Primitive::Erf
             | Primitive::Erfc
             | Primitive::ErfInv

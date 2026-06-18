@@ -1187,6 +1187,36 @@ fn oracle_float_only_unary_rejects_integer_operands() {
 }
 
 #[test]
+fn oracle_rounding_float_only_unary_rejects_integer_operands() {
+    let int_tensor = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape::vector(2),
+            vec![Literal::I64(-3), Literal::I64(4)],
+        )
+        .unwrap(),
+    );
+    let inputs = [Value::scalar_i64(2), int_tensor];
+
+    for primitive in [Primitive::Floor, Primitive::Ceil, Primitive::Round] {
+        for input in &inputs {
+            let err = eval_primitive(primitive, std::slice::from_ref(input), &no_params())
+                .expect_err("JAX rounding primitive accepted integer input");
+            assert!(
+                matches!(
+                    err,
+                    EvalError::TypeMismatch {
+                        primitive: got,
+                        detail: "expected floating operand"
+                    } if got == primitive
+                ),
+                "{primitive:?} integer input returned unexpected error: {err:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn oracle_atan2() {
     // atan2(0, 1) = 0, atan2(1, 0) = pi/2, atan2(1, 1) = pi/4
     assert_f64_close(
