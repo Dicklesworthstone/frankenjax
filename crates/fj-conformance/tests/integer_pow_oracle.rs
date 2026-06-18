@@ -34,10 +34,63 @@ fn make_i64_tensor(shape: &[u32], data: Vec<i64>) -> Value {
     )
 }
 
+fn make_i32_tensor(shape: &[u32], data: Vec<i32>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::I32,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(Literal::I32).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_u32_tensor(shape: &[u32], data: Vec<u32>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::U32,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(Literal::U32).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_u64_tensor(shape: &[u32], data: Vec<u64>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::U64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(Literal::U64).collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
         Value::Scalar(lit) => vec![lit.as_f64().unwrap()],
+    }
+}
+
+fn extract_i64_vec(v: &Value) -> Vec<i64> {
+    match v {
+        Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
+        Value::Scalar(lit) => vec![lit.as_i64().unwrap()],
+    }
+}
+
+fn extract_u64_vec(v: &Value) -> Vec<u64> {
+    match v {
+        Value::Tensor(t) => t.elements.iter().map(|l| l.as_u64().unwrap()).collect(),
+        Value::Scalar(lit) => vec![lit.as_u64().unwrap()],
     }
 }
 
@@ -251,13 +304,42 @@ fn oracle_integer_pow_large_exp() {
 
 #[test]
 fn oracle_integer_pow_i64_tensor() {
-    // Integer input gets converted to f64 for powi
     let input = make_i64_tensor(&[3], vec![2, 3, 4]);
     let result = eval_primitive(Primitive::IntegerPow, &[input], &pow_params(2)).unwrap();
-    let vals = extract_f64_vec(&result);
-    assert!((vals[0] - 4.0).abs() < 1e-10);
-    assert!((vals[1] - 9.0).abs() < 1e-10);
-    assert!((vals[2] - 16.0).abs() < 1e-10);
+    assert_eq!(result.dtype(), DType::I64);
+    assert_eq!(extract_i64_vec(&result), vec![4, 9, 16]);
+}
+
+#[test]
+fn oracle_integer_pow_integer_tensors_preserve_dtype_and_wrap() {
+    let i32_input = make_i32_tensor(&[3], vec![100_000, i32::MIN, -3]);
+    let i32_result = eval_primitive(Primitive::IntegerPow, &[i32_input], &pow_params(2)).unwrap();
+    assert_eq!(i32_result.dtype(), DType::I32);
+    assert_eq!(extract_i64_vec(&i32_result), vec![1_410_065_408, 0, 9]);
+
+    let u32_input = make_u32_tensor(&[2], vec![u32::MAX, 3]);
+    let u32_result = eval_primitive(Primitive::IntegerPow, &[u32_input], &pow_params(2)).unwrap();
+    assert_eq!(u32_result.dtype(), DType::U32);
+    assert_eq!(extract_u64_vec(&u32_result), vec![1, 9]);
+
+    let u64_input = make_u64_tensor(&[2], vec![u64::MAX, 3]);
+    let u64_result = eval_primitive(Primitive::IntegerPow, &[u64_input], &pow_params(2)).unwrap();
+    assert_eq!(u64_result.dtype(), DType::U64);
+    assert_eq!(extract_u64_vec(&u64_result), vec![1, 9]);
+}
+
+#[test]
+fn oracle_integer_pow_integer_negative_exponent_fails_closed() {
+    for input in [
+        Value::Scalar(Literal::I32(2)),
+        Value::Scalar(Literal::I64(2)),
+        Value::Scalar(Literal::U32(2)),
+        Value::Scalar(Literal::U64(2)),
+        make_i64_tensor(&[1], vec![2]),
+    ] {
+        let result = eval_primitive(Primitive::IntegerPow, &[input], &pow_params(-1));
+        assert!(result.is_err());
+    }
 }
 
 fn no_params() -> BTreeMap<String, String> {
@@ -405,6 +487,22 @@ fn property_integer_pow_preserves_all_float_dtypes() {
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let input = make_vec(dtype, &values);
         let result = eval_primitive(Primitive::IntegerPow, &[input], &pow_params(2)).unwrap();
+        let t = result.as_tensor().expect("tensor result");
+        assert_eq!(t.dtype, dtype, "integer_pow {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
+    }
+}
+
+#[test]
+fn property_integer_pow_preserves_all_integer_dtypes() {
+    for (dtype, input) in [
+        (DType::I32, make_i32_tensor(&[3], vec![1, 2, 3])),
+        (DType::I64, make_i64_tensor(&[3], vec![1, 2, 3])),
+        (DType::U32, make_u32_tensor(&[3], vec![1, 2, 3])),
+        (DType::U64, make_u64_tensor(&[3], vec![1, 2, 3])),
+    ] {
+        let result = eval_primitive(Primitive::IntegerPow, &[input], &pow_params(3)).unwrap();
         let t = result.as_tensor().expect("tensor result");
         assert_eq!(t.dtype, dtype, "integer_pow {dtype:?}: dtype mismatch");
         t.validate_dtype_consistency()

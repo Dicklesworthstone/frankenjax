@@ -23,7 +23,7 @@ const MR: usize = 4;
 type F64s = Simd<f64, NR>;
 
 #[track_caller]
-fn assert_tiled_matmul_inputs(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) {
+fn assert_tiled_matmul_inputs(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) -> usize {
     assert_eq!(
         a.len(),
         m.checked_mul(k).expect("FMA evidence lhs shape overflow"),
@@ -44,13 +44,15 @@ fn assert_tiled_matmul_inputs(a: &[f64], m: usize, k: usize, b: &[f64], n: usize
         0,
         "FMA evidence kernels require n to be a multiple of NR"
     );
+    m.checked_mul(n)
+        .expect("FMA evidence output shape overflow")
 }
 
 /// Register-tiled `[m,k]@[k,n]` f64 GEMM, NON-FMA accumulation (`c += a*b`) — mirrors the
 /// production kernel's arithmetic exactly (bit-identical to `matmul_2d_row_block`).
 pub fn matmul_muladd_free(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64> {
-    assert_tiled_matmul_inputs(a, m, k, b, n);
-    let mut c = vec![0.0_f64; m * n];
+    let output_len = assert_tiled_matmul_inputs(a, m, k, b, n);
+    let mut c = vec![0.0_f64; output_len];
     let full_rows = m / MR * MR;
     let full_cols = n / NR * NR;
     let mut j = 0;
@@ -78,8 +80,8 @@ pub fn matmul_muladd_free(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) ->
 /// instruction under `+fma`. Different rounding ⇒ different bits ⇒ would break the
 /// bit-exact-to-ijk self-golden (but stays within JAX tolerance).
 pub fn matmul_fma(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64> {
-    assert_tiled_matmul_inputs(a, m, k, b, n);
-    let mut c = vec![0.0_f64; m * n];
+    let output_len = assert_tiled_matmul_inputs(a, m, k, b, n);
+    let mut c = vec![0.0_f64; output_len];
     let full_rows = m / MR * MR;
     let full_cols = n / NR * NR;
     let mut j = 0;
@@ -147,6 +149,21 @@ mod tests {
         assert!(
             std::panic::catch_unwind(|| matmul_fma(&a, m, k, &b, n)).is_err(),
             "FMA evidence kernel must reject shapes that would leave zeroed tail cells"
+        );
+    }
+
+    #[test]
+    fn fma_evidence_kernels_reject_output_shape_overflow() {
+        let (m, k, n) = (usize::MAX - 3, 0usize, NR);
+        let a = Vec::new();
+        let b = Vec::new();
+        assert!(
+            std::panic::catch_unwind(|| matmul_muladd_free(&a, m, k, &b, n)).is_err(),
+            "non-FMA evidence kernel must reject m*n overflow before allocation"
+        );
+        assert!(
+            std::panic::catch_unwind(|| matmul_fma(&a, m, k, &b, n)).is_err(),
+            "FMA evidence kernel must reject m*n overflow before allocation"
         );
     }
 
