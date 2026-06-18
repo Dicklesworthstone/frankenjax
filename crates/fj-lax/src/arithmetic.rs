@@ -7660,7 +7660,7 @@ pub(crate) fn eval_polygamma(primitive: Primitive, inputs: &[Value]) -> Result<V
             actual: inputs.len(),
         });
     }
-    ensure_float_binary_operands(primitive, inputs)?;
+    ensure_float_operands(primitive, inputs)?;
     let n_val = &inputs[0];
     let x_val = &inputs[1];
 
@@ -8011,7 +8011,7 @@ pub(crate) fn eval_igamma(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             actual: inputs.len(),
         });
     }
-    ensure_float_binary_operands(primitive, inputs)?;
+    ensure_float_operands(primitive, inputs)?;
     eval_binary_elementwise(
         primitive,
         inputs,
@@ -8028,7 +8028,7 @@ pub(crate) fn eval_igammac(primitive: Primitive, inputs: &[Value]) -> Result<Val
             actual: inputs.len(),
         });
     }
-    ensure_float_binary_operands(primitive, inputs)?;
+    ensure_float_operands(primitive, inputs)?;
     eval_binary_elementwise(
         primitive,
         inputs,
@@ -8146,6 +8146,7 @@ pub(crate) fn eval_betainc(primitive: Primitive, inputs: &[Value]) -> Result<Val
             actual: inputs.len(),
         });
     }
+    ensure_float_operands(primitive, inputs)?;
     eval_ternary_elementwise(primitive, inputs, betainc_approx)
 }
 
@@ -8337,11 +8338,11 @@ pub(crate) fn eval_zeta(primitive: Primitive, inputs: &[Value]) -> Result<Value,
             actual: inputs.len(),
         });
     }
-    ensure_float_binary_operands(primitive, inputs)?;
+    ensure_float_operands(primitive, inputs)?;
     eval_binary_elementwise(primitive, inputs, |_, _| 0, hurwitz_zeta_approx)
 }
 
-fn ensure_float_binary_operands(primitive: Primitive, inputs: &[Value]) -> Result<(), EvalError> {
+fn ensure_float_operands(primitive: Primitive, inputs: &[Value]) -> Result<(), EvalError> {
     if inputs.iter().all(|value| is_float_dtype(value.dtype())) {
         Ok(())
     } else {

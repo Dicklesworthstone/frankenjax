@@ -32,6 +32,19 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
     )
 }
 
+fn make_i64_tensor(shape: &[u32], data: Vec<i64>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(Literal::I64).collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
@@ -278,6 +291,43 @@ fn oracle_betainc_incompatible_shapes_error() {
     let x = make_f64_tensor(&[3], vec![0.0, 0.5, 1.0]);
     let result = eval_primitive(Primitive::Betainc, &[a, b, x], &no_params());
     assert!(result.is_err(), "incompatible shapes should error");
+}
+
+#[test]
+fn oracle_betainc_rejects_integer_operands() {
+    for (case, a, b, x) in [
+        (
+            "integer a",
+            Value::scalar_i64(2),
+            scalar_f64(3.0),
+            scalar_f64(0.5),
+        ),
+        (
+            "integer b",
+            scalar_f64(2.0),
+            Value::scalar_i64(3),
+            scalar_f64(0.5),
+        ),
+        (
+            "integer x",
+            scalar_f64(2.0),
+            scalar_f64(3.0),
+            Value::scalar_i64(0),
+        ),
+        (
+            "integer tensor x",
+            scalar_f64(2.0),
+            scalar_f64(3.0),
+            make_i64_tensor(&[2], vec![0, 1]),
+        ),
+    ] {
+        let err = eval_primitive(Primitive::Betainc, &[a, b, x], &no_params())
+            .expect_err("JAX betainc is float-only and must reject integer operands");
+        assert!(
+            err.to_string().contains("floating operands"),
+            "{case} returned unexpected betainc error: {err}"
+        );
+    }
 }
 
 #[test]
