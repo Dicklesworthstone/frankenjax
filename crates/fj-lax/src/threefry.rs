@@ -1216,7 +1216,8 @@ pub fn random_chi2(key: PRNGKey, count: usize, df: f64) -> Vec<f64> {
 /// exactly. `jnp.linalg.norm(..., axis=-1)` is the plain `sqrt(Σ x²)` for a real
 /// vector (no hypot rescaling), so the per-sample arithmetic matches too.
 pub fn random_maxwell(key: PRNGKey, count: usize) -> Vec<f64> {
-    let normals = random_normal(key, count.saturating_mul(3));
+    let normal_count = checked_random_output_len("random_maxwell normal draw", count, 3);
+    let normals = random_normal(key, normal_count);
     (0..count)
         .map(|i| {
             let a = normals[3 * i];
@@ -1225,6 +1226,14 @@ pub fn random_maxwell(key: PRNGKey, count: usize) -> Vec<f64> {
             (a * a + b * b + c * c).sqrt()
         })
         .collect()
+}
+
+#[inline]
+fn checked_random_output_len(context: &str, count: usize, factor: usize) -> usize {
+    let Some(len) = count.checked_mul(factor) else {
+        panic!("{context} output size overflow: count={count} factor={factor}");
+    };
+    len
 }
 
 /// Generate Student's t-distributed random samples.
@@ -1256,7 +1265,8 @@ pub fn random_dirichlet(key: PRNGKey, count: usize, alpha: &[f64]) -> Vec<f64> {
         return Vec::new();
     }
 
-    let mut result = Vec::with_capacity(count * k);
+    let output_len = checked_random_output_len("random_dirichlet", count, k);
+    let mut result = Vec::with_capacity(output_len);
     let mut current_key = key;
 
     for _ in 0..count {
@@ -2336,6 +2346,12 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "random_maxwell normal draw output size overflow")]
+    fn maxwell_rejects_normal_draw_count_overflow() {
+        let _ = random_maxwell(random_key(42), usize::MAX / 3 + 1);
+    }
+
+    #[test]
     fn test_maxwell_matches_jax_norm_of_three_normals() {
         // JAX `_maxwell`: norm(normal(key, shape+(3,)), axis=-1). Pin the exact
         // transform bit-for-bit over the SAME normal stream: sample i is the L2
@@ -2794,6 +2810,13 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "random_dirichlet output size overflow")]
+    fn dirichlet_rejects_output_size_overflow() {
+        let alpha = [1.0, 1.0];
+        let _ = random_dirichlet(random_key(42), usize::MAX / 2 + 1, &alpha);
     }
 
     #[test]
