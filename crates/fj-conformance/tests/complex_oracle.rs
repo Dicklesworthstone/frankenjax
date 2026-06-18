@@ -670,3 +670,45 @@ fn complex_sqrt_log_return_principal_branch() {
         );
     }
 }
+
+#[test]
+fn complex_inverse_hyperbolic_returns_principal_branch() {
+    // sinh(asinh(z))==z etc. hold for either branch. The principal inverse
+    // hyperbolics satisfy Re(acosh(z)) >= 0 (right half-plane), Im(asinh(z)) in
+    // [-pi/2, pi/2], and Im(atanh(z)) in [-pi/2, pi/2]. Combined with the existing
+    // round trips, these bounds pin the principal branch of complex_asinh/acosh/
+    // atanh — catching a wrong-branch regression the round trips alone cannot.
+    use std::f64::consts::FRAC_PI_2;
+    let pts = [
+        (1.5, 0.5),
+        (2.0, -0.8),
+        (1.2, 0.9),
+        (-0.6, 0.4),
+        (0.7, -1.3),
+        (3.0, 1.0),
+    ];
+    let z = complex_from_pairs(&pts);
+    let eps = 1e-12;
+
+    let acosh = extract_complex_vec(&unary(Primitive::Acosh, &z));
+    for (i, (re, _)) in acosh.iter().enumerate() {
+        assert!(*re >= -eps, "principal acosh must have Re >= 0 at {i}: {re}");
+    }
+    let asinh = extract_complex_vec(&unary(Primitive::Asinh, &z));
+    for (i, (_, im)) in asinh.iter().enumerate() {
+        assert!(
+            im.abs() <= FRAC_PI_2 + eps,
+            "principal asinh must have Im in [-pi/2, pi/2] at {i}: {im}"
+        );
+    }
+    // atanh poles at +/-1; keep points modest and off the real axis >= 1.
+    let tpts = [(0.5, 0.3), (-0.4, 0.6), (0.2, -0.5), (0.3, 0.4)];
+    let tz = complex_from_pairs(&tpts);
+    let atanh = extract_complex_vec(&unary(Primitive::Atanh, &tz));
+    for (i, (_, im)) in atanh.iter().enumerate() {
+        assert!(
+            im.abs() <= FRAC_PI_2 + eps,
+            "principal atanh must have Im in [-pi/2, pi/2] at {i}: {im}"
+        );
+    }
+}
