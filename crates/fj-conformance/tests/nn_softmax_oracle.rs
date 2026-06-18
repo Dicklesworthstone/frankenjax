@@ -52,6 +52,27 @@ fn test_logsumexp_zeros() {
     );
 }
 
+// A +inf term dominates: logsumexp([inf, x]) = log(exp(inf)+exp(x)) = inf.
+#[test]
+fn test_logsumexp_positive_infinity_is_infinity() {
+    let result = logsumexp(&[f64::INFINITY, 1.0, 2.0]);
+    assert!(
+        result.is_infinite() && result.is_sign_positive(),
+        "logsumexp with a +inf term must be +inf, got {result}"
+    );
+}
+
+// A -inf term contributes exp(-inf) = 0, so it is masked out: logsumexp([-inf, 5])
+// = 5. The logsumexp analog of softmax's -inf masking (masked-attention pattern).
+#[test]
+fn test_logsumexp_masks_negative_infinity() {
+    let result = logsumexp(&[f64::NEG_INFINITY, 5.0, f64::NEG_INFINITY]);
+    assert!(
+        approx_eq(result, 5.0, 1e-12),
+        "logsumexp must mask -inf terms (exp(-inf)=0); got {result}, expected 5.0"
+    );
+}
+
 // JAX reference: logsumexp([1000.0, 1000.0]) = 1000 + ln(2)
 // Tests numerical stability with large values
 #[test]
