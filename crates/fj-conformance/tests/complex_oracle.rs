@@ -407,3 +407,76 @@ fn metamorphic_complex_negation_symmetry() {
         );
     }
 }
+
+// ============ METAMORPHIC: complex transcendental inverse identities ============
+// Oracle-free mathematical identities (no JAX runtime needed) that exercise the
+// complex exp/log/sqrt/reciprocal/mul/add evaluators end-to-end. These catch
+// divergence in the complex transcendental implementations — the same family where
+// complex bessel had a real truncation bug (fixed in 0f1ed8b9) and which the
+// frankenjax-w8u0a fail-close touched. All ops used here are JAX `_float|_complex`.
+
+fn complex_from_pairs(pairs: &[(f64, f64)]) -> Value {
+    let n = pairs.len() as u32;
+    let re = make_f64_tensor(&[n], pairs.iter().map(|p| p.0).collect());
+    let im = make_f64_tensor(&[n], pairs.iter().map(|p| p.1).collect());
+    eval_primitive(Primitive::Complex, &[re, im], &no_params()).unwrap()
+}
+
+fn unary(prim: Primitive, z: &Value) -> Value {
+    eval_primitive(prim, std::slice::from_ref(z), &no_params()).unwrap()
+}
+
+fn assert_complex_close(got: &Value, expected: &[(f64, f64)], tol: f64, msg: &str) {
+    let g = extract_complex_vec(got);
+    assert_eq!(g.len(), expected.len(), "{msg}: length");
+    for (i, ((gre, gim), (ere, eim))) in g.iter().zip(expected).enumerate() {
+        assert!(
+            (gre - ere).abs() < tol && (gim - eim).abs() < tol,
+            "{msg} [{i}]: got ({gre}, {gim}) expected ({ere}, {eim})"
+        );
+    }
+}
+
+#[test]
+fn metamorphic_complex_exp_log_roundtrip() {
+    // exp(log(z)) == z for every z != 0 (principal log returns the branch exp inverts).
+    let pts = [(1.5, 0.7), (-0.8, 1.2), (2.0, -1.0), (0.3, 0.4)];
+    let z = complex_from_pairs(&pts);
+    let back = unary(Primitive::Exp, &unary(Primitive::Log, &z));
+    assert_complex_close(&back, &pts, 1e-9, "exp(log(z)) == z");
+}
+
+#[test]
+fn metamorphic_complex_sqrt_squared_roundtrip() {
+    // sqrt(z) * sqrt(z) == z for every z (principal sqrt).
+    let pts = [(1.5, 0.7), (-0.8, 1.2), (2.0, -1.0), (0.3, 0.4)];
+    let z = complex_from_pairs(&pts);
+    let s = unary(Primitive::Sqrt, &z);
+    let sq = eval_primitive(Primitive::Mul, &[s.clone(), s], &no_params()).unwrap();
+    assert_complex_close(&sq, &pts, 1e-9, "sqrt(z)^2 == z");
+}
+
+#[test]
+fn metamorphic_complex_reciprocal_involution() {
+    // reciprocal(reciprocal(z)) == z for every z != 0.
+    let pts = [(1.5, 0.7), (-0.8, 1.2), (2.0, -1.0), (0.3, 0.4)];
+    let z = complex_from_pairs(&pts);
+    let back = unary(Primitive::Reciprocal, &unary(Primitive::Reciprocal, &z));
+    assert_complex_close(&back, &pts, 1e-9, "1/(1/z) == z");
+}
+
+#[test]
+fn metamorphic_complex_exp_addition_is_multiplication() {
+    // exp(a + b) == exp(a) * exp(b). Small arguments keep values O(1).
+    let a_pts = [(0.5, 0.3), (-0.2, 0.7), (0.1, -0.4)];
+    let b_pts = [(-0.2, 0.6), (0.4, -0.1), (0.3, 0.2)];
+    let a = complex_from_pairs(&a_pts);
+    let b = complex_from_pairs(&b_pts);
+    let sum = eval_primitive(Primitive::Add, &[a.clone(), b.clone()], &no_params()).unwrap();
+    let exp_sum = unary(Primitive::Exp, &sum);
+    let exp_a = unary(Primitive::Exp, &a);
+    let exp_b = unary(Primitive::Exp, &b);
+    let prod = eval_primitive(Primitive::Mul, &[exp_a, exp_b], &no_params()).unwrap();
+    let expected = extract_complex_vec(&prod);
+    assert_complex_close(&exp_sum, &expected, 1e-9, "exp(a+b) == exp(a)*exp(b)");
+}
