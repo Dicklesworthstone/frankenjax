@@ -701,25 +701,72 @@ fn broadcast_dims(a: &[u32], b: &[u32]) -> Vec<u32> {
 }
 
 /// BroadcastedIota takes NO inputs — its aval comes entirely from params.
-fn infer_broadcasted_iota_aval(eqn: &Equation) -> AbstractValue {
-    let dims: Vec<u32> = eqn
+fn infer_broadcasted_iota_aval(eqn: &Equation) -> Result<AbstractValue, PartialEvalError> {
+    let primitive = Primitive::BroadcastedIota;
+    let raw_shape = eqn
         .params
         .get("shape")
-        .map(|s| {
-            s.split(',')
-                .filter_map(|d| d.trim().parse::<u32>().ok())
-                .collect()
-        })
-        .unwrap_or_default();
-    let dtype = eqn
-        .params
-        .get("dtype")
-        .and_then(|s| dtype_from_name(s))
-        .unwrap_or(DType::I64);
-    AbstractValue {
+        .ok_or_else(|| PartialEvalError::ShapeInference {
+            primitive,
+            detail: "missing required param 'shape'".to_owned(),
+        })?;
+    let mut dims = Vec::new();
+    for piece in raw_shape.split(',').map(str::trim) {
+        let dim = piece
+            .parse::<u32>()
+            .map_err(|_| PartialEvalError::ShapeInference {
+                primitive,
+                detail: format!("invalid u32 in param 'shape': '{piece}'"),
+            })?;
+        dims.push(dim);
+    }
+
+    let dimension = match eqn.params.get("dimension") {
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err(PartialEvalError::ShapeInference {
+                    primitive,
+                    detail: "invalid dimension: ''".to_owned(),
+                });
+            }
+            trimmed
+                .parse::<usize>()
+                .map_err(|_| PartialEvalError::ShapeInference {
+                    primitive,
+                    detail: format!("invalid dimension: '{raw}'"),
+                })?
+        }
+        None => 0,
+    };
+    if !dims.is_empty() && dimension >= dims.len() {
+        return Err(PartialEvalError::ShapeInference {
+            primitive,
+            detail: format!(
+                "dimension {dimension} out of bounds for rank {}",
+                dims.len()
+            ),
+        });
+    }
+
+    let dtype = match eqn.params.get("dtype") {
+        Some(raw) => dtype_from_name(raw).ok_or_else(|| PartialEvalError::ShapeInference {
+            primitive,
+            detail: format!("invalid dtype: '{raw}'"),
+        })?,
+        None => DType::I64,
+    };
+    if matches!(dtype, DType::Bool) {
+        return Err(PartialEvalError::ShapeInference {
+            primitive,
+            detail: "broadcasted_iota does not accept bool dtype".to_owned(),
+        });
+    }
+
+    Ok(AbstractValue {
         dtype,
         shape: Shape { dims },
-    }
+    })
 }
 
 /// Complex(re, im): dtype (F32,F32)→Complex64 else Complex128; shape = broadcast.
@@ -823,7 +870,7 @@ fn infer_equation_output_avals(
     // BroadcastedIota takes NO inputs, so it must be typed before the
     // first-input guard below (which would otherwise return an empty aval list).
     if eqn.primitive == BroadcastedIota {
-        return Ok(vec![infer_broadcasted_iota_aval(eqn); eqn.outputs.len()]);
+        return Ok(vec![infer_broadcasted_iota_aval(eqn)?; eqn.outputs.len()]);
     }
 
     let Some(first_input) = input_avals.first() else {
@@ -5081,6 +5128,40 @@ mod tests {
         .unwrap();
         assert_eq!(outs[0].shape.dims, vec![3, 4]);
         assert_eq!(outs[0].dtype, DType::F32);
+
+        for (label, params, expected_detail) in [
+            (
+                "bad shape token",
+                &[("shape", "3,bad,4"), ("dtype", "f32")][..],
+                "invalid u32 in param 'shape'",
+            ),
+            (
+                "dimension out of bounds",
+                &[("shape", "3,4"), ("dimension", "2")][..],
+                "dimension 2 out of bounds for rank 2",
+            ),
+            (
+                "bool dtype",
+                &[("shape", "3,4"), ("dtype", "bool")][..],
+                "broadcasted_iota does not accept bool dtype",
+            ),
+        ] {
+            let err = infer_equation_output_avals(
+                &eqn_n(Primitive::BroadcastedIota, 1, params),
+                &[],
+            )
+            .unwrap_err();
+            match err {
+                PartialEvalError::ShapeInference { primitive, detail } => {
+                    assert_eq!(primitive, Primitive::BroadcastedIota, "{label}");
+                    assert!(
+                        detail.contains(expected_detail),
+                        "{label}: unexpected detail: {detail}"
+                    );
+                }
+                other => panic!("{label}: unexpected error: {other}"),
+            }
+        }
 
         // Complex(f32,f32) -> Complex64; broadcast [3,1] with [4] -> [3,4].
         let outs = infer_equation_output_avals(
