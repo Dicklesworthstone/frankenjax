@@ -296,6 +296,26 @@ fn oracle_slogdet_reconstructs_det() {
 }
 
 #[test]
+fn oracle_det_singular_is_zero() {
+    // det of a singular matrix is 0 (must not error or return NaN). Rows of A are
+    // proportional ([1,2] and [2,4]), so det = 1*4 - 2*2 = 0 exactly. JAX returns 0.
+    let scalar = |v: &Value| -> f64 {
+        match v {
+            Value::Scalar(l) => l.as_f64().unwrap(),
+            Value::Tensor(t) => t.elements[0].as_f64().unwrap(),
+        }
+    };
+    let a = make_f64_matrix(2, 2, &[1.0, 2.0, 2.0, 4.0]);
+    let det = scalar(
+        &eval_primitive_multi(Primitive::Det, std::slice::from_ref(&a), &no_params()).unwrap()[0],
+    );
+    assert!(
+        det.abs() < 1e-12,
+        "det of a singular matrix must be 0, got {det}"
+    );
+}
+
+#[test]
 fn oracle_cholesky_2x2_identity() {
     // Cholesky of I₂ = I₂
     let a = make_f64_matrix(2, 2, &[1.0, 0.0, 0.0, 1.0]);
