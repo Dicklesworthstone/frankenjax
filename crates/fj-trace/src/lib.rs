@@ -1897,9 +1897,24 @@ impl SimpleTraceContext {
                         (width - 1) * factor_at(&lhs_dil, 0) + 1
                     };
                     let eff_kw = (kernel_w.max(1) - 1) * factor_at(&rhs_dil, 0) + 1;
-                    let out_w = match padding {
+                    if let ConvPadding::Explicit(pairs) = &padding
+                        && pairs.len() != 1
+                    {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "conv explicit padding rank {} does not match spatial rank 1",
+                                pairs.len()
+                            ),
+                        });
+                    }
+                    let out_w = match &padding {
                         ConvPadding::Same | ConvPadding::SameLower => eff_in.div_ceil(stride),
                         ConvPadding::Valid => conv_valid_output_dim(eff_in, eff_kw, stride),
+                        ConvPadding::Explicit(pairs) => {
+                            let (lo, hi) = pairs.first().copied().unwrap_or((0, 0));
+                            conv_valid_output_dim(eff_in.saturating_add(lo).saturating_add(hi), eff_kw, stride)
+                        }
                     };
                     vec![lhs.shape.dims[0], out_w as u32, c_out]
                 } else {
@@ -1973,13 +1988,32 @@ impl SimpleTraceContext {
                     };
                     let eff_kh = (kernel_h.max(1) - 1) * factor_at(&rhs_dil, 0) + 1;
                     let eff_kw = (kernel_w.max(1) - 1) * factor_at(&rhs_dil, 1) + 1;
-                    let out_h = match padding {
+                    if let ConvPadding::Explicit(pairs) = &padding
+                        && pairs.len() != 2
+                    {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "conv explicit padding rank {} does not match spatial rank 2",
+                                pairs.len()
+                            ),
+                        });
+                    }
+                    let out_h = match &padding {
                         ConvPadding::Same | ConvPadding::SameLower => eff_h_in.div_ceil(stride_h),
                         ConvPadding::Valid => conv_valid_output_dim(eff_h_in, eff_kh, stride_h),
+                        ConvPadding::Explicit(pairs) => {
+                            let (lo, hi) = pairs.first().copied().unwrap_or((0, 0));
+                            conv_valid_output_dim(eff_h_in.saturating_add(lo).saturating_add(hi), eff_kh, stride_h)
+                        }
                     };
-                    let out_w = match padding {
+                    let out_w = match &padding {
                         ConvPadding::Same | ConvPadding::SameLower => eff_w_in.div_ceil(stride_w),
                         ConvPadding::Valid => conv_valid_output_dim(eff_w_in, eff_kw, stride_w),
+                        ConvPadding::Explicit(pairs) => {
+                            let (lo, hi) = pairs.get(1).copied().unwrap_or((0, 0));
+                            conv_valid_output_dim(eff_w_in.saturating_add(lo).saturating_add(hi), eff_kw, stride_w)
+                        }
                     };
                     vec![lhs.shape.dims[0], out_h as u32, out_w as u32, c_out]
                 };
@@ -2786,11 +2820,14 @@ fn parse_bool_param(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum ConvPadding {
     Valid,
     Same,
     SameLower,
+    /// Explicit per-spatial-dim (low, high) padding, mirroring eval_conv's
+    /// `ConvPadding::Explicit`. Output uses the valid formula on the padded size.
+    Explicit(Vec<(usize, usize)>),
 }
 
 fn parse_conv_padding_param(
@@ -2808,11 +2845,34 @@ fn parse_conv_padding_param(
     } else if trimmed.eq_ignore_ascii_case("SAME_LOWER") {
         Ok(ConvPadding::SameLower)
     } else {
-        Err(TraceError::InvalidPrimitiveParam {
+        // Explicit per-dim (low, high) padding, e.g. "EXPLICIT:1,1" or "1,0,2,2".
+        // Mirrors eval_conv's parse_conv_explicit_padding so traced/jit conv shape
+        // inference matches the eval-layer support.
+        let body = trimmed
+            .strip_prefix("EXPLICIT:")
+            .or_else(|| trimmed.strip_prefix("explicit:"))
+            .unwrap_or(trimmed);
+        let invalid = || TraceError::InvalidPrimitiveParam {
             primitive,
             key: "padding",
             value: raw.clone(),
-        })
+        };
+        let numbers: Vec<isize> = body
+            .split(|ch: char| !(ch.is_ascii_digit() || ch == '-'))
+            .filter(|part| !part.is_empty())
+            .map(str::parse::<isize>)
+            .collect::<Result<_, _>>()
+            .map_err(|_| invalid())?;
+        if numbers.is_empty() || numbers.len() % 2 != 0 {
+            return Err(invalid());
+        }
+        let mut pairs = Vec::with_capacity(numbers.len() / 2);
+        for pair in numbers.chunks_exact(2) {
+            let low = usize::try_from(pair[0]).map_err(|_| invalid())?;
+            let high = usize::try_from(pair[1]).map_err(|_| invalid())?;
+            pairs.push((low, high));
+        }
+        Ok(ConvPadding::Explicit(pairs))
     }
 }
 
@@ -9668,6 +9728,90 @@ mod tests {
             .expect("uppercase SAME padding should succeed");
         let aval = ctx.tracer_aval(out[0]).expect("aval present");
         assert_eq!(aval.shape.dims, vec![1, 4, 1]);
+    }
+
+    #[test]
+    fn test_infer_conv_1d_explicit_padding() {
+        // gtoel: explicit padding must be accepted by shape inference and produce the
+        // same output shape as eval_conv. lhs [1,3,1], rhs [2,1,1], pad 1 each side,
+        // stride 1 -> padded width 5, valid output (5-2)/1+1 = 4.
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![1, 3, 1],
+                },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 1, 1],
+                },
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "EXPLICIT:1,1".to_owned());
+        params.insert("strides".to_owned(), "1".to_owned());
+
+        let out = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect("explicit padding should succeed");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(aval.shape.dims, vec![1, 4, 1]);
+    }
+
+    #[test]
+    fn test_infer_conv_2d_explicit_padding() {
+        // 2D explicit padding "1,1,0,0": pad h by (1,1), w by (0,0). lhs [1,3,3,1],
+        // rhs [2,2,1,1], stride 1 -> out_h = (3+2-2)/1+1 = 4, out_w = (3-2)/1+1 = 2.
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![1, 3, 3, 1],
+                },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 2, 1, 1],
+                },
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "EXPLICIT:1,1,0,0".to_owned());
+        params.insert("strides".to_owned(), "1,1".to_owned());
+
+        let out = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect("2D explicit padding should succeed");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(aval.shape.dims, vec![1, 4, 2, 1]);
+    }
+
+    #[test]
+    fn test_infer_conv_1d_explicit_padding_rejects_wrong_rank() {
+        // A 1D conv needs exactly one (low, high) pair; two pairs must be rejected.
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![1, 4, 1],
+                },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 1, 1],
+                },
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "EXPLICIT:1,1,2,2".to_owned());
+        params.insert("strides".to_owned(), "1".to_owned());
+
+        ctx.process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect_err("explicit padding with 2 pairs must be rejected for 1D conv");
     }
 
     #[test]
