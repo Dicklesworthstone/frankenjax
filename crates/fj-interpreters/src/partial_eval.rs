@@ -764,13 +764,21 @@ fn parse_required_u32_list_param(
             primitive: eqn.primitive,
             detail: format!("missing required param '{key}'"),
         })?;
+    parse_u32_list_param(eqn.primitive, key, raw)
+}
+
+fn parse_u32_list_param(
+    primitive: Primitive,
+    key: &str,
+    raw: &str,
+) -> Result<Vec<u32>, PartialEvalError> {
     raw.split(',')
         .map(str::trim)
         .map(|piece| {
             piece
                 .parse::<u32>()
                 .map_err(|_| PartialEvalError::ShapeInference {
-                    primitive: eqn.primitive,
+                    primitive,
                     detail: format!("invalid u32 in param '{key}': '{piece}'"),
                 })
         })
@@ -853,6 +861,61 @@ fn infer_broadcast_in_dim_shape(
     }
 
     Ok(Shape { dims: target_dims })
+}
+
+fn infer_slice_shape(eqn: &Equation, input: &AbstractValue) -> Result<Shape, PartialEvalError> {
+    let rank = input.shape.rank();
+    let starts = parse_required_u32_list_param(eqn, "start_indices")?;
+    let limits = parse_required_u32_list_param(eqn, "limit_indices")?;
+    let strides = match eqn.params.get("strides") {
+        Some(raw) => parse_u32_list_param(eqn.primitive, "strides", raw)?,
+        None => vec![1; rank],
+    };
+
+    if starts.len() != rank || limits.len() != rank {
+        return Err(PartialEvalError::ShapeInference {
+            primitive: eqn.primitive,
+            detail: format!(
+                "slice start/limit rank mismatch starts={} limits={} rank={rank}",
+                starts.len(),
+                limits.len(),
+            ),
+        });
+    }
+    if strides.len() != rank {
+        return Err(PartialEvalError::ShapeInference {
+            primitive: eqn.primitive,
+            detail: format!(
+                "slice strides rank mismatch strides={} rank={rank}",
+                strides.len()
+            ),
+        });
+    }
+
+    let mut dims = Vec::with_capacity(rank);
+    for axis in 0..rank {
+        let start = starts[axis];
+        let limit = limits[axis];
+        let stride = strides[axis];
+        let bound = input.shape.dims[axis];
+        if stride == 0 {
+            return Err(PartialEvalError::ShapeInference {
+                primitive: eqn.primitive,
+                detail: format!("slice stride on axis {axis} must be positive"),
+            });
+        }
+        if start > limit || limit > bound {
+            return Err(PartialEvalError::ShapeInference {
+                primitive: eqn.primitive,
+                detail: format!(
+                    "invalid slice bounds axis {axis}: start={start} limit={limit} bound={bound}"
+                ),
+            });
+        }
+        dims.push((limit - start).div_ceil(stride));
+    }
+
+    Ok(Shape { dims })
 }
 
 /// Complex(re, im): dtype (F32,F32)→Complex64 else Complex128; shape = broadcast.
@@ -1096,28 +1159,7 @@ fn infer_equation_output_aval(
         }
         // Slice: shape = limit_indices - start_indices
         Slice => {
-            let shape = match (
-                eqn.params.get("start_indices"),
-                eqn.params.get("limit_indices"),
-            ) {
-                (Some(starts), Some(limits)) => {
-                    let start_vals: Vec<u32> = starts
-                        .split(',')
-                        .filter_map(|s| s.trim().parse::<u32>().ok())
-                        .collect();
-                    let limit_vals: Vec<u32> = limits
-                        .split(',')
-                        .filter_map(|s| s.trim().parse::<u32>().ok())
-                        .collect();
-                    let dims: Vec<u32> = start_vals
-                        .iter()
-                        .zip(limit_vals.iter())
-                        .map(|(&s, &l)| l.saturating_sub(s))
-                        .collect();
-                    Shape { dims }
-                }
-                _ => first_input.shape.clone(),
-            };
+            let shape = infer_slice_shape(eqn, first_input)?;
             AbstractValue {
                 dtype: first_input.dtype,
                 shape,
@@ -5158,6 +5200,72 @@ mod tests {
                 ..
             }
         ));
+
+        // Slice fallback honors strides and rejects malformed params instead of
+        // dropping bad tokens or keeping the input shape.
+        let out = infer_equation_output_aval(
+            &eqn(
+                Primitive::Slice,
+                &[
+                    ("start_indices", "1"),
+                    ("limit_indices", "8"),
+                    ("strides", "2"),
+                ],
+            ),
+            &av(&[10], DType::F64),
+        )
+        .unwrap();
+        assert_eq!(out.shape.dims, vec![4]);
+
+        for (label, params, input, expected_detail) in [
+            (
+                "bad slice start token",
+                &[("start_indices", "0,bad"), ("limit_indices", "2,3")][..],
+                av(&[4, 6], DType::F64),
+                "invalid u32 in param 'start_indices'",
+            ),
+            (
+                "missing slice limits",
+                &[("start_indices", "0")][..],
+                av(&[4], DType::F64),
+                "missing required param 'limit_indices'",
+            ),
+            (
+                "slice rank mismatch",
+                &[("start_indices", "0"), ("limit_indices", "2,3")][..],
+                av(&[4, 6], DType::F64),
+                "slice start/limit rank mismatch",
+            ),
+            (
+                "zero slice stride",
+                &[
+                    ("start_indices", "0"),
+                    ("limit_indices", "3"),
+                    ("strides", "0"),
+                ][..],
+                av(&[4], DType::F64),
+                "slice stride on axis 0 must be positive",
+            ),
+            (
+                "slice limit before start",
+                &[("start_indices", "3"), ("limit_indices", "2")][..],
+                av(&[4], DType::F64),
+                "invalid slice bounds axis 0",
+            ),
+        ] {
+            let err = infer_equation_output_aval(&eqn(Primitive::Slice, params), &input)
+                .unwrap_err();
+            match err {
+                PartialEvalError::ShapeInference { primitive, detail } => {
+                    assert_eq!(primitive, Primitive::Slice, "{label}");
+                    assert!(
+                        detail.contains(expected_detail),
+                        "{label}: unexpected detail: {detail}"
+                    );
+                }
+                other => panic!("{label}: unexpected error: {other}"),
+            }
+        }
 
         // OneHot [2] num_classes=5 default axis -> [2,5] dtype F64 (catch-all kept
         // the [2] index shape and its dtype).
