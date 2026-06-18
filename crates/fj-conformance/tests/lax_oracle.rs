@@ -1356,6 +1356,34 @@ fn oracle_inverse_hyperbolic_reject_integer_operands() {
 }
 
 #[test]
+fn oracle_float_only_special_unops_reject_integer_operands() {
+    // is_jax_float_only_unary members (beyond floor/ceil/round, covered by rsxjp) that
+    // route through eval_unary_elementwise_parallel -> the serial guard: erf/erfc/cbrt/
+    // lgamma/digamma reject integer operands per JAX standard_unop(_float). Floats eval.
+    let int_scalar = Value::scalar_i64(1);
+    for primitive in [
+        Primitive::Erf,
+        Primitive::Erfc,
+        Primitive::Cbrt,
+        Primitive::Lgamma,
+        Primitive::Digamma,
+    ] {
+        let err = eval_primitive(primitive, std::slice::from_ref(&int_scalar), &no_params())
+            .expect_err("float-only special unop must reject integer operands");
+        assert!(
+            matches!(
+                &err,
+                EvalError::TypeMismatch { primitive: got, detail }
+                    if *got == primitive && detail.contains("floating")
+            ),
+            "{primitive:?} integer input returned unexpected error: {err:?}"
+        );
+        eval_primitive(primitive, &[Value::scalar_f64(1.5)], &no_params())
+            .unwrap_or_else(|e| panic!("{primitive:?} float operand should evaluate: {e:?}"));
+    }
+}
+
+#[test]
 fn oracle_atan2() {
     // atan2(0, 1) = 0, atan2(1, 0) = pi/2, atan2(1, 1) = pi/4
     assert_f64_close(
