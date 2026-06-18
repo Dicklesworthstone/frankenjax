@@ -8660,11 +8660,12 @@ fn reject_unsupported_conv_params(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum ConvPadding {
     Valid,
     Same,
     SameLower,
+    Explicit(Vec<(usize, usize)>),
 }
 
 fn parse_conv_padding(
@@ -8682,11 +8683,67 @@ fn parse_conv_padding(
     } else if trimmed.eq_ignore_ascii_case("SAME_LOWER") {
         Ok(ConvPadding::SameLower)
     } else {
-        Err(EvalError::Unsupported {
+        parse_conv_explicit_padding(primitive, raw).map(ConvPadding::Explicit)
+    }
+}
+
+fn parse_conv_explicit_padding(
+    primitive: Primitive,
+    raw: &str,
+) -> Result<Vec<(usize, usize)>, EvalError> {
+    let trimmed = raw
+        .trim()
+        .strip_prefix("EXPLICIT:")
+        .or_else(|| raw.trim().strip_prefix("explicit:"))
+        .unwrap_or(raw.trim());
+    let numbers: Result<Vec<isize>, _> = trimmed
+        .split(|ch: char| !(ch.is_ascii_digit() || ch == '-'))
+        .filter(|part| !part.is_empty())
+        .map(str::parse::<isize>)
+        .collect();
+    let numbers = numbers.map_err(|_| EvalError::Unsupported {
+        primitive,
+        detail: format!("unsupported conv padding mode {raw:?}"),
+    })?;
+    if numbers.is_empty() || !numbers.len().is_multiple_of(2) {
+        return Err(EvalError::Unsupported {
             primitive,
             detail: format!("unsupported conv padding mode {raw:?}"),
-        })
+        });
     }
+
+    let mut pairs = Vec::with_capacity(numbers.len() / 2);
+    for pair in numbers.chunks_exact(2) {
+        let low = usize::try_from(pair[0]).map_err(|_| EvalError::Unsupported {
+            primitive,
+            detail: format!("conv explicit padding must be non-negative: {raw:?}"),
+        })?;
+        let high = usize::try_from(pair[1]).map_err(|_| EvalError::Unsupported {
+            primitive,
+            detail: format!("conv explicit padding must be non-negative: {raw:?}"),
+        })?;
+        pairs.push((low, high));
+    }
+    Ok(pairs)
+}
+
+fn validate_conv_padding_rank(
+    primitive: Primitive,
+    padding: &ConvPadding,
+    spatial_rank: usize,
+) -> Result<(), EvalError> {
+    if let ConvPadding::Explicit(pairs) = padding
+        && pairs.len() != spatial_rank
+    {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "conv explicit padding rank {} does not match spatial rank {spatial_rank}",
+                pairs.len()
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn conv_float_literal_from_f64(dtype: DType, value: f64) -> Literal {
@@ -9250,26 +9307,10 @@ fn eval_conv_1d(
     // geometry) and tap `k` reads input position `w*stride + k*d - pad`.
     let dil = parse_conv_1d_dilation(primitive, params)?;
     let eff_kernel_w = (kernel_w - 1) * dil + 1;
+    validate_conv_padding_rank(primitive, &padding, 1)?;
 
-    let (out_w, pad_left) = if width == 0 {
-        // Empty input produces empty output with no padding
-        (0, 0)
-    } else {
-        match padding {
-            ConvPadding::Same | ConvPadding::SameLower => {
-                let out_w = width.div_ceil(stride);
-                // out_w >= 1 since width >= 1 and stride >= 1
-                let pad_total = ((out_w - 1) * stride + eff_kernel_w).saturating_sub(width);
-                let pad_low = if padding == ConvPadding::SameLower {
-                    pad_total.div_ceil(2)
-                } else {
-                    pad_total / 2
-                };
-                (out_w, pad_low)
-            }
-            ConvPadding::Valid => (conv_valid_output_dim(width, eff_kernel_w, stride), 0),
-        }
-    };
+    let (out_w, pad_left) =
+        compute_output_and_pad(primitive, width, eff_kernel_w, stride, &padding, 0)?;
 
     // Grouped/depthwise 1D conv (G>1): each group is an independent conv over its own
     // Cin/G input and Cout/G output channels. Dedicated direct path; the G==1 fast
@@ -10176,8 +10217,11 @@ fn eval_conv_2d(
     let eff_kernel_h = (kernel_h - 1) * dil_h + 1;
     let eff_kernel_w = (kernel_w - 1) * dil_w + 1;
 
-    let (out_h, pad_top) = compute_output_and_pad(height, eff_kernel_h, stride_h, padding);
-    let (out_w, pad_left) = compute_output_and_pad(width, eff_kernel_w, stride_w, padding);
+    validate_conv_padding_rank(primitive, &padding, 2)?;
+    let (out_h, pad_top) =
+        compute_output_and_pad(primitive, height, eff_kernel_h, stride_h, &padding, 0)?;
+    let (out_w, pad_left) =
+        compute_output_and_pad(primitive, width, eff_kernel_w, stride_w, &padding, 1)?;
 
     // Grouped/depthwise conv (G>1): each group is an independent conv over its own
     // Cin/G input channels and Cout/G output channels. Routed to a dedicated direct
@@ -10702,28 +10746,44 @@ fn parse_conv_group_count(
 }
 
 fn compute_output_and_pad(
+    primitive: Primitive,
     input_size: usize,
     kernel_size: usize,
     stride: usize,
-    padding: ConvPadding,
-) -> (usize, usize) {
-    // Empty input produces empty output with no padding
-    if input_size == 0 {
-        return (0, 0);
-    }
+    padding: &ConvPadding,
+    spatial_axis: usize,
+) -> Result<(usize, usize), EvalError> {
     match padding {
+        ConvPadding::Explicit(pairs) => {
+            let &(pad_low, pad_high) = pairs.get(spatial_axis).ok_or_else(|| {
+                EvalError::Unsupported {
+                    primitive,
+                    detail: format!("conv explicit padding missing axis {spatial_axis}"),
+                }
+            })?;
+            let padded = input_size
+                .checked_add(pad_low)
+                .and_then(|value| value.checked_add(pad_high))
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "conv explicit padded input size overflow".to_owned(),
+                })?;
+            Ok((conv_valid_output_dim(padded, kernel_size, stride), pad_low))
+        }
+        // Empty input produces empty output with no implicit padding.
+        _ if input_size == 0 => Ok((0, 0)),
         ConvPadding::Same | ConvPadding::SameLower => {
             let out = input_size.div_ceil(stride);
             // out >= 1 since input_size >= 1 and stride >= 1
             let pad_total = ((out - 1) * stride + kernel_size).saturating_sub(input_size);
-            let pad_low = if padding == ConvPadding::SameLower {
+            let pad_low = if matches!(padding, ConvPadding::SameLower) {
                 pad_total.div_ceil(2)
             } else {
                 pad_total / 2
             };
-            (out, pad_low)
+            Ok((out, pad_low))
         }
-        ConvPadding::Valid => (conv_valid_output_dim(input_size, kernel_size, stride), 0),
+        ConvPadding::Valid => Ok((conv_valid_output_dim(input_size, kernel_size, stride), 0)),
     }
 }
 
@@ -13080,6 +13140,60 @@ mod tests {
                 "1D grouped conv G={g} must match direct reference"
             );
         }
+    }
+
+    #[test]
+    fn conv_1d_explicit_padding_asymmetric() {
+        let lhs = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![1, 3, 1] }, vec![1.0, 2.0, 3.0])
+                .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![2, 1, 1] }, vec![1.0, 1.0])
+                .unwrap(),
+        );
+
+        let out = eval_conv(
+            Primitive::Conv,
+            &[lhs, rhs],
+            &params(&[("padding", "1,0"), ("strides", "1")]),
+        )
+        .unwrap();
+
+        assert_eq!(out.as_tensor().unwrap().shape.dims, vec![1, 3, 1]);
+        assert_eq!(extract_f64_vec(&out), vec![1.0, 3.0, 5.0]);
+    }
+
+    #[test]
+    fn conv_2d_explicit_padding_pair_list() {
+        let lhs = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![1, 2, 2, 1],
+                },
+                vec![1.0, 2.0, 3.0, 4.0],
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![2, 2, 1, 1],
+                },
+                vec![1.0, 1.0, 1.0, 1.0],
+            )
+            .unwrap(),
+        );
+
+        let out = eval_conv(
+            Primitive::Conv,
+            &[lhs, rhs],
+            &params(&[("padding", "[(1,0),(0,1)]"), ("strides", "1,1")]),
+        )
+        .unwrap();
+
+        assert_eq!(out.as_tensor().unwrap().shape.dims, vec![1, 2, 2, 1]);
+        assert_eq!(extract_f64_vec(&out), vec![3.0, 2.0, 10.0, 6.0]);
     }
 
     /// f32 conv2d now emits DENSE f32 storage so the output feeds downstream f32
