@@ -2172,3 +2172,42 @@ fn broadcast_in_dim_jvp_broadcasts_the_tangent() {
         "broadcast_in_dim JVP broadcasts the tangent"
     );
 }
+
+#[test]
+fn expand_dims_jvp_expands_the_tangent() {
+    // expand_dims is linear: its JVP inserts the size-1 axis into the tangent (values
+    // unchanged). input [3] -> [1,3].
+    let mut params = BTreeMap::new();
+    params.insert("axis".to_string(), "0".to_string());
+    let jaxpr = make_single_input_jaxpr(Primitive::ExpandDims, params);
+    let r = fj_ad::jvp(
+        &jaxpr,
+        &[make_f64_vector(&[1.0, 2.0, 3.0])],
+        &[make_f64_vector(&[10.0, 20.0, 30.0])],
+    )
+    .unwrap();
+    assert_eq!(
+        extract_f64_vec(&r.tangents[0]),
+        vec![10.0, 20.0, 30.0],
+        "expand_dims JVP inserts the axis into the tangent"
+    );
+}
+
+#[test]
+fn squeeze_jvp_squeezes_the_tangent() {
+    // squeeze is linear: its JVP removes the size-1 axis from the tangent. input [1,3] -> [3].
+    let mut params = BTreeMap::new();
+    params.insert("dimensions".to_string(), "0".to_string());
+    let jaxpr = make_single_input_jaxpr(Primitive::Squeeze, params);
+    let r = fj_ad::jvp(
+        &jaxpr,
+        &[make_f64_matrix(1, 3, &[1.0, 2.0, 3.0])],
+        &[make_f64_matrix(1, 3, &[10.0, 20.0, 30.0])],
+    )
+    .unwrap();
+    assert_eq!(
+        extract_f64_vec(&r.tangents[0]),
+        vec![10.0, 20.0, 30.0],
+        "squeeze JVP removes the axis from the tangent"
+    );
+}
