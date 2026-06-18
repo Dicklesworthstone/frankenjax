@@ -5749,6 +5749,47 @@ mod tests {
         .unwrap();
         assert_eq!(out.shape.dims, vec![5, 2]);
 
+        // expand_dims / one_hot / tile fallbacks fail closed on malformed params (eqsll):
+        // the old inline arms defaulted (unwrap_or), clamped, or silent-dropped instead.
+        for (prim, label, params, input, expected) in [
+            (
+                Primitive::ExpandDims,
+                "expand_dims out-of-range axis",
+                &[("axis", "5")][..],
+                av(&[2, 3], DType::F64),
+                "out of range",
+            ),
+            (
+                Primitive::OneHot,
+                "one_hot missing num_classes",
+                &[][..],
+                av(&[2], DType::I64),
+                "num_classes",
+            ),
+            (
+                Primitive::OneHot,
+                "one_hot out-of-range axis",
+                &[("num_classes", "3"), ("axis", "5")][..],
+                av(&[2], DType::I64),
+                "out of range",
+            ),
+            (
+                Primitive::Tile,
+                "tile bad reps token",
+                &[("reps", "2,bad")][..],
+                av(&[2, 3], DType::F64),
+                "invalid tile reps token",
+            ),
+        ] {
+            match infer_equation_output_aval(&eqn(prim, params), &input).unwrap_err() {
+                PartialEvalError::ShapeInference { primitive, detail } => {
+                    assert_eq!(primitive, prim, "{label}");
+                    assert!(detail.contains(expected), "{label}: unexpected detail: {detail}");
+                }
+                other => panic!("{label}: unexpected error: {other}"),
+            }
+        }
+
         for (label, params, input, expected_detail) in [
             (
                 "bad broadcast shape token",
