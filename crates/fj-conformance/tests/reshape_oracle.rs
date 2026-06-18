@@ -813,3 +813,46 @@ fn property_reshape_preserves_complex_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+#[test]
+fn property_reshape_inferred_dim_preserves_complex_dtypes() -> Result<(), String> {
+    fn check_inferred_reshape(dtype: DType, elements: Vec<Literal>) -> Result<(), String> {
+        let input = Value::Tensor(
+            TensorValue::new(dtype, Shape { dims: vec![6] }, elements)
+                .map_err(|err| err.to_string())?,
+        );
+        let result = eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[-1, 3]))
+            .map_err(|err| err.to_string())?;
+        let Some(tensor) = result.as_tensor() else {
+            return Err(format!("reshape {dtype:?}: expected tensor"));
+        };
+
+        assert_eq!(tensor.shape.dims, vec![2, 3], "reshape {dtype:?}: shape");
+        assert_eq!(tensor.dtype, dtype, "reshape {dtype:?}: dtype mismatch");
+        tensor
+            .validate_dtype_consistency()
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    let cases = vec![
+        (
+            DType::Complex64,
+            (1..=6)
+                .map(|i| Literal::from_complex64(i as f32, -(i as f32)))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            DType::Complex128,
+            (1..=6)
+                .map(|i| Literal::from_complex128(i as f64, -(i as f64)))
+                .collect::<Vec<_>>(),
+        ),
+    ];
+
+    for (dtype, elements) in cases {
+        check_inferred_reshape(dtype, elements)?;
+    }
+
+    Ok(())
+}
