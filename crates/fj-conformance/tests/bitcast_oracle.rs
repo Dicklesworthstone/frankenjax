@@ -262,6 +262,27 @@ fn oracle_bitcast_f32_to_u32_zero() {
 }
 
 #[test]
+fn oracle_bitcast_f32_to_u32_preserves_special_value_bits() {
+    // bitcast is a pure bit reinterpretation: f32 NaN / +-inf / -0.0 map to their
+    // exact IEEE bit patterns as u32 (XLA bitcast_convert, no canonicalization).
+    // Reference is Rust f32::to_bits (the same bit-level reinterpretation).
+    let vals = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.0_f32];
+    let input = make_f32_tensor(&[4], vals.to_vec());
+    let result = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("u32"),
+    )
+    .unwrap();
+    let got = extract_u32_vec(&result);
+    let expected: Vec<u32> = vals.iter().map(|&x| x.to_bits()).collect();
+    assert_eq!(
+        got, expected,
+        "bitcast f32->u32 must preserve exact special-value bits (no canonicalization)"
+    );
+}
+
+#[test]
 fn oracle_bitcast_f32_to_u32_one() {
     let input = make_f32_tensor(&[1], vec![1.0_f32]);
     let result = eval_primitive(
