@@ -876,8 +876,8 @@ mod tests {
     fn cache_manager_file_backed_survives_reopen() {
         use super::{CacheLookup, CacheManager};
 
-        let dir = std::env::temp_dir().join("fj-cache-mgr-persist-test");
-        let _ = std::fs::create_dir_all(&dir);
+        let dir =
+            std::env::temp_dir().join(format!("fj-cache-mgr-persist-test-{}", std::process::id()));
 
         let key = build_cache_key(&CacheKeyInput {
             mode: CompatibilityMode::Hardened,
@@ -1120,8 +1120,10 @@ mod tests {
     fn cache_manager_file_backed_failed_write_stays_miss() {
         use super::{CacheLookup, CacheManager};
 
-        let missing_dir =
-            std::env::temp_dir().join(format!("fj-cache-missing-write-dir-{}", std::process::id()));
+        let parent_file =
+            std::env::temp_dir().join(format!("fj-cache-missing-write-file-{}", std::process::id()));
+        std::fs::write(&parent_file, b"not a directory").expect("parent marker should write");
+        let missing_dir = parent_file.join("cache");
         let key = build_cache_key(&baseline_input()).unwrap();
 
         let mut manager = CacheManager::file_backed(missing_dir);
@@ -1131,6 +1133,8 @@ mod tests {
             CacheLookup::Miss,
             "failed file cache writes must not become readable stale hits"
         );
+
+        let _ = std::fs::remove_file(&parent_file);
     }
 
     #[test]

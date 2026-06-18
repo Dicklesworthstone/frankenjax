@@ -187,9 +187,12 @@ pub struct FileCache {
 impl FileCache {
     /// Create a new `FileCache` rooted at the given directory.
     ///
-    /// Does not create the directory — callers must ensure it exists.
+    /// Best-effort creates the directory. If creation fails, later `put`,
+    /// `get`, `stats`, and `clear` calls preserve their existing fail-closed
+    /// behavior and failure counters.
     #[must_use]
     pub fn new(cache_dir: PathBuf) -> Self {
+        let _ = std::fs::create_dir_all(&cache_dir);
         Self {
             cache_dir,
             put_failures: AtomicU64::new(0),
@@ -445,7 +448,6 @@ mod tests {
     #[test]
     fn file_cache_round_trip() {
         let dir = std::env::temp_dir().join("fj-cache-test-file-backend");
-        let _ = std::fs::create_dir_all(&dir);
 
         let mut cache = FileCache::new(dir.clone());
         let key = test_key("deadbeef");
@@ -512,13 +514,15 @@ mod tests {
 
     #[test]
     fn file_cache_put_failure_counter_increments_when_dir_missing() {
-        // Point the cache at a path whose parent directory does not exist.
-        // std::fs::write will fail with NotFound, exercising the
-        // temp-write-failure branch of put().
-        let dir = std::env::temp_dir().join(format!(
-            "fj-cache-test-missing-parent-{}/never_created",
+        // Point the cache under a regular file. FileCache::new now creates
+        // normal missing directories, but this path still cannot become a
+        // directory, so std::fs::write exercises the put() failure branch.
+        let parent_file = std::env::temp_dir().join(format!(
+            "fj-cache-test-file-parent-{}",
             std::process::id()
         ));
+        std::fs::write(&parent_file, b"not a directory").expect("parent marker should write");
+        let dir = parent_file.join("never_created");
 
         let mut cache = FileCache::new(dir.clone());
         assert_eq!(cache.put_failure_count(), 0);
@@ -541,6 +545,8 @@ mod tests {
         // A second failing put bumps the counter again.
         cache.put(&key, test_artifact(b"still failing"));
         assert_eq!(cache.put_failure_count(), 2);
+
+        let _ = std::fs::remove_file(&parent_file);
     }
 
     #[test]
