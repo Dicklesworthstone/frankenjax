@@ -1384,6 +1384,33 @@ fn oracle_float_only_special_unops_reject_integer_operands() {
 }
 
 #[test]
+fn oracle_bessel_erfinv_reject_integer_operands() {
+    // Remaining is_jax_float_only_unary members with dedicated eval fns: bessel_i0e/i1e
+    // and erf_inv all route through eval_unary_elementwise_parallel -> the serial guard,
+    // so integer operands fail closed per JAX standard_unop(_float). (erf_inv valid on
+    // (-1, 1); bessel on all reals — 0.5 works for all.)
+    let int_scalar = Value::scalar_i64(1);
+    for primitive in [
+        Primitive::BesselI0e,
+        Primitive::BesselI1e,
+        Primitive::ErfInv,
+    ] {
+        let err = eval_primitive(primitive, std::slice::from_ref(&int_scalar), &no_params())
+            .expect_err("float-only unop must reject integer operands");
+        assert!(
+            matches!(
+                &err,
+                EvalError::TypeMismatch { primitive: got, detail }
+                    if *got == primitive && detail.contains("floating")
+            ),
+            "{primitive:?} integer input returned unexpected error: {err:?}"
+        );
+        eval_primitive(primitive, &[Value::scalar_f64(0.5)], &no_params())
+            .unwrap_or_else(|e| panic!("{primitive:?} float operand should evaluate: {e:?}"));
+    }
+}
+
+#[test]
 fn oracle_atan2() {
     // atan2(0, 1) = 0, atan2(1, 0) = pi/2, atan2(1, 1) = pi/4
     assert_f64_close(
