@@ -304,6 +304,17 @@ fn select_n_boolean_with_single_case_false() {
 }
 
 #[test]
+fn select_n_boolean_with_single_case_true_rejected() {
+    let err = select_n(vec![Value::scalar_bool(true), Value::scalar_f64(42.0)])
+        .expect_err("boolean true with single case should fail");
+
+    assert!(
+        err.to_string().contains("out of bounds"),
+        "unexpected boolean-true-single-case error: {err}"
+    );
+}
+
+#[test]
 fn select_n_boolean_with_three_cases_rejected() {
     let err = select_n(vec![
         Value::scalar_bool(true),
