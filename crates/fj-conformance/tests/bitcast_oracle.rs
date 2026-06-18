@@ -3,6 +3,7 @@
 //! Tests against expected behavior for bitwise reinterpretation:
 //! - Reinterprets bit pattern as a different dtype of same width
 //! - i64 <-> f64, i32 <-> f32, etc.
+//! - Narrows/widens element widths by appending/removing a trailing dimension
 
 #![allow(dead_code, clippy::approx_constant)]
 
@@ -119,6 +120,14 @@ fn bitcast_params(new_dtype: &str) -> BTreeMap<String, String> {
     let mut p = BTreeMap::new();
     p.insert("new_dtype".to_string(), new_dtype.to_string());
     p
+}
+
+fn f64_to_u32_chunks(value: f64) -> [u32; 2] {
+    let bytes = value.to_bits().to_le_bytes();
+    [
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+    ]
 }
 
 // ======================== i64 <-> f64 Tests ========================
@@ -244,6 +253,72 @@ fn oracle_bitcast_f64_to_i64_1d() {
     assert_eq!(vals[0], 0.0_f64.to_bits() as i64);
     assert_eq!(vals[1], 1.0_f64.to_bits() as i64);
     assert_eq!(vals[2], (-1.0_f64).to_bits() as i64);
+}
+
+#[test]
+fn oracle_bitcast_f64_to_u32_appends_trailing_dim() {
+    let values = [1.25_f64, -0.0_f64];
+    let input = make_f64_tensor(&[2], values.to_vec());
+    let result = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("u32"),
+    )
+    .unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let expected: Vec<u32> = values
+        .iter()
+        .flat_map(|&value| f64_to_u32_chunks(value))
+        .collect();
+    assert_eq!(
+        extract_u32_vec(&result),
+        expected,
+        "f64->u32 narrowing must split each little-endian element into two trailing chunks"
+    );
+}
+
+#[test]
+fn oracle_bitcast_u32_to_f64_removes_trailing_dim() {
+    let values = [1.25_f64, -0.0_f64];
+    let chunks: Vec<u32> = values
+        .iter()
+        .flat_map(|&value| f64_to_u32_chunks(value))
+        .collect();
+    let input = make_u32_tensor(&[2, 2], chunks);
+    let result = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("f64"),
+    )
+    .unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2]);
+    let got_bits: Vec<u64> = extract_f64_vec(&result)
+        .iter()
+        .map(|value| value.to_bits())
+        .collect();
+    let expected_bits: Vec<u64> = values.iter().map(|value| value.to_bits()).collect();
+    assert_eq!(
+        got_bits, expected_bits,
+        "u32->f64 widening must consume the trailing dimension without changing bits"
+    );
+}
+
+#[test]
+fn oracle_bitcast_u32_to_f64_rejects_wrong_trailing_dim() {
+    let input = make_u32_tensor(&[3], vec![1, 2, 3]);
+    let err = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("f64"),
+    )
+    .expect_err("u32->f64 widening requires trailing dimension size 2");
+    let detail = format!("{err:?}");
+    assert!(
+        detail.contains("trailing dimension size 2"),
+        "unexpected error: {detail}"
+    );
 }
 
 // ======================== u32 <-> f32 Tests ========================

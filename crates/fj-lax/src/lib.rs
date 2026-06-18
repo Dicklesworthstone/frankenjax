@@ -17617,16 +17617,68 @@ mod tests {
     }
 
     #[test]
-    fn test_bitcast_rejects_mismatched_bit_widths() {
+    fn test_bitcast_narrowing_appends_trailing_dimension() {
         let input = Value::scalar_f64(1.25);
         let mut params = BTreeMap::new();
         params.insert("new_dtype".to_owned(), "u32".to_owned());
-        let err = eval_primitive(Primitive::BitcastConvertType, &[input], &params)
-            .expect_err("bitcast with mismatched widths should fail");
-        assert!(
-            matches!(err, EvalError::Unsupported { .. }),
-            "expected unsupported error, got {err:?}"
+        let out = eval_primitive(Primitive::BitcastConvertType, &[input], &params)
+            .expect("f64 -> u32 bitcast should split into two trailing elements");
+        let tensor = out.as_tensor().expect("narrowing should produce a tensor");
+        assert_eq!(tensor.dtype, DType::U32);
+        assert_eq!(tensor.shape.dims, vec![2]);
+
+        let bytes = 1.25_f64.to_bits().to_le_bytes();
+        assert_eq!(
+            tensor.elements,
+            vec![
+                Literal::U32(u32::from_le_bytes([
+                    bytes[0], bytes[1], bytes[2], bytes[3],
+                ])),
+                Literal::U32(u32::from_le_bytes([
+                    bytes[4], bytes[5], bytes[6], bytes[7],
+                ])),
+            ]
         );
+    }
+
+    #[test]
+    fn test_bitcast_widening_removes_trailing_dimension() {
+        let bytes = 1.25_f64.to_bits().to_le_bytes();
+        let input = Value::Tensor(
+            TensorValue::new_u32_values(
+                Shape { dims: vec![2] },
+                vec![
+                    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+                    u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("new_dtype".to_owned(), "f64".to_owned());
+        let out = eval_primitive(Primitive::BitcastConvertType, &[input], &params)
+            .expect("u32 -> f64 bitcast should consume the trailing dimension");
+        let tensor = out.as_tensor().expect("tensor input stays tensor output");
+        assert_eq!(tensor.dtype, DType::F64);
+        assert_eq!(tensor.shape.dims, Vec::<u32>::new());
+        assert_eq!(tensor.elements, vec![Literal::from_f64(1.25)]);
+    }
+
+    #[test]
+    fn test_bitcast_widening_rejects_wrong_trailing_dimension() {
+        let input = Value::Tensor(
+            TensorValue::new_u32_values(Shape { dims: vec![3] }, vec![1, 2, 3]).unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("new_dtype".to_owned(), "f64".to_owned());
+        let err = eval_primitive(Primitive::BitcastConvertType, &[input], &params)
+            .expect_err("u32 -> f64 requires a trailing dimension of size two");
+        match err {
+            EvalError::Unsupported { detail, .. } => {
+                assert!(detail.contains("trailing dimension size 2"));
+            }
+            other => panic!("expected unsupported error, got {other:?}"),
+        }
     }
 
     #[test]

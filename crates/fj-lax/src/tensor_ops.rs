@@ -3996,8 +3996,10 @@ pub(crate) fn eval_copy(inputs: &[Value]) -> Result<Value, EvalError> {
 /// Params:
 /// - `new_dtype`: destination dtype string (e.g. `i32`, `f32`, `i64`, `f64`)
 ///
-/// Constraint:
-/// - Source and destination element widths must match.
+/// Shape rule:
+/// - Equal element width preserves shape.
+/// - Narrowing appends a trailing dimension with the byte-width ratio.
+/// - Widening consumes a trailing dimension whose size is the byte-width ratio.
 // Dense bool-source convert: a Bool mask -> numeric/bool target without the
 // per-Literal path, and — for a BoolWords (bit-packed) source — without first
 // materializing the whole mask as Vec<Literal::Bool> (materialize_bool_words).
@@ -4635,35 +4637,117 @@ pub(crate) fn eval_bitcast_convert_type(
 
     let target_dtype = parse_dtype_param(primitive, "new_dtype", params)?;
     let source_dtype = inputs[0].dtype();
-
-    if dtype_bit_width(source_dtype) != dtype_bit_width(target_dtype) {
-        return Err(EvalError::Unsupported {
-            primitive,
-            detail: format!(
-                "bitcast requires equal element widths: source={source_dtype:?}({} bits) target={target_dtype:?}({} bits)",
-                dtype_bit_width(source_dtype),
-                dtype_bit_width(target_dtype)
-            ),
-        });
-    }
+    let source_bytes = (dtype_bit_width(source_dtype) / 8) as usize;
+    let target_bytes = (dtype_bit_width(target_dtype) / 8) as usize;
 
     match &inputs[0] {
         Value::Scalar(literal) => {
             let raw = literal_to_bytes(primitive, source_dtype, *literal)?;
-            let converted = bytes_to_literal(primitive, target_dtype, &raw)?;
-            Ok(Value::Scalar(converted))
+            match source_bytes.cmp(&target_bytes) {
+                std::cmp::Ordering::Equal => {
+                    let converted = bytes_to_literal(primitive, target_dtype, &raw)?;
+                    Ok(Value::Scalar(converted))
+                }
+                std::cmp::Ordering::Greater => {
+                    let ratio = source_bytes / target_bytes;
+                    let mut out = Vec::with_capacity(ratio);
+                    for chunk in raw.chunks_exact(target_bytes) {
+                        out.push(bytes_to_literal(primitive, target_dtype, chunk)?);
+                    }
+                    Ok(Value::Tensor(TensorValue::new(
+                        target_dtype,
+                        Shape {
+                            dims: vec![ratio as u32],
+                        },
+                        out,
+                    )?))
+                }
+                std::cmp::Ordering::Less => Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!(
+                        "bitcast widening requires trailing dimension size {} for source={source_dtype:?} target={target_dtype:?}",
+                        target_bytes / source_bytes
+                    ),
+                }),
+            }
         }
         Value::Tensor(tensor) => {
-            let mut out = Vec::with_capacity(tensor.elements.len());
-            for literal in &tensor.elements {
-                let raw = literal_to_bytes(primitive, source_dtype, *literal)?;
-                out.push(bytes_to_literal(primitive, target_dtype, &raw)?);
+            match source_bytes.cmp(&target_bytes) {
+                std::cmp::Ordering::Equal => {
+                    let mut out = Vec::with_capacity(tensor.elements.len());
+                    for literal in &tensor.elements {
+                        let raw = literal_to_bytes(primitive, source_dtype, *literal)?;
+                        out.push(bytes_to_literal(primitive, target_dtype, &raw)?);
+                    }
+                    Ok(Value::Tensor(TensorValue::new(
+                        target_dtype,
+                        tensor.shape.clone(),
+                        out,
+                    )?))
+                }
+                std::cmp::Ordering::Greater => {
+                    let ratio = source_bytes / target_bytes;
+                    let out_len = tensor.elements.len().checked_mul(ratio).ok_or_else(|| {
+                        EvalError::Unsupported {
+                            primitive,
+                            detail: "bitcast narrowing output size overflow".to_owned(),
+                        }
+                    })?;
+                    let mut out = Vec::with_capacity(out_len);
+                    for literal in &tensor.elements {
+                        let raw = literal_to_bytes(primitive, source_dtype, *literal)?;
+                        for chunk in raw.chunks_exact(target_bytes) {
+                            out.push(bytes_to_literal(primitive, target_dtype, chunk)?);
+                        }
+                    }
+                    let mut dims = tensor.shape.dims.clone();
+                    dims.push(ratio as u32);
+                    Ok(Value::Tensor(TensorValue::new(
+                        target_dtype,
+                        Shape { dims },
+                        out,
+                    )?))
+                }
+                std::cmp::Ordering::Less => {
+                    let ratio = target_bytes / source_bytes;
+                    let mut dims = tensor.shape.dims.clone();
+                    let Some(last_dim) = dims.pop() else {
+                        return Err(EvalError::Unsupported {
+                            primitive,
+                            detail: format!(
+                                "bitcast widening requires trailing dimension size {ratio}"
+                            ),
+                        });
+                    };
+                    if last_dim as usize != ratio {
+                        return Err(EvalError::Unsupported {
+                            primitive,
+                            detail: format!(
+                                "bitcast widening requires trailing dimension size {ratio}, got {last_dim}"
+                            ),
+                        });
+                    }
+
+                    let mut out = Vec::with_capacity(tensor.elements.len() / ratio);
+                    let mut group = Vec::with_capacity(target_bytes);
+                    for chunk in tensor.elements.as_slice().chunks_exact(ratio) {
+                        group.clear();
+                        for literal in chunk {
+                            group.extend_from_slice(&literal_to_bytes(
+                                primitive,
+                                source_dtype,
+                                *literal,
+                            )?);
+                        }
+                        out.push(bytes_to_literal(primitive, target_dtype, &group)?);
+                    }
+                    Ok(Value::Tensor(TensorValue::new(
+                        target_dtype,
+                        Shape { dims },
+                        out,
+                    )?))
+                }
             }
-            Ok(Value::Tensor(TensorValue::new(
-                target_dtype,
-                tensor.shape.clone(),
-                out,
-            )?))
         }
     }
 }
