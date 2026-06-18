@@ -57,6 +57,7 @@ impl DecisionRecord {
     ) -> Self {
         let expected_loss_keep = expected_loss_keep(posterior_abandoned, matrix);
         let expected_loss_kill = expected_loss_kill(posterior_abandoned, matrix);
+        let posterior_abandoned = normalize_probability(posterior_abandoned).unwrap_or(0.5);
         let action = if expected_loss_keep < expected_loss_kill {
             DecisionAction::Keep
         } else if expected_loss_kill < expected_loss_keep {
@@ -83,6 +84,9 @@ pub fn recommend_action(posterior_abandoned: f64, matrix: &LossMatrix) -> Decisi
 
 #[must_use]
 pub fn expected_loss_keep(posterior_abandoned: f64, matrix: &LossMatrix) -> f64 {
+    let Some(posterior_abandoned) = normalize_probability(posterior_abandoned) else {
+        return f64::INFINITY;
+    };
     let useful_prob = 1.0 - posterior_abandoned;
     useful_prob * f64::from(matrix.keep_if_useful)
         + posterior_abandoned * f64::from(matrix.keep_if_abandoned)
@@ -90,9 +94,17 @@ pub fn expected_loss_keep(posterior_abandoned: f64, matrix: &LossMatrix) -> f64 
 
 #[must_use]
 pub fn expected_loss_kill(posterior_abandoned: f64, matrix: &LossMatrix) -> f64 {
+    let Some(posterior_abandoned) = normalize_probability(posterior_abandoned) else {
+        return f64::INFINITY;
+    };
     let useful_prob = 1.0 - posterior_abandoned;
     useful_prob * f64::from(matrix.kill_if_useful)
         + posterior_abandoned * f64::from(matrix.kill_if_abandoned)
+}
+
+#[inline]
+fn normalize_probability(probability: f64) -> Option<f64> {
+    probability.is_finite().then(|| probability.clamp(0.0, 1.0))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -829,6 +841,35 @@ mod tests {
         let matrix = LossMatrix::default();
         let action = recommend_action(1.0, &matrix);
         assert_eq!(action, DecisionAction::Kill);
+    }
+
+    #[test]
+    fn decision_record_non_finite_posterior_reprofiles_without_nan_losses() {
+        let matrix = LossMatrix::default();
+        for posterior in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let record = DecisionRecord::from_posterior(
+                CompatibilityMode::Strict,
+                posterior,
+                &matrix,
+            );
+            assert_eq!(record.posterior_abandoned.to_bits(), 0.5_f64.to_bits());
+            assert_eq!(record.expected_loss_keep, f64::INFINITY);
+            assert_eq!(record.expected_loss_kill, f64::INFINITY);
+            assert_eq!(record.action, DecisionAction::Reprofile);
+        }
+    }
+
+    #[test]
+    fn expected_loss_clamps_out_of_range_finite_posterior() {
+        let matrix = LossMatrix::default();
+        assert_eq!(
+            expected_loss_keep(-1.0, &matrix),
+            expected_loss_keep(0.0, &matrix)
+        );
+        assert_eq!(
+            expected_loss_kill(2.0, &matrix),
+            expected_loss_kill(1.0, &matrix)
+        );
     }
 
     #[test]
