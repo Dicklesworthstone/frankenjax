@@ -2499,6 +2499,74 @@ fn gather_fill_literal(dtype: DType) -> Literal {
     }
 }
 
+/// Non-contiguous (partial trailing slice) gather over a contiguous typed `src`.
+/// Each gathered window starts at inner offset 0 on axes 1..rank, so the innermost
+/// op axis (row-major stride 1) is always copied contiguously; the block extends
+/// leftward through any inner-neighbor axis that FULLY spans the operand dim
+/// (slice_size==op_dim), making rows adjacent. The block is then
+/// `src[flat..flat+block_len]` for a `flat` fixed by the outer window axes, copied
+/// via extend_from_slice (memcpy) — only the outer axes are decoded. Common in
+/// patch/sliding-window gathers ([P,P,C] with full C). `None` signals an offset
+/// overflow / out-of-bounds read (caller maps to an error). Bit-identical to the
+/// per-element odometer: same flat indices, same row-major order, same OOB fill.
+#[allow(clippy::too_many_arguments)]
+fn gather_window_blocks<T: Copy>(
+    src: &[T],
+    resolved: &[Option<usize>],
+    fill: T,
+    rank: usize,
+    slice_sizes: &[usize],
+    op_dims: &[u32],
+    op_strides: &[usize],
+    slice_elems: usize,
+    out_capacity: usize,
+) -> Option<Vec<T>> {
+    let mut block_len = 1_usize;
+    let mut block_op_start = rank;
+    for ax in (1..rank).rev() {
+        if block_op_start < rank && slice_sizes[block_op_start] != op_dims[block_op_start] as usize
+        {
+            break;
+        }
+        block_len *= slice_sizes[ax];
+        block_op_start = ax;
+    }
+    let block_len = block_len.max(1);
+    let outer_rank = block_op_start.saturating_sub(1); // outer window axes = op axes 1..block_op_start
+    let outer_per_index = slice_elems / block_len;
+
+    let mut out = Vec::with_capacity(out_capacity);
+    let mut coords = vec![0_usize; outer_rank];
+    for &resolved_idx in resolved {
+        let Some(idx) = resolved_idx else {
+            out.extend(std::iter::repeat_n(fill, slice_elems));
+            continue;
+        };
+        let base_offset = idx.checked_mul(op_strides[0])?;
+        for c in coords.iter_mut() {
+            *c = 0;
+        }
+        for _ in 0..outer_per_index {
+            let mut flat = base_offset;
+            for (k, &coord) in coords.iter().enumerate() {
+                flat = flat.checked_add(coord.checked_mul(op_strides[k + 1])?)?;
+            }
+            let block = src.get(flat..flat.checked_add(block_len)?)?;
+            out.extend_from_slice(block);
+            if outer_rank > 0 {
+                for k in (0..outer_rank).rev() {
+                    coords[k] += 1;
+                    if coords[k] < slice_sizes[k + 1] {
+                        break;
+                    }
+                    coords[k] = 0;
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
 pub(crate) fn eval_gather(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -2840,52 +2908,21 @@ pub(crate) fn eval_gather(
     // the generic Literal loop below.
     macro_rules! dense_strided_gather {
         ($src:expr, $fill:expr, $ctor:expr) => {{
-            let src = $src;
-            let mut out = Vec::with_capacity(resolved.len().saturating_mul(slice_elems));
-            for &resolved_idx in &resolved {
-                let Some(idx) = resolved_idx else {
-                    out.extend(std::iter::repeat_n($fill, slice_elems));
-                    continue;
-                };
-                let base_offset =
-                    idx.checked_mul(op_strides[0])
-                        .ok_or_else(|| EvalError::Unsupported {
-                            primitive,
-                            detail: "gather base offset overflows usize".to_owned(),
-                        })?;
-                let mut slice_coords = vec![0_usize; rank.saturating_sub(1)];
-                for _ in 0..slice_elems {
-                    let mut flat = base_offset;
-                    for (ax, &coord) in slice_coords.iter().enumerate() {
-                        let offset = coord.checked_mul(op_strides[ax + 1]).ok_or_else(|| {
-                            EvalError::Unsupported {
-                                primitive,
-                                detail: format!("gather offset overflows usize on axis {}", ax + 1),
-                            }
-                        })?;
-                        flat = flat
-                            .checked_add(offset)
-                            .ok_or_else(|| EvalError::Unsupported {
-                                primitive,
-                                detail: "gather flat offset overflows usize".to_owned(),
-                            })?;
-                    }
-                    let v = *src.get(flat).ok_or_else(|| EvalError::Unsupported {
-                        primitive,
-                        detail: "gather offset exceeds operand element count".to_owned(),
-                    })?;
-                    out.push(v);
-                    if rank > 1 {
-                        for ax in (0..rank - 1).rev() {
-                            slice_coords[ax] += 1;
-                            if slice_coords[ax] < slice_sizes[ax + 1] {
-                                break;
-                            }
-                            slice_coords[ax] = 0;
-                        }
-                    }
-                }
-            }
+            let out = gather_window_blocks(
+                $src,
+                &resolved,
+                $fill,
+                rank,
+                &slice_sizes,
+                op_dims,
+                &op_strides,
+                slice_elems,
+                total,
+            )
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "gather offset exceeds operand element count or overflows usize".to_owned(),
+            })?;
             return Ok(Value::Tensor($ctor(Shape { dims: out_dims }, out)?));
         }};
     }
@@ -2941,59 +2978,23 @@ pub(crate) fn eval_gather(
         dense_strided_gather!(s, fill, |sh, o| TensorValue::new_complex_values(dt, sh, o));
     }
 
-    for &resolved_idx in &resolved {
-        let Some(idx) = resolved_idx else {
-            // FILL_OR_DROP out-of-bounds slice: emit the fill value.
-            elements.extend(std::iter::repeat_n(fill_lit, slice_elems));
-            continue;
-        };
-        // Base offset for this index along axis 0
-        let base_offset = idx
-            .checked_mul(op_strides[0])
-            .ok_or_else(|| EvalError::Unsupported {
-                primitive,
-                detail: "gather base offset overflows usize".to_owned(),
-            })?;
-
-        // Iterate over all positions within the slice (axes 1..rank)
-        let mut slice_coords = vec![0_usize; rank.saturating_sub(1)];
-        for _ in 0..slice_elems {
-            let mut flat = base_offset;
-            for (ax, &coord) in slice_coords.iter().enumerate() {
-                let offset = coord.checked_mul(op_strides[ax + 1]).ok_or_else(|| {
-                    EvalError::Unsupported {
-                        primitive,
-                        detail: format!("gather offset overflows usize on axis {}", ax + 1),
-                    }
-                })?;
-                flat = flat
-                    .checked_add(offset)
-                    .ok_or_else(|| EvalError::Unsupported {
-                        primitive,
-                        detail: "gather flat offset overflows usize".to_owned(),
-                    })?;
-            }
-            let element = operand
-                .elements
-                .get(flat)
-                .ok_or_else(|| EvalError::Unsupported {
-                    primitive,
-                    detail: "gather offset exceeds operand element count".to_owned(),
-                })?;
-            elements.push(*element);
-
-            // Increment slice coordinates
-            if rank > 1 {
-                for ax in (0..rank - 1).rev() {
-                    slice_coords[ax] += 1;
-                    if slice_coords[ax] < slice_sizes[ax + 1] {
-                        break;
-                    }
-                    slice_coords[ax] = 0;
-                }
-            }
-        }
-    }
+    // Generic Literal fallback (boxed/other dtypes): the same block-copy gather over
+    // the materialized Literal slice. `gather_fill_literal` supplies the OOB fill.
+    let elements = gather_window_blocks(
+        operand.elements.as_slice(),
+        &resolved,
+        fill_lit,
+        rank,
+        &slice_sizes,
+        op_dims,
+        &op_strides,
+        slice_elems,
+        total,
+    )
+    .ok_or_else(|| EvalError::Unsupported {
+        primitive,
+        detail: "gather offset exceeds operand element count or overflows usize".to_owned(),
+    })?;
 
     Ok(Value::Tensor(TensorValue::new(
         operand.dtype,
