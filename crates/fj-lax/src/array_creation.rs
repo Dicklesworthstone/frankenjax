@@ -23,7 +23,7 @@ fn checked_shape_and_size(dims: &[u32]) -> Result<(Shape, usize), ValueError> {
     Ok((shape, size))
 }
 
-fn linspace_elements(start: f64, stop: f64, num: usize, endpoint: bool) -> Vec<Literal> {
+fn linspace_values(start: f64, stop: f64, num: usize, endpoint: bool) -> Vec<f64> {
     if num == 0 {
         return Vec::new();
     }
@@ -36,15 +36,13 @@ fn linspace_elements(start: f64, stop: f64, num: usize, endpoint: bool) -> Vec<L
         (stop - start) / num as f64
     };
 
-    let mut elements: Vec<Literal> = (0..num)
-        .map(|i| Literal::from_f64(start + step * i as f64))
-        .collect();
+    let mut elements: Vec<f64> = (0..num).map(|i| start + step * i as f64).collect();
 
     // JAX/NumPy pin the final sample to exactly `stop` when `endpoint=True`,
     // overriding the `start + step*(num-1)` value (which drifts by up to an ULP).
     // `jnp.linspace` does `out = out.at[-1].set(stop)`; reproduce it bit-for-bit.
     if endpoint && num > 1 {
-        elements[num - 1] = Literal::from_f64(stop);
+        elements[num - 1] = stop;
     }
 
     elements
@@ -179,13 +177,12 @@ pub fn linspace(start: f64, stop: f64, num: usize, endpoint: bool) -> Result<Val
         return Ok(Value::Tensor(tensor));
     }
 
-    let elements = linspace_elements(start, stop, num, endpoint);
-    let tensor = TensorValue::new(
-        DType::F64,
+    let values = linspace_values(start, stop, num, endpoint);
+    let tensor = TensorValue::new_f64_values(
         Shape {
             dims: vec![num as u32],
         },
-        elements,
+        values,
     )?;
     Ok(Value::Tensor(tensor))
 }
@@ -214,16 +211,13 @@ pub fn arange(start: f64, stop: f64, step: f64) -> Result<Value, ValueError> {
         0
     };
 
-    let elements: Vec<Literal> = (0..n)
-        .map(|i| Literal::from_f64(start + step * i as f64))
-        .collect();
+    let values: Vec<f64> = (0..n).map(|i| start + step * i as f64).collect();
 
-    let tensor = TensorValue::new(
-        DType::F64,
+    let tensor = TensorValue::new_f64_values(
         Shape {
             dims: vec![n as u32],
         },
-        elements,
+        values,
     )?;
     Ok(Value::Tensor(tensor))
 }
@@ -238,24 +232,16 @@ pub fn logspace(
     endpoint: bool,
     base: f64,
 ) -> Result<Value, ValueError> {
-    let source = linspace_elements(start, stop, num, endpoint);
-    let elements: Vec<Literal> = source
+    let values: Vec<f64> = linspace_values(start, stop, num, endpoint)
         .into_iter()
-        .map(|lit| {
-            if let Some(v) = lit.as_f64() {
-                Literal::from_f64(base.powf(v))
-            } else {
-                lit
-            }
-        })
+        .map(|v| base.powf(v))
         .collect();
 
-    let tensor = TensorValue::new(
-        DType::F64,
+    let tensor = TensorValue::new_f64_values(
         Shape {
             dims: vec![num as u32],
         },
-        elements,
+        values,
     )?;
     Ok(Value::Tensor(tensor))
 }
@@ -282,7 +268,7 @@ pub fn diag(v: &[f64], k: i32) -> Result<Value, ValueError> {
     let offset_usize = usize::try_from(offset).map_err(|_| ValueError::ShapeOverflow {
         shape: shape.clone(),
     })?;
-    let mut elements = vec![Literal::from_f64(0.0); mat_size];
+    let mut elements = vec![0.0_f64; mat_size];
 
     for (i, &val) in v.iter().enumerate() {
         let row = if k >= 0 {
@@ -302,11 +288,11 @@ pub fn diag(v: &[f64], k: i32) -> Result<Value, ValueError> {
             i
         };
         if row < size_usize && col < size_usize {
-            elements[row * size_usize + col] = Literal::from_f64(val);
+            elements[row * size_usize + col] = val;
         }
     }
 
-    let tensor = TensorValue::new(DType::F64, shape, elements)?;
+    let tensor = TensorValue::new_f64_values(shape, elements)?;
     Ok(Value::Tensor(tensor))
 }
 
