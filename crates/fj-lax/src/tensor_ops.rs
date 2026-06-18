@@ -933,6 +933,16 @@ pub(crate) fn eval_broadcast_in_dim(
                     });
                 }
             }
+            // JAX (lax._broadcast_in_dim_shape_rule) requires broadcast_dimensions to be
+            // STRICTLY INCREASING, not merely unique: `tuple(bd) != tuple(sorted(bd))`
+            // raises. The uniqueness check above accepts non-monotonic orders like
+            // [2, 0]; reject them here to match JAX fail-closed parity.
+            if broadcast_dims.windows(2).any(|w| w[0] >= w[1]) {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "broadcast_dimensions must be strictly increasing".to_owned(),
+                });
+            }
             let total = checked_shape_element_count(primitive, "broadcast_in_dim", &target_dims)?;
             if total == 0 {
                 return Ok(Value::Tensor(TensorValue::new(
