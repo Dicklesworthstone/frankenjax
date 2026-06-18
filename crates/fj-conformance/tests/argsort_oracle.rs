@@ -405,3 +405,50 @@ fn oracle_argsort_complex64_lexicographic() {
         "complex64 argsort must order lexicographically by (real, imag)"
     );
 }
+
+#[test]
+fn metamorphic_argsort_gather_equals_sort_with_duplicates() {
+    // Cross-validate argsort against the Sort primitive: gathering x by argsort(x)'s
+    // indices must reproduce sort(x) element-wise. Uses DUPLICATES so this checks more
+    // than is-permutation / monotonicity — it requires argsort and sort to agree on
+    // the ordering of equal elements (the sorted multiset matches exactly). Oracle-free.
+    let data = vec![5.0, 3.0, 3.0, 1.0, 4.0, 2.0, 6.0, 3.0, 1.0, 4.0];
+    let input = make_f64_tensor(&[data.len() as u32], data.clone());
+
+    let idx = extract_i64_vec(
+        &eval_primitive(
+            Primitive::Argsort,
+            std::slice::from_ref(&input),
+            &argsort_params(-1, false),
+        )
+        .unwrap(),
+    );
+    let gathered: Vec<f64> = idx.iter().map(|&i| data[i as usize]).collect();
+
+    let sorted_val = eval_primitive(
+        Primitive::Sort,
+        std::slice::from_ref(&input),
+        &argsort_params(-1, false),
+    )
+    .unwrap();
+    let sorted: Vec<f64> = sorted_val
+        .as_tensor()
+        .unwrap()
+        .elements
+        .iter()
+        .map(|l| l.as_f64().unwrap())
+        .collect();
+
+    assert_eq!(gathered.len(), sorted.len(), "length");
+    for (i, (g, s)) in gathered.iter().zip(&sorted).enumerate() {
+        assert!(
+            (g - s).abs() < 1e-12,
+            "x[argsort(x)] != sort(x) at {i}: {g} vs {s}"
+        );
+    }
+    // Sanity: the gathered sequence is non-decreasing.
+    assert!(
+        gathered.windows(2).all(|w| w[0] <= w[1]),
+        "x[argsort(x)] must be non-decreasing"
+    );
+}
