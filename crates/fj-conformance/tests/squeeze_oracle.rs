@@ -148,6 +148,7 @@ fn oracle_squeeze_auto_no_ones() {
     let input = make_i64_tensor(&[2, 3], (1..=6).collect());
     let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(extract_i64_vec(&result), (1..=6).collect::<Vec<_>>());
 }
 
 // ======================== Explicit Dimensions ========================
