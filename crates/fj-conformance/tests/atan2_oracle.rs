@@ -727,177 +727,38 @@ fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
     )
 }
 
-fn extract_complex64_scalar(v: &Value) -> (f32, f32) {
-    match v {
-        Value::Tensor(t) => {
-            assert!(t.shape.dims.is_empty(), "expected scalar");
-            t.elements[0].as_complex64().unwrap()
-        }
-        _ => unreachable!("expected tensor"),
-    }
-}
-
-fn extract_complex128_scalar(v: &Value) -> (f64, f64) {
-    match v {
-        Value::Tensor(t) => {
-            assert!(t.shape.dims.is_empty(), "expected scalar");
-            t.elements[0].as_complex128().unwrap()
-        }
-        _ => unreachable!("expected tensor"),
-    }
-}
-
-fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
-    match v {
-        Value::Tensor(t) => t
-            .elements
-            .iter()
-            .map(|l| l.as_complex64().unwrap())
-            .collect(),
-        _ => unreachable!("expected tensor"),
-    }
-}
-
-fn assert_complex64_close(actual: (f32, f32), expected: (f32, f32), tol: f32, msg: &str) {
-    let diff_re = (actual.0 - expected.0).abs();
-    let diff_im = (actual.1 - expected.1).abs();
-    assert!(
-        diff_re < tol && diff_im < tol,
-        "{}: expected ({}, {}), got ({}, {}), diff=({}, {})",
-        msg,
-        expected.0,
-        expected.1,
-        actual.0,
-        actual.1,
-        diff_re,
-        diff_im
-    );
-}
-
-fn assert_complex128_close(actual: (f64, f64), expected: (f64, f64), tol: f64, msg: &str) {
-    let diff_re = (actual.0 - expected.0).abs();
-    let diff_im = (actual.1 - expected.1).abs();
-    assert!(
-        diff_re < tol && diff_im < tol,
-        "{}: expected ({}, {}), got ({}, {}), diff=({}, {})",
-        msg,
-        expected.0,
-        expected.1,
-        actual.0,
-        actual.1,
-        diff_re,
-        diff_im
-    );
-}
-
 #[test]
-fn oracle_atan2_complex64_real_positive() {
-    // atan2 of real positive values should behave like real atan2
-    // atan2(1, 1) = pi/4
+fn oracle_atan2_complex64_scalar_rejected() {
     let y = make_complex64_scalar(1.0, 0.0);
     let x = make_complex64_scalar(1.0, 0.0);
-    let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
-    let (re, im) = extract_complex64_scalar(&result);
-    assert_complex64_close(
-        (re, im),
-        (std::f32::consts::FRAC_PI_4, 0.0),
-        1e-5,
-        "atan2(1, 1) = pi/4",
-    );
-}
-
-#[test]
-fn oracle_atan2_complex64_real_negative_x() {
-    // atan2(1, -1) = 3*pi/4
-    let y = make_complex64_scalar(1.0, 0.0);
-    let x = make_complex64_scalar(-1.0, 0.0);
-    let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
-    let (re, im) = extract_complex64_scalar(&result);
-    let expected = 3.0 * std::f32::consts::FRAC_PI_4;
-    assert_complex64_close((re, im), (expected, 0.0), 1e-4, "atan2(1, -1) = 3*pi/4");
-}
-
-#[test]
-fn oracle_atan2_complex64_mixed() {
-    // atan2 with small imaginary parts should be close to real atan2
-    let y = make_complex64_scalar(1.0, 0.01);
-    let x = make_complex64_scalar(1.0, 0.01);
-    let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
-    let (re, im) = extract_complex64_scalar(&result);
-    // Should be close to pi/4 with small imaginary perturbation
+    let err = eval_primitive(Primitive::Atan2, &[y, x], &no_params())
+        .expect_err("atan2 is float-only and must reject complex64");
     assert!(
-        (re - std::f32::consts::FRAC_PI_4).abs() < 0.1,
-        "real part should be near pi/4"
-    );
-    assert!(im.abs() < 0.1, "imaginary part should be small");
-}
-
-#[test]
-fn oracle_atan2_complex64_general() {
-    // General complex inputs
-    let y = make_complex64_scalar(1.0, 1.0);
-    let x = make_complex64_scalar(1.0, 0.0);
-    let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
-    let (re, im) = extract_complex64_scalar(&result);
-    // Result should be finite
-    assert!(
-        re.is_finite() && im.is_finite(),
-        "atan2(1+i, 1) should be finite"
+        err.to_string().contains("complex operands"),
+        "unexpected complex atan2 error: {err}"
     );
 }
 
 #[test]
-fn oracle_atan2_complex64_vector() {
+fn oracle_atan2_complex64_tensor_rejected() {
     let y = make_complex64_tensor(&[3], vec![(1.0, 0.0), (0.0, 0.0), (-1.0, 0.0)]);
     let x = make_complex64_tensor(&[3], vec![(1.0, 0.0), (1.0, 0.0), (1.0, 0.0)]);
-    let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
-    let vals = extract_complex64_vec(&result);
-
-    // atan2(1, 1) = pi/4
-    assert_complex64_close(
-        vals[0],
-        (std::f32::consts::FRAC_PI_4, 0.0),
-        1e-5,
-        "atan2(1,1)",
-    );
-    // atan2(0, 1) = 0
-    assert_complex64_close(vals[1], (0.0, 0.0), 1e-5, "atan2(0,1)");
-    // atan2(-1, 1) = -pi/4
-    assert_complex64_close(
-        vals[2],
-        (-std::f32::consts::FRAC_PI_4, 0.0),
-        1e-5,
-        "atan2(-1,1)",
+    let err = eval_primitive(Primitive::Atan2, &[y, x], &no_params())
+        .expect_err("atan2 is float-only and must reject complex64 tensors");
+    assert!(
+        err.to_string().contains("complex operands"),
+        "unexpected complex atan2 error: {err}"
     );
 }
 
 #[test]
-fn oracle_atan2_complex128_real() {
-    // atan2(1, 1) = pi/4 with higher precision
+fn oracle_atan2_complex128_scalar_rejected() {
     let y = make_complex128_scalar(1.0, 0.0);
     let x = make_complex128_scalar(1.0, 0.0);
-    let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
-    let (re, im) = extract_complex128_scalar(&result);
-    assert_complex128_close(
-        (re, im),
-        (std::f64::consts::FRAC_PI_4, 0.0),
-        1e-12,
-        "atan2(1, 1) Complex128",
+    let err = eval_primitive(Primitive::Atan2, &[y, x], &no_params())
+        .expect_err("atan2 is float-only and must reject complex128");
+    assert!(
+        err.to_string().contains("complex operands"),
+        "unexpected complex atan2 error: {err}"
     );
-}
-
-#[test]
-fn oracle_atan2_complex64_preserves_dtype() {
-    let y = make_complex64_scalar(1.0, 1.0);
-    let x = make_complex64_scalar(1.0, 0.0);
-    let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
-    assert_eq!(result.dtype(), DType::Complex64);
-}
-
-#[test]
-fn oracle_atan2_complex128_preserves_dtype() {
-    let y = make_complex128_scalar(1.0, 1.0);
-    let x = make_complex128_scalar(1.0, 0.0);
-    let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
-    assert_eq!(result.dtype(), DType::Complex128);
 }

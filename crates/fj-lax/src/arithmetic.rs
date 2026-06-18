@@ -2181,7 +2181,6 @@ fn apply_complex_binary(
         Primitive::Max => Ok(if complex_lex_ge(lhs, rhs) { lhs } else { rhs }),
         Primitive::Min => Ok(if complex_lex_ge(lhs, rhs) { rhs } else { lhs }),
         Primitive::Pow => apply_complex_pow(lhs, rhs),
-        Primitive::Atan2 => Ok(complex_atan2(lhs, rhs)),
         Primitive::XLogY => {
             if ar == 0.0 && ai == 0.0 {
                 Ok((0.0, 0.0))
@@ -2356,14 +2355,6 @@ fn complex_atan(input: (f64, f64)) -> (f64, f64) {
     let log_right = complex_log(complex_add((1.0, 0.0), i_times_input));
     let diff = complex_sub(log_left, log_right);
     (-0.5 * diff.1, 0.5 * diff.0)
-}
-
-fn complex_atan2(y: (f64, f64), x: (f64, f64)) -> (f64, f64) {
-    let numerator = complex_add(x, (-y.1, y.0));
-    let denominator = complex_sqrt(complex_add(complex_mul(x, x), complex_mul(y, y)));
-    let quotient = complex_div(numerator, denominator);
-    let logged = complex_log(quotient);
-    (logged.1, -logged.0)
 }
 
 fn complex_logistic(input: (f64, f64)) -> (f64, f64) {
@@ -2795,13 +2786,13 @@ fn complex_binary_literal_op(
 }
 
 /// Dense (and, for the expensive transcendental ops, threaded) fast path for a complex
-/// tensor combined with a single complex `scalar` (the common `z*c` / `z^c` / `atan2(z, c)`
+/// tensor combined with a single complex `scalar` (the common `z*c` / `z^c`
 /// broadcast). Mirrors the same-shape complex path: read the packed `(re,im)` backing, apply
 /// `apply_complex_binary` (exactly what `complex_binary_literal_op` delegates to) straight
 /// into dense complex storage with the same `out_dtype` narrowing (`new_complex_values` ==
 /// `complex_literal_from_f64_parts` per element) — BIT-FOR-BIT identical to the per-`Literal`
 /// loop, minus the 4-f64-from-bits unpack/repack. `scalar_on_left` preserves operand order for
-/// the non-commutative ops (Sub/Div/Pow/Atan2). Returns `None` for a non-dense tensor backing.
+/// the non-commutative ops (Sub/Div/Pow). Returns `None` for a non-dense tensor backing.
 fn eval_complex_tensor_scalar(
     primitive: Primitive,
     tensor: &TensorValue,
@@ -2884,7 +2875,6 @@ fn eval_binary_elementwise_complex(
         | Primitive::Max
         | Primitive::Min
         | Primitive::Pow
-        | Primitive::Atan2
         | Primitive::XLogY
         | Primitive::LogAddExp => {}
         _ => {
@@ -2912,7 +2902,7 @@ fn eval_binary_elementwise_complex(
                 }
 
                 // Threaded dense fast path for the EXPENSIVE complex binary ops
-                // (Pow/Atan2/XLogY/LogAddExp — each several complex transcendentals
+                // (Pow/XLogY/LogAddExp — each several complex transcendentals
                 // per element). `apply_complex_binary` is infallible for these, and
                 // the packed values + dtype narrowing match the serial path, so this
                 // is bit-for-bit identical.
@@ -17161,7 +17151,7 @@ mod tests {
     }
 
     /// Isomorphism proof for the threaded dense complex-binary path: a large
-    /// same-shape dense-c128 Pow/Atan2/XLogY/LogAddExp (>= 1<<13, threaded) must
+    /// same-shape dense-c128 Pow/XLogY/LogAddExp (>= 1<<13, threaded) must
     /// equal the Literal-backed serial map bit-for-bit.
     #[test]
     fn threaded_dense_complex_binary_bit_identical_to_literal() {
@@ -17195,7 +17185,6 @@ mod tests {
         };
         let prims = [
             Primitive::Pow,
-            Primitive::Atan2,
             Primitive::XLogY,
             Primitive::LogAddExp,
         ];
