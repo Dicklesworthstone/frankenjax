@@ -258,7 +258,9 @@ impl LogDomainPosterior {
 
     pub fn update(&mut self, log_likelihood_delta: f64) {
         if log_likelihood_delta.is_finite() {
-            self.accumulated_log_likelihood += log_likelihood_delta;
+            self.accumulated_log_likelihood = (self.accumulated_log_likelihood
+                + log_likelihood_delta)
+                .clamp(-f64::MAX, f64::MAX);
         }
     }
 
@@ -527,6 +529,21 @@ mod tests {
         ldp.update(1.0);
         assert!(ldp.posterior_abandoned().is_finite());
         assert!((ldp.bayes_factor() - 1.0_f64.exp()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn log_domain_posterior_saturates_huge_finite_evidence() {
+        let mut abandoned = super::LogDomainPosterior::new(0.5);
+        abandoned.update(f64::MAX);
+        abandoned.update(f64::MAX);
+        assert_eq!(abandoned.posterior_abandoned(), 1.0);
+        assert!(abandoned.bayes_factor().is_infinite());
+
+        let mut useful = super::LogDomainPosterior::new(0.5);
+        useful.update(-f64::MAX);
+        useful.update(-f64::MAX);
+        assert_eq!(useful.posterior_abandoned(), 0.0);
+        assert_eq!(useful.bayes_factor(), 0.0);
     }
 
     #[test]
