@@ -549,6 +549,17 @@ fn oracle_squeeze_complex64_multiple_dims() {
     );
     let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(
+        extract_complex64_vec(&result),
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
+        ]
+    );
 }
 
 #[test]
@@ -567,6 +578,17 @@ fn oracle_squeeze_complex64_no_change() {
     );
     let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(
+        extract_complex64_vec(&result),
+        vec![
+            (1.0, 1.0),
+            (2.0, 2.0),
+            (3.0, 3.0),
+            (4.0, 4.0),
+            (5.0, 5.0),
+            (6.0, 6.0),
+        ]
+    );
 }
 
 #[test]
