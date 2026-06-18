@@ -2805,6 +2805,10 @@ pub enum ValueError {
         declared: DType,
         literal: Literal,
     },
+    InvalidArgument {
+        op: &'static str,
+        reason: &'static str,
+    },
 }
 
 impl std::fmt::Display for ValueError {
@@ -2863,6 +2867,9 @@ impl std::fmt::Display for ValueError {
                     f,
                     "tensor element {index} literal {literal:?} disagrees with declared dtype {declared:?}"
                 )
+            }
+            Self::InvalidArgument { op, reason } => {
+                write!(f, "{op} invalid argument: {reason}")
             }
         }
     }
@@ -4726,7 +4733,7 @@ mod tests {
         let outcome = catch_unwind(AssertUnwindSafe(body));
         log.phase_timings.execute_ms = duration_ms(execute_start);
 
-        let verify_start = Instant::now();
+        let validation_start = Instant::now();
         let mut panic_payload: Option<Box<dyn Any + Send>> = None;
         let mut failure_detail: Option<String> = None;
 
@@ -4761,7 +4768,7 @@ mod tests {
                 panic_payload = Some(payload);
             }
         }
-        log.phase_timings.verify_ms = duration_ms(verify_start);
+        log.phase_timings.verify_ms = duration_ms(validation_start);
 
         let log_path = test_log_path(&test_id);
         log.artifact_refs.push(log_path.display().to_string());
@@ -5821,18 +5828,22 @@ mod tests {
             vec![Literal::from_f64(1.0), Literal::from_f64(2.0)],
         )
         .expect("element count matches, count check passes");
-        match tensor.validate_dtype_consistency() {
-            Err(ValueError::ElementDTypeMismatch {
-                index,
-                declared,
-                literal,
-            }) => {
-                assert_eq!(index, 0);
-                assert_eq!(declared, DType::F32);
-                assert!(matches!(literal, Literal::F64Bits(_)));
-            }
-            other => panic!("expected ElementDTypeMismatch, got {other:?}"),
-        }
+        let mismatch = tensor.validate_dtype_consistency();
+        assert!(matches!(
+            mismatch,
+            Err(ValueError::ElementDTypeMismatch { .. })
+        ));
+        let Err(ValueError::ElementDTypeMismatch {
+            index,
+            declared,
+            literal,
+        }) = mismatch
+        else {
+            return;
+        };
+        assert_eq!(index, 0);
+        assert_eq!(declared, DType::F32);
+        assert!(matches!(literal, Literal::F64Bits(_)));
     }
 
     #[test]
@@ -7693,8 +7704,10 @@ mod tests {
         // the +2^-30 (below f32 half-ULP), leaving an exact tie that round-to-
         // even sends back down to 0x3C00 — the double-rounding bug.
         let x = 1.00048828125_f64 + 2f64.powi(-30);
-        let Literal::F16Bits(bits) = Literal::from_f16_f64(x) else {
-            panic!("expected F16Bits");
+        let literal = Literal::from_f16_f64(x);
+        assert!(matches!(literal, Literal::F16Bits(_)));
+        let Literal::F16Bits(bits) = literal else {
+            return;
         };
         assert_eq!(bits, 0x3C01, "f64->f16 must single-round (XLA parity)");
         // Naive double rounding would land on 0x3C00.

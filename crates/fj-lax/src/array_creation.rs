@@ -168,9 +168,13 @@ pub fn linspace(start: f64, stop: f64, num: usize, endpoint: bool) -> Result<Val
 /// Create evenly spaced values within a half-open interval.
 ///
 /// Matches `jnp.arange(start, stop, step)`.
-/// Panics if step is zero.
 pub fn arange(start: f64, stop: f64, step: f64) -> Result<Value, ValueError> {
-    assert!(step != 0.0, "arange step cannot be zero");
+    if step == 0.0 {
+        return Err(ValueError::InvalidArgument {
+            op: "arange",
+            reason: "step cannot be zero",
+        });
+    }
 
     // JAX/NumPy size the result once as `ceil((stop - start) / step)` (clamped to
     // >= 0) and compute each value as `start + step*i`. The previous iterative
@@ -573,9 +577,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "step cannot be zero")]
-    fn test_arange_zero_step_panics() {
-        let _ = arange(0.0, 5.0, 0.0);
+    fn test_arange_zero_step_returns_error() {
+        assert!(matches!(
+            arange(0.0, 5.0, 0.0),
+            Err(ValueError::InvalidArgument {
+                op: "arange",
+                reason: "step cannot be zero"
+            })
+        ));
     }
 
     #[test]
