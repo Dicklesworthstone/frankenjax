@@ -10720,6 +10720,26 @@ fn f64_predicate_dense(
     )?)))
 }
 
+/// Dense f32 sibling of `f64_predicate_dense`. For F32Bits elements the generic
+/// path applies the same predicate to `f32::from_bits`, so reading the packed
+/// f32 slice and emitting dense Bool storage is bit-identical.
+fn f32_predicate_dense(
+    tensor: &TensorValue,
+    pred: impl Fn(f32) -> bool,
+) -> Result<Option<Value>, EvalError> {
+    if tensor.dtype != DType::F32 {
+        return Ok(None);
+    }
+    let Some(xs) = tensor.elements.as_f32_slice() else {
+        return Ok(None);
+    };
+    let out: Vec<bool> = xs.iter().map(|&v| pred(v)).collect();
+    Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+        tensor.shape.clone(),
+        out,
+    )?)))
+}
+
 pub(crate) fn eval_is_finite(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.len() != 1 {
         return Err(EvalError::ArityMismatch {
@@ -10750,6 +10770,9 @@ pub(crate) fn eval_is_finite(primitive: Primitive, inputs: &[Value]) -> Result<V
         }
         Value::Tensor(tensor) => {
             if let Some(value) = f64_predicate_dense(tensor, f64::is_finite)? {
+                return Ok(value);
+            }
+            if let Some(value) = f32_predicate_dense(tensor, f32::is_finite)? {
                 return Ok(value);
             }
             let mut elements = Vec::with_capacity(tensor.elements.len());
@@ -10814,6 +10837,9 @@ pub(crate) fn eval_is_nan(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             if let Some(value) = f64_predicate_dense(tensor, f64::is_nan)? {
                 return Ok(value);
             }
+            if let Some(value) = f32_predicate_dense(tensor, f32::is_nan)? {
+                return Ok(value);
+            }
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for literal in &tensor.elements {
                 let is_nan = match *literal {
@@ -10875,6 +10901,9 @@ pub(crate) fn eval_is_inf(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             if let Some(value) = f64_predicate_dense(tensor, f64::is_infinite)? {
                 return Ok(value);
             }
+            if let Some(value) = f32_predicate_dense(tensor, f32::is_infinite)? {
+                return Ok(value);
+            }
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for literal in &tensor.elements {
                 let is_inf = match *literal {
@@ -10933,6 +10962,9 @@ pub(crate) fn eval_signbit(primitive: Primitive, inputs: &[Value]) -> Result<Val
         }
         Value::Tensor(tensor) => {
             if let Some(value) = f64_predicate_dense(tensor, f64::is_sign_negative)? {
+                return Ok(value);
+            }
+            if let Some(value) = f32_predicate_dense(tensor, f32::is_sign_negative)? {
                 return Ok(value);
             }
             let mut elements = Vec::with_capacity(tensor.elements.len());
@@ -11853,6 +11885,54 @@ mod tests {
                 dense_ns as f64 / reps as f64 / 1e6,
                 lit_ns as f64 / reps as f64 / 1e6,
             );
+        }
+    }
+
+    #[test]
+    fn f32_float_predicates_dense_path_truth_table() {
+        let xs = [
+            0.0f32,
+            -0.0,
+            1.5,
+            f32::from_bits(1),
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::from_bits(0x7fc0_0001),
+            f32::from_bits(0xffc0_0001),
+        ];
+        let x = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![2, 4] }, xs.to_vec()).unwrap(),
+        );
+
+        type EvalFn = fn(Primitive, &[Value]) -> Result<Value, EvalError>;
+        type PredicateCase = (&'static str, Primitive, EvalFn, fn(f32) -> bool);
+        let cases: [PredicateCase; 4] = [
+            (
+                "is_finite",
+                Primitive::IsFinite,
+                eval_is_finite,
+                f32::is_finite,
+            ),
+            ("is_nan", Primitive::IsNan, eval_is_nan, f32::is_nan),
+            ("is_inf", Primitive::IsInf, eval_is_inf, f32::is_infinite),
+            (
+                "signbit",
+                Primitive::Signbit,
+                eval_signbit,
+                f32::is_sign_negative,
+            ),
+        ];
+
+        for (label, primitive, eval_fn, pred) in cases {
+            let out = eval_fn(primitive, std::slice::from_ref(&x)).unwrap();
+            let tensor = out.as_tensor().unwrap();
+            assert_eq!(tensor.dtype, DType::Bool, "{label} dtype");
+            let bools = tensor
+                .elements
+                .as_bool_slice()
+                .unwrap_or_else(|| panic!("{label} did not emit dense bool storage"));
+            let expected: Vec<bool> = xs.iter().map(|&v| pred(v)).collect();
+            assert_eq!(bools, expected.as_slice(), "{label} truth table");
         }
     }
 
