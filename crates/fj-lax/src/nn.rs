@@ -262,6 +262,22 @@ fn softmax_2d_thread_count(rows: usize, total: usize) -> usize {
     }
 }
 
+#[inline]
+fn checked_softmax_2d_len(x: &[f64], rows: usize, cols: usize) -> usize {
+    let len = rows
+        .checked_mul(cols)
+        .expect("2D softmax output shape overflow");
+    assert!(
+        x.len() >= len,
+        "2D softmax input length {} is shorter than declared shape {}x{}={}",
+        x.len(),
+        rows,
+        cols,
+        len
+    );
+    len
+}
+
 fn fill_softmax_rows_parallel(
     x: &[f64],
     result: &mut [f64],
@@ -314,7 +330,8 @@ fn fill_softmax_rows_parallel(
 /// many-rows/small-cols batched regime; this removes it.
 #[must_use]
 pub fn softmax_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
-    let mut result = vec![0.0; rows * cols];
+    let len = checked_softmax_2d_len(x, rows, cols);
+    let mut result = vec![0.0; len];
     if cols == 0 {
         return result;
     }
@@ -359,7 +376,8 @@ fn log_softmax_row_into(src: &[f64], dst: &mut [f64]) {
 /// result is bit-for-bit identical to mapping [`log_softmax`] over the rows.
 #[must_use]
 pub fn log_softmax_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
-    let mut result = vec![0.0; rows * cols];
+    let len = checked_softmax_2d_len(x, rows, cols);
+    let mut result = vec![0.0; len];
     if cols == 0 {
         return result;
     }
@@ -660,6 +678,24 @@ mod tests {
     fn softmax_2d_log_softmax_2d_handle_zero_cols() {
         assert!(softmax_2d(&[], 0, 0).is_empty());
         assert!(log_softmax_2d(&[], 3, 0).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "2D softmax output shape overflow")]
+    fn softmax_2d_rejects_output_shape_overflow_before_allocation() {
+        let _ = softmax_2d(&[], usize::MAX, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "2D softmax output shape overflow")]
+    fn log_softmax_2d_rejects_output_shape_overflow_before_allocation() {
+        let _ = log_softmax_2d(&[], usize::MAX, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "2D softmax input length 0 is shorter than declared shape")]
+    fn softmax_2d_rejects_oversized_declared_shape_before_allocation() {
+        let _ = softmax_2d(&[], usize::MAX, 1);
     }
 
     #[test]
