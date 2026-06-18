@@ -565,3 +565,26 @@ fn metamorphic_complex_inverse_trig_round_trips() {
     let tan_atan = unary(Primitive::Tan, &unary(Primitive::Atan, &z));
     assert_complex_close(&tan_atan, &pts, 1e-9, "tan(atan(z)) == z");
 }
+
+#[test]
+fn metamorphic_complex_inverse_hyperbolic_round_trips() {
+    // Forward-of-inverse round trips for complex_asinh/acosh/atanh (eval_asinh/
+    // acosh/atanh route complex through eval_unary_complex_map): sinh(asinh(z))==z,
+    // cosh(acosh(z))==z, tanh(atanh(z))==z. Points chosen away from the branch cuts
+    // (acosh cut on (-inf, 1], atanh poles at +/-1) so the principal inverse is
+    // recovered exactly. Completes the complex inverse-function metamorphic family.
+    let pts = [(1.5, 0.5), (2.0, -0.8), (1.2, 0.9), (0.6, 0.4)];
+    let z = complex_from_pairs(&pts);
+
+    let sinh_asinh = unary(Primitive::Sinh, &unary(Primitive::Asinh, &z));
+    assert_complex_close(&sinh_asinh, &pts, 1e-9, "sinh(asinh(z)) == z");
+
+    let cosh_acosh = unary(Primitive::Cosh, &unary(Primitive::Acosh, &z));
+    assert_complex_close(&cosh_acosh, &pts, 1e-9, "cosh(acosh(z)) == z");
+
+    // atanh poles at +/-1; keep |z| modest and away from the real axis >= 1.
+    let tanh_pts = [(0.5, 0.3), (-0.4, 0.6), (0.2, -0.5), (0.3, 0.4)];
+    let tz = complex_from_pairs(&tanh_pts);
+    let tanh_atanh = unary(Primitive::Tanh, &unary(Primitive::Atanh, &tz));
+    assert_complex_close(&tanh_atanh, &tanh_pts, 1e-9, "tanh(atanh(z)) == z");
+}
