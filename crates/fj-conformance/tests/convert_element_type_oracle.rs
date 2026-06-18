@@ -173,6 +173,23 @@ fn convert_element_type_bool_tensor_to_i64_uses_zero_and_one() {
 }
 
 #[test]
+fn convert_element_type_bool_tensor_to_f64_uses_zero_and_one() {
+    // bool -> float: true -> 1.0, false -> 0.0 (JAX/XLA) — the float sibling of the
+    // bool -> i64 conversion above, which the oracle did not cover.
+    let input = bool_tensor(&[4], &[true, false, true, false]);
+    let result = convert(input, "f64").expect("bool to f64 conversion should succeed");
+    assert_eq!(result.dtype(), DType::F64);
+    let vals: Vec<f64> = result
+        .as_tensor()
+        .expect("expected tensor")
+        .elements
+        .iter()
+        .map(|l| l.as_f64().expect("expected f64"))
+        .collect();
+    assert_eq!(vals, vec![1.0, 0.0, 1.0, 0.0]);
+}
+
+#[test]
 fn convert_element_type_i64_tensor_to_bool_uses_zero_truthiness() {
     let input = i64_tensor(&[4], &[0, -2, 3, 0]);
     let result = convert(input, "bool").expect("i64 to bool conversion should succeed");
