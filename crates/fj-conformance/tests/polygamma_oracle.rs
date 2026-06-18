@@ -202,6 +202,26 @@ fn polygamma_rejects_invalid_arity() {
     );
 }
 
+#[test]
+fn polygamma_rejects_integer_operands() {
+    for (case, order, x) in [
+        ("integer scalar order", Value::scalar_i64(1), scalar_f64(2.0)),
+        ("integer scalar argument", scalar_f64(1.0), Value::scalar_i64(2)),
+        (
+            "integer tensor argument",
+            scalar_f64(1.0),
+            tensor_i64(&[2], &[2, 3]),
+        ),
+    ] {
+        let err = eval_primitive(Primitive::Polygamma, &[order, x], &no_params())
+            .expect_err("JAX polygamma is float-only and must reject integer operands");
+        assert!(
+            err.to_string().contains("floating operands"),
+            "{case} returned unexpected polygamma error: {err}"
+        );
+    }
+}
+
 // --------------------------------------------------------------------------
 // Broadcast tests: verify NumPy-style broadcasting semantics
 // --------------------------------------------------------------------------
@@ -218,6 +238,19 @@ fn tensor_f64(shape: &[u32], data: &[f64]) -> Value {
                 dims: shape.to_vec(),
             },
             data.iter().copied().map(Literal::from_f64).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn tensor_i64(shape: &[u32], data: &[i64]) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.iter().copied().map(Literal::I64).collect(),
         )
         .unwrap(),
     )

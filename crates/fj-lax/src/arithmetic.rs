@@ -7660,6 +7660,7 @@ pub(crate) fn eval_polygamma(primitive: Primitive, inputs: &[Value]) -> Result<V
             actual: inputs.len(),
         });
     }
+    ensure_float_binary_operands(primitive, inputs)?;
     let n_val = &inputs[0];
     let x_val = &inputs[1];
 
