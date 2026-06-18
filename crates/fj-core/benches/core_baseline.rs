@@ -95,16 +95,46 @@ fn bench_tensor_value_new(c: &mut Criterion) {
     let shape = Shape {
         dims: vec![10, 100],
     };
-    c.bench_function("core/tensor_value_new_1k", |b| {
+    c.bench_function("core/tensor_value_new_1k_f64_generic_dense", |b| {
         b.iter(|| TensorValue::new(DType::F64, shape.clone(), elements.clone()))
     });
+    c.bench_function("core/tensor_value_new_1k_f64_forced_literal", |b| {
+        b.iter(|| {
+            TensorValue::new_with_literal_buffer(
+                DType::F64,
+                shape.clone(),
+                LiteralBuffer::new(elements.clone()),
+            )
+        })
+    });
+    c.bench_function("core/tensor_value_new_then_to_f64_vec_1k", |b| {
+        b.iter(|| {
+            let tensor = TensorValue::new(DType::F64, shape.clone(), elements.clone())
+                .expect("valid f64 tensor");
+            black_box(tensor.to_f64_vec())
+        })
+    });
+    c.bench_function(
+        "core/tensor_value_new_forced_literal_then_to_f64_vec_1k",
+        |b| {
+            b.iter(|| {
+                let tensor = TensorValue::new_with_literal_buffer(
+                    DType::F64,
+                    shape.clone(),
+                    LiteralBuffer::new(elements.clone()),
+                )
+                .expect("valid literal-backed f64 tensor");
+                black_box(tensor.to_f64_vec())
+            })
+        },
+    );
 }
 
 fn bench_tensor_to_i64_vec(c: &mut Criterion) {
     let values: Vec<i64> = (0..4096).map(|i| i as i64 - 2048).collect();
     let shape = Shape::vector(values.len() as u32);
-    let dense = TensorValue::new_i64_values(shape.clone(), values.clone())
-        .expect("valid dense i64 tensor");
+    let dense =
+        TensorValue::new_i64_values(shape.clone(), values.clone()).expect("valid dense i64 tensor");
     let literal_elements = values.iter().copied().map(Literal::I64).collect();
     let literal = TensorValue::new_with_literal_buffer(
         DType::I64,
@@ -125,8 +155,7 @@ fn bench_tensor_repeat_axis0(c: &mut Criterion) {
     let values: Vec<f64> = (0..1024).map(|i| i as f64).collect();
     let shape = Shape::vector(values.len() as u32);
     let dense = Value::Tensor(
-        TensorValue::new_f64_values(shape.clone(), values.clone())
-            .expect("valid dense f64 tensor"),
+        TensorValue::new_f64_values(shape.clone(), values.clone()).expect("valid dense f64 tensor"),
     );
     let literal_elements = values.into_iter().map(Literal::from_f64).collect();
     let literal = Value::Tensor(
@@ -150,8 +179,7 @@ fn bench_tensor_stack_axis0(c: &mut Criterion) {
                 .map(|index| f64::from(slice * 1024 + index))
                 .collect();
             Value::Tensor(
-                TensorValue::new_f64_values(shape.clone(), values)
-                    .expect("valid dense f64 tensor"),
+                TensorValue::new_f64_values(shape.clone(), values).expect("valid dense f64 tensor"),
             )
         })
         .collect();
