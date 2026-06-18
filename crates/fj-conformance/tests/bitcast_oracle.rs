@@ -138,6 +138,35 @@ fn oracle_bitcast_f64_to_i64_zero() {
 }
 
 #[test]
+fn oracle_bitcast_f64_to_i64_preserves_special_value_bits() {
+    // bitcast is a pure bit reinterpretation, so NaN / +-inf / -0.0 must map to their
+    // exact IEEE bit patterns reinterpreted as i64 (matching XLA bitcast_convert) —
+    // no NaN canonicalization, no value change. Reference is Rust's f64::to_bits,
+    // which is the same bit-level reinterpretation (non-circular vs the eval path).
+    let vals = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.0_f64];
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![4] },
+            vals.iter().map(|&x| Literal::from_f64(x)).collect(),
+        )
+        .unwrap(),
+    );
+    let result = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    let got = extract_i64_vec(&result);
+    let expected: Vec<i64> = vals.iter().map(|&x| x.to_bits() as i64).collect();
+    assert_eq!(
+        got, expected,
+        "bitcast f64->i64 must preserve exact special-value bits (no canonicalization)"
+    );
+}
+
+#[test]
 fn oracle_bitcast_f64_to_i64_one() {
     // f64 1.0 has specific bit pattern
     let input = Value::Scalar(Literal::from_f64(1.0));
