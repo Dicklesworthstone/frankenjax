@@ -16,7 +16,7 @@
 //! - Broadcast-compatible operands
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
-use fj_lax::eval_primitive;
+use fj_lax::{eval_igamma_grad_a, eval_primitive};
 use std::collections::BTreeMap;
 
 fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
@@ -27,6 +27,19 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
                 dims: shape.to_vec(),
             },
             data.into_iter().map(Literal::from_f64).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_i64_tensor(shape: &[u32], data: Vec<i64>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(Literal::I64).collect(),
         )
         .unwrap(),
     )
@@ -344,6 +357,33 @@ fn oracle_igammac_rejects_integer_operands() {
     assert!(
         err.to_string().contains("floating operands"),
         "unexpected igammac integer operand error: {err}"
+    );
+}
+
+#[test]
+fn oracle_igamma_grad_a_rejects_integer_operands() {
+    let scalar_a_err = eval_igamma_grad_a(&[scalar_i64(2), scalar_f64(1.0)])
+        .expect_err("JAX igamma_grad_a is float-only and must reject integer a");
+    assert!(
+        scalar_a_err.to_string().contains("floating operands"),
+        "unexpected igamma_grad_a integer scalar a error: {scalar_a_err}"
+    );
+
+    let scalar_x_err = eval_igamma_grad_a(&[scalar_f64(2.0), scalar_i64(1)])
+        .expect_err("JAX igamma_grad_a is float-only and must reject integer x");
+    assert!(
+        scalar_x_err.to_string().contains("floating operands"),
+        "unexpected igamma_grad_a integer scalar x error: {scalar_x_err}"
+    );
+
+    let tensor_x_err = eval_igamma_grad_a(&[
+        make_f64_tensor(&[2], vec![2.0, 3.0]),
+        make_i64_tensor(&[2], vec![1, 2]),
+    ])
+    .expect_err("JAX igamma_grad_a is float-only and must reject integer tensor x");
+    assert!(
+        tensor_x_err.to_string().contains("floating operands"),
+        "unexpected igamma_grad_a integer tensor x error: {tensor_x_err}"
     );
 }
 

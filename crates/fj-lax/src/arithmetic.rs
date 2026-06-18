@@ -8049,6 +8049,7 @@ pub fn eval_igamma_grad_a(inputs: &[Value]) -> Result<Value, EvalError> {
             actual: inputs.len(),
         });
     }
+    ensure_float_operands(Primitive::Igamma, inputs)?;
     eval_binary_elementwise(
         Primitive::Igamma,
         inputs,
