@@ -231,6 +231,24 @@ fn oracle_conv_1d_multi_channel_out() {
     assert!((vals[3] - 3.0).abs() < 1e-10);
 }
 
+#[test]
+fn oracle_conv_1d_multi_channel_in() {
+    // Multi-INPUT-channel conv (c_in=2): the output sums over BOTH input channels
+    // (channel reduction) — the prior multi-channel test only exercised c_out. With
+    // an all-ones kernel of size 2 over channels {ch0=[1,2,3], ch1=[10,20,30]} the
+    // output is just the window-sum across both channels, which is commutative and
+    // so independent of the exact channel-interleaving layout:
+    //   p=0: (1+10)+(2+20) = 33;  p=1: (2+20)+(3+30) = 55
+    // lhs [batch=1, length=3, c_in=2] interleaved; rhs [kernel=2, c_in=2, c_out=1].
+    let lhs = make_f64_tensor(&[1, 3, 2], vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0]);
+    let rhs = make_f64_tensor(&[2, 2, 1], vec![1.0, 1.0, 1.0, 1.0]);
+    let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1")).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 2, 1]);
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 33.0).abs() < 1e-10, "(1+10)+(2+20) = 33");
+    assert!((vals[1] - 55.0).abs() < 1e-10, "(2+20)+(3+30) = 55");
+}
+
 // ======================== 2D Convolution Tests ========================
 
 #[test]
