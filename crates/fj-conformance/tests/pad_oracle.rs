@@ -399,6 +399,13 @@ fn oracle_pad_4d() {
     let params = pad_params(&[1, 0, 0, 0], &[0, 0, 0, 0], &[0, 0, 0, 0]);
     let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
     assert_eq!(extract_shape(&result), vec![3, 2, 2, 2]);
+    assert_eq!(
+        extract_i64_vec(&result),
+        vec![
+            0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+            16,
+        ]
+    );
 }
 
 #[test]
