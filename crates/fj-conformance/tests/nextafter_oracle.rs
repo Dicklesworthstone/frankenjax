@@ -87,6 +87,23 @@ fn nextafter_f64_scalar(x: f64, y: f64) -> Result<f64, String> {
     }
 }
 
+fn nextafter_f32_scalar(x: f32, y: f32) -> Result<f32, String> {
+    let result = eval_primitive(
+        Primitive::Nextafter,
+        &[
+            Value::Scalar(Literal::from_f32(x)),
+            Value::Scalar(Literal::from_f32(y)),
+        ],
+        &no_params(),
+    )
+    .map_err(|err| format!("{err:?}"))?;
+    let values = extract_f32_vec(&result)?;
+    values
+        .first()
+        .copied()
+        .ok_or_else(|| format!("expected scalar nextafter result, got {result:?}"))
+}
+
 fn assert_f32_tensor_dtype(value: &Value) {
     assert!(
         matches!(value, Value::Tensor(t) if t.dtype == DType::F32),
@@ -170,6 +187,25 @@ fn oracle_nextafter_zero_f64_subnormal_bits() -> Result<(), String> {
 }
 
 #[test]
+fn oracle_nextafter_f64_equal_signed_zero_uses_target_sign() -> Result<(), String> {
+    let positive_to_negative = nextafter_f64_scalar(0.0, -0.0)?;
+    assert_eq!(
+        positive_to_negative.to_bits(),
+        (-0.0_f64).to_bits(),
+        "nextafter(+0.0, -0.0) must return target -0.0"
+    );
+
+    let negative_to_positive = nextafter_f64_scalar(-0.0, 0.0)?;
+    assert_eq!(
+        negative_to_positive.to_bits(),
+        0.0_f64.to_bits(),
+        "nextafter(-0.0, +0.0) must return target +0.0"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn oracle_nextafter_nan_x() {
     // nextafter(NaN, y) = NaN
     let a = Value::Scalar(Literal::from_f64(f64::NAN));
@@ -198,6 +234,25 @@ fn oracle_nextafter_f32_scalar_preserves_dtype() -> Result<(), String> {
     let vals = extract_f32_vec(&result)?;
     assert!(vals[0] > 1.0);
     assert!(vals[0] < 1.0 + 1e-5);
+    Ok(())
+}
+
+#[test]
+fn oracle_nextafter_f32_equal_signed_zero_uses_target_sign() -> Result<(), String> {
+    let positive_to_negative = nextafter_f32_scalar(0.0, -0.0)?;
+    assert_eq!(
+        positive_to_negative.to_bits(),
+        (-0.0_f32).to_bits(),
+        "nextafter(+0.0f32, -0.0f32) must return target -0.0"
+    );
+
+    let negative_to_positive = nextafter_f32_scalar(-0.0, 0.0)?;
+    assert_eq!(
+        negative_to_positive.to_bits(),
+        0.0_f32.to_bits(),
+        "nextafter(-0.0f32, +0.0f32) must return target +0.0"
+    );
+
     Ok(())
 }
 
