@@ -1274,39 +1274,28 @@ fn erf_vjp_numerical_f64_value_sanity() {
     );
 }
 
-/// Complex64 scalar Cbrt VJP (frankenjax-6bfr).
+/// Complex64 Cbrt VJP must FAIL CLOSED (frankenjax-w8u0a).
 ///
-/// `d/dz cbrt(z) = 1/(3 * cbrt(z)²)` → `g_z = g/(3*cbrt(z)²)`. Pick
-/// `z = 8 + 0i` so cbrt is real: cbrt(8) = 2. Then 3*cbrt(z)² = 12,
-/// so g_z = g/12 = (1+0i)/12 ≈ 0.0833 + 0i.
+/// JAX's `cbrt` is `standard_unop(_float)` — complex is rejected — so its forward
+/// eval fails closed (commit eb5ad225) and therefore its gradient is undefined for
+/// complex too: the cbrt VJP rule evaluates the forward cbrt, which surfaces the
+/// "operation is not supported for complex operands" error. (Was: asserted a
+/// complex VJP value of g/12, stale since the forward fail-close.)
 #[test]
 fn cbrt_vjp_numerical_complex64() {
-    use fj_core::Literal::Complex64Bits;
-
     let z = Value::Scalar(Literal::from_complex64(8.0, 0.0));
     let g = Value::Scalar(Literal::from_complex64(1.0, 0.0));
 
-    let grads = fj_ad::vjp_single(
+    let result = fj_ad::vjp_single(
         Primitive::Cbrt,
         std::slice::from_ref(&z),
         &g,
         &BTreeMap::new(),
-    )
-    .expect("cbrt VJP should accept complex64 scalar");
-    assert_eq!(grads.len(), 1);
-
-    match grads[0] {
-        Value::Scalar(Complex64Bits(re, im)) => {
-            let re = f32::from_bits(re);
-            let im = f32::from_bits(im);
-            let expected = 1.0_f32 / 12.0;
-            assert!(
-                (re - expected).abs() < 1e-5 && im.abs() < 1e-5,
-                "g_z should be ({expected}, 0); got ({re}, {im})"
-            );
-        }
-        ref other => panic!("expected Complex64 scalar, got {other:?}"),
-    }
+    );
+    assert!(
+        result.is_err(),
+        "complex cbrt VJP must fail closed (JAX cbrt is float-only); got {result:?}"
+    );
 }
 
 /// Complex64 scalar Square VJP (frankenjax-t8rl).
