@@ -3663,6 +3663,62 @@ fn select_n_64k_u32_inputs(dense: bool) -> [Value; 4] {
     [idx, mk(0), mk(11), mk(29)]
 }
 
+fn select_n_64k_u32_bool_index_inputs(dense: bool) -> [Value; 3] {
+    let dims = vec![LARGE_ELEMENTWISE_LEN as u32];
+    let shape = Shape { dims: dims.clone() };
+    let mut words = vec![0u64; LARGE_ELEMENTWISE_LEN.div_ceil(64)];
+    let bools: Vec<bool> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| {
+            let flag = (i.wrapping_mul(17).wrapping_add(11)) % 19 < 9;
+            if flag {
+                words[i / 64] |= 1_u64 << (i % 64);
+            }
+            flag
+        })
+        .collect();
+    let idx = if dense {
+        Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                shape,
+                fj_core::LiteralBuffer::from_bool_words(words, LARGE_ELEMENTWISE_LEN).unwrap(),
+            )
+            .unwrap(),
+        )
+    } else {
+        Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                shape,
+                bools.into_iter().map(Literal::Bool).collect(),
+            )
+            .unwrap(),
+        )
+    };
+    let mk = |seed: u32| {
+        let data: Vec<u32> = (0..LARGE_ELEMENTWISE_LEN)
+            .map(|i| {
+                (i as u32)
+                    .wrapping_mul(2_654_435_761)
+                    .wrapping_add(seed)
+            })
+            .collect();
+        if dense {
+            Value::Tensor(TensorValue::new_u32_values(Shape { dims: dims.clone() }, data).unwrap())
+        } else {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::U32,
+                    Shape { dims: dims.clone() },
+                    data.into_iter().map(Literal::U32).collect(),
+                )
+                .unwrap(),
+            )
+        }
+    };
+    [idx, mk(0), mk(11)]
+}
+
 fn bench_select_n_64k_u32_vec(c: &mut Criterion) {
     let inputs = select_n_64k_u32_inputs(true);
     let p = no_params();
@@ -3675,6 +3731,22 @@ fn bench_select_n_64k_u32_literal_reference(c: &mut Criterion) {
     let inputs = select_n_64k_u32_inputs(false);
     let p = no_params();
     c.bench_function("eval/select_n_64k_u32_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::SelectN, &inputs, &p))
+    });
+}
+
+fn bench_select_n_64k_u32_boolwords_index_vec(c: &mut Criterion) {
+    let inputs = select_n_64k_u32_bool_index_inputs(true);
+    let p = no_params();
+    c.bench_function("eval/select_n_64k_u32_boolwords_index_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::SelectN, &inputs, &p))
+    });
+}
+
+fn bench_select_n_64k_u32_bool_index_literal_reference(c: &mut Criterion) {
+    let inputs = select_n_64k_u32_bool_index_inputs(false);
+    let p = no_params();
+    c.bench_function("eval/select_n_64k_u32_bool_index_literal_ref", |bencher| {
         bencher.iter(|| eval_primitive(Primitive::SelectN, &inputs, &p))
     });
 }
@@ -5741,6 +5813,8 @@ criterion_group!(
     bench_select_64k_i64_literal_reference,
     bench_select_n_64k_u32_vec,
     bench_select_n_64k_u32_literal_reference,
+    bench_select_n_64k_u32_boolwords_index_vec,
+    bench_select_n_64k_u32_bool_index_literal_reference,
     bench_complex_mul_1k,
     bench_complex_mul_1m_literal,
     bench_complex_mul_1m_dense,

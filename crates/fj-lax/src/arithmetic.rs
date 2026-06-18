@@ -6709,10 +6709,10 @@ pub(crate) fn eval_select_n(primitive: Primitive, inputs: &[Value]) -> Result<Va
             // Dense fast paths (cond/switch per-element select): when every operand
             // shares a dense typed backing, pick operand[idx[i]][i] straight from the
             // contiguous slices into dense output, skipping the per-`Literal`
-            // materialization of each picked element AND the boxed output. The index
-            // is still decoded per element via select_n_index_to_usize (preserving
-            // its Bool/int handling, bounds errors, and >2-operand-Bool rejection),
-            // so behavior is identical; only the (bulk) operand read/output is dense.
+            // materialization of each picked element AND the boxed output. Dense index
+            // buffers are decoded from their native backing (including packed BoolWords);
+            // unsupported index layouts fall back to select_n_index_to_usize, preserving
+            // Bool/int handling, bounds errors, and >2-operand-Bool rejection.
             // Bit-for-bit identical: operand slice[i] == operand.elements[i].
             macro_rules! dense_select_n {
                 ($accessor:ident, $ctor:expr) => {{
@@ -6735,12 +6735,9 @@ pub(crate) fn eval_select_n(primitive: Primitive, inputs: &[Value]) -> Result<Va
                     }
                     if all_dense {
                         let mut out = Vec::with_capacity(idx_tensor.elements.len());
-                        if let Some(idxs) = idx_tensor.elements.as_i64_slice() {
-                            // Dense i64 index (switch lowering): decode inline,
-                            // matching select_n_index_to_usize for an I64 literal
-                            // exactly (`v as usize`, OOB -> same error message).
-                            for (i, &iv) in idxs.iter().enumerate() {
-                                let u = iv as usize;
+                        macro_rules! push_dense_index {
+                            ($pos:expr, $idx:expr) => {{
+                                let u = $idx;
                                 if u >= n_operands {
                                     return Err(EvalError::Unsupported {
                                         primitive,
@@ -6749,11 +6746,58 @@ pub(crate) fn eval_select_n(primitive: Primitive, inputs: &[Value]) -> Result<Va
                                         ),
                                     });
                                 }
-                                out.push(op_slices[u][i]);
+                                out.push(op_slices[u][$pos]);
+                            }};
+                        }
+                        if let Some(idxs) = idx_tensor.elements.as_i64_slice() {
+                            // Dense i64 index (switch lowering): decode inline,
+                            // matching select_n_index_to_usize for an I64 literal
+                            // exactly (`v as usize`, OOB -> same error message).
+                            for (i, &iv) in idxs.iter().enumerate() {
+                                push_dense_index!(i, iv as usize);
+                            }
+                        } else if let Some(idxs) = idx_tensor.elements.as_u32_slice() {
+                            // Dense u32 switch table IDs: Literal::U32(v).as_i64()
+                            // is always Some(v as i64), so this is the same decode
+                            // without per-element Literal materialization.
+                            for (i, &iv) in idxs.iter().enumerate() {
+                                push_dense_index!(i, iv as usize);
+                            }
+                        } else if let Some(idxs) = idx_tensor.elements.as_u64_slice() {
+                            // Dense u64 table IDs preserve Literal::U64(v).as_i64():
+                            // values above i64::MAX are a TypeMismatch before bounds.
+                            for (i, &iv) in idxs.iter().enumerate() {
+                                let signed =
+                                    i64::try_from(iv).map_err(|_| EvalError::TypeMismatch {
+                                        primitive,
+                                        detail: "select_n index must be an integer or boolean",
+                                    })?;
+                                push_dense_index!(i, signed as usize);
+                            }
+                        } else if let Some(idxs) = idx_tensor.elements.as_bool_slice() {
+                            if n_operands > 2 {
+                                return Err(EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: "select_n with boolean index requires at most 2 operands",
+                                });
+                            }
+                            for (i, &flag) in idxs.iter().enumerate() {
+                                push_dense_index!(i, if flag { 1 } else { 0 });
+                            }
+                        } else if let Some((words, len)) = idx_tensor.elements.as_bool_words() {
+                            if n_operands > 2 {
+                                return Err(EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: "select_n with boolean index requires at most 2 operands",
+                                });
+                            }
+                            for i in 0..len {
+                                let flag = (words[i / 64] >> (i % 64)) & 1 != 0;
+                                push_dense_index!(i, if flag { 1 } else { 0 });
                             }
                         } else {
-                            // Bool / other index dtypes: keep per-`Literal` decode
-                            // (preserves Bool->{0,1} with >2-operand rejection).
+                            // Other index layouts: keep per-`Literal` decode
+                            // (preserves all scalar conversion edge cases).
                             for (i, idx_lit) in idx_tensor.elements.iter().enumerate() {
                                 let idx = select_n_index_to_usize(*idx_lit, n_operands, primitive)?;
                                 out.push(op_slices[idx][i]);
@@ -19603,6 +19647,137 @@ mod tests {
         assert!(
             d.as_tensor().unwrap().elements.as_u64_slice().is_some(),
             "u64 dense out"
+        );
+
+        // Dense unsigned index tensors: switch/table IDs produced as u32/u64
+        // buffers should decode without boxing every index Literal.
+        let idx_u32_values: Vec<u32> = (0..n).map(|i| (i % 3) as u32).collect();
+        let idx_u32_dense = Value::Tensor(
+            TensorValue::new_u32_values(Shape { dims: dims.clone() }, idx_u32_values.clone())
+                .unwrap(),
+        );
+        let idx_u32_boxed = Value::Tensor(
+            TensorValue::new(
+                DType::U32,
+                Shape { dims: dims.clone() },
+                idx_u32_values.iter().copied().map(Literal::U32).collect(),
+            )
+            .unwrap(),
+        );
+        let (da, ba) = mk_u32(101);
+        let (db, bb) = mk_u32(211);
+        let (dc, bc) = mk_u32(307);
+        let d = eval_select_n(Primitive::SelectN, &[idx_u32_dense, da, db, dc]).unwrap();
+        let l = eval_select_n(Primitive::SelectN, &[idx_u32_boxed, ba, bb, bc]).unwrap();
+        assert_eq!(lits(&d), lits(&l), "u32-index select_n");
+        assert!(
+            d.as_tensor().unwrap().elements.as_u32_slice().is_some(),
+            "u32-index dense out"
+        );
+
+        let idx_u64_values: Vec<u64> = (0..n).map(|i| (i % 3) as u64).collect();
+        let idx_u64_dense = Value::Tensor(
+            TensorValue::new_u64_values(Shape { dims: dims.clone() }, idx_u64_values.clone())
+                .unwrap(),
+        );
+        let idx_u64_boxed = Value::Tensor(
+            TensorValue::new(
+                DType::U64,
+                Shape { dims: dims.clone() },
+                idx_u64_values.iter().copied().map(Literal::U64).collect(),
+            )
+            .unwrap(),
+        );
+        let (da, ba) = mk_u64(13);
+        let (db, bb) = mk_u64(89);
+        let (dc, bc) = mk_u64(144);
+        let d = eval_select_n(Primitive::SelectN, &[idx_u64_dense, da, db, dc]).unwrap();
+        let l = eval_select_n(Primitive::SelectN, &[idx_u64_boxed, ba, bb, bc]).unwrap();
+        assert_eq!(lits(&d), lits(&l), "u64-index select_n");
+        assert!(
+            d.as_tensor().unwrap().elements.as_u64_slice().is_some(),
+            "u64-index dense out"
+        );
+
+        let huge_u64_idx = Value::Tensor(
+            TensorValue::new_u64_values(
+                Shape { dims: vec![1] },
+                vec![(i64::MAX as u64).wrapping_add(1)],
+            )
+            .unwrap(),
+        );
+        let small_u64_case = |value: u64| {
+            Value::Tensor(
+                TensorValue::new_u64_values(Shape { dims: vec![1] }, vec![value]).unwrap(),
+            )
+        };
+        let huge_u64_err = eval_select_n(
+            Primitive::SelectN,
+            &[
+                huge_u64_idx,
+                small_u64_case(1),
+                small_u64_case(2),
+                small_u64_case(3),
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                huge_u64_err,
+                EvalError::TypeMismatch {
+                    detail: "select_n index must be an integer or boolean",
+                    ..
+                }
+            ),
+            "{huge_u64_err:?}"
+        );
+
+        // Packed BoolWords index tensor: two-way select_n should bit-test the
+        // index buffer directly, and >2 operands must still reject boolean index.
+        let mut idx_words = vec![0u64; n.div_ceil(64)];
+        let bool_idx_lits: Vec<Literal> = (0..n)
+            .map(|i| {
+                let flag = (i.wrapping_mul(17).wrapping_add(11)) % 19 < 9;
+                if flag {
+                    idx_words[i / 64] |= 1_u64 << (i % 64);
+                }
+                Literal::Bool(flag)
+            })
+            .collect();
+        let idx_bool_words = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::Bool,
+                Shape { dims: dims.clone() },
+                fj_core::LiteralBuffer::from_bool_words(idx_words, n).unwrap(),
+            )
+            .unwrap(),
+        );
+        let idx_bool_boxed = Value::Tensor(
+            TensorValue::new(DType::Bool, Shape { dims: dims.clone() }, bool_idx_lits).unwrap(),
+        );
+        let (da, ba) = mk_u32(707);
+        let (db, bb) = mk_u32(909);
+        let d = eval_select_n(Primitive::SelectN, &[idx_bool_words.clone(), da, db]).unwrap();
+        let l = eval_select_n(Primitive::SelectN, &[idx_bool_boxed, ba, bb]).unwrap();
+        assert_eq!(lits(&d), lits(&l), "BoolWords-index select_n");
+        assert!(
+            d.as_tensor().unwrap().elements.as_u32_slice().is_some(),
+            "BoolWords-index dense out"
+        );
+        let bool_words_three_way_err = eval_select_n(
+            Primitive::SelectN,
+            &[idx_bool_words, mk_u32(1).0, mk_u32(2).0, mk_u32(3).0],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                bool_words_three_way_err,
+                EvalError::TypeMismatch {
+                    detail: "select_n with boolean index requires at most 2 operands",
+                    ..
+                }
+            ),
+            "{bool_words_three_way_err:?}"
         );
 
         // Bool case tensors: nested where/switch masks should stay dense Bool.
