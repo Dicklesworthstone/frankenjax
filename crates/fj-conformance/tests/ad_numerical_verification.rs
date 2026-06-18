@@ -4380,6 +4380,29 @@ fn broadcast_in_dim_vjp_sums_over_broadcast_axes() {
 }
 
 #[test]
+fn rev_vjp_reverses_the_cotangent() {
+    // rev is its own inverse, so its VJP reverses the cotangent along the same axes.
+    let input = make_f64_vector(&[1.0, 2.0, 3.0]);
+    let mut params = BTreeMap::new();
+    params.insert("axes".to_string(), "0".to_string());
+    let out = eval_primitive(Primitive::Rev, std::slice::from_ref(&input), &params).unwrap();
+    let g = make_f64_vector(&[10.0, 20.0, 30.0]);
+    let vjp = fj_ad::vjp(
+        Primitive::Rev,
+        std::slice::from_ref(&input),
+        std::slice::from_ref(&g),
+        std::slice::from_ref(&out),
+        &params,
+    )
+    .unwrap();
+    assert_eq!(
+        extract_f64_vec(&vjp[0]),
+        vec![30.0, 20.0, 10.0],
+        "rev VJP reverses the cotangent"
+    );
+}
+
+#[test]
 fn igamma_igammac_vjp_numerical() {
     // igamma(a, x): grad w.r.t. a (igamma_grad_a's dedicated series — the most error-prone)
     // AND x (x^(a-1)·e^{-x}/Gamma(a)). igammac = 1 - igamma, so its grads are negated.
