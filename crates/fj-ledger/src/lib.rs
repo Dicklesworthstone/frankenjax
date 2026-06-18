@@ -361,6 +361,9 @@ impl EProcess {
     }
 
     pub fn update(&mut self, likelihood_ratio: f64) {
+        if !likelihood_ratio.is_finite() {
+            return;
+        }
         self.e_value *= likelihood_ratio.max(0.0);
         self.observations += 1;
     }
@@ -555,6 +558,23 @@ mod tests {
         }
         assert!(!ep.rejected());
         assert!((ep.e_value() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn e_process_ignores_non_finite_likelihood_ratios() {
+        let mut ep = super::EProcess::new(20.0);
+        ep.update(2.0);
+        ep.update(f64::NAN);
+        ep.update(f64::INFINITY);
+        ep.update(f64::NEG_INFINITY);
+
+        assert_eq!(ep.observations(), 1);
+        assert_eq!(ep.e_value().to_bits(), 2.0_f64.to_bits());
+        assert!(!ep.rejected());
+
+        ep.update(3.0);
+        assert_eq!(ep.observations(), 2);
+        assert_eq!(ep.e_value().to_bits(), 6.0_f64.to_bits());
     }
 
     #[test]
