@@ -29,6 +29,36 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
     )
 }
 
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
@@ -51,6 +81,34 @@ fn extract_shape(v: &Value) -> Vec<u32> {
         Value::Tensor(t) => t.shape.dims.clone(),
         _ => unreachable!("expected tensor"),
     }
+}
+
+fn extract_complex_vec(v: &Value) -> Vec<(f64, f64)> {
+    let tensor = v.as_tensor().expect("expected tensor result");
+    tensor
+        .elements
+        .iter()
+        .map(|literal| match *literal {
+            Literal::Complex64Bits(re, im) => (f32::from_bits(re) as f64, f32::from_bits(im) as f64),
+            Literal::Complex128Bits(re, im) => (f64::from_bits(re), f64::from_bits(im)),
+            other => panic!("expected complex literal, got {other:?}"),
+        })
+        .collect()
+}
+
+fn assert_complex_close(actual: (f64, f64), expected: (f64, f64), tol: f64, label: &str) {
+    assert!(
+        (actual.0 - expected.0).abs() <= tol,
+        "{label} real: expected {}, got {}",
+        expected.0,
+        actual.0
+    );
+    assert!(
+        (actual.1 - expected.1).abs() <= tol,
+        "{label} imag: expected {}, got {}",
+        expected.1,
+        actual.1
+    );
 }
 
 fn no_params() -> BTreeMap<String, String> {
@@ -456,4 +514,38 @@ fn property_logaddexp2_preserves_all_float_dtypes() {
         t.validate_dtype_consistency()
             .expect("literal/dtype consistency");
     }
+}
+
+#[test]
+fn oracle_logaddexp2_complex64_equal_values() {
+    let x = make_complex64_tensor(&[2], vec![(0.0, 0.0), (1.0, 0.25)]);
+    let y = make_complex64_tensor(&[2], vec![(0.0, 0.0), (1.0, 0.25)]);
+    let result = eval_primitive(Primitive::LogAddExp2, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(result.dtype(), DType::Complex64);
+    let actual = extract_complex_vec(&result);
+    assert_complex_close(actual[0], (1.0, 0.0), 1e-6, "complex64 logaddexp2(0,0)");
+    assert_complex_close(
+        actual[1],
+        (2.0, 0.25),
+        1e-6,
+        "complex64 logaddexp2(z,z)",
+    );
+}
+
+#[test]
+fn oracle_logaddexp2_complex128_equal_values() {
+    let x = make_complex128_tensor(&[2], vec![(0.0, 0.0), (2.0, -0.25)]);
+    let y = make_complex128_tensor(&[2], vec![(0.0, 0.0), (2.0, -0.25)]);
+    let result = eval_primitive(Primitive::LogAddExp2, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(result.dtype(), DType::Complex128);
+    let actual = extract_complex_vec(&result);
+    assert_complex_close(actual[0], (1.0, 0.0), 1e-14, "complex128 logaddexp2(0,0)");
+    assert_complex_close(
+        actual[1],
+        (3.0, -0.25),
+        1e-14,
+        "complex128 logaddexp2(z,z)",
+    );
 }

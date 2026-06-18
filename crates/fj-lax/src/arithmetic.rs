@@ -126,7 +126,11 @@ fn is_expensive_binary(primitive: Primitive) -> bool {
 fn is_expensive_complex_binary(primitive: Primitive) -> bool {
     matches!(
         primitive,
-        Primitive::Pow | Primitive::Atan2 | Primitive::LogAddExp | Primitive::XLogY
+        Primitive::Pow
+            | Primitive::Atan2
+            | Primitive::LogAddExp
+            | Primitive::LogAddExp2
+            | Primitive::XLogY
     )
 }
 
@@ -2241,11 +2245,33 @@ fn apply_complex_binary(
             let sum = complex_add(exp_lhs, exp_rhs);
             Ok(complex_log(sum))
         }
+        Primitive::LogAddExp2 => {
+            let amax = if complex_lex_ge(lhs, rhs) { lhs } else { rhs };
+            let delta = complex_sub(complex_add(lhs, rhs), (2.0 * amax.0, 2.0 * amax.1));
+            let exp2_delta = complex_exp((
+                delta.0 * std::f64::consts::LN_2,
+                delta.1 * std::f64::consts::LN_2,
+            ));
+            let log1p = complex_log(complex_add((1.0, 0.0), exp2_delta));
+            let inv_ln2 = 1.0 / std::f64::consts::LN_2;
+            let out = complex_add(amax, (log1p.0 * inv_ln2, log1p.1 * inv_ln2));
+            Ok((
+                out.0,
+                wrap_between(out.1, std::f64::consts::PI * inv_ln2),
+            ))
+        }
         _ => Err(EvalError::TypeMismatch {
             primitive,
             detail: complex_binary_unsupported_detail(primitive),
         }),
     }
+}
+
+fn wrap_between(x: f64, a: f64) -> f64 {
+    let two_a = 2.0 * a;
+    let rem = (x + a) % two_a;
+    let rem = if rem < 0.0 { rem + two_a } else { rem };
+    rem - a
 }
 
 fn complex_sub(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
@@ -2923,7 +2949,8 @@ fn eval_binary_elementwise_complex(
         | Primitive::Min
         | Primitive::Pow
         | Primitive::XLogY
-        | Primitive::LogAddExp => {}
+        | Primitive::LogAddExp
+        | Primitive::LogAddExp2 => {}
         _ => {
             return Err(EvalError::TypeMismatch {
                 primitive,
@@ -2949,7 +2976,7 @@ fn eval_binary_elementwise_complex(
                 }
 
                 // Threaded dense fast path for the EXPENSIVE complex binary ops
-                // (Pow/XLogY/LogAddExp — each several complex transcendentals
+                // (Pow/XLogY/LogAddExp/LogAddExp2 — each several complex transcendentals
                 // per element). `apply_complex_binary` is infallible for these, and
                 // the packed values + dtype narrowing match the serial path, so this
                 // is bit-for-bit identical.
