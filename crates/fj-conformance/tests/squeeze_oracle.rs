@@ -519,6 +519,8 @@ fn oracle_squeeze_complex64_explicit() {
     let input = make_complex64_tensor(&[1, 2, 1], vec![(1.0, 2.0), (3.0, 4.0)]);
     let result = eval_primitive(Primitive::Squeeze, &[input], &squeeze_params(&[0])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 1]);
+    assert_eq!(extract_complex64_vec(&result), vec![(1.0, 2.0), (3.0, 4.0)]);
+    assert_eq!(result.dtype(), DType::Complex64);
 }
 
 #[test]
