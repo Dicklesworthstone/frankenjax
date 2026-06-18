@@ -1657,7 +1657,118 @@ impl LiteralBuffer {
 
     #[must_use]
     pub fn to_vec(&self) -> Vec<Literal> {
-        self.as_slice().to_vec()
+        match &self.storage {
+            LiteralBufferStorage::Literals(elements) => elements.as_ref().clone(),
+            LiteralBufferStorage::F64 { values, literals } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                values.iter().copied().map(Literal::from_f64).collect()
+            }
+            LiteralBufferStorage::F64OnePlusXPlusX {
+                base,
+                values,
+                literals,
+            } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                values
+                    .get_or_init(|| Arc::new(materialize_f64_one_plus_x_plus_x(base)))
+                    .iter()
+                    .copied()
+                    .map(Literal::from_f64)
+                    .collect()
+            }
+            LiteralBufferStorage::F32 { values, literals } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                values.iter().copied().map(Literal::from_f32).collect()
+            }
+            LiteralBufferStorage::I64 { values, literals } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                values.iter().copied().map(Literal::I64).collect()
+            }
+            LiteralBufferStorage::Bool { values, literals } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                values.iter().copied().map(Literal::Bool).collect()
+            }
+            LiteralBufferStorage::BoolWords {
+                words,
+                len,
+                literals,
+            } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                materialize_bool_words(words, *len)
+            }
+            LiteralBufferStorage::Complex {
+                values,
+                dtype,
+                literals,
+            } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                values
+                    .iter()
+                    .map(|&(re, im)| complex_pair_to_literal(re, im, *dtype))
+                    .collect()
+            }
+            LiteralBufferStorage::HalfFloat {
+                values,
+                dtype,
+                literals,
+            } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                values
+                    .iter()
+                    .map(|&bits| half_bits_to_literal(bits, *dtype))
+                    .collect()
+            }
+            LiteralBufferStorage::U32 { values, literals } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                values.iter().copied().map(Literal::U32).collect()
+            }
+            LiteralBufferStorage::U64 { values, literals } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                values.iter().copied().map(Literal::U64).collect()
+            }
+            LiteralBufferStorage::RepeatedPatches {
+                base,
+                repeats,
+                patches,
+                literals,
+            } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                materialize_repeated_patches(base, *repeats, patches)
+            }
+            LiteralBufferStorage::Concat {
+                parts,
+                len,
+                literals,
+                ..
+            } => {
+                if let Some(elements) = clone_cached_literals(literals) {
+                    return elements;
+                }
+                materialize_concat_slices(parts, *len)
+            }
+        }
     }
 
     fn make_mut(&mut self) -> &mut Vec<Literal> {
@@ -2152,6 +2263,10 @@ fn complex_pair_to_literal(re: f64, im: f64, dtype: DType) -> Literal {
         DType::Complex64 => Literal::from_complex64(re as f32, im as f32),
         _ => Literal::from_complex128(re, im),
     }
+}
+
+fn clone_cached_literals(literals: &OnceLock<Arc<Vec<Literal>>>) -> Option<Vec<Literal>> {
+    literals.get().map(|elements| elements.as_ref().clone())
 }
 
 /// Materialize a dense half-float bit pattern into the matching `Literal`. The
@@ -8935,6 +9050,74 @@ mod tests {
             "literal-backed parts keep the dense accessor unavailable"
         );
         Ok(())
+    }
+
+    #[test]
+    fn literal_buffer_to_vec_direct_paths_match_slice_materialization() {
+        fn assert_direct_to_vec_matches_slice(buffer: LiteralBuffer) {
+            let direct = buffer.to_vec();
+            let slice_materialized = buffer.as_slice().to_vec();
+            assert_eq!(direct, slice_materialized);
+        }
+
+        assert_direct_to_vec_matches_slice(LiteralBuffer::from_f64_values(vec![
+            1.0,
+            -0.0,
+            f64::from_bits(0x7ff8_0000_0000_0042),
+        ]));
+        assert_direct_to_vec_matches_slice(LiteralBuffer::from_f64_one_plus_x_plus_x(
+            std::sync::Arc::new(vec![0.25, -0.5]),
+        ));
+        assert_direct_to_vec_matches_slice(LiteralBuffer::from_f32_values(vec![
+            1.0,
+            -0.0,
+            f32::from_bits(0x7fc0_0042),
+        ]));
+        assert_direct_to_vec_matches_slice(LiteralBuffer::from_i64_values(vec![
+            i64::MIN,
+            -1,
+            0,
+            7,
+        ]));
+        assert_direct_to_vec_matches_slice(LiteralBuffer::from_u32_values(vec![0, 17, u32::MAX]));
+        assert_direct_to_vec_matches_slice(LiteralBuffer::from_u64_values(vec![0, 17, u64::MAX]));
+        assert_direct_to_vec_matches_slice(LiteralBuffer::from_bool_values(vec![
+            true, false, true,
+        ]));
+        assert_direct_to_vec_matches_slice(
+            LiteralBuffer::from_bool_words(vec![0b1011], 4).expect("valid bool words"),
+        );
+        assert_direct_to_vec_matches_slice(LiteralBuffer::from_half_float_values(
+            vec![0x3c00, 0xbc00, 0x7e00],
+            DType::F16,
+        ));
+        assert_direct_to_vec_matches_slice(LiteralBuffer::from_half_float_values(
+            vec![0x3f80, 0xbf80, 0x7fc0],
+            DType::BF16,
+        ));
+        assert_direct_to_vec_matches_slice(LiteralBuffer::from_complex_values(
+            vec![(1.0, -2.0), (3.5, 4.25)],
+            DType::Complex64,
+        ));
+        assert_direct_to_vec_matches_slice(LiteralBuffer::from_complex_values(
+            vec![(1.0, -2.0), (3.5, 4.25)],
+            DType::Complex128,
+        ));
+        assert_direct_to_vec_matches_slice(
+            LiteralBuffer::from_repeated_with_patches(
+                vec![Literal::I64(1), Literal::I64(2)],
+                3,
+                vec![(1, Literal::I64(99)), (4, Literal::I64(-5))],
+            )
+            .expect("valid repeated patches"),
+        );
+        assert_direct_to_vec_matches_slice(
+            LiteralBuffer::from_concat_slices(vec![
+                (LiteralBuffer::from_f64_values(vec![1.0, 2.0, 3.0]), 1, 2),
+                (LiteralBuffer::new(vec![Literal::from_f64(4.0)]), 0, 1),
+            ])
+            .expect("valid concat slices"),
+        );
     }
 
     #[test]

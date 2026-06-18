@@ -151,6 +151,19 @@ fn bench_tensor_to_i64_vec(c: &mut Criterion) {
     });
 }
 
+fn bench_literal_buffer_to_vec(c: &mut Criterion) {
+    let values: Vec<f64> = (0..65_536).map(|i| i as f64 + 0.25).collect();
+    let dense = LiteralBuffer::from_f64_values(values.clone());
+    let literal = LiteralBuffer::new(values.into_iter().map(Literal::from_f64).collect());
+
+    c.bench_function("core/literal_buffer_to_vec_dense_f64_64k", |b| {
+        b.iter(|| black_box(&dense).to_vec())
+    });
+    c.bench_function("core/literal_buffer_to_vec_literal_f64_64k", |b| {
+        b.iter(|| black_box(&literal).to_vec())
+    });
+}
+
 fn bench_tensor_repeat_axis0(c: &mut Criterion) {
     let values: Vec<f64> = (0..1024).map(|i| i as f64).collect();
     let shape = Shape::vector(values.len() as u32);
@@ -235,6 +248,7 @@ criterion_group!(
     bench_jaxpr_validate_large,
     bench_tensor_value_new,
     bench_tensor_to_i64_vec,
+    bench_literal_buffer_to_vec,
     bench_tensor_repeat_axis0,
     bench_tensor_stack_axis0,
     bench_value_scalar_f64,
