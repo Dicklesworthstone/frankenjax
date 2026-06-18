@@ -2132,3 +2132,43 @@ fn clamp_jvp_routes_tangent_through_active_branch() {
     assert_eq!(jvp(-0.5), 1.0, "below min: tangent flows from min");
     assert_eq!(jvp(1.5), 3.0, "above max: tangent flows from max");
 }
+
+#[test]
+fn rev_jvp_reverses_the_tangent() {
+    // Forward-mode dual of the Rev VJP: rev is linear, so the JVP reverses the tangent.
+    let mut params = BTreeMap::new();
+    params.insert("axes".to_string(), "0".to_string());
+    let jaxpr = make_single_input_jaxpr(Primitive::Rev, params);
+    let r = fj_ad::jvp(
+        &jaxpr,
+        &[make_f64_vector(&[1.0, 2.0, 3.0])],
+        &[make_f64_vector(&[10.0, 20.0, 30.0])],
+    )
+    .unwrap();
+    assert_eq!(
+        extract_f64_vec(&r.tangents[0]),
+        vec![30.0, 20.0, 10.0],
+        "rev JVP reverses the tangent"
+    );
+}
+
+#[test]
+fn broadcast_in_dim_jvp_broadcasts_the_tangent() {
+    // BroadcastInDim is linear, so its JVP broadcasts the tangent like the primal.
+    // input [3] -> [2,3] (broadcast_dimensions=[1]); tangent [1,2,3] -> [[1,2,3],[1,2,3]].
+    let mut params = BTreeMap::new();
+    params.insert("shape".to_string(), "2,3".to_string());
+    params.insert("broadcast_dimensions".to_string(), "1".to_string());
+    let jaxpr = make_single_input_jaxpr(Primitive::BroadcastInDim, params);
+    let r = fj_ad::jvp(
+        &jaxpr,
+        &[make_f64_vector(&[1.0, 2.0, 3.0])],
+        &[make_f64_vector(&[1.0, 2.0, 3.0])],
+    )
+    .unwrap();
+    assert_eq!(
+        extract_f64_vec(&r.tangents[0]),
+        vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+        "broadcast_in_dim JVP broadcasts the tangent"
+    );
+}
