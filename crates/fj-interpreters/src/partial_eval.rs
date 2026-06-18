@@ -772,6 +772,10 @@ fn parse_u32_list_param(
     key: &str,
     raw: &str,
 ) -> Result<Vec<u32>, PartialEvalError> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
     raw.split(',')
         .map(str::trim)
         .map(|piece| {
@@ -785,11 +789,83 @@ fn parse_u32_list_param(
         .collect()
 }
 
+fn parse_i64_list_param(
+    primitive: Primitive,
+    key: &str,
+    raw: &str,
+) -> Result<Vec<i64>, PartialEvalError> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    raw.split(',')
+        .map(str::trim)
+        .map(|piece| {
+            piece
+                .parse::<i64>()
+                .map_err(|_| PartialEvalError::ShapeInference {
+                    primitive,
+                    detail: format!("invalid i64 in param '{key}': '{piece}'"),
+                })
+        })
+        .collect()
+}
+
+fn parse_i64_list_param_for_rank(
+    eqn: &Equation,
+    key: &str,
+    rank: usize,
+    missing_default: Option<i64>,
+) -> Result<Vec<i64>, PartialEvalError> {
+    match eqn.params.get(key) {
+        Some(raw) => parse_i64_list_param(eqn.primitive, key, raw),
+        None => {
+            if let Some(default) = missing_default {
+                Ok(vec![default; rank])
+            } else if rank == 0 {
+                Ok(Vec::new())
+            } else {
+                Err(PartialEvalError::ShapeInference {
+                    primitive: eqn.primitive,
+                    detail: format!("missing required param '{key}'"),
+                })
+            }
+        }
+    }
+}
+
+fn parse_u32_list_param_for_rank(
+    eqn: &Equation,
+    key: &str,
+    rank: usize,
+    missing_default: Option<u32>,
+) -> Result<Vec<u32>, PartialEvalError> {
+    match eqn.params.get(key) {
+        Some(raw) => parse_u32_list_param(eqn.primitive, key, raw),
+        None => {
+            if let Some(default) = missing_default {
+                Ok(vec![default; rank])
+            } else if rank == 0 {
+                Ok(Vec::new())
+            } else {
+                Err(PartialEvalError::ShapeInference {
+                    primitive: eqn.primitive,
+                    detail: format!("missing required param '{key}'"),
+                })
+            }
+        }
+    }
+}
+
 fn parse_usize_list_param(
     primitive: Primitive,
     key: &str,
     raw: &str,
 ) -> Result<Vec<usize>, PartialEvalError> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
     raw.split(',')
         .map(str::trim)
         .map(|piece| {
@@ -913,6 +989,57 @@ fn infer_slice_shape(eqn: &Equation, input: &AbstractValue) -> Result<Shape, Par
             });
         }
         dims.push((limit - start).div_ceil(stride));
+    }
+
+    Ok(Shape { dims })
+}
+
+fn infer_pad_shape(eqn: &Equation, input: &AbstractValue) -> Result<Shape, PartialEvalError> {
+    let rank = input.shape.rank();
+    let lows = parse_i64_list_param_for_rank(eqn, "padding_low", rank, None)?;
+    let highs = parse_i64_list_param_for_rank(eqn, "padding_high", rank, None)?;
+    let interiors = parse_u32_list_param_for_rank(eqn, "padding_interior", rank, Some(0))?;
+
+    if lows.len() != rank || highs.len() != rank || interiors.len() != rank {
+        return Err(PartialEvalError::ShapeInference {
+            primitive: eqn.primitive,
+            detail: format!(
+                "padding rank mismatch: rank={rank} low={} high={} interior={}",
+                lows.len(),
+                highs.len(),
+                interiors.len()
+            ),
+        });
+    }
+
+    let mut dims = Vec::with_capacity(rank);
+    for axis in 0..rank {
+        let dim = i64::from(input.shape.dims[axis]);
+        let interior_span = if dim == 0 {
+            0
+        } else {
+            (dim - 1)
+                .checked_mul(i64::from(interiors[axis]))
+                .ok_or_else(|| PartialEvalError::ShapeInference {
+                    primitive: eqn.primitive,
+                    detail: format!("padding interior overflow on axis {axis}"),
+                })?
+        };
+        let out_dim = lows[axis]
+            .checked_add(dim)
+            .and_then(|v| v.checked_add(interior_span))
+            .and_then(|v| v.checked_add(highs[axis]))
+            .ok_or_else(|| PartialEvalError::ShapeInference {
+                primitive: eqn.primitive,
+                detail: format!("padded dimension overflow on axis {axis}"),
+            })?;
+        if out_dim < 0 || out_dim > i64::from(u32::MAX) {
+            return Err(PartialEvalError::ShapeInference {
+                primitive: eqn.primitive,
+                detail: format!("padded dimension overflow on axis {axis}: {out_dim}"),
+            });
+        }
+        dims.push(out_dim as u32);
     }
 
     Ok(Shape { dims })
@@ -1222,40 +1349,7 @@ fn infer_equation_output_aval(
         }
         // Pad: expand each axis by low/high edges and interior spacing.
         Pad => {
-            let parse_list = |key: &str| {
-                eqn.params.get(key).map(|s| {
-                    s.split(',')
-                        .filter_map(|d| d.trim().parse::<u32>().ok())
-                        .collect::<Vec<_>>()
-                })
-            };
-
-            let rank = first_input.shape.rank();
-            let shape = match (
-                parse_list("padding_low"),
-                parse_list("padding_high"),
-                parse_list("padding_interior"),
-            ) {
-                (Some(lows), Some(highs), Some(interiors))
-                    if lows.len() == rank && highs.len() == rank && interiors.len() == rank =>
-                {
-                    let dims = first_input
-                        .shape
-                        .dims
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &dim)| {
-                            let interior_span = dim.saturating_sub(1).saturating_mul(interiors[i]);
-                            lows[i]
-                                .saturating_add(dim)
-                                .saturating_add(interior_span)
-                                .saturating_add(highs[i])
-                        })
-                        .collect();
-                    Shape { dims }
-                }
-                _ => first_input.shape.clone(),
-            };
+            let shape = infer_pad_shape(eqn, first_input)?;
 
             AbstractValue {
                 dtype: first_input.dtype,
@@ -5320,6 +5414,96 @@ mod tests {
             match err {
                 PartialEvalError::ShapeInference { primitive, detail } => {
                     assert_eq!(primitive, Primitive::Transpose, "{label}");
+                    assert!(
+                        detail.contains(expected_detail),
+                        "{label}: unexpected detail: {detail}"
+                    );
+                }
+                other => panic!("{label}: unexpected error: {other}"),
+            }
+        }
+
+        let out = infer_equation_output_aval(
+            &eqn(
+                Primitive::Pad,
+                &[
+                    ("padding_low", "1,0"),
+                    ("padding_high", "0,2"),
+                    ("padding_interior", "1,0"),
+                ],
+            ),
+            &av(&[2, 3], DType::F64),
+        )
+        .unwrap();
+        assert_eq!(out.shape.dims, vec![4, 5]);
+
+        let out = infer_equation_output_aval(
+            &eqn(
+                Primitive::Pad,
+                &[("padding_low", "1"), ("padding_high", "1")],
+            ),
+            &av(&[2], DType::F64),
+        )
+        .unwrap();
+        assert_eq!(out.shape.dims, vec![4]);
+
+        let out = infer_equation_output_aval(
+            &eqn(
+                Primitive::Pad,
+                &[("padding_low", "-1"), ("padding_high", "-2")],
+            ),
+            &av(&[5], DType::F64),
+        )
+        .unwrap();
+        assert_eq!(out.shape.dims, vec![2]);
+
+        for (label, params, input, expected_detail) in [
+            (
+                "bad padding low token",
+                &[("padding_low", "bad"), ("padding_high", "0")][..],
+                av(&[2], DType::F64),
+                "invalid i64 in param 'padding_low'",
+            ),
+            (
+                "missing padding high",
+                &[("padding_low", "0")][..],
+                av(&[2], DType::F64),
+                "missing required param 'padding_high'",
+            ),
+            (
+                "padding rank mismatch",
+                &[("padding_low", "1"), ("padding_high", "1,1")][..],
+                av(&[2, 3], DType::F64),
+                "padding rank mismatch",
+            ),
+            (
+                "negative interior padding",
+                &[
+                    ("padding_low", "0"),
+                    ("padding_high", "0"),
+                    ("padding_interior", "-1"),
+                ][..],
+                av(&[2], DType::F64),
+                "invalid u32 in param 'padding_interior'",
+            ),
+            (
+                "negative padded dimension",
+                &[("padding_low", "-5"), ("padding_high", "0")][..],
+                av(&[2], DType::F64),
+                "padded dimension overflow on axis 0",
+            ),
+            (
+                "oversized padded dimension",
+                &[("padding_low", "1"), ("padding_high", "0")][..],
+                av(&[u32::MAX], DType::F64),
+                "padded dimension overflow on axis 0",
+            ),
+        ] {
+            let err = infer_equation_output_aval(&eqn(Primitive::Pad, params), &input)
+                .unwrap_err();
+            match err {
+                PartialEvalError::ShapeInference { primitive, detail } => {
+                    assert_eq!(primitive, Primitive::Pad, "{label}");
                     assert!(
                         detail.contains(expected_detail),
                         "{label}: unexpected detail: {detail}"
