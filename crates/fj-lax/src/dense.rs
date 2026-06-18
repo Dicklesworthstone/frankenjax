@@ -21,7 +21,7 @@
 #[inline]
 #[must_use]
 pub fn add(a: &[f64], b: &[f64]) -> Vec<f64> {
-    debug_assert_eq!(a.len(), b.len(), "dense::add length mismatch");
+    assert_eq!(a.len(), b.len(), "dense::add length mismatch");
     a.iter().zip(b).map(|(&x, &y)| x + y).collect()
 }
 
@@ -29,7 +29,7 @@ pub fn add(a: &[f64], b: &[f64]) -> Vec<f64> {
 #[inline]
 #[must_use]
 pub fn sub(a: &[f64], b: &[f64]) -> Vec<f64> {
-    debug_assert_eq!(a.len(), b.len(), "dense::sub length mismatch");
+    assert_eq!(a.len(), b.len(), "dense::sub length mismatch");
     a.iter().zip(b).map(|(&x, &y)| x - y).collect()
 }
 
@@ -37,7 +37,7 @@ pub fn sub(a: &[f64], b: &[f64]) -> Vec<f64> {
 #[inline]
 #[must_use]
 pub fn mul(a: &[f64], b: &[f64]) -> Vec<f64> {
-    debug_assert_eq!(a.len(), b.len(), "dense::mul length mismatch");
+    assert_eq!(a.len(), b.len(), "dense::mul length mismatch");
     a.iter().zip(b).map(|(&x, &y)| x * y).collect()
 }
 
@@ -45,7 +45,7 @@ pub fn mul(a: &[f64], b: &[f64]) -> Vec<f64> {
 #[inline]
 #[must_use]
 pub fn div(a: &[f64], b: &[f64]) -> Vec<f64> {
-    debug_assert_eq!(a.len(), b.len(), "dense::div length mismatch");
+    assert_eq!(a.len(), b.len(), "dense::div length mismatch");
     a.iter().zip(b).map(|(&x, &y)| x / y).collect()
 }
 
@@ -121,6 +121,54 @@ mod tests {
 
     fn dense_bits(v: &[f64]) -> Vec<u64> {
         v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    fn assert_length_mismatch_panic<F>(f: F, expected: &str)
+    where
+        F: FnOnce() + std::panic::UnwindSafe,
+    {
+        let err = std::panic::catch_unwind(f).expect_err("expected length mismatch panic");
+        let msg = if let Some(s) = err.downcast_ref::<&'static str>() {
+            (*s).to_string()
+        } else if let Some(s) = err.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            String::new()
+        };
+        assert!(
+            msg.contains(expected),
+            "panic message {msg:?} did not contain {expected:?}"
+        );
+    }
+
+    #[test]
+    fn dense_binary_kernels_reject_length_mismatch() {
+        let a = [1.0, 2.0];
+        let b = [3.0];
+        assert_length_mismatch_panic(
+            || {
+                let _ = add(&a, &b);
+            },
+            "dense::add length mismatch",
+        );
+        assert_length_mismatch_panic(
+            || {
+                let _ = sub(&a, &b);
+            },
+            "dense::sub length mismatch",
+        );
+        assert_length_mismatch_panic(
+            || {
+                let _ = mul(&a, &b);
+            },
+            "dense::mul length mismatch",
+        );
+        assert_length_mismatch_panic(
+            || {
+                let _ = div(&a, &b);
+            },
+            "dense::div length mismatch",
+        );
     }
 
     #[test]
