@@ -121,6 +121,27 @@ fn bench_tensor_to_i64_vec(c: &mut Criterion) {
     });
 }
 
+fn bench_tensor_repeat_axis0(c: &mut Criterion) {
+    let values: Vec<f64> = (0..1024).map(|i| i as f64).collect();
+    let shape = Shape::vector(values.len() as u32);
+    let dense = Value::Tensor(
+        TensorValue::new_f64_values(shape.clone(), values.clone())
+            .expect("valid dense f64 tensor"),
+    );
+    let literal_elements = values.into_iter().map(Literal::from_f64).collect();
+    let literal = Value::Tensor(
+        TensorValue::new(DType::F64, shape, literal_elements)
+            .expect("valid literal-backed f64 tensor"),
+    );
+
+    c.bench_function("core/tensor_repeat_axis0_dense_f64_1k_x64", |b| {
+        b.iter(|| TensorValue::repeat_axis0(black_box(&dense), black_box(64)))
+    });
+    c.bench_function("core/tensor_repeat_axis0_literal_f64_1k_x64", |b| {
+        b.iter(|| TensorValue::repeat_axis0(black_box(&literal), black_box(64)))
+    });
+}
+
 fn bench_value_scalar_f64(c: &mut Criterion) {
     c.bench_function("core/value_scalar_f64", |b| {
         b.iter(|| Value::scalar_f64(std::f64::consts::PI))
@@ -153,6 +174,7 @@ criterion_group!(
     bench_jaxpr_validate_large,
     bench_tensor_value_new,
     bench_tensor_to_i64_vec,
+    bench_tensor_repeat_axis0,
     bench_value_scalar_f64,
     bench_value_vector_f64,
     bench_shape_element_count,

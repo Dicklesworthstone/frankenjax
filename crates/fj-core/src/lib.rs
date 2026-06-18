@@ -2820,12 +2820,21 @@ impl TensorValue {
                         shape: shape.clone(),
                     },
                 )?;
-                let mut elements = Vec::with_capacity(total_len);
-                for _ in 0..repeat_count {
-                    elements.extend_from_slice(&tensor.elements);
+                let elements = if tensor.elements.is_empty() {
+                    LiteralBuffer::from_concat_slices(Vec::new())
+                } else {
+                    let mut slices = Vec::with_capacity(repeat_count);
+                    for _ in 0..repeat_count {
+                        slices.push((tensor.elements.clone(), 0, tensor.elements.len()));
+                    }
+                    LiteralBuffer::from_concat_slices(slices)
                 }
+                .ok_or(ValueError::ShapeOverflow {
+                    shape: shape.clone(),
+                })?;
+                debug_assert_eq!(elements.len(), total_len);
 
-                TensorValue::new(tensor.dtype, shape, elements)
+                TensorValue::new_with_literal_buffer(tensor.dtype, shape, elements)
             }
         }
     }
@@ -6288,6 +6297,114 @@ mod tests {
         assert_eq!(
             complex_repeat.elements.as_complex_slice(),
             Some(&[(1.25, -0.5), (1.25, -0.5)][..])
+        );
+    }
+
+    #[test]
+    fn repeat_axis0_tensor_uses_concat_dense_storage() {
+        let f64_nan = f64::from_bits(0x7ff8_0000_0000_0042);
+        let f64_value = Value::Tensor(
+            TensorValue::new_f64_values(Shape::vector(2), vec![-0.0, f64_nan])
+                .expect("dense f64 tensor"),
+        );
+        let f64_repeat =
+            TensorValue::repeat_axis0(&f64_value, 3).expect("dense f64 tensor repeat");
+        assert_eq!(f64_repeat.shape, Shape { dims: vec![3, 2] });
+        assert_eq!(
+            f64_repeat
+                .elements
+                .as_f64_slice()
+                .expect("dense f64 repeated tensor")
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            vec![
+                (-0.0_f64).to_bits(),
+                f64_nan.to_bits(),
+                (-0.0_f64).to_bits(),
+                f64_nan.to_bits(),
+                (-0.0_f64).to_bits(),
+                f64_nan.to_bits(),
+            ]
+        );
+
+        let f32_value = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape::vector(2),
+                vec![1.25, f32::from_bits(0x7fc0_0001)],
+            )
+            .expect("dense f32 tensor"),
+        );
+        let f32_repeat =
+            TensorValue::repeat_axis0(&f32_value, 2).expect("dense f32 tensor repeat");
+        assert_eq!(
+            f32_repeat
+                .elements
+                .as_f32_slice()
+                .expect("dense f32 repeated tensor")
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            vec![
+                1.25_f32.to_bits(),
+                0x7fc0_0001,
+                1.25_f32.to_bits(),
+                0x7fc0_0001,
+            ]
+        );
+
+        let i64_value =
+            Value::Tensor(TensorValue::new_i64_values(Shape::vector(2), vec![7, -3]).unwrap());
+        let i64_repeat =
+            TensorValue::repeat_axis0(&i64_value, 2).expect("dense i64 tensor repeat");
+        assert_eq!(i64_repeat.elements.as_i64_slice(), Some(&[7, -3, 7, -3][..]));
+
+        let u32_value = Value::Tensor(
+            TensorValue::new_u32_values(Shape::vector(2), vec![10, u32::MAX]).unwrap(),
+        );
+        let u32_repeat =
+            TensorValue::repeat_axis0(&u32_value, 2).expect("dense u32 tensor repeat");
+        assert_eq!(
+            u32_repeat.elements.as_u32_slice(),
+            Some(&[10, u32::MAX, 10, u32::MAX][..])
+        );
+
+        let bool_value = Value::Tensor(
+            TensorValue::new_bool_values(Shape::vector(2), vec![true, false]).unwrap(),
+        );
+        let bool_repeat =
+            TensorValue::repeat_axis0(&bool_value, 2).expect("dense bool tensor repeat");
+        assert_eq!(
+            bool_repeat.elements.as_bool_slice(),
+            Some(&[true, false, true, false][..])
+        );
+
+        let half_value = Value::Tensor(
+            TensorValue::new_half_float_values(DType::BF16, Shape::vector(2), vec![1, 0x7fc1])
+                .unwrap(),
+        );
+        let half_repeat =
+            TensorValue::repeat_axis0(&half_value, 2).expect("dense bf16 tensor repeat");
+        assert_eq!(half_repeat.dtype, DType::BF16);
+        assert_eq!(
+            half_repeat.elements.as_half_float_slice(),
+            Some(&[1, 0x7fc1, 1, 0x7fc1][..])
+        );
+
+        let complex_value = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex64,
+                Shape::vector(2),
+                vec![(1.0, -0.0), (2.5, 3.25)],
+            )
+            .unwrap(),
+        );
+        let complex_repeat =
+            TensorValue::repeat_axis0(&complex_value, 2).expect("dense complex64 tensor repeat");
+        assert_eq!(complex_repeat.dtype, DType::Complex64);
+        assert_eq!(
+            complex_repeat.elements.as_complex_slice(),
+            Some(&[(1.0, -0.0), (2.5, 3.25), (1.0, -0.0), (2.5, 3.25)][..])
         );
     }
 
