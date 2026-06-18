@@ -9947,6 +9947,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_batch_transpose_explicit_perm_matches_per_slice_values() {
+        // Guards the param-key class (project_vmap_param_key_mismatch) at the VALUE
+        // level: test_batch_trace_transpose_adjusts_batch checks only the SHAPE for an
+        // explicit permutation, so a perm-shift bug yielding right-shape/wrong-values
+        // would slip through. vmap(transpose, perm=[1,0]) over a batch of 2x3 matrices
+        // must transpose each slice's inner dims, NOT touch the batch axis.
+        let data: Vec<f64> = (1..=12).map(|x| x as f64).collect(); // [B=2, 2, 3]
+        let input = BatchTracer::batched(make_f64_tensor(&[2, 2, 3], &data), 0);
+        let params = BTreeMap::from([("permutation".to_owned(), "1, 0".to_owned())]);
+        let result = apply_batch_rule(Primitive::Transpose, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3, 2]);
+        // Per-slice reference: batch0 [[1,2,3],[4,5,6]]^T = [[1,4],[2,5],[3,6]];
+        // batch1 [[7,8,9],[10,11,12]]^T = [[7,10],[8,11],[9,12]].
+        let expected = vec![
+            1.0, 4.0, 2.0, 5.0, 3.0, 6.0, // batch 0
+            7.0, 10.0, 8.0, 11.0, 9.0, 12.0, // batch 1
+        ];
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            expected,
+            "vmap(transpose perm=[1,0]) must transpose each slice, not the batch axis"
+        );
+    }
+
     // ── Reshape Tests ──────────────────────────────────────────
 
     #[test]
