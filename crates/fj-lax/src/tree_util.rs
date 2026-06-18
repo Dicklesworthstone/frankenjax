@@ -154,6 +154,12 @@ where
     match (tree1, tree2) {
         (TreeNode::Leaf(v1), TreeNode::Leaf(v2)) => TreeNode::Leaf(f(*v1, *v2)),
         (TreeNode::Tuple(c1), TreeNode::Tuple(c2)) => {
+            assert!(
+                c1.len() == c2.len(),
+                "tree_map2 tuple arity mismatch: left has {} children, right has {}",
+                c1.len(),
+                c2.len()
+            );
             let children: Vec<TreeNode> = c1
                 .iter()
                 .zip(c2.iter())
@@ -162,14 +168,42 @@ where
             TreeNode::Tuple(children)
         }
         (TreeNode::Dict(m1), TreeNode::Dict(m2)) => {
-            let map: HashMap<String, TreeNode> = m1
-                .iter()
-                .filter_map(|(k, v1)| m2.get(k).map(|v2| (k.clone(), tree_map2(f, v1, v2))))
-                .collect();
+            assert!(
+                m1.len() == m2.len(),
+                "tree_map2 dict key mismatch: left has {} keys, right has {}",
+                m1.len(),
+                m2.len()
+            );
+            let mut map = HashMap::new();
+            for (k, v1) in m1 {
+                let v2 = m2.get(k).unwrap_or_else(|| {
+                    panic!("tree_map2 dict key mismatch: right tree missing key {k:?}")
+                });
+                map.insert(k.clone(), tree_map2(f, v1, v2));
+            }
+            for k in m2.keys() {
+                assert!(
+                    m1.contains_key(k),
+                    "tree_map2 dict key mismatch: right tree has extra key {k:?}"
+                );
+            }
             TreeNode::Dict(map)
         }
         (TreeNode::None, TreeNode::None) => TreeNode::None,
-        _ => TreeNode::None, // Mismatched structures
+        _ => panic!(
+            "tree_map2 structure mismatch: left is {}, right is {}",
+            tree_node_kind(tree1),
+            tree_node_kind(tree2)
+        ),
+    }
+}
+
+fn tree_node_kind(node: &TreeNode) -> &'static str {
+    match node {
+        TreeNode::Leaf(_) => "leaf",
+        TreeNode::Tuple(_) => "tuple",
+        TreeNode::Dict(_) => "dict",
+        TreeNode::None => "none",
     }
 }
 
@@ -302,6 +336,34 @@ mod tests {
         let sum = tree_map2(|a, b| a + b, &tree1, &tree2);
         let leaves = tree_leaves(&sum);
         assert_eq!(leaves, vec![4.0, 6.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "tree_map2 tuple arity mismatch")]
+    fn test_tree_map2_rejects_tuple_arity_mismatch() {
+        let tree1 = TreeNode::Tuple(vec![TreeNode::Leaf(1.0), TreeNode::Leaf(2.0)]);
+        let tree2 = TreeNode::Tuple(vec![TreeNode::Leaf(3.0)]);
+        let _ = tree_map2(|a, b| a + b, &tree1, &tree2);
+    }
+
+    #[test]
+    #[should_panic(expected = "tree_map2 dict key mismatch")]
+    fn test_tree_map2_rejects_dict_key_mismatch() {
+        let mut left = HashMap::new();
+        left.insert("a".to_string(), TreeNode::Leaf(1.0));
+        let mut right = HashMap::new();
+        right.insert("b".to_string(), TreeNode::Leaf(2.0));
+        let _ = tree_map2(
+            |a, b| a + b,
+            &TreeNode::Dict(left),
+            &TreeNode::Dict(right),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "tree_map2 structure mismatch")]
+    fn test_tree_map2_rejects_node_kind_mismatch() {
+        let _ = tree_map2(|a, b| a + b, &TreeNode::Leaf(1.0), &TreeNode::None);
     }
 
     #[test]
