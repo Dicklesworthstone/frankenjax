@@ -762,3 +762,27 @@ fn oracle_atan2_complex128_scalar_rejected() {
         "unexpected complex atan2 error: {err}"
     );
 }
+
+#[test]
+fn oracle_atan2_mixed_complex_left_real_right_rejected() {
+    let y = make_complex64_scalar(1.0, 0.0);
+    let x = make_f64_tensor(&[], vec![1.0]);
+    let err = eval_primitive(Primitive::Atan2, &[y, x], &no_params())
+        .expect_err("atan2 is float-only and must reject complex left operands");
+    assert!(
+        err.to_string().contains("complex operands"),
+        "unexpected complex atan2 error: {err}"
+    );
+}
+
+#[test]
+fn oracle_atan2_mixed_real_left_complex_right_rejected() {
+    let y = make_f64_tensor(&[], vec![1.0]);
+    let x = make_complex128_scalar(1.0, 0.0);
+    let err = eval_primitive(Primitive::Atan2, &[y, x], &no_params())
+        .expect_err("atan2 is float-only and must reject complex right operands");
+    assert!(
+        err.to_string().contains("complex operands"),
+        "unexpected complex atan2 error: {err}"
+    );
+}
