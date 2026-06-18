@@ -500,6 +500,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     )
 }
 
+// erf no longer computes complex (float-only per w8u0a); this helper is retained for
+// potential future complex-erf coverage but is currently unused by the rejection tests.
+#[allow(dead_code)]
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
         Value::Tensor(t) => t
@@ -513,28 +516,31 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 
 #[test]
 
-fn oracle_erf_complex64_real_values() {
-    // erf([0+0i, 1+0i]) on real axis should match real erf
+fn oracle_erf_complex64_real_axis_rejected() {
+    // erf is JAX standard_unop(_float): it REJECTS complex operands at the eval level
+    // (w8u0a float-only decision; complex_unary_elementwise returns None for Erf), even
+    // for real-axis complex inputs. (This test previously asserted complex-erf VALUES,
+    // which is stale — erf no longer computes complex.)
     let input = make_complex64_tensor(&[2], vec![(0.0, 0.0), (1.0, 0.0)]);
-    let result = eval_primitive(Primitive::Erf, &[input], &no_params())
-        .expect("erf complex64 should succeed");
-    let vals = extract_complex64_vec(&result);
-    assert!(vals[0].0.abs() < 1e-5, "erf(0) = 0");
-    assert!((vals[1].0 - 0.8427).abs() < 1e-3, "erf(1) ≈ 0.8427");
+    let err = eval_primitive(Primitive::Erf, &[input], &no_params())
+        .expect_err("erf is float-only and must reject complex64");
+    assert!(
+        err.to_string().contains("complex"),
+        "unexpected complex erf error: {err}"
+    );
 }
 
 #[test]
 
-fn oracle_erf_complex64_purely_imaginary() {
-    // erf(i) is purely imaginary: erf(i) ≈ 1.6505i
+fn oracle_erf_complex64_purely_imaginary_rejected() {
+    // erf rejects complex even on the imaginary axis (float-only per w8u0a; previously
+    // asserted erf(i) ≈ 1.6505i, now stale).
     let input = make_complex64_tensor(&[1], vec![(0.0, 1.0)]);
-    let result = eval_primitive(Primitive::Erf, &[input], &no_params())
-        .expect("erf complex64 imaginary should succeed");
-    let vals = extract_complex64_vec(&result);
-    assert!(vals[0].0.abs() < 1e-3, "real part should be ~0");
+    let err = eval_primitive(Primitive::Erf, &[input], &no_params())
+        .expect_err("erf is float-only and must reject complex64");
     assert!(
-        (vals[0].1 - 1.6505).abs() < 1e-2,
-        "imag part should be ~1.6505"
+        err.to_string().contains("complex"),
+        "unexpected complex erf error: {err}"
     );
 }
 
@@ -557,24 +563,34 @@ fn oracle_erf_rejects_complex_operands_even_large() {
 
 #[test]
 
-fn oracle_erf_complex128_preserves_dtype() {
+fn oracle_erf_complex128_rejected() {
+    // erf rejects complex128 too (float-only per w8u0a; previously asserted dtype
+    // preservation, which is stale — there is no complex erf result).
     let input = make_complex128_tensor(&[2], vec![(0.0, 0.0), (1.0, 0.0)]);
-    let result = eval_primitive(Primitive::Erf, &[input], &no_params())
-        .expect("erf complex128 should succeed");
-    assert_eq!(result.dtype(), DType::Complex128);
+    let err = eval_primitive(Primitive::Erf, &[input], &no_params())
+        .expect_err("erf is float-only and must reject complex128");
+    assert!(
+        err.to_string().contains("complex"),
+        "unexpected complex erf error: {err}"
+    );
 }
 
 #[test]
 
-fn property_erf_preserves_complex_dtypes() {
+fn property_erf_rejects_all_complex_dtypes() {
+    // erf is float-only (w8u0a): every complex dtype is rejected (previously asserted
+    // dtype preservation, now stale).
     for dtype in [DType::Complex64, DType::Complex128] {
         let input = match dtype {
             DType::Complex64 => make_complex64_tensor(&[2], vec![(0.0, 0.0), (1.0, 0.0)]),
             DType::Complex128 => make_complex128_tensor(&[2], vec![(0.0, 0.0), (1.0, 0.0)]),
             _ => unreachable!(),
         };
-        let result = eval_primitive(Primitive::Erf, &[input], &no_params())
-            .expect("erf should succeed for complex dtype");
-        assert_eq!(result.dtype(), dtype, "erf {dtype:?}: dtype mismatch");
+        let err = eval_primitive(Primitive::Erf, &[input], &no_params())
+            .expect_err("erf is float-only and must reject all complex dtypes");
+        assert!(
+            err.to_string().contains("complex"),
+            "erf {dtype:?}: unexpected error {err}"
+        );
     }
 }
