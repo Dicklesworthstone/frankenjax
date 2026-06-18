@@ -2384,18 +2384,38 @@ impl SimpleTraceContext {
                     vec![1; rank]
                 };
 
+                if let ReduceWindowPadding::Explicit(pairs) = &padding
+                    && pairs.len() != rank
+                {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "reduce_window explicit padding rank {} does not match tensor rank {rank}",
+                            pairs.len()
+                        ),
+                    });
+                }
                 let mut out_dims = Vec::with_capacity(rank);
                 for d in 0..rank {
                     let input_dim = input.shape.dims[d] as usize;
                     let win = (window_dims[d].max(1) - 1) * window_dilation[d] + 1;
                     let stride = strides[d];
-                    let out_dim = match padding {
+                    let out_dim = match &padding {
                         ReduceWindowPadding::Same | ReduceWindowPadding::SameLower => {
                             input_dim.div_ceil(stride)
                         }
                         ReduceWindowPadding::Valid => {
                             if input_dim >= win {
                                 (input_dim - win) / stride + 1
+                            } else {
+                                0
+                            }
+                        }
+                        ReduceWindowPadding::Explicit(pairs) => {
+                            let (lo, hi) = pairs.get(d).copied().unwrap_or((0, 0));
+                            let padded = input_dim.saturating_add(lo).saturating_add(hi);
+                            if padded >= win {
+                                (padded - win) / stride + 1
                             } else {
                                 0
                             }
@@ -2884,11 +2904,15 @@ fn conv_valid_output_dim(input_size: usize, kernel_size: usize, stride: usize) -
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum ReduceWindowPadding {
     Valid,
     Same,
     SameLower,
+    /// Explicit per-dim (low, high) padding, mirroring eval_reduce_window's
+    /// `ReduceWindowPadding::Explicit`. Output uses the valid formula on the padded
+    /// size. Unlike conv, reduce_window pads ALL dims (one pair per tensor dim).
+    Explicit(Vec<(usize, usize)>),
 }
 
 fn parse_reduce_window_padding_param(
@@ -2906,11 +2930,34 @@ fn parse_reduce_window_padding_param(
     } else if trimmed.eq_ignore_ascii_case("SAME_LOWER") {
         Ok(ReduceWindowPadding::SameLower)
     } else {
-        Err(TraceError::InvalidPrimitiveParam {
+        // Explicit per-dim (low, high) padding, e.g. "EXPLICIT:1,1,0,0". Mirrors
+        // eval_reduce_window's parse_reduce_window_explicit_padding so traced/jit
+        // reduce_window shape inference matches the eval-layer support.
+        let body = trimmed
+            .strip_prefix("EXPLICIT:")
+            .or_else(|| trimmed.strip_prefix("explicit:"))
+            .unwrap_or(trimmed);
+        let invalid = || TraceError::InvalidPrimitiveParam {
             primitive,
             key: "padding",
             value: raw.clone(),
-        })
+        };
+        let numbers: Vec<isize> = body
+            .split(|ch: char| !(ch.is_ascii_digit() || ch == '-'))
+            .filter(|part| !part.is_empty())
+            .map(str::parse::<isize>)
+            .collect::<Result<_, _>>()
+            .map_err(|_| invalid())?;
+        if numbers.is_empty() || numbers.len() % 2 != 0 {
+            return Err(invalid());
+        }
+        let mut pairs = Vec::with_capacity(numbers.len() / 2);
+        for pair in numbers.chunks_exact(2) {
+            let low = usize::try_from(pair[0]).map_err(|_| invalid())?;
+            let high = usize::try_from(pair[1]).map_err(|_| invalid())?;
+            pairs.push((low, high));
+        }
+        Ok(ReduceWindowPadding::Explicit(pairs))
     }
 }
 
@@ -9675,6 +9722,43 @@ mod tests {
         let aval = ctx.tracer_aval(out[0]).expect("aval present");
         assert_eq!(aval.dtype, DType::F64);
         assert_eq!(aval.shape.dims, vec![3]);
+    }
+
+    #[test]
+    fn test_infer_reduce_window_explicit_padding() {
+        // Completes wj7om end-to-end: explicit padding must be accepted by shape
+        // inference and match eval_reduce_window. shape [6], window 2, stride 2,
+        // pad (1,1): padded 8, valid output (8-2)/2+1 = 4.
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::vector(6),
+        }]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".to_owned(), "2".to_owned());
+        params.insert("window_strides".to_owned(), "2".to_owned());
+        params.insert("padding".to_owned(), "EXPLICIT:1,1".to_owned());
+
+        let out = ctx
+            .process_primitive(Primitive::ReduceWindow, &[TracerId(1)], params)
+            .expect("explicit padding should succeed");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(aval.shape.dims, vec![4]);
+    }
+
+    #[test]
+    fn test_infer_reduce_window_explicit_padding_rejects_wrong_rank() {
+        // reduce_window pads every dim, so a rank-1 input needs exactly one pair.
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::vector(6),
+        }]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".to_owned(), "2".to_owned());
+        params.insert("window_strides".to_owned(), "2".to_owned());
+        params.insert("padding".to_owned(), "EXPLICIT:1,1,2,2".to_owned());
+
+        ctx.process_primitive(Primitive::ReduceWindow, &[TracerId(1)], params)
+            .expect_err("explicit padding with 2 pairs must be rejected for rank-1 input");
     }
 
     #[test]
