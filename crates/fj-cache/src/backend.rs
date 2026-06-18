@@ -447,7 +447,10 @@ mod tests {
 
     #[test]
     fn file_cache_round_trip() {
-        let dir = std::env::temp_dir().join("fj-cache-test-file-backend");
+        let dir = std::env::temp_dir().join(format!(
+            "fj-cache-test-file-backend-{}",
+            std::process::id()
+        ));
 
         let mut cache = FileCache::new(dir.clone());
         let key = test_key("deadbeef");
@@ -465,7 +468,10 @@ mod tests {
 
     #[test]
     fn file_cache_stats_counts_bin_files() {
-        let dir = std::env::temp_dir().join("fj-cache-test-file-stats");
+        let dir = std::env::temp_dir().join(format!(
+            "fj-cache-test-file-stats-{}",
+            std::process::id()
+        ));
         let _ = std::fs::create_dir_all(&dir);
 
         let mut cache = FileCache::new(dir.clone());
