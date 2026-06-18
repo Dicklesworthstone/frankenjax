@@ -3172,17 +3172,61 @@ struct DenseF64BroadcastInDimPlan {
     broadcast_dimensions: Option<Vec<usize>>,
 }
 
-/// Single-equation dense tensor reshape with a static, fully-known target
-/// shape. Reshape is metadata-only in fj-lax for tensor inputs, so this plan
-/// pre-parses `new_shape` once and then clones the existing backing buffer with a
-/// new shape tag. Scalars, inferred `-1`, shape mismatches, and malformed params
-/// fall through to the generic interpreter for exact error behavior.
+/// Single-equation dense tensor reshape. Reshape is metadata-only in fj-lax for
+/// tensor inputs, so this plan pre-parses `new_shape` once and then clones the
+/// existing backing buffer with a new shape tag. Scalars, shape mismatches, and
+/// malformed params fall through to the generic interpreter for exact error
+/// behavior.
 struct DenseReshapePlan {
     const_slots: Vec<usize>,
     input_slots: Vec<usize>,
     input_slot: usize,
-    target_shape: Shape,
-    target_count: u64,
+    target: DenseReshapeTarget,
+}
+
+enum DenseReshapeTarget {
+    Static {
+        target_shape: Shape,
+        target_count: u64,
+    },
+    Inferred {
+        shape_spec: Vec<i64>,
+        known_product: u64,
+        inferred_axis: usize,
+    },
+}
+
+impl DenseReshapeTarget {
+    fn resolve(&self, input_count: u64) -> Option<(Shape, u64)> {
+        match self {
+            Self::Static {
+                target_shape,
+                target_count,
+            } => Some((target_shape.clone(), *target_count)),
+            Self::Inferred {
+                shape_spec,
+                known_product,
+                inferred_axis,
+            } => {
+                if *known_product == 0 || !input_count.is_multiple_of(*known_product) {
+                    return None;
+                }
+                let inferred = input_count / *known_product;
+                let inferred = u32::try_from(inferred).ok()?;
+                let mut dims = Vec::with_capacity(shape_spec.len());
+                for (idx, dim) in shape_spec.iter().copied().enumerate() {
+                    if idx == *inferred_axis {
+                        dims.push(inferred);
+                    } else {
+                        dims.push(u32::try_from(dim).ok()?);
+                    }
+                }
+                let shape = Shape { dims };
+                let target_count = shape.element_count()?;
+                Some((shape, target_count))
+            }
+        }
+    }
 }
 
 /// Single-equation reduction over ONE trailing axis (`axes=<rank-1>`), e.g.
@@ -3663,22 +3707,49 @@ fn build_dense_reshape_plan(jaxpr: &Jaxpr, slots: usize) -> Option<DenseReshapeP
         return None;
     }
     let raw = equation.params.get("new_shape")?;
-    let mut dims = Vec::new();
+    let mut shape_spec = Vec::new();
+    let mut static_dims = Vec::new();
+    let mut inferred_axis = None;
+    let mut known_product = 1_u64;
     if !raw.trim().is_empty() {
-        for part in raw
+        for (axis, part) in raw
             .split(',')
             .map(str::trim)
             .filter(|part| !part.is_empty())
+            .enumerate()
         {
             let dim = part.parse::<i64>().ok()?;
+            if dim == -1 {
+                if inferred_axis.is_some() {
+                    return None;
+                }
+                inferred_axis = Some(axis);
+                shape_spec.push(dim);
+                continue;
+            }
             if dim < 0 {
                 return None;
             }
-            dims.push(u32::try_from(dim).ok()?);
+            let dim_u32 = u32::try_from(dim).ok()?;
+            known_product = known_product.checked_mul(u64::from(dim_u32))?;
+            shape_spec.push(dim);
+            static_dims.push(dim_u32);
         }
     }
-    let target_shape = Shape { dims };
-    let target_count = target_shape.element_count()?;
+    let target = if let Some(inferred_axis) = inferred_axis {
+        DenseReshapeTarget::Inferred {
+            shape_spec,
+            known_product,
+            inferred_axis,
+        }
+    } else {
+        let target_shape = Shape { dims: static_dims };
+        let target_count = target_shape.element_count()?;
+        DenseReshapeTarget::Static {
+            target_shape,
+            target_count,
+        }
+    };
 
     let Atom::Var(input_var) = equation.inputs[0] else {
         return None;
@@ -3693,8 +3764,7 @@ fn build_dense_reshape_plan(jaxpr: &Jaxpr, slots: usize) -> Option<DenseReshapeP
         const_slots: var_slots(&jaxpr.constvars, slots)?,
         input_slots: var_slots(&jaxpr.invars, slots)?,
         input_slot,
-        target_shape,
-        target_count,
+        target,
     })
 }
 
@@ -7446,15 +7516,14 @@ fn run_dense_reshape_plan_into(
     let Value::Tensor(tensor) = input else {
         return None;
     };
-    if tensor.elements.len() as u64 != plan.target_count {
+    let input_count = u64::try_from(tensor.elements.len()).ok()?;
+    let (target_shape, target_count) = plan.target.resolve(input_count)?;
+    if input_count != target_count {
         return None;
     }
 
-    match TensorValue::new_with_literal_buffer(
-        tensor.dtype,
-        plan.target_shape.clone(),
-        tensor.elements.clone(),
-    ) {
+    match TensorValue::new_with_literal_buffer(tensor.dtype, target_shape, tensor.elements.clone())
+    {
         Ok(tensor) => {
             out.clear();
             out.push(Value::Tensor(tensor));
@@ -7610,9 +7679,9 @@ fn run_dense_plan_into(
     {
         return result;
     }
-    // One-equation dense tensor reshape: pre-parsed static target shape plus the
-    // same metadata-only literal-buffer clone as fj-lax. Scalars, inferred dims,
-    // and runtime shape mismatches fall through to generic eval_primitive.
+    // One-equation dense tensor reshape: pre-parsed target shape/spec plus the
+    // same metadata-only literal-buffer clone as fj-lax. Scalars and runtime
+    // shape mismatches fall through to generic eval_primitive.
     if let Some(p) = &plan.dense_reshape_plan
         && let Some(result) = run_dense_reshape_plan_into(p, const_values, args, out)
     {
@@ -14053,10 +14122,81 @@ mod tests {
         .expect("planned reshape");
 
         assert_eq!(planned_out, generic_out);
-        let Value::Tensor(tensor) = &planned_out[0] else {
-            panic!("reshape should return a tensor");
-        };
-        assert_eq!(tensor.shape.dims, vec![8, 8]);
+        assert!(
+            matches!(&planned_out[0], Value::Tensor(tensor) if tensor.shape.dims == vec![8, 8])
+        );
+        let sha256 =
+            fj_test_utils::fixture_id_from_json(&("frankenjax-0x3pu-reshape", &planned_out))
+                .expect("golden digest");
+        assert_eq!(
+            sha256,
+            "ebe11fbcbab2dff9893ae1a4a4f90c0eeb1881d8d4c5ce14f447e73bad18a7e3"
+        );
+    }
+
+    #[test]
+    fn dense_reshape_plan_supports_inferred_dimension() {
+        let (x, out) = (VarId(0), VarId(1));
+        let body = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![Equation {
+                primitive: Primitive::Reshape,
+                inputs: smallvec![Atom::Var(x)],
+                outputs: smallvec![out],
+                params: BTreeMap::from([("new_shape".to_owned(), "8,-1".to_owned())]),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let plan = super::build_dense_plan(&body).expect("dense plan");
+        assert!(
+            plan.dense_reshape_plan.is_some(),
+            "inferred reshape body should compile to the dense reshape plan"
+        );
+
+        let data: Vec<f64> = (0..64)
+            .map(|i| if i == 7 { -0.0 } else { i as f64 * 0.125 })
+            .collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![64] }, data).unwrap(),
+        )];
+
+        let mut generic_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut generic_scratch: Vec<Value> = Vec::new();
+        let mut generic_out: Vec<Value> = Vec::new();
+        super::run_dense_env_into(
+            &body,
+            &[],
+            &args,
+            &mut generic_env,
+            &plan.last_use,
+            &mut generic_scratch,
+            &mut generic_out,
+        )
+        .expect("generic reshape");
+
+        let mut planned_env: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut planned_scratch: Vec<Value> = Vec::new();
+        let mut planned_out: Vec<Value> = Vec::new();
+        let mut bufs = super::ScalarPlanBuffers::default();
+        super::run_dense_plan_into(
+            &body,
+            &[],
+            &args,
+            &mut planned_env,
+            &plan,
+            &mut planned_scratch,
+            &mut planned_out,
+            &mut bufs,
+        )
+        .expect("planned reshape");
+
+        assert_eq!(planned_out, generic_out);
+        assert!(
+            matches!(&planned_out[0], Value::Tensor(tensor) if tensor.shape.dims == vec![8, 8])
+        );
         let sha256 =
             fj_test_utils::fixture_id_from_json(&("frankenjax-0x3pu-reshape", &planned_out))
                 .expect("golden digest");
