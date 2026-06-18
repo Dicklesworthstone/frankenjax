@@ -5972,6 +5972,39 @@ pub(crate) fn eval_unary_int_or_float(
                     out?,
                 )?));
             }
+            // Dense complex Sign/Square (the only complex primitives that reach this
+            // function — neg/abs are intercepted earlier). Mirrors the boxed complex
+            // arm: Sign = z/|z| (0 at origin), Square = z*z. new_complex_values applies
+            // the same out_dtype narrowing complex_literal_from_f64_parts does -> bit-
+            // identical. Unsupported complex primitives error exactly as the boxed arm.
+            if matches!(tensor.dtype, DType::Complex64 | DType::Complex128)
+                && let Some(src) = tensor.elements.as_complex_slice()
+            {
+                let dt = tensor.dtype;
+                let out: Result<Vec<(f64, f64)>, EvalError> = src
+                    .iter()
+                    .map(|&(re, im)| match primitive {
+                        Primitive::Sign => {
+                            let magnitude = re.hypot(im);
+                            Ok(if magnitude == 0.0 {
+                                (0.0, 0.0)
+                            } else {
+                                (re / magnitude, im / magnitude)
+                            })
+                        }
+                        Primitive::Square => Ok(complex_mul((re, im), (re, im))),
+                        _ => Err(EvalError::TypeMismatch {
+                            primitive,
+                            detail: complex_unary_unsupported_detail(primitive),
+                        }),
+                    })
+                    .collect();
+                return Ok(Value::Tensor(TensorValue::new_complex_values(
+                    dt,
+                    tensor.shape.clone(),
+                    out?,
+                )?));
+            }
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for literal in tensor.elements.iter().copied() {
                 let out = match literal {
