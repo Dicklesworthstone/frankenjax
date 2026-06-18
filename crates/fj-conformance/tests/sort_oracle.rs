@@ -189,6 +189,38 @@ fn oracle_sort_f64_with_special_values() {
     assert!(vals[3].is_nan());
 }
 
+#[test]
+fn oracle_sort_sends_negative_nan_to_end_too() {
+    // JAX/numpy sort sends EVERY NaN to the end, regardless of sign bit — unlike
+    // total_cmp, which orders -NaN as the minimum (it would sort FIRST). Guards the
+    // -NaN sign edge that the +NaN-only test above misses
+    // (project_total_cmp_vs_jax_float_ordering; note top_k keeps -NaN as min).
+    let neg_nan = -f64::NAN;
+    assert!(neg_nan.is_nan() && neg_nan.is_sign_negative());
+    let input = make_f64_tensor(&[4u32], vec![neg_nan, 3.0, f64::NAN, 1.0]);
+    let result = eval_primitive(Primitive::Sort, &[input], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 1.0).abs() < 1e-10, "finite values sort first");
+    assert!((vals[1] - 3.0).abs() < 1e-10);
+    assert!(vals[2].is_nan(), "both NaN (either sign) sort to the end");
+    assert!(vals[3].is_nan());
+}
+
+#[test]
+fn oracle_sort_orders_negative_zero_before_positive_zero() {
+    // JAX sort uses a total order in which -0.0 < +0.0 (verified vs JAX 0.10.1),
+    // so a -0.0 sorts ahead of a +0.0 even though they compare equal under `==`.
+    let input = make_f64_tensor(&[2u32], vec![0.0, -0.0]);
+    let result = eval_primitive(Primitive::Sort, &[input], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+    assert!(
+        vals[0].is_sign_negative() && vals[0] == 0.0,
+        "-0.0 must sort before +0.0, got {:?}",
+        vals
+    );
+    assert!(vals[1].is_sign_positive() && vals[1] == 0.0);
+}
+
 // ======================== Argsort Oracle Tests ========================
 
 #[test]
