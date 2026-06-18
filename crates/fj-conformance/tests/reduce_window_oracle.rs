@@ -286,6 +286,29 @@ fn oracle_reduce_window_1d_max_basic() {
 }
 
 #[test]
+fn oracle_reduce_window_1d_max_window_dilation_atrous() {
+    // Atrous (dilated) max pooling: window_dilation=2 spaces the 2 window taps 2
+    // apart, so each window covers indices {c, c+2}. window_dilation is fully
+    // supported in the impl but was untested at the conformance/parity layer.
+    // input=[1,2,3,4,5], window=2, stride=1, dilation=2, valid:
+    //   span = (2-1)*2 + 1 = 3, output length = (5-3)/1 + 1 = 3
+    //   c=0: max(1,3)=3; c=1: max(2,4)=4; c=2: max(3,5)=5
+    let input = make_f64_tensor(&[5], vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    let mut params = max_window("2", "1", "valid");
+    params.insert("window_dilation".to_string(), "2".to_string());
+    let result = eval_primitive(Primitive::ReduceWindow, &[input], &params).unwrap();
+    assert_eq!(
+        extract_shape(&result),
+        vec![3],
+        "atrous window span 3 over length 5 -> output length 3"
+    );
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 3.0).abs() < 1e-10, "max(in[0],in[2]) = 3");
+    assert!((vals[1] - 4.0).abs() < 1e-10, "max(in[1],in[3]) = 4");
+    assert!((vals[2] - 5.0).abs() < 1e-10, "max(in[2],in[4]) = 5");
+}
+
+#[test]
 fn oracle_reduce_window_1d_max_stride2() {
     // input=[1,3,2,5,4,6], window=2, stride=2, valid
     // output = [max(1,3), max(2,5), max(4,6)] = [3, 5, 6]
