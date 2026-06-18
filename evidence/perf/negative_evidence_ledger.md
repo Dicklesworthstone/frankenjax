@@ -59,3 +59,24 @@ ends are not rediscovered without new evidence.
   evidence showing mutation/materialization cost remains a top-five fj-core
   bottleneck. Do not revisit FMA, SIMD exp, GEMM, QR, SVD, cumsum, or eager
   concat without fresh same-worker benchmark evidence and ownership check.
+
+## frankenjax-mcqr.100 - Dense Half-Width Bitcast Chunks
+
+- Date: 2026-06-18
+- Agent: cod-a / TopazOrchid
+- Lever: route dense `BitcastConvertType` F32->BF16/F16 and BF16/F16->F32
+  through packed f32/u16 slices instead of per-`Literal` byte conversion.
+- Status: batch-test pending.
+- Benchmark guard: `eval/bitcast_f32_bf16_dense_1m`,
+  `eval/bitcast_f32_bf16_literal_ref_1m`,
+  `eval/bitcast_bf16_f32_dense_1m`,
+  `eval/bitcast_bf16_f32_literal_ref_1m`.
+- Conformance guard: dense and literal-backed half-width bitcasts produce the
+  same output shapes, dtypes, raw half chunks, and round-trip f32 bit patterns
+  across NaN, infinities, signed zero, normals, and a custom NaN payload.
+- Retry predicate: do not retry this half-width bitcast family unless focused
+  criterion evidence shows the dense rows are still slower than the
+  literal-backed reference or the original path remains a top-five fj-lax
+  bottleneck. Do not merge it with FMA/SIMD exp, GEMM, QR, SVD, cumsum,
+  OneHot, SelectN/iota, or peer-owned fj-core dense-storage lanes without fresh
+  same-worker benchmark evidence and ownership check.
