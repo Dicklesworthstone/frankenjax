@@ -2725,16 +2725,18 @@ impl TensorValue {
             .ok_or(ValueError::ShapeOverflow {
                 shape: self.shape.clone(),
             })?;
-        let end = start
-            .checked_add(slice_len)
-            .ok_or(ValueError::ShapeOverflow {
-                shape: self.shape.clone(),
-            })?;
-        let elements = self.elements[start..end].to_vec();
+        start.checked_add(slice_len).ok_or(ValueError::ShapeOverflow {
+            shape: self.shape.clone(),
+        })?;
         let subshape = Shape {
             dims: self.shape.dims[1..].to_vec(),
         };
-        Ok(Value::Tensor(TensorValue::new(
+        let elements =
+            LiteralBuffer::from_concat_slices(vec![(self.elements.clone(), start, slice_len)])
+                .ok_or(ValueError::ShapeOverflow {
+                    shape: self.shape.clone(),
+                })?;
+        Ok(Value::Tensor(TensorValue::new_with_literal_buffer(
             self.dtype, subshape, elements,
         )?))
     }
@@ -6044,6 +6046,115 @@ mod tests {
                 );
                 Ok(Vec::new())
             },
+        );
+    }
+
+    #[test]
+    fn tensor_slice_axis0_preserves_dense_storage() {
+        let f64_nan = f64::from_bits(0x7ff8_0000_0000_0042);
+        let f64_tensor = TensorValue::new_f64_values(
+            Shape { dims: vec![2, 2] },
+            vec![1.0, -0.0, f64_nan, 3.5],
+        )
+        .expect("dense f64 tensor");
+        let Value::Tensor(f64_slice) = f64_tensor.slice_axis0(1).expect("f64 slice") else {
+            panic!("rank2 slice should be a tensor");
+        };
+        assert_eq!(f64_slice.shape, Shape::vector(2));
+        assert_eq!(
+            f64_slice
+                .elements
+                .as_f64_slice()
+                .expect("dense f64 slice")
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            vec![f64_nan.to_bits(), 3.5_f64.to_bits()]
+        );
+        assert_eq!(
+            f64_slice.elements.as_slice(),
+            &[Literal::from_f64(f64_nan), Literal::from_f64(3.5)]
+        );
+
+        let f32_tensor = TensorValue::new_f32_values(
+            Shape { dims: vec![2, 2] },
+            vec![1.0, -0.0, f32::from_bits(0x7fc0_0001), 4.0],
+        )
+        .expect("dense f32 tensor");
+        let Value::Tensor(f32_slice) = f32_tensor.slice_axis0(1).expect("f32 slice") else {
+            panic!("rank2 slice should be a tensor");
+        };
+        assert_eq!(
+            f32_slice
+                .elements
+                .as_f32_slice()
+                .expect("dense f32 slice")
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            vec![0x7fc0_0001, 4.0_f32.to_bits()]
+        );
+
+        let u32_tensor = TensorValue::new_u32_values(
+            Shape { dims: vec![2, 2] },
+            vec![10, 20, 30, u32::MAX],
+        )
+        .expect("dense u32 tensor");
+        let Value::Tensor(u32_slice) = u32_tensor.slice_axis0(1).expect("u32 slice") else {
+            panic!("rank2 slice should be a tensor");
+        };
+        assert_eq!(u32_slice.elements.as_u32_slice(), Some(&[30, u32::MAX][..]));
+
+        let bool_tensor = TensorValue::new_bool_values(
+            Shape { dims: vec![2, 2] },
+            vec![true, false, false, true],
+        )
+        .expect("dense bool tensor");
+        let Value::Tensor(bool_slice) = bool_tensor.slice_axis0(1).expect("bool slice") else {
+            panic!("rank2 slice should be a tensor");
+        };
+        assert_eq!(
+            bool_slice.elements.as_bool_slice(),
+            Some(&[false, true][..])
+        );
+
+        let half_tensor = TensorValue::new_half_float_values(
+            DType::BF16,
+            Shape { dims: vec![2, 2] },
+            vec![0x3f80, 0xbf80, 0x7fc1, 0x0001],
+        )
+        .expect("dense bf16 tensor");
+        let Value::Tensor(half_slice) = half_tensor.slice_axis0(1).expect("bf16 slice") else {
+            panic!("rank2 slice should be a tensor");
+        };
+        assert_eq!(half_slice.dtype, DType::BF16);
+        assert_eq!(
+            half_slice.elements.as_half_float_slice(),
+            Some(&[0x7fc1, 0x0001][..])
+        );
+
+        let complex_tensor = TensorValue::new_complex_values(
+            DType::Complex64,
+            Shape { dims: vec![2, 2] },
+            vec![(1.0, 2.0), (3.0, 4.0), (1.5, -0.0), (-2.0, 3.25)],
+        )
+        .expect("dense complex64 tensor");
+        let Value::Tensor(complex_slice) =
+            complex_tensor.slice_axis0(1).expect("complex slice")
+        else {
+            panic!("rank2 slice should be a tensor");
+        };
+        assert_eq!(complex_slice.dtype, DType::Complex64);
+        assert_eq!(
+            complex_slice.elements.as_complex_slice(),
+            Some(&[(1.5, -0.0), (-2.0, 3.25)][..])
+        );
+        assert_eq!(
+            complex_slice.elements.as_slice(),
+            &[
+                Literal::from_complex64(1.5, -0.0),
+                Literal::from_complex64(-2.0, 3.25)
+            ]
         );
     }
 
