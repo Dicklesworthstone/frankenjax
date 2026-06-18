@@ -96,6 +96,33 @@ fn oracle_argmax_1d_returns_first_maximum_index() {
 }
 
 #[test]
+fn oracle_argmax_argmin_first_nan_wins_sign_agnostic() {
+    // JAX _ArgMinMaxReducer: the FIRST NaN (either sign) wins outright and is sticky
+    // for BOTH argmax and argmin (a NaN candidate replaces via `v != v`), verified
+    // vs JAX CPU. This DIFFERS from total_cmp, which ranks -NaN below -inf — so a
+    // total_cmp argmax would MISS a -NaN (returning 2 below) and a total_cmp argmin
+    // would wrongly pick a +NaN's neighbor. project_total_cmp_vs_jax_float_ordering.
+    let pos_nan = f64::NAN;
+    let neg_nan = -f64::NAN;
+    assert!(neg_nan.is_sign_negative());
+
+    // argmax picks the first NaN even when it is -NaN (total_cmp would give 2).
+    let inp = make_f64_tensor(&[3], vec![1.0, neg_nan, 2.0]);
+    let r = eval_primitive(Primitive::Argmax, &[inp], &axis_params(0)).unwrap();
+    assert_eq!(extract_i64_scalar(&r), 1, "argmax: first NaN wins, sign-agnostic");
+
+    // argmin also picks the first NaN, even when it is +NaN (total_cmp would give 0).
+    let inp = make_f64_tensor(&[3], vec![1.0, pos_nan, 2.0]);
+    let r = eval_primitive(Primitive::Argmin, &[inp], &axis_params(0)).unwrap();
+    assert_eq!(extract_i64_scalar(&r), 1, "argmin: first NaN wins, sign-agnostic");
+
+    // First NaN is sticky: an earlier NaN beats a later NaN and all finite values.
+    let inp = make_f64_tensor(&[4], vec![5.0, pos_nan, neg_nan, 9.0]);
+    let r = eval_primitive(Primitive::Argmax, &[inp], &axis_params(0)).unwrap();
+    assert_eq!(extract_i64_scalar(&r), 1, "first NaN is sticky over later NaN");
+}
+
+#[test]
 fn oracle_argmin_2d_axis0_reduces_rows() {
     // JAX: jnp.argmin([[1, 4, 2], [3, 0, 5]], axis=0) == [0, 1, 0]
     let input = make_f64_tensor(&[2, 3], vec![1.0, 4.0, 2.0, 3.0, 0.0, 5.0]);
