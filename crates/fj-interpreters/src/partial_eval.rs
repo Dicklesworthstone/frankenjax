@@ -1007,6 +1007,44 @@ fn infer_squeeze_shape(eqn: &Equation, input: &AbstractValue) -> Result<Shape, P
     Ok(Shape { dims })
 }
 
+/// Strict expand_dims shape inference matching fj-trace. The previous inline fallback
+/// defaulted a missing/malformed axis to 0 (unwrap_or(0)) and CLAMPED an out-of-range
+/// axis into range instead of rejecting it, staging a residual aval for an insertion
+/// position eval/JAX reject. Fail closed instead.
+fn infer_expand_dims_shape(
+    eqn: &Equation,
+    input: &AbstractValue,
+) -> Result<Shape, PartialEvalError> {
+    let rank = input.shape.rank() as i64;
+    let raw_axis = eqn
+        .params
+        .get("axis")
+        .ok_or_else(|| PartialEvalError::ShapeInference {
+            primitive: eqn.primitive,
+            detail: "expand_dims requires 'axis' param".to_owned(),
+        })?;
+    // Single-axis insertion (mirrors fj-trace's split(',').next()).
+    let raw: i64 = raw_axis
+        .split(',')
+        .next()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .ok_or_else(|| PartialEvalError::ShapeInference {
+            primitive: eqn.primitive,
+            detail: format!("invalid expand_dims axis: '{raw_axis}'"),
+        })?;
+    // Negative axis normalizes against the OUTPUT rank (input rank + 1).
+    let norm = if raw < 0 { raw + rank + 1 } else { raw };
+    if norm < 0 || norm > rank {
+        return Err(PartialEvalError::ShapeInference {
+            primitive: eqn.primitive,
+            detail: format!("expand_dims axis {raw} out of range for rank {rank}"),
+        });
+    }
+    let mut dims = input.shape.dims.clone();
+    dims.insert(norm as usize, 1);
+    Ok(Shape { dims })
+}
+
 fn infer_slice_shape(eqn: &Equation, input: &AbstractValue) -> Result<Shape, PartialEvalError> {
     let rank = input.shape.rank();
     let starts = parse_required_u32_list_param(eqn, "start_indices")?;
@@ -1531,27 +1569,10 @@ fn infer_equation_output_aval(
         // ExpandDims: insert a size-1 axis (normalize a negative axis against
         // rank+1, matching numpy/jnp expand_dims and fj-trace). Without this the
         // catch-all returned the INPUT shape — a residual typed one rank too low.
-        ExpandDims => {
-            let rank = first_input.shape.rank() as i64;
-            let raw_axis: i64 = eqn
-                .params
-                .get("axis")
-                .and_then(|s| s.split(',').next())
-                .and_then(|s| s.trim().parse::<i64>().ok())
-                .unwrap_or(0);
-            let norm = if raw_axis < 0 {
-                raw_axis + rank + 1
-            } else {
-                raw_axis
-            };
-            let mut dims = first_input.shape.dims.clone();
-            let axis = norm.clamp(0, rank) as usize;
-            dims.insert(axis, 1);
-            AbstractValue {
-                dtype: first_input.dtype,
-                shape: Shape { dims },
-            }
-        }
+        ExpandDims => AbstractValue {
+            dtype: first_input.dtype,
+            shape: infer_expand_dims_shape(eqn, first_input)?,
+        },
         // Squeeze: drop the listed dims (negative-normalized against rank), or all
         // size-1 dims if unspecified. Catch-all previously kept the input shape.
         Squeeze => AbstractValue {
