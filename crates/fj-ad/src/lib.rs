@@ -23093,11 +23093,15 @@ mod tests {
                 .is_none(),
             "non-F64 tensor should fall back"
         );
+        // Genuinely BOXED (Literal-backed) F64 input: `TensorValue::new` densifies
+        // homogeneous F64 literals (cbea72b3), which would make this a packed tensor
+        // the fast path handles — defeating the "non-packed falls back" guard. Build
+        // it via new_with_literal_buffer so it stays Literal-backed.
         let literal_f64_args = [Value::Tensor(
-            TensorValue::new(
+            TensorValue::new_with_literal_buffer(
                 DType::F64,
                 Shape::vector(2),
-                vec![Literal::from_f64(1.0), Literal::from_f64(2.0)],
+                fj_core::LiteralBuffer::new(vec![Literal::from_f64(1.0), Literal::from_f64(2.0)]),
             )
             .map_err(|e| e.to_string())?,
         )];
