@@ -1737,3 +1737,33 @@ ends are not rediscovered without new evidence.
   Rust LOST to JAX by ~2.3x; after, DOMINATES by ~3.5x. Same gate; v==0 stays calloc (already fast).
 - Retry predicate: extend threaded_fill_into to the half/i64/u32/u64/bool scalar arms (concrete-zero
   calloc) and to array_creation full/zeros/ones if those hit the cliff. Mechanical.
+
+## CobaltForge - Threaded full f64/f32 max/min reduce for DRAM-bound (JAX WIN)
+
+- Lever: full ReduceMax/ReduceMin used a single-threaded SIMD fold (`simd_reduce_minmax_f64/f32`,
+  ~21.6 GB/s f64) — read-bound, so a single core can't saturate multi-channel DRAM. New
+  `threaded_reduce_minmax_f64/f32` splits the input into chunks, SIMD-reduces each on a scoped
+  thread, and combines the partials. Gated at `CHEAP_BINARY_PARALLEL_MIN` (serial SIMD wins in
+  cache). (Sum/Prod stay scalar/serial — float-sum is non-associative and bit-exact-pinned vs JAX;
+  not touched.)
+- Bit-identity: max/min are associative+commutative; each partial resolves ±0 sign and NaN exactly
+  per-chunk, and the combine preserves both (NaN if any partial NaN -> canonical NaN; f64::max/min
+  maxNum/minNum ±0 handling is order-independent, so fold-of-folds == full fold). Guarded by
+  `threaded_reduce_minmax_bit_identical_to_serial` (NaN mid/boundary, ±0-only, ±inf; f64 AND f32).
+- Conformance: `fj-lax --lib` 1506 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, best-of-15) + JAX (`jax.jit(jnp.max)` x64, /tmp/jax_red.py):
+
+  | n | serial (before) | threaded (after) | internal | JAX | Rust/JAX |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 16M | 5935 us (21.6 GB/s) | 3627 us (35.3 GB/s) | 1.64x | 4518 us (28.3 GB/s) | 0.80x (1.25x FASTER) |
+  | 64M | 26189 us (19.5 GB/s) | 8552 us (59.9 GB/s) | 3.06x | 11568 us (44.3 GB/s) | 0.74x (1.35x FASTER) |
+
+- Decision: KEEP. max/min reduce (softmax stability, clipping bounds) was a 1.3-2.3x JAX LOSS;
+  threading flips it to a 1.25-1.35x WIN. First reduction-family threading; read-bound (no
+  page-fault cliff), so the win is bandwidth (~2-3x internal) not the dramatic fill-op factors.
+- NEGATIVE (recorded): ReduceSum is 10.9 GB/s (3-4x slower than JAX's 33-43) but CANNOT be threaded
+  or SIMD-vectorized — float sum is non-associative and pinned bit-exact vs JAX (memory: DO-NOT
+  float-sum SIMD). Closing it needs a bit-exact-matching tree/pairwise order = the compiled-jaxpr /
+  XLA-order-matching swing, not threading.
+- Retry predicate: extend threaded minmax to bf16/f16 full reduce + argmax/argmin (needs
+  first-index-preserving combine) and to axis reductions where the reduced extent is huge.

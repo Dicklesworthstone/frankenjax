@@ -413,3 +413,11 @@ Additional cod-a repeat validation environment:
 - jnp.full / scalar-const fill threaded (calloc'd output + parallel constant write): 16M/64M f64 =
   Rust/JAX 0.29/0.28 (3.42-3.53x faster than jax.jit full), internal 7.85-8.42x (2.5 -> 20.3-20.9
   GB/s). Bit-identical (incl. NaN), guarded. Common in init/masks. Other dtypes are follow-ons.
+
+## CobaltForge - Threaded max/min reduce (f64/f32): JAX WIN (2026-06-19)
+
+- Full ReduceMax/ReduceMin threaded (parallel partial SIMD reduce + associative combine): 16M/64M
+  f64 = Rust/JAX 0.80/0.74 (1.25-1.35x faster than jax.jit max), internal 1.64-3.06x (21.6 ->
+  35.3-59.9 GB/s). Bit-identical (NaN/±0/±inf, f64+f32), guarded. Was a 1.3-2.3x loss. ReduceSum
+  stays a loss (10.9 GB/s) but is bit-exact-pinned (non-associative) -> needs XLA-order matching,
+  not threading.

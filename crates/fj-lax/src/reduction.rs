@@ -232,6 +232,77 @@ fn simd_reduce_minmax_f32(values: &[f32], is_max: bool) -> f32 {
     m
 }
 
+/// Threaded full f64 max/min reduce: split the input into chunks, SIMD-reduce each on a
+/// scoped thread, then combine the partials. Bit-for-bit identical to
+/// [`simd_reduce_minmax_f64`] over the whole slice — max/min are associative+commutative,
+/// each partial already resolves ±0 sign and NaN exactly (per-chunk), and the combine
+/// preserves both (NaN if any partial is NaN -> canonical `f64::NAN`; `f64::max`/`min`'s
+/// maxNum/minNum ±0 handling is order-independent so fold-of-folds == full fold). Only
+/// engages once the input is DRAM-bound (see [`CHEAP_BINARY_PARALLEL_MIN`]); the serial
+/// SIMD reduce wins while it fits in cache.
+fn threaded_reduce_minmax_f64(values: &[f64], is_max: bool) -> f64 {
+    let n = values.len();
+    if n < crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+        return simd_reduce_minmax_f64(values, is_max);
+    }
+    let threads = crate::arithmetic::work_scaled_threads(n);
+    if threads <= 1 {
+        return simd_reduce_minmax_f64(values, is_max);
+    }
+    let chunk = n.div_ceil(threads);
+    let partials: Vec<f64> = std::thread::scope(|scope| {
+        let handles: Vec<_> = values
+            .chunks(chunk)
+            .map(|c| scope.spawn(move || simd_reduce_minmax_f64(c, is_max)))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    if partials.iter().any(|p| p.is_nan()) {
+        return f64::NAN;
+    }
+    let mut m = if is_max {
+        f64::NEG_INFINITY
+    } else {
+        f64::INFINITY
+    };
+    for &p in &partials {
+        m = if is_max { m.max(p) } else { m.min(p) };
+    }
+    m
+}
+
+/// f32 sibling of [`threaded_reduce_minmax_f64`].
+fn threaded_reduce_minmax_f32(values: &[f32], is_max: bool) -> f32 {
+    let n = values.len();
+    if n < crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+        return simd_reduce_minmax_f32(values, is_max);
+    }
+    let threads = crate::arithmetic::work_scaled_threads(n);
+    if threads <= 1 {
+        return simd_reduce_minmax_f32(values, is_max);
+    }
+    let chunk = n.div_ceil(threads);
+    let partials: Vec<f32> = std::thread::scope(|scope| {
+        let handles: Vec<_> = values
+            .chunks(chunk)
+            .map(|c| scope.spawn(move || simd_reduce_minmax_f32(c, is_max)))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    if partials.iter().any(|p| p.is_nan()) {
+        return f32::NAN;
+    }
+    let mut m = if is_max {
+        f32::NEG_INFINITY
+    } else {
+        f32::INFINITY
+    };
+    for &p in &partials {
+        m = if is_max { m.max(p) } else { m.min(p) };
+    }
+    m
+}
+
 /// SIMD axis-reduce max/min for the trailing-axes (`inner == 1`) contiguous-block
 /// layout — i.e. `jnp.max(x, axis=-1)` / softmax/attention stability, the dominant
 /// case. Each of the `outer` output cells reduces one contiguous run of `reduce`
@@ -902,15 +973,14 @@ fn eval_dense_float_full_reduce(
                 if let Some(values) = tensor.elements.as_f64_slice() {
                     return Some(Value::Scalar(reduce_real_literal(
                         DType::F64,
-                        simd_reduce_minmax_f64(values, is_max),
+                        threaded_reduce_minmax_f64(values, is_max),
                     )));
                 }
             }
             DType::F32 => {
                 if let Some(values) = tensor.elements.as_f32_slice() {
-                    return Some(Value::Scalar(Literal::from_f32(simd_reduce_minmax_f32(
-                        values, is_max,
-                    ))));
+                    let m = threaded_reduce_minmax_f32(values, is_max);
+                    return Some(Value::Scalar(Literal::from_f32(m)));
                 }
             }
             DType::BF16 => {
@@ -3561,6 +3631,48 @@ mod tests {
     use super::*;
     use fj_core::LiteralBuffer;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn threaded_reduce_minmax_bit_identical_to_serial() {
+        // >= gate so the threaded path engages; seed NaN / +-inf / +-0 at varied positions
+        // (incl. near chunk boundaries) and compare bit-for-bit to the serial SIMD reduce.
+        let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 1234;
+        let base: Vec<f64> = (0..n).map(|i| ((i % 4096) as f64) * 0.5 - 1000.0).collect();
+        let make = |specials: &[(usize, f64)]| {
+            let mut v = base.clone();
+            for &(pos, val) in specials {
+                v[pos % n] = val;
+            }
+            v
+        };
+        let cases: Vec<Vec<f64>> = vec![
+            base.clone(),
+            make(&[(0, 0.0), (n - 1, -0.0), (n / 2, 0.0)]), // ±0 only -> exercises the ±0 fold
+            make(&[(7, f64::INFINITY), (n - 3, f64::NEG_INFINITY)]),
+            make(&[(n / 3, f64::NAN)]),
+            make(&[(n - 1, f64::NAN), (0, f64::NAN)]),
+            make(&[(5, 0.0), (6, -0.0), (n - 2, -0.0)]),
+        ];
+        for v in &cases {
+            for is_max in [true, false] {
+                let serial = simd_reduce_minmax_f64(v, is_max);
+                let threaded = threaded_reduce_minmax_f64(v, is_max);
+                assert_eq!(
+                    serial.to_bits(),
+                    threaded.to_bits(),
+                    "f64 threaded minmax (is_max={is_max}) != serial"
+                );
+                let vf: Vec<f32> = v.iter().map(|&x| x as f32).collect();
+                let serial32 = simd_reduce_minmax_f32(&vf, is_max);
+                let threaded32 = threaded_reduce_minmax_f32(&vf, is_max);
+                assert_eq!(
+                    serial32.to_bits(),
+                    threaded32.to_bits(),
+                    "f32 threaded minmax (is_max={is_max}) != serial"
+                );
+            }
+        }
+    }
 
     #[test]
     fn axis_reduce_output_is_dense_and_bit_identical() {
