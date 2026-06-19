@@ -2338,7 +2338,119 @@ fn try_fuse_elementwise_chain_f32(
 enum I64Operand {
     Chain,
     Ext(usize),
+    RowBroadcast(usize),
+    ColBroadcast { idx: usize, cols: usize },
     Scalar(i64),
+}
+
+/// One i64 fused binary op — the exact fj-lax dispatcher semantics inlined by the
+/// i64 fusion arms (wrapping +/-/*, checked_div→0, total max/min). Shared by the
+/// i64 broadcast helpers so they match the Scalar/Ext arms bit-for-bit.
+#[inline]
+fn i64_fused_binary(op: CheapOp, left: i64, right: i64) -> i64 {
+    match op {
+        CheapOp::Add => left.wrapping_add(right),
+        CheapOp::Sub => left.wrapping_sub(right),
+        CheapOp::Mul => left.wrapping_mul(right),
+        CheapOp::Div => left.checked_div(right).unwrap_or(0),
+        CheapOp::Max => left.max(right),
+        CheapOp::Min => left.min(right),
+        // Unary ops are handled by the chunk driver; never a binary step.
+        CheapOp::Neg | CheapOp::Abs => left,
+    }
+}
+
+#[inline]
+fn seed_i64_row_broadcast(out: &mut [i64], row: &[i64], base: usize) {
+    if out.is_empty() {
+        return;
+    }
+    let row_len = row.len();
+    let mut done = 0;
+    let mut col = base % row_len;
+    while done < out.len() {
+        let take = (row_len - col).min(out.len() - done);
+        out[done..done + take].copy_from_slice(&row[col..col + take]);
+        done += take;
+        col = 0;
+    }
+}
+
+#[inline]
+fn apply_i64_row_broadcast_other(
+    out: &mut [i64],
+    op: CheapOp,
+    chain_left: bool,
+    row: &[i64],
+    base: usize,
+) {
+    if out.is_empty() {
+        return;
+    }
+    let row_len = row.len();
+    let mut done = 0;
+    let mut col = base % row_len;
+    while done < out.len() {
+        let take = (row_len - col).min(out.len() - done);
+        let out_part = &mut out[done..done + take];
+        let row_part = &row[col..col + take];
+        match chain_left {
+            true => out_part
+                .iter_mut()
+                .zip(row_part)
+                .for_each(|(o, e)| *o = i64_fused_binary(op, *o, *e)),
+            false => out_part
+                .iter_mut()
+                .zip(row_part)
+                .for_each(|(o, e)| *o = i64_fused_binary(op, *e, *o)),
+        }
+        done += take;
+        col = 0;
+    }
+}
+
+#[inline]
+fn seed_i64_col_broadcast(out: &mut [i64], col_values: &[i64], cols: usize, base: usize) {
+    let mut done = 0;
+    let mut linear = base;
+    while done < out.len() {
+        let row = linear / cols;
+        let col = linear % cols;
+        let take = (cols - col).min(out.len() - done);
+        out[done..done + take].fill(col_values[row]);
+        done += take;
+        linear += take;
+    }
+}
+
+#[inline]
+fn apply_i64_col_broadcast_other(
+    out: &mut [i64],
+    op: CheapOp,
+    chain_left: bool,
+    col_values: &[i64],
+    cols: usize,
+    base: usize,
+) {
+    let mut done = 0;
+    let mut linear = base;
+    while done < out.len() {
+        let row = linear / cols;
+        let col = linear % cols;
+        let take = (cols - col).min(out.len() - done);
+        let scalar = col_values[row];
+        let out_part = &mut out[done..done + take];
+        match chain_left {
+            true => out_part
+                .iter_mut()
+                .for_each(|o| *o = i64_fused_binary(op, *o, scalar)),
+            false => out_part
+                .iter_mut()
+                .for_each(|o| *o = i64_fused_binary(op, scalar, *o)),
+        }
+        done += take;
+        linear += take;
+    }
 }
 
 struct I64Step {
@@ -2378,7 +2490,23 @@ fn classify_i64_fusion_operand<'e>(
                     match shape {
                         None => *shape = Some(t.shape.clone()),
                         Some(s) if *s == t.shape => {}
-                        Some(_) => return None,
+                        Some(s) => {
+                            // [C] row / [...,1] col broadcast (shared detectors); pure
+                            // wrapping int arith with broadcast indexing, bit-identical.
+                            if row_broadcast_len(s, &t.shape).is_some() {
+                                let idx = ext.len();
+                                ext.push(slice);
+                                ext_vars.push(*v);
+                                return Some(I64Operand::RowBroadcast(idx));
+                            }
+                            if let Some(cols) = col_broadcast_cols(s, &t.shape) {
+                                let idx = ext.len();
+                                ext.push(slice);
+                                ext_vars.push(*v);
+                                return Some(I64Operand::ColBroadcast { idx, cols });
+                            }
+                            return None;
+                        }
                     }
                     let idx = ext.len();
                     ext.push(slice);
@@ -2451,6 +2579,12 @@ fn apply_i64_fusion_other(
                 (CheapOp::Neg | CheapOp::Abs, _) => {}
             }
         }
+        I64Operand::RowBroadcast(i) => {
+            apply_i64_row_broadcast_other(out, op, chain_left, ext[i], base);
+        }
+        I64Operand::ColBroadcast { idx, cols } => {
+            apply_i64_col_broadcast_other(out, op, chain_left, ext[idx], cols, base);
+        }
         I64Operand::Chain => {}
     }
 }
@@ -2462,6 +2596,8 @@ fn apply_i64_fusion_chunk(out: &mut [i64], tape: &[I64Step], ext: &[&[i64]], bas
     let s0 = &tape[0];
     match s0.a {
         I64Operand::Ext(i) => out.copy_from_slice(&ext[i][base..base + out.len()]),
+        I64Operand::RowBroadcast(i) => seed_i64_row_broadcast(out, ext[i], base),
+        I64Operand::ColBroadcast { idx, cols } => seed_i64_col_broadcast(out, ext[idx], cols, base),
         I64Operand::Scalar(v) => out.fill(v),
         I64Operand::Chain => {}
     }
