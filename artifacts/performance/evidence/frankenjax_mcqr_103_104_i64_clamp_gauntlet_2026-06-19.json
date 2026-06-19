@@ -1,0 +1,151 @@
+{
+  "agent_name": "WildForge",
+  "beads": [
+    "frankenjax-mcqr.103",
+    "frankenjax-mcqr.104"
+  ],
+  "commands": [
+    "CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo check -p fj-lax --bench clamp_gauntlet",
+    "CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo bench -p fj-lax --bench clamp_gauntlet -- 'i64_' --sample-size 20 --warm-up-time 1 --measurement-time 3 --save-baseline frankenjax-mcqr-103-104-i64-clamp",
+    "benchmarks/jax_comparison/.venv/bin/python benchmarks/jax_comparison/clamp_gauntlet.py --runs 50 --warmup 10 --inner-loops 100 --output /tmp/frankenjax_mcqr_103_104_i64_clamp_jax_raw.json"
+  ],
+  "comparison_rule": "Same host for timing: Rust Criterion and JAX CPU both ran on thinkstation1. rch was used only for the compile check, not for timing.",
+  "decision": "Keep both I64 clamp optimization clusters as Rust-internal wins. Do not claim original-JAX domination: every measured I64 row remains slower than JAX CPU.",
+  "environment": {
+    "criterion_baseline": "frankenjax-mcqr-103-104-i64-clamp",
+    "git_head": "637d1584ebf418f8d5f9c339da6e6fd5c36f9287",
+    "host": "thinkstation1",
+    "cpu": "AMD Ryzen Threadripper PRO 5975WX 32-Cores",
+    "kernel": "Linux 6.17.0-35-generic x86_64",
+    "rustc": "rustc 1.98.0-nightly (f20a92ec0 2026-06-07)",
+    "rust_target_dir": "/data/projects/.rch-targets/frankenjax-cod-a",
+    "jax": {
+      "jax_backend": "cpu",
+      "jax_devices": [
+        "cpu:0"
+      ],
+      "jax_version": "0.10.1",
+      "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.42",
+      "python_version": "3.13.7"
+    }
+  },
+  "lever_cluster": "dense I64 Clamp same-shape tensor bounds and mixed scalar/tensor bounds",
+  "results": [
+    {
+      "bead": "frankenjax-mcqr.104",
+      "workload": "i64_mixed_scalar_lo_tensor_hi_1m",
+      "element_count": 1048576,
+      "frankenjax_dense": {
+        "mean_ns": 689991.0707498202,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 655919.6311707962,
+          "upper_bound": 732154.5285638464
+        },
+        "standard_error_ns": 19522.567027066245
+      },
+      "frankenjax_boxed_reference": {
+        "mean_ns": 23655425.381286353,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 22688897.27673489,
+          "upper_bound": 24662764.72920384
+        },
+        "standard_error_ns": 508088.95727832365
+      },
+      "jax_jit_cpu": {
+        "mean_ns": 200558.08239999998,
+        "p50_ns": 204235.59,
+        "p95_ns": 240607.808,
+        "p99_ns": 249757.98699999996,
+        "cv_pct": 13.518555996922672,
+        "runs": 50,
+        "inner_loops": 100
+      },
+      "dense_vs_boxed_speedup_x": 34.283668853250184,
+      "dense_slower_than_jax_x": 3.440355344910399,
+      "vs_jax_speedup_x": 0.29066767027480175,
+      "keep_gate": "keep_internal_win",
+      "external_verdict": "loss_vs_jax"
+    },
+    {
+      "bead": "frankenjax-mcqr.104",
+      "workload": "i64_mixed_tensor_lo_scalar_hi_1m",
+      "element_count": 1048576,
+      "frankenjax_dense": {
+        "mean_ns": 611377.1199201697,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 567326.087972171,
+          "upper_bound": 658821.9863669894
+        },
+        "standard_error_ns": 23403.977560605777
+      },
+      "frankenjax_boxed_reference": {
+        "mean_ns": 25749031.897270985,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 24744566.596546777,
+          "upper_bound": 26933147.025367055
+        },
+        "standard_error_ns": 562274.1449849419
+      },
+      "jax_jit_cpu": {
+        "mean_ns": 197536.05,
+        "p50_ns": 198223.60499999998,
+        "p95_ns": 237151.8255,
+        "p99_ns": 242839.4752,
+        "cv_pct": 12.564595115612228,
+        "runs": 50,
+        "inner_loops": 100
+      },
+      "dense_vs_boxed_speedup_x": 42.116446720533396,
+      "dense_slower_than_jax_x": 3.095015415769272,
+      "vs_jax_speedup_x": 0.3231017825026722,
+      "keep_gate": "keep_internal_win",
+      "external_verdict": "loss_vs_jax"
+    },
+    {
+      "bead": "frankenjax-mcqr.103",
+      "workload": "i64_tensor_tensor_tensor_1m",
+      "element_count": 1048576,
+      "frankenjax_dense": {
+        "mean_ns": 1045809.4723086345,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 994112.7855585804,
+          "upper_bound": 1104954.4667341926
+        },
+        "standard_error_ns": 28325.881286769705
+      },
+      "frankenjax_boxed_reference": {
+        "mean_ns": 24674379.994880535,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 23914710.2194652,
+          "upper_bound": 25383324.257505275
+        },
+        "standard_error_ns": 375446.9929282384
+      },
+      "jax_jit_cpu": {
+        "mean_ns": 287593.3452,
+        "p50_ns": 277064.67500000005,
+        "p95_ns": 381061.0079999999,
+        "p99_ns": 439257.93759999983,
+        "cv_pct": 14.917423615093227,
+        "runs": 50,
+        "inner_loops": 100
+      },
+      "dense_vs_boxed_speedup_x": 23.593570959356107,
+      "dense_slower_than_jax_x": 3.6364174963135922,
+      "vs_jax_speedup_x": 0.2750014241266232,
+      "keep_gate": "keep_internal_win",
+      "external_verdict": "loss_vs_jax"
+    }
+  ],
+  "validation": {
+    "rust_check": "PASS: CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo check -p fj-lax --bench clamp_gauntlet",
+    "jax_smoke": "PASS: clamp_gauntlet.py --runs 1 --warmup 0 --inner-loops 1 emitted all I64 workloads",
+    "conformance": "PASS: CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo test -p fj-lax clamp --lib passed 25 tests, 0 failed, 6 ignored"
+  }
+}

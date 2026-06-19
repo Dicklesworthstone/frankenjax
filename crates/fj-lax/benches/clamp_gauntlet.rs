@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use fj_core::{DType, Literal, LiteralBuffer, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
@@ -40,6 +40,21 @@ fn f64_boxed(values: &[f64]) -> Value {
             DType::F64,
             vector_shape(values.len()),
             LiteralBuffer::new(values.iter().map(|&v| Literal::from_f64(v)).collect()),
+        )
+        .unwrap(),
+    )
+}
+
+fn i64_dense(values: &[i64]) -> Value {
+    Value::Tensor(TensorValue::new_i64_values(vector_shape(values.len()), values.to_vec()).unwrap())
+}
+
+fn i64_boxed(values: &[i64]) -> Value {
+    Value::Tensor(
+        TensorValue::new_with_literal_buffer(
+            DType::I64,
+            vector_shape(values.len()),
+            LiteralBuffer::new(values.iter().map(|&v| Literal::I64(v)).collect()),
         )
         .unwrap(),
     )
@@ -152,6 +167,60 @@ fn bench_half_mixed_scalar_tensor(c: &mut Criterion) {
     }
 }
 
+fn bench_i64_tensor_tensor(c: &mut Criterion) {
+    let lo: Vec<i64> = (0..N).map(|i| (i as i64 % 97) - 50).collect();
+    let x: Vec<i64> = (0..N)
+        .map(|i| (i as i64).wrapping_mul(2_654_435_761) % 10_000)
+        .collect();
+    let hi: Vec<i64> = lo.iter().map(|&v| v + 128).collect();
+    bench_inputs(
+        "i64_tensor_tensor_tensor_1m",
+        [i64_dense(&lo), i64_dense(&x), i64_dense(&hi)],
+        [i64_boxed(&lo), i64_boxed(&x), i64_boxed(&hi)],
+        c,
+    );
+}
+
+fn bench_i64_mixed_scalar_tensor(c: &mut Criterion) {
+    let x: Vec<i64> = (0..N)
+        .map(|i| (i as i64).wrapping_mul(1_103_515_245) % 100_000)
+        .collect();
+    let hi: Vec<i64> = (0..N).map(|i| 50 + (i as i64 % 211)).collect();
+    bench_inputs(
+        "i64_mixed_scalar_lo_tensor_hi_1m",
+        [
+            Value::Scalar(Literal::I64(0)),
+            i64_dense(&x),
+            i64_dense(&hi),
+        ],
+        [
+            Value::Scalar(Literal::I64(0)),
+            i64_boxed(&x),
+            i64_boxed(&hi),
+        ],
+        c,
+    );
+
+    let lo: Vec<i64> = (0..N).map(|i| (i as i64 % 197) - 96).collect();
+    let x_hi: Vec<i64> = (0..N)
+        .map(|i| (i as i64).wrapping_mul(1_664_525) % 100_000)
+        .collect();
+    bench_inputs(
+        "i64_mixed_tensor_lo_scalar_hi_1m",
+        [
+            i64_dense(&lo),
+            i64_dense(&x_hi),
+            Value::Scalar(Literal::I64(211)),
+        ],
+        [
+            i64_boxed(&lo),
+            i64_boxed(&x_hi),
+            Value::Scalar(Literal::I64(211)),
+        ],
+        c,
+    );
+}
+
 fn bench_half_tensor_tensor(c: &mut Criterion) {
     for (dtype, label, lo_bits, x_bits, hi_bits) in [
         (
@@ -197,6 +266,8 @@ criterion_group! {
         .measurement_time(Duration::from_secs(2));
     targets =
         bench_f32_f64_mixed_scalar_tensor,
+        bench_i64_mixed_scalar_tensor,
+        bench_i64_tensor_tensor,
         bench_half_mixed_scalar_tensor,
         bench_half_tensor_tensor
 }

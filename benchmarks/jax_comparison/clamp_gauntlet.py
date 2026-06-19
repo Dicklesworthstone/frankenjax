@@ -7,6 +7,7 @@ import platform
 import statistics
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import jax
 
@@ -69,6 +70,38 @@ def f64_mixed():
     return "f64_mixed_scalar_tensor_1m", lambda lo, x, hi: jnp.clip(x, lo, hi), (lo, x, hi)
 
 
+def i64_mixed_scalar_lo_tensor_hi():
+    i = jnp.arange(N, dtype=jnp.int64)
+    x = (i * jnp.int64(1_103_515_245)) % jnp.int64(100_000)
+    hi = jnp.int64(50) + (i % jnp.int64(211))
+    lo = jnp.array(0, dtype=jnp.int64)
+    return (
+        "i64_mixed_scalar_lo_tensor_hi_1m",
+        lambda lo, x, hi: jnp.clip(x, lo, hi),
+        (lo, x, hi),
+    )
+
+
+def i64_mixed_tensor_lo_scalar_hi():
+    i = jnp.arange(N, dtype=jnp.int64)
+    lo = (i % jnp.int64(197)) - jnp.int64(96)
+    x = (i * jnp.int64(1_664_525)) % jnp.int64(100_000)
+    hi = jnp.array(211, dtype=jnp.int64)
+    return (
+        "i64_mixed_tensor_lo_scalar_hi_1m",
+        lambda lo, x, hi: jnp.clip(x, lo, hi),
+        (lo, x, hi),
+    )
+
+
+def i64_tensor():
+    i = jnp.arange(N, dtype=jnp.int64)
+    lo = (i % jnp.int64(97)) - jnp.int64(50)
+    x = (i * jnp.int64(2_654_435_761)) % jnp.int64(10_000)
+    hi = lo + jnp.int64(128)
+    return "i64_tensor_tensor_tensor_1m", lambda lo, x, hi: jnp.clip(x, lo, hi), (lo, x, hi)
+
+
 def half_mixed(dtype, name):
     base = jnp.arange(N, dtype=jnp.float32) % jnp.float32(64.0)
     x = (jnp.float32(1.0) + base * jnp.float32(0.015625)).astype(dtype)
@@ -96,6 +129,9 @@ def main():
     workloads = [
         f32_mixed(),
         f64_mixed(),
+        i64_mixed_scalar_lo_tensor_hi(),
+        i64_mixed_tensor_lo_scalar_hi(),
+        i64_tensor(),
         half_mixed(jnp.bfloat16, "bf16_mixed_scalar_tensor_1m"),
         half_mixed(jnp.float16, "f16_mixed_scalar_tensor_1m"),
         half_tensor(jnp.bfloat16, "bf16_tensor_tensor_tensor_1m"),
@@ -121,9 +157,10 @@ def main():
         },
         "results": results,
     }
-    with open(args.output, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2, sort_keys=True)
-        fh.write("\n")
+    Path(args.output).write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 

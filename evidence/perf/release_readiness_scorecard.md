@@ -58,6 +58,9 @@ Additional current scalar broadcast environment:
 | frankenjax-mcqr.106 | `f16_mixed_scalar_tensor_1m` | 19.859 ms mean | 371.729 us mean | 53.423 | Rust 53.42x slower |
 | frankenjax-mcqr.107 | `bf16_tensor_tensor_tensor_1m` | 15.652 ms mean | 183.707 us mean | 85.200 | Rust 85.20x slower |
 | frankenjax-mcqr.107 | `f16_tensor_tensor_tensor_1m` | 20.951 ms mean | 229.951 us mean | 91.110 | Rust 91.11x slower |
+| frankenjax-mcqr.104 | `i64_mixed_scalar_lo_tensor_hi_1m` | 689.991 us mean | 200.558 us mean | 3.440 | Rust 3.44x slower (34.28x vs boxed ref) |
+| frankenjax-mcqr.104 | `i64_mixed_tensor_lo_scalar_hi_1m` | 611.377 us mean | 197.536 us mean | 3.095 | Rust 3.10x slower (42.12x vs boxed ref) |
+| frankenjax-mcqr.103 | `i64_tensor_tensor_tensor_1m` | 1.046 ms mean | 287.593 us mean | 3.636 | Rust 3.64x slower (23.59x vs boxed ref) |
 | frankenjax-mcqr.101 | `bitcast_f32_i32_1m` | 430.783 us mean | 133.290 us mean | 3.232 | Rust 3.23x slower (45.35x vs literal ref) |
 | frankenjax-mcqr.101 | `bitcast_i32_f32_1m` | 642.693 us mean | 93.945 us mean | 6.841 | Rust 6.84x slower (35.28x vs literal ref) |
 | frankenjax-mcqr.101 | `bitcast_f64_u64_1m` | 270.723 us mean | 176.611 us mean | 1.533 | Rust 1.53x slower (91.41x vs literal ref) |
@@ -132,8 +135,9 @@ Additional current scalar broadcast environment:
     scalar broadcast cluster as a mixed keep, not a release-grade pass, until a
     low-CV rerun confirms the split.
 - Dense clamp verification is a Rust-internal keep but an external JAX loss
-  on all six measured clamp workloads, with the worst gap in half-precision
-  tensor clamp.
+  on all nine measured clamp workloads. The I64 rows lose by 3.10-3.64x versus
+  JAX despite 23.59-42.12x internal wins over the boxed Rust reference; the
+  worst gap remains half-precision tensor clamp.
 - Dense bitcast verification is a Rust-internal keep but an external JAX loss
   on all six measured bitcast workloads. The f64/u64 same-width rows are
   near the known memory-bandwidth residual (1.30-1.53x slower), while the BF16
@@ -152,9 +156,9 @@ Additional current scalar broadcast environment:
   output construction or a fused real-to-complex path, not another retry of the
   boxed-literal-elision lever.
 - Next clamp gate: BF16/F16 clamp must remove per-lane `clamp_literal`
-  widen/round overhead with a raw-bit proof harness; F32/F64 clamp must target
-  SIMD/parallel throughput or output allocation/fusion rather than another
-  boxed-literal-elision retry.
+  widen/round overhead with a raw-bit proof harness; F32/F64 and I64 clamp must
+  target SIMD/parallel throughput, output allocation/fusion, or compiled-buffer
+  reuse rather than another boxed-literal-elision retry.
 - Next bitcast gate: same-width f64/u64 should share the elementwise/store
   throughput plan; half-width F32/BF16 needs a raw packed chunk builder that
   avoids the current shape-changing construction overhead. Do not retry the

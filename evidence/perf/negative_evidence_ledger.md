@@ -151,6 +151,46 @@ ends are not rediscovered without new evidence.
   peer-owned fj-core dense-storage lanes without fresh same-worker benchmark
   evidence and ownership check.
 
+## frankenjax-mcqr.103-.104 - Dense I64 Clamp Tensor and Mixed Bounds
+
+- Date: 2026-06-19
+- Agent: cod-a / WildForge
+- Lever: verify committed dense I64 `Clamp` fast paths for same-shape tensor
+  bounds and both mixed scalar/tensor bound orders against the boxed Rust
+  reference path and original JAX CPU.
+- Status: measured keep internally; negative head-to-head result versus JAX on
+  all three measured I64 clamp workloads.
+- Evidence artifact:
+  `artifacts/performance/evidence/frankenjax_mcqr_103_104_i64_clamp_gauntlet_2026-06-19.json`.
+- Benchmark guard: `crates/fj-lax/benches/clamp_gauntlet.rs`, 1,048,576 I64
+  elements per row, Criterion sample size 20, warmed original-JAX CPU timing
+  with 50 runs x 100 inner loops.
+- Measured evidence (2026-06-19, same-host CPU):
+  - Rust check: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo check -p fj-lax --bench clamp_gauntlet`.
+  - Rust bench: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo bench -p fj-lax --bench clamp_gauntlet -- 'i64_' --sample-size 20 --warm-up-time 1 --measurement-time 3 --save-baseline frankenjax-mcqr-103-104-i64-clamp`.
+  - JAX command: `benchmarks/jax_comparison/.venv/bin/python benchmarks/jax_comparison/clamp_gauntlet.py --runs 50 --warmup 10 --inner-loops 100 --output /tmp/frankenjax_mcqr_103_104_i64_clamp_jax_raw.json`.
+  - JAX/JAXLIB: 0.10.1 / 0.10.1, `jax_enable_x64=true`, CPU backend.
+
+| Workload | Rust dense mean | Rust boxed mean | Dense/boxed | JAX mean | Rust/JAX | Outcome |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `i64_mixed_scalar_lo_tensor_hi_1m` | 689.991 us | 23.655 ms | 34.28x faster | 200.558 us | 3.44x slower | Keep internal win; JAX loss |
+| `i64_mixed_tensor_lo_scalar_hi_1m` | 611.377 us | 25.749 ms | 42.12x faster | 197.536 us | 3.10x slower | Keep internal win; JAX loss |
+| `i64_tensor_tensor_tensor_1m` | 1.046 ms | 24.674 ms | 23.59x faster | 287.593 us | 3.64x slower | Keep internal win; JAX loss |
+
+- Conformance guard: dense and boxed I64 clamp paths match the generic
+  semantics for same-shape tensor bounds and mixed scalar/tensor bounds.
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo test -p fj-lax clamp --lib`
+  passed 25 tests, 0 failed, 6 ignored.
+- Decision: keep, not revert. Every measured row is a 23.59-42.12x internal
+  win over the boxed Rust reference path, while every row remains a 3.10-3.64x
+  external loss versus original JAX CPU.
+- Retry predicate: do not retry boxed-literal elision for these I64 clamp
+  shapes. The next I64 clamp attempt must target SIMD/parallel clamp
+  throughput, output allocation/fusion, or JAX-like compiled buffer reuse, not
+  another dense-storage sibling fast path. Do not merge this family with
+  half-raw-bit clamp or broadcast-shape generalization without fresh
+  Criterion/JAX evidence and ownership check.
+
 ## frankenjax-co009 - Stream Dense LiteralBuffer Serialization
 
 - Date: 2026-06-18
