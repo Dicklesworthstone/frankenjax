@@ -2613,28 +2613,60 @@ pub(crate) fn eval_slice(
                 // ENTIRE input buffer to `Vec<Literal>` (which `tensor.elements[range]`
                 // does via `Index`/`as_slice`) just to copy a sub-range, AND keeps the
                 // output dense. Pure copy -> bit-for-bit identical to the boxed path.
+                // Threaded contiguous copy above the gate: calloc'd output + parallel copy
+                // of the single source sub-range (serial `.to_vec()` is page-fault-bound at
+                // ~3.5 GB/s). Bit-identical (pure copy). `concat_contiguous_into` with one
+                // source is exactly a parallel memcpy. Reused across the dense dtype arms.
+                let par = total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+                    && crate::arithmetic::work_scaled_threads(total) > 1;
+                let threads = crate::arithmetic::work_scaled_threads(total);
                 if let Some(src) = tensor.elements.as_f64_slice() {
-                    return Ok(Value::Tensor(TensorValue::new_f64_values(
-                        shape,
-                        src[start_offset..end_offset].to_vec(),
-                    )?));
+                    let sub = &src[start_offset..end_offset];
+                    let vals = if par {
+                        let mut out = vec![0.0f64; total];
+                        concat_contiguous_into(&mut out, &[sub], threads);
+                        out
+                    } else {
+                        sub.to_vec()
+                    };
+                    return Ok(Value::Tensor(TensorValue::new_f64_values(shape, vals)?));
                 }
                 if let Some(src) = tensor.elements.as_f32_slice() {
-                    return Ok(Value::Tensor(TensorValue::new_f32_values(
-                        shape,
-                        src[start_offset..end_offset].to_vec(),
-                    )?));
+                    let sub = &src[start_offset..end_offset];
+                    let vals = if par {
+                        let mut out = vec![0.0f32; total];
+                        concat_contiguous_into(&mut out, &[sub], threads);
+                        out
+                    } else {
+                        sub.to_vec()
+                    };
+                    return Ok(Value::Tensor(TensorValue::new_f32_values(shape, vals)?));
                 }
                 if let Some(src) = tensor.elements.as_half_float_slice() {
+                    let sub = &src[start_offset..end_offset];
+                    let vals = if par {
+                        let mut out = vec![0u16; total];
+                        concat_contiguous_into(&mut out, &[sub], threads);
+                        out
+                    } else {
+                        sub.to_vec()
+                    };
                     return Ok(Value::Tensor(TensorValue::new_half_float_values(
                         tensor.dtype,
                         shape,
-                        src[start_offset..end_offset].to_vec(),
+                        vals,
                     )?));
                 }
                 if let Some(src) = tensor.elements.as_i64_slice() {
+                    let sub = &src[start_offset..end_offset];
+                    let vals = if par {
+                        let mut out = vec![0i64; total];
+                        concat_contiguous_into(&mut out, &[sub], threads);
+                        out
+                    } else {
+                        sub.to_vec()
+                    };
                     // Preserve the input integer width (i32 slice must stay I32).
-                    let vals = src[start_offset..end_offset].to_vec();
                     let tv = if tensor.dtype == DType::I32 {
                         TensorValue::new_i32_values(shape, vals)
                     } else {
@@ -12957,6 +12989,59 @@ mod tests {
     }
 
     #[test]
+    fn threaded_slice_bit_identical_to_serial() {
+        // Contiguous leading-axis slice at >= gate engages the threaded copy; compare to
+        // the serial sub-range copy, f64 + i64.
+        let total = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 999;
+        let big = 2 * total;
+        let xf: Vec<f64> = (0..big).map(|i| (i as f64) * 0.5 - 7.0).collect();
+        let t = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![big as u32],
+                },
+                xf.clone(),
+            )
+            .unwrap(),
+        );
+        let mut p = BTreeMap::new();
+        p.insert("start_indices".to_owned(), "3".to_owned());
+        p.insert("limit_indices".to_owned(), format!("{}", 3 + total));
+        let got = eval_slice(std::slice::from_ref(&t), &p).unwrap();
+        let gb: Vec<u64> = got
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f64_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let wb: Vec<u64> = xf[3..3 + total].iter().map(|v| v.to_bits()).collect();
+        assert!(gb == wb, "threaded f64 slice != serial");
+        // i64
+        let xi: Vec<i64> = (0..big).map(|i| i as i64 - 5).collect();
+        let ti = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![big as u32],
+                },
+                xi.clone(),
+            )
+            .unwrap(),
+        );
+        let goti = eval_slice(std::slice::from_ref(&ti), &p).unwrap();
+        let gib = goti
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_i64_slice()
+            .unwrap()
+            .to_vec();
+        assert!(gib == xi[3..3 + total], "threaded i64 slice != serial");
+    }
+
+    #[test]
     fn threaded_i64_broadcast_and_gather_bit_identical() {
         // i64 broadcast [C] -> [rows, C] at >= gate.
         let cols = 1024usize;
@@ -12964,9 +13049,12 @@ mod tests {
         let total = rows * cols;
         assert!(total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN);
         let src: Vec<i64> = (0..cols).map(|i| (i as i64) * 7 - 3000).collect();
-        let in_strides =
-            checked_row_major_strides(Primitive::BroadcastInDim, "broadcast_in_dim", &[cols as u32])
-                .unwrap();
+        let in_strides = checked_row_major_strides(
+            Primitive::BroadcastInDim,
+            "broadcast_in_dim",
+            &[cols as u32],
+        )
+        .unwrap();
         let target_dims = vec![rows as u32, cols as u32];
         let out_to_in = vec![None, Some(0usize)];
         let serial = broadcast_replicate(
@@ -13067,9 +13155,12 @@ mod tests {
         let total = rows * cols;
         assert!(total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN);
         let src: Vec<u16> = (0..cols).map(|i| (i as u16).wrapping_mul(37)).collect();
-        let in_strides =
-            checked_row_major_strides(Primitive::BroadcastInDim, "broadcast_in_dim", &[cols as u32])
-                .unwrap();
+        let in_strides = checked_row_major_strides(
+            Primitive::BroadcastInDim,
+            "broadcast_in_dim",
+            &[cols as u32],
+        )
+        .unwrap();
         let target_dims = vec![rows as u32, cols as u32];
         let out_to_in = vec![None, Some(0usize)];
         let serial = broadcast_replicate(

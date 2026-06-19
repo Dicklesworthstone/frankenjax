@@ -1874,3 +1874,30 @@ ends are not rediscovered without new evidence.
   scorecard blocker (for the scalar-bounds case).
 - Retry predicate: extend to the tensor-bounds + mixed scalar/tensor clamp arms (clamp_*_tensor_*)
   and bf16/f16 clamp via threaded_index_fill_into. Mechanical.
+
+## CobaltForge - Threaded contiguous slice (f64/f32/bf16/i64) for DRAM-bound (JAX WIN) + rev/bitwise losses
+
+- Lever: `slice` (sequence/window/batch slicing — ubiquitous) copied its contiguous leading-axis
+  output via serial `src[start..end].to_vec()` (page-fault-bound ~3.3-3.5 GB/s). Routed the f64/f32/
+  bf16(f16)/i64 contiguous-trailing-slice dense arms through `concat_contiguous_into` with a single
+  source (calloc'd output + parallel copy) above CHEAP_BINARY_PARALLEL_MIN. Bit-identical (pure copy).
+- Guarded by `threaded_slice_bit_identical_to_serial` (f64 + i64, offset start), bit-for-bit vs the
+  serial sub-range copy.
+- Conformance: `fj-lax --lib` 1511 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, best-of-15) + JAX (`x[:N]` x64, /tmp/jax_misc.py):
+
+  | n | serial (before) | threaded (after) | internal | JAX | Rust/JAX |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 16M | 72675 us (3.5 GB/s) | 17999 us (14.2 GB/s) | 4.04x | 22910 us (11.2 GB/s) | 0.79x (1.27x FASTER) |
+  | 64M | 311358 us (3.3 GB/s) | 74208 us (13.8 GB/s) | 4.20x | 92900 us (11.0 GB/s) | 0.80x (1.25x FASTER) |
+
+- Decision: KEEP. slice is ubiquitous; was a ~3.2x JAX loss, now a 1.25-1.27x win (modest because
+  slice is a memory-bound copy and JAX already streams at ~11 GB/s).
+- ALSO MEASURED (this round, recorded as remaining losses / follow-ons):
+  * `rev` (reverse): Rust 2.1-2.2 GB/s vs JAX 10.8-10.9 (~5x LOSS). Threadable (index map
+    out[i]=in[n-1-i]); not yet done — follow-on.
+  * `BitwiseAnd/Or/Xor` (i64): Rust 4.8-4.9 GB/s vs JAX 20.7-24.3 (~4-5x LOSS). Goes through a
+    dedicated bitwise eval fn (NOT eval_binary_elementwise), so my i64 arith threading doesn't
+    cover it — follow-on (thread its integer same-shape loop + the BoolWords SWAR path).
+- Retry predicate: thread rev + bitwise (and/or/xor/shifts) same-shape integer paths next; both are
+  clean index-map / elementwise patterns with the same calloc+parallel lever.

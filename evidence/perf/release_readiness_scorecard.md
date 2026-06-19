@@ -452,3 +452,11 @@ Additional cod-a repeat validation environment:
   Bit-identical (f64/f32/i64, NaN/±0/±inf), guarded. RESOLVES the prior "I64 clamp 3.10-3.64x
   slower than JAX" blocker (scalar-bounds case). Gradient clipping / activation bounds are
   ubiquitous. Tensor-bounds + bf16 clamp arms are mechanical follow-ons.
+
+## CobaltForge - Threaded slice (f64/f32/bf16/i64): JAX WIN + rev/bitwise losses noted (2026-06-19)
+
+- Contiguous leading-axis slice threaded (single-source concat_contiguous_into): 16M/64M = Rust/JAX
+  0.79/0.80 (1.27/1.25x faster than jax.jit slice), internal ~4x (3.3 -> 13.8-14.2 GB/s).
+  Bit-identical, guarded. Was a ~3.2x loss.
+- Remaining measured losses (follow-ons): rev ~5x (threadable index-map), BitwiseAnd/Or/Xor ~4-5x
+  (dedicated bitwise fn, not covered by arith threading). Both clean threading targets.
