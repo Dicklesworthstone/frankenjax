@@ -573,3 +573,20 @@ Additional cod-a repeat validation environment:
     densify damage / already fixed by the densify author).
   - fj-interpreters: NOT swept (WildForge's reserved compiled-dispatch surface).
 - Net: every crate outside fj-interpreters has a fully-green `cargo test --lib` post-densify.
+## WildForge - CompiledJaxpr tensor-param pre-scan rejected; tensor64 n=32 remains a real JAX loss (frankenjax-6dfew, 2026-06-19)
+
+- Focused `fj-interpreters` Criterion on RCH `hz2`:
+  - scalar compiled is slower than eager: n=8 146.14 ns vs 34.66 ns, n=32
+    217.46 ns vs 82.13 ns, n=128 695.67 ns vs 310.40 ns.
+  - tensor64 compiled is only modestly faster than eager: n=8 1.8546 us vs
+    2.1616 us (1.17x), n=32 7.3435 us vs 7.9298 us (1.08x).
+- JAX comparator (`jax.jit`, CPU x64, JAX 0.10.2) means:
+  - scalar n=8/32/128: 5.735/6.146/5.101 us, so Rust eager already wins and
+    compiled is not the right scalar path.
+  - tensor64 n=8: Rust compiled/JAX = 0.37x (Rust wins).
+  - tensor64 n=32: Rust compiled/JAX = 1.48x (Rust loses).
+- Decision: do not implement the originally proposed typed tensor-param pre-scan.
+  Existing chain fusion already removes the dispatch/param-parse cost for this
+  workload; the remaining n=32 loss is per-element work or JAX algebra/codegen.
+  Folding float `x+1+...` into `x+n` would alter FP rounding, so it is not a
+  valid bit-preserving FrankenJAX lever without an explicit relaxed-FP contract.

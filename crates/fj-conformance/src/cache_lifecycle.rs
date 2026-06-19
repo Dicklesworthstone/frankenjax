@@ -1,23 +1,26 @@
 #![forbid(unsafe_code)]
 
 use fj_cache::{
-    CACHE_KEY_NAMESPACE, CacheKey, CacheKeyInput, CacheLookup, CacheManager, build_cache_key,
+    build_cache_key,
     legacy_parity::{
-        CacheLegacyParityLedger, CacheParityIssue, cache_legacy_parity_ledger,
-        cache_legacy_parity_markdown, validate_cache_legacy_parity_ledger,
+        cache_legacy_parity_ledger, cache_legacy_parity_markdown,
+        validate_cache_legacy_parity_ledger, CacheLegacyParityLedger, CacheParityIssue,
     },
+    CacheKey, CacheKeyInput, CacheLookup, CacheManager, CACHE_KEY_NAMESPACE,
 };
 #[cfg(test)]
 use fj_core::Jaxpr;
-use fj_core::{CompatibilityMode, ProgramSpec, Transform, build_program};
+use fj_core::{build_program, CompatibilityMode, ProgramSpec, Transform};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const CACHE_LIFECYCLE_REPORT_SCHEMA_VERSION: &str = "frankenjax.cache-lifecycle-report.v1";
+static CACHE_LIFECYCLE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheLifecycleScenario {
@@ -342,8 +345,9 @@ fn unique_temp_root(root: &Path) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
+    let seq = CACHE_LIFECYCLE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     root.join("target/cache-lifecycle-gate")
-        .join(format!("run-{}-{nanos}", std::process::id()))
+        .join(format!("run-{}-{nanos}-{seq}", std::process::id()))
 }
 
 fn scenario_corrupt_read_bypass(temp_root: &Path) -> CacheLifecycleScenario {

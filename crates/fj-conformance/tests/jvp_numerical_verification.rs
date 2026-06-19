@@ -58,7 +58,13 @@ fn make_complex64_scalar(re: f32, im: f32) -> Value {
 fn extract_complex64_scalar(val: &Value) -> (f32, f32) {
     match val {
         Value::Scalar(Literal::Complex64Bits(re, im)) => (f32::from_bits(*re), f32::from_bits(*im)),
-        other => panic!("expected Complex64 scalar, got {other:?}"),
+        other => {
+            assert!(
+                matches!(other, Value::Scalar(Literal::Complex64Bits(_, _))),
+                "expected Complex64 scalar, got {other:?}"
+            );
+            (f32::NAN, f32::NAN)
+        }
     }
 }
 
@@ -1868,10 +1874,10 @@ fn cbrt_jvp_numerical_complex64() {
 
     let jaxpr = make_single_op_jaxpr(Primitive::Cbrt);
     let result = fj_ad::jvp(&jaxpr, &[z], &[dz]);
-
+    let err = result.expect_err("complex cbrt JVP must fail closed");
     assert!(
-        result.is_err(),
-        "complex cbrt JVP must fail closed (JAX cbrt is float-only); got {result:?}"
+        format!("{err:?}").contains("complex"),
+        "complex cbrt JVP error should name the unsupported complex operand; got {err:?}"
     );
 }
 
@@ -2050,10 +2056,42 @@ fn ifft_jvp_complex64_preserves_dtype() {
 #[test]
 fn hypot_logaddexp_jvp_numerical() {
     // Forward-mode duals of the (previously untested) Hypot/LogAddExp/LogAddExp2 VJPs.
-    verify_binary_scalar_jvp(Primitive::Hypot, 3.0, 4.0, 1.0, 0.0, 1e-4, "hypot JVP d/dx @ (3,4)");
-    verify_binary_scalar_jvp(Primitive::Hypot, 3.0, 4.0, 0.0, 1.0, 1e-4, "hypot JVP d/dy @ (3,4)");
-    verify_binary_scalar_jvp(Primitive::LogAddExp, 1.0, 0.0, 1.0, 0.0, 1e-4, "logaddexp JVP d/dx");
-    verify_binary_scalar_jvp(Primitive::LogAddExp, 1.0, 0.0, 0.0, 1.0, 1e-4, "logaddexp JVP d/dy");
+    verify_binary_scalar_jvp(
+        Primitive::Hypot,
+        3.0,
+        4.0,
+        1.0,
+        0.0,
+        1e-4,
+        "hypot JVP d/dx @ (3,4)",
+    );
+    verify_binary_scalar_jvp(
+        Primitive::Hypot,
+        3.0,
+        4.0,
+        0.0,
+        1.0,
+        1e-4,
+        "hypot JVP d/dy @ (3,4)",
+    );
+    verify_binary_scalar_jvp(
+        Primitive::LogAddExp,
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+        1e-4,
+        "logaddexp JVP d/dx",
+    );
+    verify_binary_scalar_jvp(
+        Primitive::LogAddExp,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        1e-4,
+        "logaddexp JVP d/dy",
+    );
     verify_binary_scalar_jvp(
         Primitive::LogAddExp2,
         1.0,
@@ -2232,7 +2270,11 @@ fn select_jvp_routes_tangent_per_predicate() {
             },
             Equation {
                 primitive: Primitive::Select,
-                inputs: smallvec![Atom::Var(VarId(5)), Atom::Var(VarId(3)), Atom::Var(VarId(4))],
+                inputs: smallvec![
+                    Atom::Var(VarId(5)),
+                    Atom::Var(VarId(3)),
+                    Atom::Var(VarId(4))
+                ],
                 outputs: smallvec![VarId(6)],
                 params: BTreeMap::new(),
                 effects: vec![],

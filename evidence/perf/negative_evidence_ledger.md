@@ -165,6 +165,53 @@ ends are not rediscovered without new evidence.
   `new_with_literal_buffer(LiteralBuffer::new(..))`; do not assume `TensorValue::new`
   stays boxed. The 3 pre-existing polygamma/complex eval failures are a separate
   correctness gap (not densify, not perf).
+## frankenjax-6dfew - CompiledJaxpr Tensor-Param Pre-Scan (NO-SHIP)
+
+- Date: 2026-06-19
+- Agent: cod-b / WildForge
+- Lever considered: extend `CompiledJaxpr`'s dense plan with typed tensor
+  equation param pre-scan so hot repeated eval avoids per-call
+  `BTreeMap<String, String>` param parsing and generic `eval_primitive`
+  dispatch for tensor equations.
+- Alien/optimization mapping: graveyard vectorized execution + query/JIT
+  entries point at removing interpreter overhead for hot repeated queries, but
+  the live code already applies the matching lower-risk primitive:
+  `run_dense_env_into` fuses maximal cheap elementwise tensor chains via
+  `try_fuse_elementwise_chain`, and scalar chains use existing scalar arena
+  plans. Remaining residual is not the original dispatch/param-parse target.
+- Status: NO-SHIP / close as negative evidence. The focused benchmark does not
+  clear the Score >= 2.0 gate for the proposed lever:
+  - scalar compiled path is slower than eager:
+    n=8 146.14 ns vs 34.66 ns (0.24x), n=32 217.46 ns vs 82.13 ns
+    (0.38x), n=128 695.67 ns vs 310.40 ns (0.45x).
+  - tensor64 compiled path is only a small win:
+    n=8 1.8546 us vs eager 2.1616 us (1.17x), n=32 7.3435 us vs
+    eager 7.9298 us (1.08x).
+  These are already after chain fusion, so typed param pre-scan can only attack
+  the small leftover call overhead, not the dominant per-element work.
+- Head-to-head vs JAX CPU (`jax.jit`, x64 enabled, JAX 0.10.2,
+  `uv run --with 'jax[cpu]' --with numpy`, 40 runs x 200 inner loops):
+  - scalar n=8/32/128 JAX means 5.735/6.146/5.101 us; Rust eager and compiled
+    are far faster in-process, but compiled is worse than eager, so no new
+    CompiledJaxpr lever is justified.
+  - tensor64 n=8 JAX mean 5.026 us; Rust compiled 1.855 us (Rust/JAX 0.37x).
+  - tensor64 n=32 JAX mean 4.954 us; Rust compiled 7.343 us (Rust/JAX 1.48x).
+    This external loss is real, but it is not a typed-param-parse loss.
+- Measurement commands:
+  - `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec -- cargo bench -p fj-interpreters --bench compiled_dispatch_speed -- compiled_dispatch --warm-up-time 1 --measurement-time 5 --sample-size 20`
+    selected `hz2` and used a cold worker-scoped target path.
+  - `uv run --with 'jax[cpu]' --with numpy python benchmarks/jax_comparison/interpreter_compiled_dispatch_gauntlet.py --runs 40 --warmup 8 --inner-loops 200 --output /tmp/frankenjax_interpreter_compiled_dispatch_jax.json`.
+- Behavior proof / non-implementation rationale: no production code changed.
+  The obvious JAX-style rewrite, folding `(((x + 1.0) + 1.0) ...)` to
+  `x + n`, is not bit-preserving for arbitrary floating-point inputs because
+  it changes rounding points. It is only safe for integer wrapping additions,
+  where Rust already beats JAX and compiled still loses to eager internally.
+- Retry predicate: do not implement tensor-param pre-scan for Add-chain dispatch
+  without a new profile showing a non-fused, param-heavy single-op workload
+  where param parsing is top-5. To attack the tensor64 n=32 JAX loss, use a
+  semantics-safe optimizer/codegen lane with explicit FP contract, or buffer
+  reuse/arena work that reduces allocations without changing left-associative
+  float semantics.
 
 ## frankenjax-cod-b-dense-tensor-stack-axis0-rw4k4 - Dense Tensor stack_axis0 Concat Storage
 

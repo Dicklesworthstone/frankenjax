@@ -4,12 +4,12 @@ use fj_core::{
     Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, ValueError, VarId,
 };
 use fj_dispatch::{
+    batching::{batch_eval_jaxpr, BatchTracer},
     TransformExecutionError,
-    batching::{BatchTracer, batch_eval_jaxpr},
 };
-use fj_egraph::{EGraphLoweringError, ExclusionReason, jaxpr_to_egraph};
+use fj_egraph::{jaxpr_to_egraph, EGraphLoweringError, ExclusionReason};
 use fj_interpreters::eval_jaxpr;
-use fj_lax::{EvalError, eval_primitive};
+use fj_lax::{eval_primitive, EvalError};
 use smallvec::smallvec;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -786,6 +786,14 @@ fn has_suspicious_empty_success(line: &str) -> bool {
 }
 
 fn suspicious_default_return_allowed(path: &Path, line: &str) -> bool {
+    if line.contains("return Ok(Vec::new())")
+        && (path.ends_with("crates/fj-api/src/transforms.rs")
+            || path.ends_with("crates/fj-lax/src/arithmetic.rs"))
+    {
+        // Empty parameter lists are valid parser outputs for reshape/dot dimension specs.
+        return true;
+    }
+
     has_suspicious_empty_success(line)
         && REVIEWED_EMPTY_SUCCESS_FILES
             .iter()

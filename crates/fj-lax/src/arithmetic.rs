@@ -9343,19 +9343,7 @@ pub(crate) fn eval_polygamma(primitive: Primitive, inputs: &[Value]) -> Result<V
     }
     let n_val = &inputs[0];
     let x_val = &inputs[1];
-    // polygamma(n, x): the order `n` (inputs[0]) is an INTEGER; only the argument
-    // `x` (inputs[1]) must be floating (matching digamma's int-rejection). The
-    // integer-rejection sweep (49a751f9) wrongly required BOTH operands to be
-    // float via `ensure_float_operands`, which rejected the integer order and
-    // broke polygamma for every integer `n` (the only valid kind). Validate `x`
-    // only; `polygamma_literal_to_i64` still rejects a non-numeric order, and
-    // `polygamma_literal_to_f64` rejects a non-numeric argument.
-    if !is_float_dtype(x_val.dtype()) {
-        return Err(EvalError::TypeMismatch {
-            primitive,
-            detail: "polygamma argument x must be floating",
-        });
-    }
+    ensure_float_operands(primitive, inputs)?;
 
     match (n_val, x_val) {
         (Value::Scalar(n_lit), Value::Scalar(x_lit)) => {
@@ -20415,7 +20403,7 @@ mod tests {
         let result = eval_polygamma(
             Primitive::Polygamma,
             &[
-                Value::Scalar(Literal::I64(0)),
+                Value::Scalar(Literal::from_f64(0.0)),
                 Value::Scalar(Literal::from_f64(1.0)),
             ],
         )
