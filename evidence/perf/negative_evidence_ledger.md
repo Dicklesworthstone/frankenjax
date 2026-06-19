@@ -3,6 +3,33 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-cc-softmax-jax-loss - 2D softmax LOSES 2.2x to JAX (threading is NOT the lever)
+
+- Date: 2026-06-19
+- Agent: cc / CobaltForge
+- GAP WHERE WE LOSE (measured, same-load back-to-back at load ~18): Rust fused
+  `nn::softmax_2d` [65536,16] f64 = **2.22 ms** ([2.20,2.24] Criterion) vs JAX
+  `jax.nn.softmax(x, axis=-1)` = **1.01 ms** (mean 1.008, p50 1.016, CV 11.4%),
+  jax 0.10.1 CPU x64, warmed. **Rust/JAX 2.20 = JAX 2.2x FASTER.**
+- Attempt (REVERTED): hypothesised softmax was under-threaded — `softmax_2d_thread_count`
+  uses the memory-bound `work_scaled_threads` (65536 elems/thread -> only ~16 threads at
+  1M elems, ~46 cores idle). Tried a compute-scaled count (16384 elems/thread -> ~64
+  threads). Result: **3.59 ms, a REGRESSION** (1.6x SLOWER than the 16-thread default).
+  Reverted (nn.rs byte-identical to HEAD). So softmax is NOT thread-starved: the
+  16-thread default is already optimal; oversubscribing adds thread::scope spawn cost +
+  L3/cache contention. The op is L3-bandwidth / exp-throughput bound, not core-starved.
+- Root cause of the loss: per-element scalar `f64::exp` (libm, ~7-10ns) vs XLA's
+  VECTORIZED exp, plus XLA fusing the max/exp/sum/div passes. The fix (SIMD or fast-poly
+  exp) is the same one gated in [[project_simd_poly_exp_fma_finding]]: SIMD-poly f64 exp
+  is 2.2x WITH FMA / 0.79x WITHOUT, and FMA is blocked by the deliberate no-`+fma` /
+  `#![forbid(unsafe_code)]` policy ([[project_fma_lever_policy_blocked]]). A scalar fast-poly
+  exp inside softmax would also break the bit-identical `softmax_2d_fused_bit_identical_to_rowmap`
+  guard. So this loss is BLOCKED on the same FMA/SIMD-exp maintainer decision as matmul/conv.
+- Retry predicate: do NOT re-thread softmax (more threads REGRESS — measured). The softmax
+  (and any exp-bound nn op: log_softmax, logsumexp, gelu, sigmoid) vs-JAX gap is the exp
+  throughput wall; only a `+fma`/SIMD-exp policy change moves it. Reproducer:
+  `benchmarks/jax_comparison/softmax_gauntlet.py`.
+
 ## frankenjax-cc-unary-threading-surface-mined - Cheap Unary Threading Audit (negative)
 
 - Date: 2026-06-19
