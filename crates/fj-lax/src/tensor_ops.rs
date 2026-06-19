@@ -1091,6 +1091,29 @@ pub(crate) fn eval_transpose(
 
 /// BroadcastInDim: broadcast a tensor to a larger shape.
 /// Params: `shape` (target dims), `broadcast_dimensions` (mapping of input axes to output axes).
+/// Threaded constant fill into a PRE-ALLOCATED `out` (caller allocates `vec![<concrete
+/// zero>; n]` = calloc'd zero pages). Writes `v` into every element across scoped-thread
+/// chunks — parallel-faults the fresh output. Result is `vec![v; n]`, bit-for-bit identical
+/// to the serial fill, but for a non-zero `v` over a large output it avoids the serial
+/// page-fault cliff (~2.5 GB/s -> ~30 GB/s). For `v == 0` the caller's calloc already wins.
+fn threaded_fill_into<T: Copy + Send + Sync>(out: &mut [T], v: T, threads: usize) {
+    let n = out.len();
+    let chunk = n.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [T] = out;
+        while !rest.is_empty() {
+            let len = chunk.min(rest.len());
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            scope.spawn(move || {
+                for x in blk.iter_mut() {
+                    *x = v;
+                }
+            });
+        }
+    });
+}
+
 pub(crate) fn eval_broadcast_in_dim(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -1113,7 +1136,25 @@ pub(crate) fn eval_broadcast_in_dim(
             // materializes to the same literals, so it is bit-for-bit identical.
             let total = checked_shape_element_count(primitive, "broadcast_in_dim", &target_dims)?;
             let shape = Shape { dims: target_dims };
+            // Threaded constant fill above the gate for the common full() dtypes (f64/f32):
+            // calloc'd output + parallel write of the scalar, beating the serial page-fault
+            // cliff (~2.5 GB/s). Bit-identical to `vec![v; total]`.
+            let par_threads = if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+                crate::arithmetic::work_scaled_threads(total)
+            } else {
+                1
+            };
             match lit {
+                Literal::F64Bits(b) if par_threads > 1 => {
+                    let mut out = vec![0.0f64; total];
+                    threaded_fill_into(&mut out, f64::from_bits(*b), par_threads);
+                    Ok(Value::Tensor(TensorValue::new_f64_values(shape, out)?))
+                }
+                Literal::F32Bits(b) if par_threads > 1 => {
+                    let mut out = vec![0.0f32; total];
+                    threaded_fill_into(&mut out, f32::from_bits(*b), par_threads);
+                    Ok(Value::Tensor(TensorValue::new_f32_values(shape, out)?))
+                }
                 Literal::F64Bits(b) => Ok(Value::Tensor(TensorValue::new_f64_values(
                     shape,
                     vec![f64::from_bits(*b); total],
@@ -12846,6 +12887,34 @@ fn tile_recursive(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn threaded_scalar_fill_bit_identical_to_serial() {
+        // scalar broadcast / full at >= gate uses the threaded fill; compare to vec![v; n].
+        let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 173;
+        for &v in &[3.14f64, 0.0, -2.5, f64::NAN] {
+            let s = Value::Scalar(Literal::from_f64(v));
+            let mut p = BTreeMap::new();
+            p.insert("shape".to_owned(), format!("{n}"));
+            p.insert("broadcast_dimensions".to_owned(), String::new());
+            let got = eval_broadcast_in_dim(std::slice::from_ref(&s), &p).unwrap();
+            let gb: Vec<u64> = got
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .unwrap()
+                .iter()
+                .map(|x| x.to_bits())
+                .collect();
+            let want = vec![v.to_bits(); n];
+            assert!(gb == want, "threaded scalar fill v={v} != serial");
+        }
+        // direct helper check on f32
+        let mut out = vec![0.0f32; n];
+        threaded_fill_into(&mut out, 1.5f32, crate::arithmetic::work_scaled_threads(n).max(2));
+        assert!(out.iter().all(|&x| x.to_bits() == 1.5f32.to_bits()));
+    }
 
     #[test]
     fn threaded_half_float_broadcast_and_gather_bit_identical() {

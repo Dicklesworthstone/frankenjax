@@ -1716,3 +1716,24 @@ ends are not rediscovered without new evidence.
   ubiquitous there. Same calloc+parallel-page-fault lever, now covering the half-float backings.
 - Retry predicate: extend the same to i64/u32/u64 broadcast/gather/transpose/concat arms (all
   Copy+Send+Sync, concrete-zero calloc) and to bf16/f16 transpose/concat. Mechanical.
+
+## CobaltForge - Threaded scalar-broadcast / full() constant fill (f64/f32) for DRAM-bound (JAX WIN)
+
+- Lever: scalar broadcast (`jnp.full`, scalar->tensor, mask/const init) built its output via
+  `vec![v; total]`, which for a NON-ZERO v is a serial element fill, page-fault-bound at ~2.5 GB/s
+  (v==0 already callocs). New `threaded_fill_into<T>` writes v into a caller-allocated calloc'd
+  output across scoped threads (parallel page-fault). Wired into the F64Bits/F32Bits arms of the
+  BroadcastInDim scalar path above `CHEAP_BINARY_PARALLEL_MIN`. Bit-identical to `vec![v; total]`.
+- Guarded by `threaded_scalar_fill_bit_identical_to_serial` (v = 3.14 / 0.0 / -2.5 / NaN, + f32).
+- Conformance: `fj-lax --lib` 1505 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, best-of-15) + JAX (`jax.jit(jnp.full)` x64, /tmp/jax_full.py):
+
+  | n | serial (before) | threaded (after) | internal | JAX | Rust/JAX |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 16M | 49542 us (2.6 GB/s) | 6310 us (20.3 GB/s) | 7.85x | 21549 us (5.9 GB/s) | 0.29x (3.42x FASTER) |
+  | 64M | 205894 us (2.5 GB/s) | 24466 us (20.9 GB/s) | 8.42x | 86302 us (5.9 GB/s) | 0.28x (3.53x FASTER) |
+
+- Decision: KEEP. jnp.full / scalar-const materialization is common (init, masks, fills). Before,
+  Rust LOST to JAX by ~2.3x; after, DOMINATES by ~3.5x. Same gate; v==0 stays calloc (already fast).
+- Retry predicate: extend threaded_fill_into to the half/i64/u32/u64/bool scalar arms (concrete-zero
+  calloc) and to array_creation full/zeros/ones if those hit the cliff. Mechanical.

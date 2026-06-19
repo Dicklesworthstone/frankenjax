@@ -407,3 +407,9 @@ Additional cod-a repeat validation environment:
   generic _into helpers (calloc'd u16 output). bf16 broadcast 4.48-8.38x internal (2.5->11.8-20.9
   GB/s); bf16 gather ~6x (11-17 GB/s). Bit-identical, guarded. Bias broadcast + embedding gather
   are ubiquitous in training. Other dtypes (i64/u32/u64) + bf16 transpose/concat are follow-ons.
+
+## CobaltForge - Threaded scalar-broadcast / full (f64/f32): JAX WIN (2026-06-19)
+
+- jnp.full / scalar-const fill threaded (calloc'd output + parallel constant write): 16M/64M f64 =
+  Rust/JAX 0.29/0.28 (3.42-3.53x faster than jax.jit full), internal 7.85-8.42x (2.5 -> 20.3-20.9
+  GB/s). Bit-identical (incl. NaN), guarded. Common in init/masks. Other dtypes are follow-ons.
