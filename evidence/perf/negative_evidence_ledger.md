@@ -1851,3 +1851,26 @@ ends are not rediscovered without new evidence.
   DOMINATES by 1.75-2.16x. (Lower GB/s than 2-input ops — 3 inputs + 1 output of traffic — but
   still beats JAX.) `threaded_index_fill_into` is now a reusable per-index parallel fill primitive.
 - Retry predicate: extend the same to i64/bf16/u32 select arms + select_n (multi-way). Mechanical.
+
+## CobaltForge - Threaded f64/f32/i64 clamp/clip (scalar bounds) for DRAM-bound (JAX WIN)
+
+- Lever: `clamp`/`jnp.clip` (gradient clipping, activation bounds, relu6) ran its dense scalar-bounds
+  fast paths serially (~2.1 GB/s) — a documented JAX loss (prior scorecard: I64 3.10-3.64x slower).
+  Threaded the f64/f32/i64 scalar-bounds dense paths via `threaded_index_fill_into` (calloc'd output
+  + per-index clamp across scoped threads) above CHEAP_BINARY_PARALLEL_MIN. Bit-identical (per-index
+  clamp closure: clamp_f64/f32 NaN-normalize, i64 max/min — lane-independent).
+- Guarded by `threaded_clamp_bit_identical_to_serial` (f64/f32/i64, NaN/±0/±inf), bit-for-bit vs a
+  serial reference replicating clamp_f64/f32 + i64 max/min.
+- Conformance: `fj-lax --lib` 1510 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, best-of-15) + JAX (`jax.jit(jnp.clip)` x64, /tmp/jax_clamp.py):
+
+  | n | serial (before) | threaded (after) | internal | JAX | Rust/JAX |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 16M | 60484 us (2.1 GB/s) | 8304 us (15.4 GB/s) | 7.28x | 17020 us (7.5 GB/s) | 0.49x (2.05x FASTER) |
+  | 64M | 249256 us (2.1 GB/s) | 31689 us (16.2 GB/s) | 7.87x | 60542 us (8.5 GB/s) | 0.52x (1.91x FASTER) |
+
+- Decision: KEEP. clip/clamp is ubiquitous (gradient clipping, activation bounds); the prior
+  documented 3.1-4x JAX loss is now a 1.91-2.05x WIN. Resolves the "I64 clamp 3.10-3.64x slower"
+  scorecard blocker (for the scalar-bounds case).
+- Retry predicate: extend to the tensor-bounds + mixed scalar/tensor clamp arms (clamp_*_tensor_*)
+  and bf16/f16 clamp via threaded_index_fill_into. Mechanical.

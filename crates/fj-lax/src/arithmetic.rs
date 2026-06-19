@@ -8177,6 +8177,17 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
         // normalizes any-NaN to canonical NaN (so `Literal::from_f64` and the
         // dense store agree bit-for-bit), and `new_f64_values` keeps the f64 bits.
         if let Some(xs) = x.elements.as_f64_slice() {
+            let n = xs.len();
+            if n >= CHEAP_BINARY_PARALLEL_MIN && work_scaled_threads(n) > 1 {
+                let mut out = vec![0.0f64; n];
+                threaded_index_fill_into(&mut out, work_scaled_threads(n), |i| {
+                    clamp_f64(lof, xs[i], hif)
+                });
+                return Ok(Some(Value::Tensor(TensorValue::new_f64_values(
+                    x.shape.clone(),
+                    out,
+                )?)));
+            }
             let out: Vec<f64> = xs.iter().map(|&xv| clamp_f64(lof, xv, hif)).collect();
             return Ok(Some(Value::Tensor(TensorValue::new_f64_values(
                 x.shape.clone(),
@@ -8219,6 +8230,17 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
         let lof = f32::from_bits(lo_bits);
         let hif = f32::from_bits(hi_bits);
         if let Some(xs) = x.elements.as_f32_slice() {
+            let n = xs.len();
+            if n >= CHEAP_BINARY_PARALLEL_MIN && work_scaled_threads(n) > 1 {
+                let mut out = vec![0.0f32; n];
+                threaded_index_fill_into(&mut out, work_scaled_threads(n), |i| {
+                    clamp_f32(lof, xs[i], hif)
+                });
+                return Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+                    x.shape.clone(),
+                    out,
+                )?)));
+            }
             let out: Vec<f32> = xs.iter().map(|&xv| clamp_f32(lof, xv, hif)).collect();
             return Ok(Some(Value::Tensor(TensorValue::new_f32_values(
                 x.shape.clone(),
@@ -8260,6 +8282,17 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
         let Some(xs) = x.elements.as_i64_slice() else {
             return Ok(None);
         };
+        let n = xs.len();
+        if n >= CHEAP_BINARY_PARALLEL_MIN && work_scaled_threads(n) > 1 {
+            let mut out = vec![0i64; n];
+            threaded_index_fill_into(&mut out, work_scaled_threads(n), |i| {
+                lov.max(xs[i]).min(hiv)
+            });
+            return Ok(Some(Value::Tensor(TensorValue::new_i64_values(
+                x.shape.clone(),
+                out,
+            )?)));
+        }
         let out: Vec<i64> = xs.iter().map(|&xv| lov.max(xv).min(hiv)).collect();
         Ok(Some(Value::Tensor(TensorValue::new_i64_values(
             x.shape.clone(),
@@ -20414,6 +20447,109 @@ mod tests {
         )
         .unwrap();
         assert!((extract_f64(&result) - 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn threaded_clamp_bit_identical_to_serial() {
+        // clamp/clip at >= gate engages the threaded fill; compare bit-for-bit to a serial
+        // reference replicating clamp_f64/f32 (NaN-normalizing) and the i64 max/min clamp.
+        let n = CHEAP_BINARY_PARALLEL_MIN + 257;
+        let mut x: Vec<f64> = (0..n).map(|i| (i % 4000) as f64 - 2000.0).collect();
+        for (k, &s) in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -0.0]
+            .iter()
+            .enumerate()
+        {
+            x[k] = s;
+            x[n / 2 + k] = s;
+        }
+        let (lo, hi) = (-100.0f64, 100.0f64);
+        let shape = Shape {
+            dims: vec![n as u32],
+        };
+        fn ref_clamp(lo: f64, xv: f64, hi: f64) -> f64 {
+            if lo.is_nan() || xv.is_nan() || hi.is_nan() {
+                return f64::NAN;
+            }
+            let lb = if xv < lo { lo } else { xv };
+            if lb > hi { hi } else { lb }
+        }
+        // f64
+        let xt = Value::Tensor(TensorValue::new_f64_values(shape.clone(), x.clone()).unwrap());
+        let got = crate::eval_primitive(
+            Primitive::Clamp,
+            &[
+                Value::Scalar(Literal::from_f64(lo)),
+                xt,
+                Value::Scalar(Literal::from_f64(hi)),
+            ],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let gb: Vec<u64> = got
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f64_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let wb: Vec<u64> = x
+            .iter()
+            .map(|&xv| ref_clamp(lo, xv, hi).to_bits())
+            .collect();
+        assert!(gb == wb, "threaded f64 clamp != serial");
+        // f32
+        let xf: Vec<f32> = x.iter().map(|&v| v as f32).collect();
+        let xtf = Value::Tensor(TensorValue::new_f32_values(shape.clone(), xf.clone()).unwrap());
+        let gotf = crate::eval_primitive(
+            Primitive::Clamp,
+            &[
+                Value::Scalar(Literal::from_f32(lo as f32)),
+                xtf,
+                Value::Scalar(Literal::from_f32(hi as f32)),
+            ],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let gfb: Vec<u32> = gotf
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f32_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let wfb: Vec<u32> = xf
+            .iter()
+            .map(|&xv| ref_clamp(lo as f64, f64::from(xv), hi as f64) as f32)
+            .map(|v| v.to_bits())
+            .collect();
+        assert!(gfb == wfb, "threaded f32 clamp != serial");
+        // i64
+        let xi: Vec<i64> = (0..n).map(|i| (i as i64 % 4000) - 2000).collect();
+        let (loi, hii) = (-100i64, 100i64);
+        let xti = Value::Tensor(TensorValue::new_i64_values(shape.clone(), xi.clone()).unwrap());
+        let goti = crate::eval_primitive(
+            Primitive::Clamp,
+            &[
+                Value::Scalar(Literal::I64(loi)),
+                xti,
+                Value::Scalar(Literal::I64(hii)),
+            ],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let gib: Vec<i64> = goti
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_i64_slice()
+            .unwrap()
+            .to_vec();
+        let wib: Vec<i64> = xi.iter().map(|&xv| loi.max(xv).min(hii)).collect();
+        assert!(gib == wib, "threaded i64 clamp != serial");
     }
 
     #[test]

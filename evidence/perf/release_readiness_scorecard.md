@@ -444,3 +444,11 @@ Additional cod-a repeat validation environment:
   jax.jit where), internal 6.17-7.02x (1.9 -> 11.9-12.8 GB/s). Bit-identical (NaN/±0/±inf, both
   cond backings), guarded. Masking is ubiquitous (attention/dropout/clip). i64/bf16 arms + select_n
   are mechanical follow-ons.
+
+## CobaltForge - Threaded clamp/clip (f64/f32/i64 scalar bounds): JAX WIN (2026-06-19)
+
+- clamp/clip scalar-bounds dense paths threaded via threaded_index_fill_into: 16M/64M f64 = Rust/JAX
+  0.49/0.52 (2.05/1.91x faster than jax.jit clip), internal 7.28-7.87x (2.1 -> 15.4-16.2 GB/s).
+  Bit-identical (f64/f32/i64, NaN/±0/±inf), guarded. RESOLVES the prior "I64 clamp 3.10-3.64x
+  slower than JAX" blocker (scalar-bounds case). Gradient clipping / activation bounds are
+  ubiquitous. Tensor-bounds + bf16 clamp arms are mechanical follow-ons.
