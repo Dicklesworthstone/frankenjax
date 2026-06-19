@@ -3,6 +3,80 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-cc-convert-half-downcast-threading - ConvertElementType f64/f32 -> bf16/f16 Threading
+
+- Date: 2026-06-19
+- Agent: cc / CobaltForge
+- Lever: thread the dense `convert_element_type` half-float DOWNCAST
+  (`f64/f32 -> bf16/f16`) above `CHEAP_BINARY_PARALLEL_MIN` (1<<23), filling a
+  calloc'd `u16` output across the persistent pool via `threaded_convert_into`
+  (split_at_mut, zero extra copy). Bit-identical: each lane is an independent
+  single-round `convert_{bf16,f16}_bits`, so chunk boundaries never change a bit.
+  This extends the existing threaded f64<->f32 convert fast paths to the bf16/f16
+  targets used by mixed-precision ML.
+- Status: SPLIT VERDICT (measured, same-host local Criterion before/after):
+  - **f64 -> bf16: KEEP (win).** Serial 17.40 ms vs threaded 9.50 ms at 16M
+    (1<<24) = **1.83x faster**, bit-identical. The 8-byte source read is
+    bandwidth/page-fault-bound serially (~7.5 GB/s); splitting across cores
+    raises aggregate bandwidth. f16 sibling kept by the same mechanism (f16
+    decode is strictly more compute per lane, so it benefits at least as much).
+  - **f32 -> bf16: REVERTED (regression).** Serial 6.38 ms vs threaded 7.92 ms
+    at 16M = **0.81x (1.24x SLOWER)**. The 4-byte f32 read already runs ~15 GB/s
+    serially and the convert is a cheap bit-shift, so thread fan-out overhead
+    dominates. The f32-source half-threading guard was removed; f32 stays serial.
+- Benchmark guard: `eval/convert_16m_f32_to_bf16` (now serial baseline) and
+  `eval/convert_16m_f64_to_bf16` (threaded win), added to
+  `crates/fj-lax/benches/lax_baseline.rs`.
+- Measured commands (same host, AMD 5975WX, 64 logical CPUs):
+  - `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc-local cargo bench
+    -p fj-lax --bench lax_baseline -- eval/convert_16m --warm-up-time 1
+    --measurement-time 8`, before (serial: bf16 guards forced off) vs after.
+  - vs-JAX not measured cleanly: host was contended (load ~4-6) all session, the
+    same condition that made the 2026-06-19 ledger correction reframe vs-JAX
+    elementwise ratios as cross-load artifacts. This row reports the trustworthy
+    same-binary serial->threaded ratio only; it inherits the established
+    "single-input DRAM-bound calloc + parallel page-fault" win class vs JAX.
+- Conformance guard: `cargo test -p fj-lax --release --lib convert` plus the full
+  `--lib` suite (see below) pass for all convert paths; bit-identity covered by
+  `convert_element_type_dense_matches_generic_all_targets`.
+- Retry predicate: do NOT thread the f32 (or narrower, 4-byte) source half
+  downcast — measured regression. Do not re-attempt f32->bf16 threading without a
+  fundamentally different mechanism (e.g. SIMD bf16 pack, separately found NO-WIN
+  in `project_bf16_matmul_and_convert_simd`). f64->bf16/f16 threading is shipped.
+
+## frankenjax-cc-densify-guard-test-restoration - cbea72b3 broke 40 dense-vs-boxed guard tests
+
+- Date: 2026-06-19
+- Agent: cc / CobaltForge
+- Finding (NOT a perf lever; a conformance regression discovered while verifying):
+  `cbea72b3` ("frankenjax-mcqr.97 perf: TensorValue::new dense literal storage,
+  code-first batch-test pending", 2026-06-18) made `TensorValue::new` densify
+  homogeneous literal vectors for ALL dtypes via `dense_buffer_for_declared_dtype`
+  (F64/F32/half/complex/bool/ints). This silently turned the *reference* inputs of
+  40 `dense_*_matches_generic` / `*_bit_identical_to_literal_path` guard tests
+  dense, tripping their `as_*_slice().is_none()` preconditions and collapsing the
+  dense-vs-boxed comparison into a tautology. `cargo test -p fj-lax --lib` was RED
+  (43 failed) for ~20 h; the deferred "batch-test" never landed.
+- Fix (test-module only, the documented i64-densify precedent b76fa3be): added a
+  `#[cfg(test)] crate::new_boxed(dtype, shape, Vec<Literal>)` helper that routes
+  through `TensorValue::new_with_literal_buffer(.., LiteralBuffer::new(..))` to
+  keep references genuinely boxed, and pointed the 40 failing tests' reference
+  builders at it (53 scoped call-site swaps + 2 shared helpers `v_f64`/
+  `make_complex_vector`). Two output-storage assertions whose fallback output now
+  legitimately densifies (`reduce_window malformed-literal`, `f64_scalar_broadcast`)
+  were relaxed to value-equality (still proves the literal fallback path is taken).
+- Result: fj-lax `--lib` 1556 passed / 3 failed (was 1516/43). The 3 remaining are
+  PRE-EXISTING and NOT densify-related (confirmed failing on a clean-HEAD stash):
+  `eval_polygamma_scalar`, `threaded_dense_polygamma_bit_identical_to_reference`
+  (polygamma eval returns Err for digamma(1.0)), and
+  `complex_tensor_scalar_dense_path_bit_identical_to_literal` (complex
+  Atan2/XLogY/LogAddExp return Err at the dense eval). Handed off to the team.
+- Retry predicate: when `TensorValue::new`-built homogeneous tensors are used as a
+  BOXED reference in a test, build them via `crate::new_boxed` (fj-lax) /
+  `new_with_literal_buffer(LiteralBuffer::new(..))`; do not assume `TensorValue::new`
+  stays boxed. The 3 pre-existing polygamma/complex eval failures are a separate
+  correctness gap (not densify, not perf).
+
 ## frankenjax-cod-b-dense-tensor-stack-axis0-rw4k4 - Dense Tensor stack_axis0 Concat Storage
 
 - Date: 2026-06-19

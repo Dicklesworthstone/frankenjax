@@ -5085,6 +5085,30 @@ pub(crate) fn eval_convert_element_type(
                         ));
                     }
                 }
+                // Threaded hot downcast f64->bf16/f16 (the mixed-precision half cast):
+                // the 8-byte source read at DRAM sizes is bandwidth/page-fault-bound
+                // serially (~7.5 GB/s); splitting it across cores raises aggregate
+                // bandwidth (measured 17.4ms -> 9.5ms, 1.83x, at 16M). Bit-identical
+                // (per-element single-round convert_{bf16,f16}_bits(v), same as below).
+                // NOTE: the f32 source (4-byte read) is NOT threaded — it is already
+                // ~15 GB/s serially and threading REGRESSES it (see negative ledger).
+                if matches!(target_dtype, DType::BF16 | DType::F16)
+                    && n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+                {
+                    let threads = crate::arithmetic::work_scaled_threads(n);
+                    if threads > 1 {
+                        let mut out = vec![0u16; n];
+                        if target_dtype == DType::BF16 {
+                            threaded_convert_into(&mut out, values, threads, convert_bf16_bits);
+                        } else {
+                            threaded_convert_into(&mut out, values, threads, convert_f16_bits);
+                        }
+                        return Ok(Value::Tensor(
+                            TensorValue::new_half_float_values(target_dtype, shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
+                }
                 let dense = match target_dtype {
                     // from_f64(v): identity in value.
                     DType::F64 => Some(TensorValue::new_f64_values(shape.clone(), values.to_vec())),
@@ -5154,6 +5178,11 @@ pub(crate) fn eval_convert_element_type(
                         ));
                     }
                 }
+                // NOTE: f32->bf16/f16 is deliberately NOT threaded. Unlike the f64
+                // source, the 4-byte f32 read is already ~15 GB/s serially and the
+                // convert is a cheap bit-shift, so thread fan-out REGRESSED it
+                // (measured 6.4ms serial -> 7.9ms threaded at 16M). See the negative
+                // evidence ledger entry for convert f32->bf16.
                 let dense = match target_dtype {
                     DType::F32 => Some(TensorValue::new_f32_values(shape.clone(), values.to_vec())),
                     DType::F64 => Some(TensorValue::new_f64_values(
@@ -13173,7 +13202,7 @@ mod tests {
     fn threaded_scalar_fill_bit_identical_to_serial() {
         // scalar broadcast / full at >= gate uses the threaded fill; compare to vec![v; n].
         let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 173;
-        for &v in &[3.14f64, 0.0, -2.5, f64::NAN] {
+        for &v in &[3.5f64, 0.0, -2.5, f64::NAN] {
             let s = Value::Scalar(Literal::from_f64(v));
             let mut p = BTreeMap::new();
             p.insert("shape".to_owned(), format!("{n}"));
@@ -18726,7 +18755,7 @@ mod tests {
         let f_dense =
             Value::Tensor(TensorValue::new_f64_values(shape.clone(), fdata.clone()).unwrap());
         let f_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 shape.clone(),
                 fdata.iter().copied().map(Literal::from_f64).collect(),
@@ -18752,7 +18781,7 @@ mod tests {
         let i_dense =
             Value::Tensor(TensorValue::new_i64_values(shape.clone(), idata.clone()).unwrap());
         let i_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::I64,
                 shape.clone(),
                 idata.iter().copied().map(Literal::I64).collect(),
@@ -18778,7 +18807,7 @@ mod tests {
         let f32_dense =
             Value::Tensor(TensorValue::new_f32_values(shape.clone(), f32d.clone()).unwrap());
         let f32_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 shape.clone(),
                 f32d.iter().copied().map(Literal::from_f32).collect(),
@@ -18823,7 +18852,7 @@ mod tests {
                 TensorValue::new_half_float_values(dtype, shape.clone(), raw.clone()).unwrap(),
             );
             let hf_lit = Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     dtype,
                     shape.clone(),
                     raw.iter().copied().map(mk_lit).collect(),
@@ -20764,7 +20793,7 @@ mod tests {
         };
         let literal = || {
             Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     DType::F64,
                     Shape {
                         dims: vec![n as u32],
@@ -20835,7 +20864,7 @@ mod tests {
         let f_dense =
             Value::Tensor(TensorValue::new_f64_values(sh.clone(), fdata.clone()).unwrap());
         let f_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 sh.clone(),
                 fdata.iter().copied().map(Literal::from_f64).collect(),
@@ -20881,7 +20910,7 @@ mod tests {
         let i_dense =
             Value::Tensor(TensorValue::new_i64_values(sh.clone(), idata.clone()).unwrap());
         let i_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::I64,
                 sh.clone(),
                 idata.iter().copied().map(Literal::I64).collect(),
@@ -20914,7 +20943,7 @@ mod tests {
             })
             .collect();
         let f32t = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 sh.clone(),
                 f32data
@@ -21523,7 +21552,7 @@ mod tests {
             || Value::Tensor(TensorValue::new_f64_values(shape.clone(), data.clone()).unwrap());
         let literal = || {
             Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     DType::F64,
                     shape.clone(),
                     data.iter().copied().map(Literal::from_f64).collect(),
@@ -21568,7 +21597,7 @@ mod tests {
         let idense =
             Value::Tensor(TensorValue::new_i64_values(shape.clone(), idata.clone()).unwrap());
         let iliteral = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::I64,
                 shape.clone(),
                 idata.iter().copied().map(Literal::I64).collect(),
@@ -21620,7 +21649,7 @@ mod tests {
         let dense =
             Value::Tensor(TensorValue::new_f32_values(shape.clone(), data.clone()).unwrap());
         let boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 shape.clone(),
                 data.iter().copied().map(Literal::from_f32).collect(),
@@ -21677,7 +21706,7 @@ mod tests {
                 _ => Literal::F16Bits(b),
             };
             let boxed = Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     dtype,
                     shape.clone(),
                     raw.iter().map(|&b| make_lit(b)).collect(),
@@ -21974,7 +22003,7 @@ mod tests {
                     .unwrap(),
             );
             let literal = Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     DType::F64,
                     Shape::vector(data.len() as u32),
                     data.iter().copied().map(Literal::from_f64).collect(),
@@ -22181,7 +22210,7 @@ mod tests {
             TensorValue::new_f64_values(Shape::vector(fdata.len() as u32), fdata.to_vec()).unwrap(),
         );
         let f_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape::vector(fdata.len() as u32),
                 fdata.iter().copied().map(Literal::from_f64).collect(),
@@ -22204,7 +22233,7 @@ mod tests {
             TensorValue::new_i64_values(Shape::vector(idata.len() as u32), idata.to_vec()).unwrap(),
         );
         let i_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::I64,
                 Shape::vector(idata.len() as u32),
                 idata.iter().copied().map(Literal::I64).collect(),
@@ -22252,7 +22281,7 @@ mod tests {
                 .unwrap(),
         );
         let f32_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 Shape::vector(f32data.len() as u32),
                 f32data.iter().copied().map(Literal::from_f32).collect(),
@@ -22315,7 +22344,7 @@ mod tests {
                 }
             };
             let h_lit = Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     src_dt,
                     Shape::vector(raw.len() as u32),
                     raw.iter().copied().map(mk_lit).collect(),
@@ -22665,7 +22694,7 @@ mod tests {
             TensorValue::new_f64_values(Shape::vector(fd.len() as u32), fd.to_vec()).unwrap(),
         );
         let f64_boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape::vector(fd.len() as u32),
                 fd.iter().map(|&v| Literal::from_f64(v)).collect(),
@@ -22693,7 +22722,7 @@ mod tests {
             TensorValue::new_f32_values(Shape::vector(f32v.len() as u32), f32v.clone()).unwrap(),
         );
         let f32_boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 Shape::vector(f32v.len() as u32),
                 f32v.iter().map(|&v| Literal::from_f32(v)).collect(),
@@ -22946,7 +22975,7 @@ mod tests {
             TensorValue::new_f64_values(Shape::vector(f64d.len() as u32), f64d.to_vec()).unwrap(),
         );
         let f64_boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape::vector(f64d.len() as u32),
                 f64d.iter().copied().map(Literal::from_f64).collect(),
@@ -22986,7 +23015,7 @@ mod tests {
             TensorValue::new_f32_values(Shape::vector(f32d.len() as u32), f32d.to_vec()).unwrap(),
         );
         let f32_boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 Shape::vector(f32d.len() as u32),
                 f32d.iter().copied().map(Literal::from_f32).collect(),
@@ -23054,7 +23083,7 @@ mod tests {
                 .unwrap(),
             );
             let h_boxed = Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     dt,
                     Shape::vector(bits.len() as u32),
                     bits.iter()
@@ -25395,7 +25424,7 @@ mod tests {
                 TensorValue::new_f32_values(Shape { dims: dims.clone() }, f.clone()).unwrap(),
             );
             let boxed = Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     DType::F32,
                     Shape { dims: dims.clone() },
                     f.iter().copied().map(Literal::from_f32).collect(),
@@ -25514,7 +25543,7 @@ mod tests {
                     .unwrap(),
                 );
                 let boxed = Value::Tensor(
-                    TensorValue::new(
+                    crate::new_boxed(
                         dtype,
                         Shape { dims: dims.clone() },
                         raw.iter().copied().map(mk_lit).collect(),
@@ -25743,7 +25772,7 @@ mod tests {
             "expected dense f32 storage"
         );
         let literal = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 Shape {
                     dims: vec![n as u32],
@@ -25848,7 +25877,7 @@ mod tests {
                 _ => Literal::F16Bits(b),
             };
             let literal = Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     dtype,
                     Shape {
                         dims: vec![n as u32],

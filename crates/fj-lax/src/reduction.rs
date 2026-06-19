@@ -3790,8 +3790,11 @@ mod tests {
         Value::Scalar(Literal::from_f64(v))
     }
     fn v_f64(data: &[f64]) -> Value {
+        // Boxed (Literal-backed) reference for dense-vs-literal guard tests.
+        // `TensorValue::new` densifies homogeneous F64 (cbea72b3), which would
+        // turn this reference dense; `crate::new_boxed` keeps it boxed.
         Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape {
                     dims: vec![data.len() as u32],
@@ -3952,7 +3955,7 @@ mod tests {
         );
         assert!(dense.as_tensor().unwrap().elements.as_f32_slice().is_some());
         let boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 Shape { dims },
                 data.iter().map(|&v| Literal::from_f32(v)).collect(),
@@ -4039,7 +4042,7 @@ mod tests {
                     .as_half_float_slice()
                     .is_some()
             );
-            let boxed = Value::Tensor(TensorValue::new(dtype, Shape { dims }, lits).unwrap());
+            let boxed = Value::Tensor(crate::new_boxed(dtype, Shape { dims }, lits).unwrap());
             assert!(
                 boxed
                     .as_tensor()
@@ -4100,7 +4103,7 @@ mod tests {
                 .is_some()
         );
         let boxed = Value::Tensor(
-            TensorValue::new(DType::BF16, Shape { dims: dims.clone() }, lits).unwrap(),
+            crate::new_boxed(DType::BF16, Shape { dims: dims.clone() }, lits).unwrap(),
         );
         assert!(
             boxed
@@ -4190,7 +4193,7 @@ mod tests {
                 .is_some()
         );
         let boxed = Value::Tensor(
-            TensorValue::new(DType::BF16, Shape { dims: dims.clone() }, lits).unwrap(),
+            crate::new_boxed(DType::BF16, Shape { dims: dims.clone() }, lits).unwrap(),
         );
         assert!(
             boxed
@@ -4395,7 +4398,7 @@ mod tests {
                 .is_some()
         );
         let boxed = Value::Tensor(
-            TensorValue::new(DType::F16, Shape { dims: dims.clone() }, lits).unwrap(),
+            crate::new_boxed(DType::F16, Shape { dims: dims.clone() }, lits).unwrap(),
         );
         assert!(
             boxed
@@ -4669,7 +4672,7 @@ mod tests {
             TensorValue::new_f32_values(Shape { dims: dims.clone() }, data.clone()).unwrap(),
         );
         let boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 Shape { dims: dims.clone() },
                 data.iter().map(|&v| Literal::from_f32(v)).collect(),
@@ -4778,7 +4781,7 @@ mod tests {
                 .unwrap(),
             );
             let boxed = Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     dtype,
                     Shape { dims: dims.clone() },
                     raw.iter().copied().map(mk).collect(),
@@ -4993,7 +4996,7 @@ mod tests {
             .unwrap(),
         );
         let boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F16,
                 Shape { dims: dims.clone() },
                 raw.iter().copied().map(Literal::F16Bits).collect(),
@@ -5770,7 +5773,7 @@ mod tests {
                     .is_some()
             );
             let literal = Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     DType::Bool,
                     Shape {
                         dims: vec![n as u32],
@@ -5821,7 +5824,7 @@ mod tests {
                 .is_some()
         );
         let literal = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::Bool,
                 Shape { dims: dims.clone() },
                 data.iter().copied().map(Literal::Bool).collect(),
@@ -6075,7 +6078,7 @@ mod tests {
         );
         assert!(dense.as_tensor().unwrap().elements.as_f64_slice().is_some());
         let literal = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape { dims: dims.clone() },
                 data.iter().copied().map(Literal::from_f64).collect(),
@@ -6201,7 +6204,7 @@ mod tests {
         );
         assert!(dense.as_tensor().unwrap().elements.as_f64_slice().is_some());
         let boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape { dims: dims.clone() },
                 data.iter().copied().map(Literal::from_f64).collect(),
@@ -6215,7 +6218,7 @@ mod tests {
             TensorValue::new_f32_values(Shape { dims: dims.clone() }, f32_data.clone()).unwrap(),
         );
         let boxed32 = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 Shape { dims: dims.clone() },
                 f32_data.iter().copied().map(Literal::from_f32).collect(),
@@ -8082,7 +8085,7 @@ mod tests {
             TensorValue::new_f32_values(Shape { dims: dims.clone() }, f.clone()).unwrap(),
         );
         let boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 Shape { dims: dims.clone() },
                 f.iter().copied().map(Literal::from_f32).collect(),

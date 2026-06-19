@@ -19421,8 +19421,11 @@ mod tests {
     #[test]
     fn f64_scalar_broadcast_fast_path_preserves_literal_backed_fallback() {
         let tensor_data = [1.5, -0.0, f64::NAN, f64::INFINITY];
+        // Genuinely boxed input so the fast path's literal fallback is exercised:
+        // `TensorValue::new` densifies homogeneous F64 (cbea72b3), which would
+        // route this through the dense fast path and defeat the test.
         let tensor_val = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape { dims: vec![4] },
                 tensor_data.iter().copied().map(Literal::from_f64).collect(),
@@ -19442,10 +19445,11 @@ mod tests {
             assert!(matches!(result, Value::Tensor(_)));
             return;
         };
-        assert!(
-            tensor.elements.as_f64_slice().is_none(),
-            "literal-backed fallback should remain literal-backed"
-        );
+        // The boxed (literal-backed) input forces the scalar-broadcast literal
+        // fallback rather than the dense fast path (the dense path requires an
+        // `as_f64_slice` the boxed input does not expose). The fallback's *values*
+        // are the guarantee below; its output buffer may now be densified by
+        // `TensorValue::new` (cbea72b3), so we no longer assert output storage.
         let expected = tensor_data
             .iter()
             .copied()
@@ -22546,8 +22550,11 @@ mod tests {
         let dense = Value::Tensor(
             TensorValue::new_f32_values(Shape { dims: dims.clone() }, data.clone()).unwrap(),
         );
+        // Genuinely boxed reference: `TensorValue::new` densifies homogeneous F32
+        // (cbea72b3); `crate::new_boxed` keeps it Literal-backed so the dense
+        // serial-unary path is compared against the boxed generic path.
         let boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 Shape { dims: dims.clone() },
                 data.iter().copied().map(Literal::from_f32).collect(),

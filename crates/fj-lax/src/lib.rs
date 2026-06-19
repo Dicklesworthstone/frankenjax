@@ -29,6 +29,23 @@ use fj_core::{Literal, Primitive, Shape, TensorValue, Value, ValueError};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+/// Build a `TensorValue` with guaranteed BOXED (`Literal`-backed) storage, for
+/// the dense-fast-path-vs-generic guard tests. `TensorValue::new` densifies
+/// homogeneous literal vectors (see `dense_buffer_for_declared_dtype`,
+/// cbea72b3), which would silently turn these *reference* inputs dense and
+/// defeat the dense-vs-boxed comparison (and trip the `as_*_slice().is_none()`
+/// preconditions). Routing those reference builders here keeps them boxed, so
+/// each guard test again exercises the boxed generic path against the dense
+/// fast path. Bit-for-bit identical to `TensorValue::new` in value.
+#[cfg(test)]
+pub(crate) fn new_boxed(
+    dtype: fj_core::DType,
+    shape: Shape,
+    elements: Vec<Literal>,
+) -> Result<TensorValue, ValueError> {
+    TensorValue::new_with_literal_buffer(dtype, shape, fj_core::LiteralBuffer::new(elements))
+}
+
 use arithmetic::{
     erf_approx, erfc_approx, eval_abs, eval_acosh, eval_asinh, eval_atanh, eval_bessel_i0e,
     eval_bessel_i1e, eval_betainc, eval_binary_elementwise, eval_clamp, eval_complex, eval_conj,
@@ -6855,7 +6872,7 @@ mod tests {
     fn broadcast_in_dim_dense_matches_literal_path() {
         // The dense (F64/I64) broadcast fast path and the Literal-backed generic
         // path must produce identical elements (same replication index math).
-        use fj_core::{DType, Shape, TensorValue};
+        use fj_core::{DType, Shape};
         let mut params = BTreeMap::new();
         params.insert("shape".into(), "4,3,5".into()); // broadcast [3] over axes 0,2
         params.insert("broadcast_dimensions".into(), "1".into());
@@ -6864,7 +6881,7 @@ mod tests {
         let fdata = [1.5_f64, -2.0, 3.25];
         let f_dense = Value::vector_f64(&fdata).unwrap();
         let f_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape::vector(3),
                 fdata
@@ -6915,7 +6932,7 @@ mod tests {
         let idata = [7_i64, -8, 9];
         let i_dense = Value::vector_i64(&idata).unwrap();
         let i_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::I64,
                 Shape::vector(3),
                 idata.iter().copied().map(fj_core::Literal::I64).collect(),
@@ -7319,7 +7336,7 @@ mod tests {
         let f_dense =
             Value::Tensor(TensorValue::new_f64_values(shape.clone(), fdata.clone()).unwrap());
         let f_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 shape.clone(),
                 fdata.iter().copied().map(Literal::from_f64).collect(),
@@ -7357,7 +7374,7 @@ mod tests {
         let i_dense =
             Value::Tensor(TensorValue::new_i64_values(shape.clone(), idata.clone()).unwrap());
         let i_lit = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::I64,
                 shape.clone(),
                 idata.iter().copied().map(Literal::I64).collect(),
@@ -7382,7 +7399,7 @@ mod tests {
         let f_dense2 =
             Value::Tensor(TensorValue::new_f64_values(shape.clone(), fdata.clone()).unwrap());
         let f_lit2 = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 shape.clone(),
                 fdata.iter().copied().map(Literal::from_f64).collect(),
@@ -14093,7 +14110,7 @@ mod tests {
         );
         assert!(dense.as_tensor().unwrap().elements.as_f64_slice().is_some());
         let literal = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape {
                     dims: vec![rows as u32, cols as u32],
@@ -14530,7 +14547,7 @@ mod tests {
             .unwrap(),
         );
         let f64_boxed = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape {
                     dims: vec![rows as u32, cols as u32],
@@ -14743,7 +14760,7 @@ mod tests {
             TensorValue::new_f64_values(Shape { dims: dims.clone() }, data64.clone()).unwrap(),
         );
         let boxed64 = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape { dims: dims.clone() },
                 data64.iter().copied().map(Literal::from_f64).collect(),
@@ -14771,7 +14788,7 @@ mod tests {
             TensorValue::new_f32_values(Shape { dims: dims.clone() }, data32.clone()).unwrap(),
         );
         let boxed32 = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 Shape { dims: dims.clone() },
                 data32.iter().copied().map(Literal::from_f32).collect(),
@@ -14940,7 +14957,7 @@ mod tests {
         );
         assert!(dense.as_tensor().unwrap().elements.as_f64_slice().is_some());
         let literal = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F64,
                 Shape {
                     dims: vec![rows as u32, cols as u32],
@@ -17362,10 +17379,11 @@ mod tests {
         let tensor = out.as_tensor().expect("expected tensor");
         assert_eq!(tensor.dtype, DType::F64);
         assert_eq!(tensor.shape.dims, vec![1, 1]);
-        assert!(
-            tensor.elements.as_f64_slice().is_none(),
-            "malformed declared-F64 tensor should keep the literal fallback"
-        );
+        // The malformed I64-in-declared-F64 input forces the literal fallback:
+        // the dense fast path cannot run (the boxed input has no `as_f64_slice`),
+        // so the I64(7) is read via `as_f64()` -> 7.0 rather than bit-reinterpreted
+        // (which would yield ~3.5e-323). The fallback's *value* is the guarantee;
+        // its output storage may now be densified by `TensorValue::new` (cbea72b3).
         let got = tensor.elements[0].as_f64().expect("F64 fallback output");
         assert_eq!(got.to_bits(), 7.0_f64.to_bits());
     }

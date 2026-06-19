@@ -510,3 +510,27 @@ Additional cod-a repeat validation environment:
 - Definitive vs-JAX win/loss needs an IDLE host (unavailable this session). Reliable numbers are the
   internal serial->threaded speedups. To beat JAX on compute ops: streaming stores / prefetch /
   thread-affinity tuning / compiled-jaxpr arena (idle host required).
+
+## CobaltForge - Threaded convert f64->bf16/f16 (mixed-precision downcast): WIN; f32 REVERTED (2026-06-19)
+
+- convert_element_type half DOWNCAST threaded for the f64 source only (calloc'd u16 output, parallel
+  fill via threaded_convert_into / split_at_mut): f64->bf16 17.40 -> 9.50 ms at 16M = 1.83x internal,
+  bit-identical (single-round convert_{bf16,f16}_bits per lane). The 8-byte source read is BW/page-
+  fault-bound serially (~7.5 GB/s); threading raises aggregate bandwidth. f16 sibling kept by the
+  same mechanism. Guarded by eval/convert_16m_f64_to_bf16.
+- f32->bf16 REVERTED (measured regression): serial 6.38 ms vs threaded 7.92 ms = 0.81x (1.24x
+  SLOWER). The 4-byte f32 read already runs ~15 GB/s serially and the convert is a cheap bit-shift,
+  so thread fan-out overhead dominates. f32 half-downcast stays serial; documented in the negative
+  ledger so it is not re-attempted. (eval/convert_16m_f32_to_bf16 retained as the serial baseline.)
+- vs-JAX not measured (contended host, per the correction above); inherits the single-input
+  DRAM-bound calloc+parallel-fill win class. Internal serial->threaded ratio is the trustworthy number.
+
+## CobaltForge - Conformance: restored 40 densify-broken guard tests (2026-06-19)
+
+- fj-lax `cargo test --lib` was RED (43 failed) for ~20 h: cbea72b3 (mcqr.97, "batch-test pending")
+  densified `TensorValue::new` for ALL dtypes, defeating the `as_*_slice().is_none()` preconditions of
+  every `dense_*_matches_generic` / `*_bit_identical_to_literal_path` guard test. Restored to GREEN via
+  a `#[cfg(test)] crate::new_boxed` boxed-reference helper (the documented i64-densify precedent).
+  Now 1556 passed / 3 failed. The 3 remaining are PRE-EXISTING, non-densify (confirmed on clean HEAD):
+  eval_polygamma_scalar + threaded_dense_polygamma (digamma eval Err) and complex_tensor_scalar
+  (complex Atan2/XLogY/LogAddExp eval Err) — separate correctness gap, handed off to the team.

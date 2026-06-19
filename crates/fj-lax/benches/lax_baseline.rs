@@ -2585,6 +2585,58 @@ fn bench_convert_64k_f64_to_i64(c: &mut Criterion) {
     });
 }
 
+// ConvertElementType downcast f32->bf16 over a 16M dense tensor (DRAM-bound):
+// THE mixed-precision ML cast. Above CHEAP_BINARY_PARALLEL_MIN the dense path
+// threads the per-element single-round convert into a calloc'd u16 output
+// (parallel page-fault + read-bandwidth aggregation); bit-identical to serial.
+const CONVERT_DRAM_LEN: usize = 16_777_216; // 1<<24, > CHEAP_BINARY_PARALLEL_MIN (1<<23)
+
+fn bench_convert_16m_f32_to_bf16(c: &mut Criterion) {
+    let data: Vec<f32> = (0..CONVERT_DRAM_LEN)
+        .map(|i| ((i as f32) * 0.000_017_3).sin() + ((i % 97) as f32 * 0.125))
+        .collect();
+    let dense = Value::Tensor(
+        TensorValue::new_f32_values(
+            Shape {
+                dims: vec![CONVERT_DRAM_LEN as u32],
+            },
+            data,
+        )
+        .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("new_dtype".to_owned(), "bf16".to_owned());
+    c.bench_function("eval/convert_16m_f32_to_bf16", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::ConvertElementType,
+                std::slice::from_ref(&dense),
+                &p,
+            )
+        })
+    });
+}
+
+// ConvertElementType downcast f64->bf16 over a 16M dense tensor (DRAM-bound):
+// the f64 sibling of the hot half cast (8-byte source read, u16 output).
+fn bench_convert_16m_f64_to_bf16(c: &mut Criterion) {
+    let data: Vec<f64> = (0..CONVERT_DRAM_LEN)
+        .map(|i| ((i as f64) * 0.000_017_3).sin() + ((i % 97) as f64 * 0.125))
+        .collect();
+    let dense = Value::vector_f64(&data).unwrap();
+    let mut p = BTreeMap::new();
+    p.insert("new_dtype".to_owned(), "bf16".to_owned());
+    c.bench_function("eval/convert_16m_f64_to_bf16", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::ConvertElementType,
+                std::slice::from_ref(&dense),
+                &p,
+            )
+        })
+    });
+}
+
 // Same-width bitcast over 1M dense f32 words: realistic RNG/mantissa workloads
 // reinterpret contiguous XLA buffers. The literal reference keeps the old
 // per-element Literal -> bytes -> Literal path in the same Criterion process.
@@ -6421,6 +6473,8 @@ criterion_group!(
     bench_argmax_64k_f64,
     bench_sort_64k_f64_descending,
     bench_convert_64k_f64_to_i64,
+    bench_convert_16m_f32_to_bf16,
+    bench_convert_16m_f64_to_bf16,
     bench_bitcast_f32_u32_dense_1m,
     bench_bitcast_f64_i64_dense_1m,
     bench_bitcast_f32_i32_dense_1m,

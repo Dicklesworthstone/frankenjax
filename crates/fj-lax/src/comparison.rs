@@ -1425,7 +1425,7 @@ mod tests {
         };
         let boxed = |d: &[f32]| {
             Value::Tensor(
-                TensorValue::new(
+                crate::new_boxed(
                     DType::F32,
                     Shape { dims: dims.clone() },
                     d.iter().copied().map(Literal::from_f32).collect(),
@@ -1439,7 +1439,7 @@ mod tests {
             TensorValue::new_f32_values(Shape { dims: vec![1] }, vec![0.0f32]).unwrap(),
         );
         let boxed_b = Value::Tensor(
-            TensorValue::new(
+            crate::new_boxed(
                 DType::F32,
                 Shape { dims: vec![1] },
                 vec![Literal::from_f32(0.0)],

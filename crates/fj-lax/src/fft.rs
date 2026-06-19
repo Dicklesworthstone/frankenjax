@@ -1824,7 +1824,10 @@ mod tests {
         let shape = Shape {
             dims: vec![data.len() as u32],
         };
-        Value::Tensor(TensorValue::new(DType::Complex128, shape, elements).unwrap())
+        // Boxed (Literal-backed) complex reference: `TensorValue::new` densifies
+        // homogeneous complex literals (cbea72b3); `crate::new_boxed` keeps it
+        // boxed so the dense-input path is compared against a true literal path.
+        Value::Tensor(crate::new_boxed(DType::Complex128, shape, elements).unwrap())
     }
 
     fn make_complex64_vector(data: &[(f32, f32)]) -> Value {
