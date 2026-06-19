@@ -4327,9 +4327,27 @@ pub(crate) fn eval_dynamic_slice(
     // dynamic_update_slice for scan/decode loops (read the slice, compute, write it
     // back) — keeps the whole loop on dense storage. Falls through for other dtypes.
     macro_rules! dense_ds {
-        ($src:expr, $ctor:expr) => {{
+        ($src:expr, $zero:expr, $ctor:expr) => {{
+            let s = $src;
+            // Threaded contiguous extract above the gate: calloc'd output (zero literal ->
+            // alloc_zeroed) + parallel copy of the contiguous source run. This is the
+            // KV-cache READ hot path. Bit-identical (pure copy). Non-contig keeps the
+            // serial odometer gather.
+            if let Some((start, end)) = contig_range {
+                if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+                    && crate::arithmetic::work_scaled_threads(total) > 1
+                {
+                    let mut out = vec![$zero; total];
+                    concat_contiguous_into(
+                        &mut out,
+                        &[&s[start..end]],
+                        crate::arithmetic::work_scaled_threads(total),
+                    );
+                    return Ok(Value::Tensor($ctor(Shape { dims: out_dims }, out)?));
+                }
+            }
             let out = dynamic_slice_dense(
-                $src,
+                s,
                 rank,
                 total,
                 &slice_sizes,
@@ -4342,34 +4360,51 @@ pub(crate) fn eval_dynamic_slice(
         }};
     }
     if let Some(s) = tensor.elements.as_f64_slice() {
-        dense_ds!(s, TensorValue::new_f64_values);
+        dense_ds!(s, 0.0f64, TensorValue::new_f64_values);
     }
     if let Some(s) = tensor.elements.as_f32_slice() {
-        dense_ds!(s, TensorValue::new_f32_values);
+        dense_ds!(s, 0.0f32, TensorValue::new_f32_values);
     }
     if let Some(s) = tensor.elements.as_half_float_slice() {
         let dt = tensor.dtype;
-        dense_ds!(s, |sh, o| TensorValue::new_half_float_values(dt, sh, o));
+        dense_ds!(s, 0u16, |sh, o| TensorValue::new_half_float_values(
+            dt, sh, o
+        ));
     }
     if let Some(s) = tensor.elements.as_i64_slice() {
-        dense_ds!(s, |sh, o| if tensor.dtype == DType::I32 {
+        dense_ds!(s, 0i64, |sh, o| if tensor.dtype == DType::I32 {
             TensorValue::new_i32_values(sh, o)
         } else {
             TensorValue::new_i64_values(sh, o)
         });
     }
     if let Some(s) = tensor.elements.as_u32_slice() {
-        dense_ds!(s, TensorValue::new_u32_values);
+        dense_ds!(s, 0u32, TensorValue::new_u32_values);
     }
     if let Some(s) = tensor.elements.as_u64_slice() {
-        dense_ds!(s, TensorValue::new_u64_values);
+        dense_ds!(s, 0u64, TensorValue::new_u64_values);
     }
     if let Some(s) = tensor.elements.as_bool_slice() {
-        dense_ds!(s, TensorValue::new_bool_values);
+        dense_ds!(s, false, TensorValue::new_bool_values);
     }
     if let Some(s) = tensor.elements.as_complex_slice() {
+        // Complex (f64,f64) has no zero-literal calloc; keep the serial dense gather.
         let dt = tensor.dtype;
-        dense_ds!(s, |sh, o| TensorValue::new_complex_values(dt, sh, o));
+        let out = dynamic_slice_dense(
+            s,
+            rank,
+            total,
+            &slice_sizes,
+            &starts,
+            &in_strides,
+            &tensor.shape.dims,
+            contig_range,
+        );
+        return Ok(Value::Tensor(TensorValue::new_complex_values(
+            dt,
+            Shape { dims: out_dims },
+            out,
+        )?));
     }
 
     // Literal fallback (boxed/other dtypes): the same gather over Literals.
@@ -13108,6 +13143,55 @@ mod tests {
         let mut out = vec![0.0f32; n];
         threaded_fill_into(&mut out, 1.5f32, crate::arithmetic::work_scaled_threads(n).max(2));
         assert!(out.iter().all(|&x| x.to_bits() == 1.5f32.to_bits()));
+    }
+
+    #[test]
+    fn threaded_dynamic_slice_bit_identical_to_serial() {
+        // Contiguous dynamic_slice (KV-cache read) at >= gate engages the threaded extract;
+        // compare bit-for-bit to the serial sub-range, f64 + i64.
+        let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 333;
+        let big = 2 * n;
+        let start = 17usize;
+        let xf: Vec<f64> = (0..big).map(|i| (i as f64) * 0.25 - 9.0).collect();
+        let t = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![big as u32] }, xf.clone()).unwrap(),
+        );
+        let mut p = BTreeMap::new();
+        p.insert("slice_sizes".to_owned(), format!("{n}"));
+        let got = eval_dynamic_slice(
+            &[t, Value::Scalar(Literal::I64(start as i64))],
+            &p,
+        )
+        .unwrap();
+        let gb: Vec<u64> = got
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f64_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let wb: Vec<u64> = xf[start..start + n].iter().map(|v| v.to_bits()).collect();
+        assert!(gb == wb, "threaded f64 dynamic_slice != serial");
+        // i64
+        let xi: Vec<i64> = (0..big).map(|i| i as i64 - 3).collect();
+        let ti = Value::Tensor(
+            TensorValue::new_i64_values(Shape { dims: vec![big as u32] }, xi.clone()).unwrap(),
+        );
+        let goti = eval_dynamic_slice(
+            &[ti, Value::Scalar(Literal::I64(start as i64))],
+            &p,
+        )
+        .unwrap();
+        let gi = goti
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_i64_slice()
+            .unwrap()
+            .to_vec();
+        assert!(gi == xi[start..start + n], "threaded i64 dynamic_slice != serial");
     }
 
     #[test]

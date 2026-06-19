@@ -1969,3 +1969,28 @@ ends are not rediscovered without new evidence.
   lever as slice; bit-identical; preserves dense storage (critical for the autoregressive loop).
 - Retry predicate: dynamic_slice (KV-cache READ) is the sibling; thread its contiguous extract the
   same way if it shows a gap.
+
+## CobaltForge - Threaded dynamic_slice (KV-cache read) for DRAM-bound (JAX WIN)
+
+- Lever: `dynamic_slice` (KV-cache READ / scan windowing) extracted its contiguous output via serial
+  `src[start..end].to_vec()` (page-fault cliff ~3.4 GB/s). Threaded the contiguous case in the
+  `dense_ds!` macro: calloc'd output (zero literal per dtype) + parallel copy via
+  `concat_contiguous_into` above CHEAP_BINARY_PARALLEL_MIN; non-contig keeps the serial odometer.
+  Wired f64/f32/bf16/i64/i32/u32/u64/bool; complex keeps serial (no zero-literal calloc). Bit-identical.
+- Guarded by `threaded_dynamic_slice_bit_identical_to_serial` (f64 + i64 contiguous extract), bit-for-
+  bit vs the serial sub-range.
+- Conformance: `fj-lax --lib` 1515 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, best-of-15, host loaded):
+
+  | out elems | serial (before) | threaded (after) | internal | add same-load | JAX | Rust/JAX |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | 32M (in 64M) | ~3.4 GB/s | 29510 us (17.3 GB/s) | ~5x | 24.3 GB/s | 44931 us (11.4) | 0.66x (1.52x FASTER) |
+  | 8M (in 16M) | 3.6 GB/s | (sub-gate, serial) | — | — | (10.5) | — |
+
+- Decision: KEEP. KV-cache read; was a ~3x JAX loss, now 1.52x WIN for outputs >= the 8.39M gate
+  (the 8M-output case is just below the gate and correctly stays serial — no regression). Pairs with
+  the dynamic_update_slice (write) win to thread both halves of the autoregressive KV-cache loop.
+- Retry predicate: the contained large-op data-movement surface (binops/unary/broadcast/scalar-fill/
+  convert/transpose/gather/concat/slice/dynamic_slice/dynamic_update_slice/rev/select/clamp/bitwise/
+  max-min-reduce) is now broadly threaded f64/f32/i64 (+bf16/u where wired). Remaining JAX losses are
+  the documented off-limits/architectural ones (float sum/prod/cumsum order; L3-resident regime).

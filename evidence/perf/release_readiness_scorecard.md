@@ -483,3 +483,10 @@ Additional cod-a repeat validation environment:
   contention), internal 3.79-3.93x (3.4 -> 12.9-13.8 GB/s; ~= same-load add). Bit-identical (1D
   contiguous + 2D strided), guarded. KV-cache write is the hottest LLM-inference path. dynamic_slice
   (KV read) is the sibling follow-on.
+
+## CobaltForge - Threaded dynamic_slice (KV-cache read): JAX WIN (2026-06-19)
+
+- dynamic_slice contiguous extract threaded (calloc'd output + parallel copy): out=32M = Rust/JAX
+  0.66 (1.52x faster than jax.jit), internal ~5x (3.4 -> 17.3 GB/s). Bit-identical (f64+i64), guarded.
+  Sub-gate outputs (e.g. 8M) correctly stay serial. Completes the KV-cache loop (read+write both
+  threaded). Contained large-op data-movement surface now broadly threaded.
