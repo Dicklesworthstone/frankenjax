@@ -7672,12 +7672,10 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
             // Dense same-shape fast path (per-element clipping, no broadcast): clamp
             // the typed slices straight into dense output, skipping the broadcast
             // odometer + the per-element 24-byte Literal reconstruction of three
-            // operands + boxed output. The `as_f{64,32}_slice` guards also enforce
-            // that all three operands are that dtype (None otherwise -> fall through),
+            // operands + boxed output. The typed-slice guards also enforce that
+            // all three operands are that dtype (None otherwise -> fall through),
             // so it can never reach clamp_literal's mixed promote-to-f64 branch.
-            // Bit-identical to the (F64,F64,F64)/(F32,F32,F32) arms of clamp_literal
-            // (from_f{64,32}(clamp_f{64,32}(lo, x, hi)); clamp_f* normalizes NaN so
-            // the dense store and from_f* agree bit-for-bit).
+            // Bit-identical to clamp_literal's same-dtype arms.
             if lo.shape == x.shape && hi.shape == x.shape {
                 if x.dtype == DType::F64
                     && let (Some(lov), Some(xv), Some(hiv)) = (
@@ -7711,6 +7709,26 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                         .map(|((&l, &xx), &h)| clamp_f32(l, xx, h))
                         .collect();
                     return Ok(Value::Tensor(TensorValue::new_f32_values(
+                        x.shape.clone(),
+                        out,
+                    )?));
+                }
+                if x.dtype == DType::I64
+                    && lo.dtype == DType::I64
+                    && hi.dtype == DType::I64
+                    && let (Some(lov), Some(xv), Some(hiv)) = (
+                        lo.elements.as_i64_slice(),
+                        x.elements.as_i64_slice(),
+                        hi.elements.as_i64_slice(),
+                    )
+                {
+                    let out: Vec<i64> = lov
+                        .iter()
+                        .zip(xv)
+                        .zip(hiv)
+                        .map(|((&l, &xx), &h)| l.max(xx).min(h))
+                        .collect();
+                    return Ok(Value::Tensor(TensorValue::new_i64_values(
                         x.shape.clone(),
                         out,
                     )?));
@@ -22676,6 +22694,29 @@ mod tests {
             })
             .collect()
     }
+    fn i64_dense_vec(d: &[i64]) -> Value {
+        Value::Tensor(
+            TensorValue::new_i64_values(Shape::vector(d.len() as u32), d.to_vec()).unwrap(),
+        )
+    }
+    fn i64_boxed_vec(d: &[i64]) -> Value {
+        Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::I64,
+                Shape::vector(d.len() as u32),
+                fj_core::LiteralBuffer::new(d.iter().copied().map(Literal::I64).collect()),
+            )
+            .unwrap(),
+        )
+    }
+    fn i64_vec(v: &Value) -> Vec<i64> {
+        v.as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_i64().unwrap())
+            .collect()
+    }
 
     #[test]
     fn f32_clamp_scalar_bounds_dense_matches_generic() {
@@ -22737,6 +22778,57 @@ mod tests {
     }
 
     #[test]
+    fn i64_clamp_same_shape_tensor_bounds_dense_matches_generic() {
+        // Same-shape I64 tensor bounds should now bypass the broadcast odometer
+        // and boxed Literal output while matching the old boxed path exactly.
+        let p = std::collections::BTreeMap::new();
+        let lo = [
+            -10,
+            0,
+            i64::MIN,
+            5,
+            -2,
+            7,
+            i64::MAX - 10,
+        ];
+        let x = [-20, 3, i64::MAX, 1, -2, 8, i64::MAX];
+        let hi = [-5, 2, 42, 6, -1, 7, i64::MAX - 5];
+        let expected = vec![-10, 2, 42, 5, -2, 7, i64::MAX - 5];
+
+        let dense = crate::eval_primitive(
+            Primitive::Clamp,
+            &[i64_dense_vec(&lo), i64_dense_vec(&x), i64_dense_vec(&hi)],
+            &p,
+        )
+        .unwrap();
+        let boxed = crate::eval_primitive(
+            Primitive::Clamp,
+            &[i64_boxed_vec(&lo), i64_boxed_vec(&x), i64_boxed_vec(&hi)],
+            &p,
+        )
+        .unwrap();
+        assert_eq!(dense.as_tensor().unwrap().dtype, DType::I64);
+        assert!(
+            dense
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_i64_slice()
+                .is_some()
+        );
+        assert!(
+            i64_boxed_vec(&x)
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_i64_slice()
+                .is_none()
+        );
+        assert_eq!(i64_vec(&dense), expected);
+        assert_eq!(i64_vec(&dense), i64_vec(&boxed));
+    }
+
+    #[test]
     #[ignore = "benchmark: run with --ignored --nocapture"]
     fn bench_f32_clamp_dense_vs_boxed() {
         use std::time::Instant;
@@ -22762,6 +22854,40 @@ mod tests {
         let dn = best(&dense);
         println!(
             "BENCH f32 clamp [{n}]: boxed={:.2}ms dense={:.2}ms speedup={:.2}x",
+            bx * 1e3,
+            dn * 1e3,
+            bx / dn
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_i64_clamp_same_shape_tensor_bounds_dense_vs_boxed() {
+        use std::time::Instant;
+        let n = 1_000_000usize;
+        let lo: Vec<i64> = (0..n).map(|i| (i as i64 % 97) - 50).collect();
+        let x: Vec<i64> = (0..n)
+            .map(|i| (i as i64).wrapping_mul(2_654_435_761) % 10_000)
+            .collect();
+        let hi: Vec<i64> = lo.iter().map(|&v| v + 128).collect();
+        let dense = [i64_dense_vec(&lo), i64_dense_vec(&x), i64_dense_vec(&hi)];
+        let boxed = [i64_boxed_vec(&lo), i64_boxed_vec(&x), i64_boxed_vec(&hi)];
+        let p = std::collections::BTreeMap::new();
+        let best = |inputs: &[Value]| {
+            let _ = crate::eval_primitive(Primitive::Clamp, inputs, &p).unwrap();
+            let mut tm = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                let o = crate::eval_primitive(Primitive::Clamp, inputs, &p).unwrap();
+                std::hint::black_box(o.as_tensor().unwrap().elements.len());
+                tm = tm.min(s.elapsed().as_secs_f64());
+            }
+            tm
+        };
+        let bx = best(&boxed);
+        let dn = best(&dense);
+        println!(
+            "BENCH i64 clamp tensor bounds [{n}]: boxed={:.2}ms dense={:.2}ms speedup={:.2}x",
             bx * 1e3,
             dn * 1e3,
             bx / dn
