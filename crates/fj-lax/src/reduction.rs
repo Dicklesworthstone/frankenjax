@@ -1587,6 +1587,38 @@ fn dense_f64_axis_reduce<T: Copy + Sync>(
         let block = out_count;
         let outer = values.len() / block;
         let mut result = vec![float_init; block];
+        // Column-accumulation (sum/mean over the LEADING axis — batch reduction): each
+        // output column folds its `outer` rows in ascending order. The columns are
+        // INDEPENDENT, so split the OUTPUT COLUMNS across threads — every column keeps
+        // its exact ascending fold, so this is BIT-IDENTICAL to the serial fold even
+        // for non-associative float (we never reassociate a single column's sum; we
+        // only assign different columns to different threads). A read-bound pass; one
+        // core can't saturate multi-channel DRAM, so cap at ~8 cores (more REGRESS).
+        let threads = crate::arithmetic::work_scaled_threads(values.len()).min(block).min(8);
+        if threads > 1 {
+            let cols_per = block.div_ceil(threads);
+            let op_ref = float_op;
+            std::thread::scope(|scope| {
+                let mut res_rest: &mut [f64] = result.as_mut_slice();
+                let mut c0 = 0usize;
+                while c0 < block {
+                    let w = cols_per.min(block - c0);
+                    let (res_blk, res_tail) = res_rest.split_at_mut(w);
+                    res_rest = res_tail;
+                    let c_start = c0;
+                    c0 += w;
+                    scope.spawn(move || {
+                        for k in 0..outer {
+                            let row = &values[k * block + c_start..k * block + c_start + w];
+                            for (slot, &v) in res_blk.iter_mut().zip(row.iter()) {
+                                *slot = op_ref(*slot, widen(v));
+                            }
+                        }
+                    });
+                }
+            });
+            return Some(result);
+        }
         for k in 0..outer {
             let row = &values[k * block..k * block + block];
             for (slot, &v) in result.iter_mut().zip(row.iter()) {
@@ -3673,6 +3705,46 @@ mod tests {
     use super::*;
     use fj_core::LiteralBuffer;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn threaded_leading_axis_reduce_bit_identical_to_serial() {
+        // Reduce over axis 0 of a large [rows, cols] f64 tensor (the column-accumulation
+        // / leading-axis path). The threaded path splits OUTPUT COLUMNS across threads;
+        // each column folds its rows in ascending order on exactly one thread, so the
+        // result MUST be bit-identical to the serial column fold — even for
+        // non-associative float (we never reassociate a single column's sum). rows*cols
+        // exceeds the 1<<18 gate so the threaded path engages.
+        let (rows, cols) = (512usize, 600usize); // 307_200 > 262_144 gate
+        let data: Vec<f64> = (0..rows * cols)
+            .map(|i| ((i as f64) * 0.000_173).sin() * 1e6 - (i as f64) * 0.5)
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let mut p = BTreeMap::new();
+        p.insert("axes".to_string(), "0".to_string());
+        let got =
+            crate::eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &p).unwrap();
+        let got: Vec<u64> = match got {
+            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap().to_bits()).collect(),
+            other => panic!("expected tensor, got {other:?}"),
+        };
+        // Serial reference: each column folded over rows in ascending order.
+        let mut want = vec![0.0f64; cols];
+        for r in 0..rows {
+            for c in 0..cols {
+                want[c] += data[r * cols + c];
+            }
+        }
+        let want: Vec<u64> = want.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(got, want, "threaded leading-axis reduce != serial column fold");
+    }
 
     #[test]
     fn threaded_integer_full_reduce_bit_identical_to_serial() {

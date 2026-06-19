@@ -3,6 +3,36 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-cc-threaded-leading-axis-reduce - Threaded sum-over-axis-0: 1.50x bit-exact (narrows JAX loss 2.38x -> 1.59x)
+
+- Date: 2026-06-19
+- Agent: cc / CobaltForge
+- Lever: thread the LEADING-axis (column-accumulation) float reduce in
+  `dense_f64_axis_reduce` — i.e. `reduce_sum`/mean over axis 0 (batch reduction,
+  ubiquitous in ML). The trailing-axis reduce was already threaded; the leading
+  (kept = trailing suffix) path was SERIAL. Threads split the OUTPUT COLUMNS:
+  each column folds its rows in ascending order on exactly one thread, so this is
+  BIT-IDENTICAL to the serial fold even for non-associative float (a single column's
+  sum is never reassociated — only different columns go to different threads).
+- Status: SHIPPED (measured, same-load at load ~3, [16384,1024] f64 sum axis 0):
+  - serial 8.67 ms -> threaded (8-thread cap) **5.81 ms** = 1.50x internal
+    (14.7 -> 22 GB/s). Bit-identity guarded by
+    `threaded_leading_axis_reduce_bit_identical_to_serial`. Reduce tests 136/0.
+  - vs JAX `jnp.sum(x, axis=0)` = 3.64 ms (CV 8.8%): serial was Rust/JAX 2.38 (JAX
+    2.38x faster); threaded is Rust/JAX 1.59 — **still a JAX LOSS, but the gap is
+    nearly halved.** Reproducer `benchmarks/jax_comparison/reduce_axis0_gauntlet.py`.
+- Why it doesn't fully catch JAX: the bit-exact requirement forces COLUMN threading,
+  whose reads are STRIDED in row-major layout (~22 GB/s ceiling). JAX threads the
+  REDUCE dimension (contiguous reads, ~35 GB/s) but that REASSOCIATES the float sum
+  (pairwise) — the same non-associativity blocker as the full-reduce. So the
+  remaining ~1.59x is the float-reassociation gap (see reduce_sum-jax-loss entry;
+  maintainer multi-accumulator decision). 32 threads REGRESSED (6.31ms) vs 8 — a
+  strided read-bound pass saturates at ~8 cores; do NOT raise the cap.
+- Retry predicate: the INTEGER leading-axis reduce could fully catch JAX (associative
+  -> reduce-dimension chunking is bit-exact + contiguous), but goes through the
+  separate int_op path; a follow-on. Do not re-thread the FLOAT leading reduce over
+  the reduce dimension (reassociates — blocked).
+
 ## frankenjax-cc-threaded-integer-full-reduce - Threaded INTEGER full-reduce: JAX WIN (1.32x), bit-exact
 
 - Date: 2026-06-19
