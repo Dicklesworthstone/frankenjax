@@ -1288,6 +1288,19 @@ fn cheap_op(p: Primitive) -> Option<CheapOp> {
     }
 }
 
+/// `integer_pow[2]` (the lowering of `x**2`, the common square form) equals
+/// `Mul(x, x)` bit-identically for every dtype: eval_integer_pow computes
+/// `v.powi(2)` (== v*v) for floats and `v.wrapping_pow(2)` (== v.wrapping_mul(v))
+/// for ints — exactly eval_mul. The fusion builders treat it like `Primitive::Square`
+/// (one operand duplicated into a Mul step). It carries an `exponent` param, so the
+/// builders must let it past the params-empty gate; this matches ONLY exponent==2 so
+/// no other param-carrying op slips through.
+fn is_integer_pow_2(primitive: Primitive, params: &std::collections::BTreeMap<String, String>) -> bool {
+    primitive == Primitive::IntegerPow
+        && params.len() == 1
+        && params.get("exponent").map(|s| s.trim() == "2").unwrap_or(false)
+}
+
 /// An operand of a fused step: the running chain value, an external dense-f64
 /// tensor (index into the gathered `ext` slices), a row/col broadcast vector, or
 /// an f64 scalar constant.
@@ -1619,7 +1632,10 @@ fn try_fuse_elementwise_chain_f64(
     let mut k = start;
     loop {
         let Some(eqn) = eqns.get(k) else { break };
-        if !eqn.params.is_empty() || !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
+        if (!eqn.params.is_empty() && !is_integer_pow_2(eqn.primitive, &eqn.params))
+            || !eqn.sub_jaxprs.is_empty()
+            || eqn.outputs.len() != 1
+        {
             break;
         }
         let ext_mark = ext.len();
@@ -1629,7 +1645,9 @@ fn try_fuse_elementwise_chain_f64(
         // operand into a Mul step is bit-identical and reuses the proven Mul machinery
         // (no new CheapOp / apply arm). Lets variance/L2/MSE chains (mean((x-mu)^2))
         // fuse instead of breaking the run on the Square primitive.
-        let (op, a, b) = if eqn.primitive == Primitive::Square {
+        let (op, a, b) = if eqn.primitive == Primitive::Square
+            || is_integer_pow_2(eqn.primitive, &eqn.params)
+        {
             if eqn.inputs.len() != 1 {
                 break;
             }
@@ -2175,13 +2193,18 @@ fn try_fuse_elementwise_chain_f32(
     let mut k = start;
     loop {
         let Some(eqn) = eqns.get(k) else { break };
-        if !eqn.params.is_empty() || !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
+        if (!eqn.params.is_empty() && !is_integer_pow_2(eqn.primitive, &eqn.params))
+            || !eqn.sub_jaxprs.is_empty()
+            || eqn.outputs.len() != 1
+        {
             break;
         }
         let ext_mark = ext.len();
         let vars_mark = ext_vars.len();
         // Square(x) fused as Mul(x, x) — see the f64 builder for the bit-identity proof.
-        let (op, a, b) = if eqn.primitive == Primitive::Square {
+        let (op, a, b) = if eqn.primitive == Primitive::Square
+            || is_integer_pow_2(eqn.primitive, &eqn.params)
+        {
             if eqn.inputs.len() != 1 {
                 break;
             }
@@ -2501,7 +2524,10 @@ fn try_fuse_elementwise_chain_i64(
     let mut k = start;
     loop {
         let Some(eqn) = eqns.get(k) else { break };
-        if !eqn.params.is_empty() || !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
+        if (!eqn.params.is_empty() && !is_integer_pow_2(eqn.primitive, &eqn.params))
+            || !eqn.sub_jaxprs.is_empty()
+            || eqn.outputs.len() != 1
+        {
             break;
         }
         let ext_mark = ext.len();
@@ -2509,7 +2535,9 @@ fn try_fuse_elementwise_chain_i64(
         // Square(x) fused as Mul(x, x): eval_square's i64 int_op is `wrapping_mul(x, x)`
         // and the i64 fusion Mul uses wrapping_mul, so this is bit-identical (see the
         // f64 builder for the general proof).
-        let (op, a, b) = if eqn.primitive == Primitive::Square {
+        let (op, a, b) = if eqn.primitive == Primitive::Square
+            || is_integer_pow_2(eqn.primitive, &eqn.params)
+        {
             if eqn.inputs.len() != 1 {
                 break;
             }
@@ -2889,7 +2917,10 @@ fn try_fuse_elementwise_chain_half(
     let mut k = start;
     loop {
         let Some(eqn) = eqns.get(k) else { break };
-        if !eqn.params.is_empty() || !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
+        if (!eqn.params.is_empty() && !is_integer_pow_2(eqn.primitive, &eqn.params))
+            || !eqn.sub_jaxprs.is_empty()
+            || eqn.outputs.len() != 1
+        {
             break;
         }
         let ext_mark = ext.len();
@@ -2898,7 +2929,9 @@ fn try_fuse_elementwise_chain_half(
         // Square(x) fused as Mul(x, x): eval_square's half arm decodes to f64, computes
         // x*x, and re-encodes — identical to eval_mul's half arm — so duplicating the
         // operand into a Mul step is bit-identical (see the f64 builder for the proof).
-        let (op, a, b) = if eqn.primitive == Primitive::Square {
+        let (op, a, b) = if eqn.primitive == Primitive::Square
+            || is_integer_pow_2(eqn.primitive, &eqn.params)
+        {
             if eqn.inputs.len() != 1 {
                 break;
             }
