@@ -806,8 +806,48 @@ ends are not rediscovered without new evidence.
   the Rust boxed reference by 8.81x-12.47x.
 - Retry predicate: do not retry boxed literal elision or this exact two-pass
   max/min composition. The next half-clamp attempt must attack the remaining
-  JAX gap directly, such as one-pass raw half clamp with the same signed-zero
-  and NaN proof, temp allocation elimination, or fused producer/consumer clamp.
+  JAX gap directly, but not with the generic one-pass bound-abstraction shape
+  rejected in `frankenjax-mcqr.109`.
+
+## frankenjax-mcqr.109 - One-Pass Half Clamp Fused Helper
+
+- Date: 2026-06-19
+- Agent: cod-a / WildForge
+- Lever: replace the committed raw-half two-pass clamp composition with a
+  generic one-pass helper using a scalar/tensor bound abstraction, one output
+  allocation, no `tmp` vector, and the same signed-zero/NaN fallback policy.
+- Status: measured regression on all four half clamp workloads; reverted.
+- Evidence artifact:
+  `artifacts/performance/evidence/frankenjax-cod-a-half-clamp-one-pass-2026-06-19.md`.
+- Benchmark guard: `crates/fj-lax/benches/clamp_gauntlet.rs`, 1,048,576
+  element vectors, Criterion sample size 20, RCH same-worker before/after on
+  `ovh-a`.
+- Measured evidence:
+  - RCH before bench: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo bench -p fj-lax --bench clamp_gauntlet -- 'bf16_mixed_scalar_tensor_1m|f16_mixed_scalar_tensor_1m|bf16_tensor_tensor_tensor_1m|f16_tensor_tensor_tensor_1m' --sample-size 20 --warm-up-time 1 --measurement-time 3 --save-baseline frankenjax-mcqr-109-before`.
+  - RCH conformance while candidate existed: `RCH_WORKER=ovh-a CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo test -p fj-lax half_clamp --lib`.
+  - RCH after bench: `RCH_WORKER=ovh-a CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo bench -p fj-lax --bench clamp_gauntlet -- 'bf16_mixed_scalar_tensor_1m|f16_mixed_scalar_tensor_1m|bf16_tensor_tensor_tensor_1m|f16_tensor_tensor_tensor_1m' --sample-size 20 --warm-up-time 1 --measurement-time 3 --save-baseline frankenjax-mcqr-109-after`.
+  - RCH post-revert conformance: `RCH_WORKER=ovh-a CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo test -p fj-lax half_clamp --lib`.
+
+| Workload | Before two-pass mean | Candidate mean | Candidate/before | JAX mean used for context | Candidate/JAX | Outcome |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `bf16_mixed_scalar_tensor_1m` | 2.3918 ms | 3.2624 ms | 1.36x slower | 122.705 us | 26.59x slower | Reject/revert |
+| `f16_mixed_scalar_tensor_1m` | 3.0263 ms | 4.4595 ms | 1.47x slower | 319.088 us | 13.98x slower | Reject/revert |
+| `bf16_tensor_tensor_tensor_1m` | 2.7423 ms | 3.2236 ms | 1.18x slower | 148.870 us | 21.65x slower | Reject/revert |
+| `f16_tensor_tensor_tensor_1m` | 3.4745 ms | 4.4271 ms | 1.27x slower | 196.938 us | 22.48x slower | Reject/revert |
+
+- Conformance guard: the candidate passed `cargo test -p fj-lax half_clamp --lib`
+  on RCH while it existed: 4 passed, 0 failed, 2 ignored benchmark tests. The
+  additional edge-matrix proof was removed with the rejected code. Post-revert
+  production conformance also passed: 3 passed, 0 failed, 2 ignored benchmark
+  tests.
+- Decision: reject and revert. The `tmp` allocation and second helper pass were
+  not the dominant cost; the generic fused helper added more chunk setup and
+  half widen/round overhead than it saved.
+- Retry predicate: do not retry generic `HalfClampBound` one-pass fusion or
+  temp-vector removal alone. The next attempt should be dtype/shape-specialized
+  raw-bit compare/classification that avoids f64 widen/round on finite lanes, or
+  a producer/consumer clamp fusion that removes an intermediate across primitive
+  boundaries.
 
 ## frankenjax-e07uw/7g72q/rl9ha/bjqfr - eval_jaxpr Fusion Cluster (Square / Reciprocal / integer_pow[2] / i64+bf16 broadcast)
 

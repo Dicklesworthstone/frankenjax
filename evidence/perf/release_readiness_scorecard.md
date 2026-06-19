@@ -35,6 +35,9 @@ Additional current clamp and bitcast gauntlet environment:
   `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a`; the
   scorecard's Rust/JAX ratios use the local same-host Criterion pass
   `frankenjax-mcqr-108-local-after`.
+- `frankenjax-mcqr.109` one-pass half clamp was a rejected candidate, measured
+  only as RCH same-worker before/after on `ovh-a`; it changed no shipped
+  scorecard rows.
 
 Additional current scalar broadcast environment:
 
@@ -230,7 +233,9 @@ Additional cod-a repeat validation environment:
 - Dense clamp verification is a Rust-internal keep but an external JAX loss
   on all nine measured clamp workloads. The I64 rows lose by 3.10-3.64x versus
   JAX despite 23.59-42.12x internal wins over the boxed Rust reference; the
-  worst gap remains half-precision tensor clamp.
+  worst gap remains half-precision tensor clamp. The follow-up one-pass
+  generic half-bound helper was rejected after same-worker regressions of
+  1.18x-1.47x, so temp-vector removal alone is not a sufficient next lever.
 - Dense bitcast verification is a Rust-internal keep with mixed external JAX
   evidence across 10 measured bitcast workloads. The F32->U32 row is a noisy
   same-host Rust win at Rust/JAX 0.859, but F64->I64 loses 1.47x and the
@@ -245,15 +250,17 @@ Additional cod-a repeat validation environment:
     is RED until verified golden refresh; behavior correct.
 - Reverts: bf16/f16 broadcast fusion (frankenjax-bjqfr) REVERTED — measured 1.02x
   (~0 gain); bf16 tensor fusion is bandwidth-bound and the per-lane f64
-  decode/encode cancels the savings. i64 broadcast fusion (rl9ha, 3.21x) and
-  f64/f32 fusion KEPT. (Prior dense clusters: no reverts.)
+  decode/encode cancels the savings. frankenjax-mcqr.109 one-pass half clamp
+  REVERTED — measured 1.18x-1.47x slower than the two-pass raw-bit helper. i64
+  broadcast fusion (rl9ha, 3.21x) and f64/f32 fusion KEPT.
 - Next measured gate: Complex64/F32 constructor must target packed Complex64
   output construction or a fused real-to-complex path, not another retry of the
   boxed-literal-elision lever.
 - Next clamp gate: BF16/F16 clamp must remove per-lane `clamp_literal`
-  widen/round overhead with a raw-bit proof harness; F32/F64 and I64 clamp must
-  target SIMD/parallel throughput, output allocation/fusion, or compiled-buffer
-  reuse rather than another boxed-literal-elision retry.
+  widen/round overhead with a raw-bit proof harness, but not by retrying generic
+  one-pass temp-vector removal. F32/F64 and I64 clamp must target
+  SIMD/parallel throughput, output allocation/fusion, or compiled-buffer reuse
+  rather than another boxed-literal-elision retry.
 - Next bitcast gate: same-width f32/u32 has only a noisy external win, and
   f64/i64/u64 stays near the memory/store gap; both should share the
   elementwise/store throughput plan. Width-changing F64/U32, U32/F64, and
