@@ -720,6 +720,12 @@ fn eval_same_shape_f32_binop(
     lhs: &TensorValue,
     rhs: &TensorValue,
 ) -> Result<Option<Value>, EvalError> {
+    // NOTE (gauntlet 2026-06-19): native-f32 Add/Sub/Mul was tried and REVERTED —
+    // same-binary A/B (f32_add_impl_ab) measured native 173.2us vs f64-widen 174.6us
+    // = 1.008x (NO gain): f32 same-shape add is memory-bandwidth-bound (~69 GB/s for
+    // 12MB), so native (8-wide) vs widen (4-wide) is irrelevant, the compute hides
+    // behind memory. Keep the single f64-widen path (consistent with Div/Max/Min and
+    // the bit-identity-by-construction argument). Do NOT re-add a native f32 path.
     match primitive {
         Primitive::Add => eval_same_shape_f32_map(lhs, rhs, |a, b| a + b),
         Primitive::Sub => eval_same_shape_f32_map(lhs, rhs, |a, b| a - b),
