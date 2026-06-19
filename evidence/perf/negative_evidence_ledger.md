@@ -1389,3 +1389,44 @@ ends are not rediscovered without new evidence.
 - Retry predicate: same as the same-shape row — do NOT lower the gate. Remaining
   unthreaded large-array cheap paths: i64 same-shape/scalar binops and cheap unary
   (neg/abs/sign); same pattern would apply but lower priority (less common at scale).
+
+## CobaltForge - Persistent worker pool for L3-resident/2-8M elementwise (NEGATIVE, do-not-wire)
+
+- Hypothesis: XLA hits ~200 GB/s on a 1M f64 add (L3-resident) — impossible for one
+  Zen3 core (~70-100 GB/s L3/core), so XLA threads even at L3-resident sizes via a
+  PERSISTENT pool (no per-call spawn). We can't thread there because
+  `std::thread::scope` spawns fresh OS threads per call. There is an ORPHANED
+  `crates/fj-lax/src/thread_pool.rs` (a channel-based persistent pool with
+  `parallel_fill_f64`) — NOT declared as a module in lib.rs, so it is dead, never
+  compiled, never used. Tested whether wiring it in could lower the threading gate
+  below the current 8.39M into the 1M-8M range where we lose / run serial.
+- Measured (standalone replica of `parallel_fill_f64`'s exact design — persistent
+  channel pool + owned-Vec-per-chunk + caller concat — vs serial collect, +avx2,
+  best-of-20, 2026-06-19):
+
+  | n | serial | pool best | pool/serial |
+  | ---: | ---: | ---: | ---: |
+  | 1M | 305 us (78.7 GB/s) | 812 us (29.6 GB/s) | 0.38x (LOSS) |
+  | 2M | 1292 us (37.2 GB/s) | 1898 us (25.3 GB/s) | 0.68x (LOSS) |
+  | 4M | 2806 us (34.2 GB/s) | 5962 us (16.1 GB/s) | 0.47x (LOSS) |
+  | 8M | 31338 us (6.1 GB/s) | 33229 us (5.8 GB/s) | 0.94x (LOSS) |
+
+- Root cause: the pool's owned-Vec-concat design (chosen to stay unsafe-free) is
+  fundamentally wrong for MEMORY-BOUND elementwise: (1) the caller's final
+  `out[s..].copy_from_slice(buf)` concat DOUBLES output traffic and re-serializes
+  the page-faults of the full output Vec — exactly the cost my `std::thread::scope`
+  path AVOIDS by writing each chunk directly into one fresh output; (2) per-chunk
+  `vec![0.0; len]` zero-fill + channel round-trip add latency; (3) cross-CCD threads
+  don't share the 32MB/CCD L3, so L3-resident data can't be parallelized at L3 speed.
+  Note: even at 8M (where my scope path WINS 7x via parallel page-faulting of one
+  output) the pool LOSES (0.94x) because the concat re-serializes those faults.
+- Decision: DO NOT wire in thread_pool.rs; DO NOT route elementwise through it.
+  Confirms the standing conclusion: the L3-resident JAX gap (1M: ~70 vs ~200 GB/s)
+  needs compiled-jaxpr arena BUFFER REUSE (write into a pre-faulted donated buffer,
+  no per-op fresh alloc), NOT a thread pool. A copy-free persistent pool would need
+  either `unsafe` (forbidden here) or `Arc<[AtomicU64]>` shared output (still an O(n)
+  read-out copy into Vec<f64> at the end — same doubling). Left orphaned file as-is.
+- Retry predicate: only revisit a persistent pool for elementwise if it can write
+  DIRECTLY into the final output without a concat/read-out copy (i.e. after a
+  buffer-reuse arena exists, at which point the spawn-free pool becomes worthwhile
+  for the L3-resident regime). Not before.
