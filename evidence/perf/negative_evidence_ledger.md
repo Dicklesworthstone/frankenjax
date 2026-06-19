@@ -41,6 +41,40 @@ ends are not rediscovered without new evidence.
   `to_i64_vec` dense-storage beads still require their own JAX head-to-head rows;
   do not generalize this 12.09x external win to those levers.
 
+## frankenjax-cod-b-dense-scalar-stack-axis0-tobpl - Dense Scalar stack_axis0 Packing
+
+- Date: 2026-06-19
+- Agent: cod-b / WildForge
+- Lever: specialize `TensorValue::stack_axis0` for homogeneous scalar outputs
+  and route them directly to dense typed tensor constructors, avoiding boxed
+  `Vec<Literal>` materialization for loop-and-stack scalar workloads.
+- Status: measured keep. External head-to-head is a decisive Rust win versus
+  original JAX on a realistic 64-scalar loop-and-stack workload. No revert.
+- Benchmark guard: `core/scalar_stack_axis0_f64_64`, added to
+  `crates/fj-core/benches/core_baseline.rs` in this measurement commit.
+- Measured evidence (2026-06-19, same-host CPU):
+  - Rust command:
+    `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b cargo bench -p fj-core --bench core_baseline -- core/scalar_stack_axis0 --sample-size 100 --warm-up-time 1 --measurement-time 10`.
+  - JAX command: warmed inline `jax.jit(lambda *xs: jnp.stack(xs, axis=0))`
+    over 64 scalar `float64` inputs with `jax_enable_x64=true`, CPU backend,
+    200 samples x 1000 inner loops via
+    `/data/projects/frankenjax/benchmarks/jax_comparison/.venv/bin/python`
+    (JAX 0.10.1).
+  - Rust mean estimate 137.53 ns (`[135.34, 139.81]` ns Criterion interval),
+    median 136.77 ns, p95 158.22 ns, p99 165.03 ns, sample CV 8.22%.
+  - JAX mean 25.1019 us, p50 24.4422 us, p95 28.5403 us, p99 31.3033 us,
+    CV 6.26%.
+  - Rust/JAX 0.0055x, Rust 182.21x faster. This row is host-dispatch dominated
+    on the JAX side, but the ratio is far beyond the noise band.
+- Conformance guard: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b cargo test -p fj-core stack_axis0 --lib`
+  passed 6 tests, 0 failed. Per-crate `cargo check -p fj-core --all-targets`,
+  `cargo clippy -p fj-core --all-targets -- -D warnings`, and
+  `cargo fmt -p fj-core --check` also passed.
+- Retry predicate: do not repeat scalar `stack_axis0` dense-constructor packing
+  unless a new profile shows a non-`f64` scalar dtype, larger scalar-count batch,
+  or a compiled buffer-reuse path with materially different cost. Continue to
+  benchmark scalar repeat, slice, and extraction siblings separately.
+
 ## frankenjax-cod-b-dense-tensor-repeat-axis0-jk3ed - Dense Tensor repeat_axis0 Concat Storage
 
 - Date: 2026-06-19

@@ -271,6 +271,16 @@ fn bench_tensor_stack_axis0(c: &mut Criterion) {
     });
 }
 
+fn bench_scalar_stack_axis0(c: &mut Criterion) {
+    let scalars: Vec<Value> = (0..64)
+        .map(|index| Value::scalar_f64(f64::from(index)))
+        .collect();
+
+    c.bench_function("core/scalar_stack_axis0_f64_64", |b| {
+        b.iter(|| TensorValue::stack_axis0(black_box(scalars.as_slice())))
+    });
+}
+
 fn bench_value_scalar_f64(c: &mut Criterion) {
     c.bench_function("core/value_scalar_f64", |b| {
         b.iter(|| Value::scalar_f64(std::f64::consts::PI))
@@ -309,6 +319,7 @@ criterion_group!(
     bench_literal_buffer_index_mut,
     bench_tensor_repeat_axis0,
     bench_tensor_stack_axis0,
+    bench_scalar_stack_axis0,
     bench_value_scalar_f64,
     bench_value_vector_f64,
     bench_shape_element_count,
