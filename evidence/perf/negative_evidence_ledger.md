@@ -202,6 +202,51 @@ ends are not rediscovered without new evidence.
   Future work should target compiled consumer fusion or direct output-buffer
   reuse, not another row-slice storage repack.
 
+## frankenjax-cod-b-dense-to-i64-vec-7xbu9 - Dense Tensor to_i64_vec Fast Path
+
+- Date: 2026-06-19
+- Agent: cod-b / WildForge
+- Lever: verify `TensorValue::to_i64_vec` through
+  `LiteralBuffer::as_i64_slice` before falling back to per-`Literal`
+  extraction, avoiding boxed literal iteration for packed I64 buffers and
+  concat I64 slices.
+- Status: measured keep. The direct dense extraction path is a decisive Rust
+  internal win versus the literal-backed fallback and a directional external
+  win versus original JAX host extraction. No revert.
+- Benchmark guard: `core/tensor_to_i64_vec_dense_4k` and
+  `core/tensor_to_i64_vec_literal_4k` in `crates/fj-core/benches/core_baseline.rs`,
+  plus `benchmarks/jax_comparison/core_to_i64_gauntlet.py` for the JAX host-copy
+  comparator.
+- Measured evidence (2026-06-19, same-host CPU):
+  - Rust command:
+    `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b cargo bench -p fj-core --bench core_baseline -- core/tensor_to_i64_vec --sample-size 100 --warm-up-time 1 --measurement-time 10 --save-baseline frankenjax-cod-b-to-i64-vec`.
+  - JAX command:
+    `benchmarks/jax_comparison/.venv/bin/python benchmarks/jax_comparison/core_to_i64_gauntlet.py --runs 100 --warmup 10 --inner-loops 1000 --output /tmp/frankenjax_cod_b_to_i64_jax_raw.json`.
+  - Rust dense mean estimate 552.47 ns (`[542.29, 565.54]` ns Criterion
+    interval).
+  - Rust literal-backed fallback mean estimate 6.6566 us
+    (`[6.4275, 6.8878]` us Criterion interval): dense/literal 0.0830x,
+    dense 12.05x faster internally.
+  - JAX identity-ready lower-bound mean 6.5825 us (p50 6.1655 us,
+    p95 8.9080 us, p99 12.4299 us, CV 19.47%): dense Rust/JAX 0.0839x,
+    Rust 11.92x faster.
+  - JAX NumPy host-copy mean 9.0209 us (p50 8.8057 us, p95 10.4230 us,
+    p99 10.6834 us, CV 6.56%): dense Rust/JAX 0.0612x, Rust 16.33x
+    faster. Treat both external ratios as directional because JAX CV exceeded
+    5%; the local dense/literal separation is the primary keep proof.
+- Conformance guard: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec -- cargo test -p fj-core to_i64_vec --lib`
+  passed 4 tests, 0 failed on `vmi1152480`. RCH
+  `cargo check -p fj-core --bench core_baseline` passed on `hz2`, RCH
+  `cargo clippy -p fj-core --bench core_baseline -- -D warnings` passed on
+  `hz1`, `python -m py_compile benchmarks/jax_comparison/core_to_i64_gauntlet.py`
+  passed, and `ubs --only=python benchmarks/jax_comparison/core_to_i64_gauntlet.py`
+  returned 0 warnings.
+- Retry predicate: do not retry dense `to_i64_vec` or another
+  `as_i64_slice -> Vec<i64>` elision for this path without a fresh profile
+  showing extraction remains a top-five fj-core cost. Future work should target
+  compiled consumers, output-buffer reuse, non-I64 extraction, or avoiding the
+  owned host copy entirely.
+
 ## frankenjax-mcqr.97 - TensorValue::new Dense Literal Storage
 
 - Date: 2026-06-18
