@@ -204,13 +204,13 @@ ends are not rediscovered without new evidence.
   `eval/tile_scalar_complex128_1024x1024`.
 - Measured evidence (2026-06-19, same-host CPU):
   - Rust command: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b cargo bench -p fj-lax --bench lax_baseline -- eval/tile_scalar --sample-size 10 --warm-up-time 1 --measurement-time 3`.
-  - JAX command: `uv run --with 'jax[cpu]' --with numpy python` with
-    `jax_enable_x64=true`, JAX/JAXLIB 0.10.2, CPU backend, 12 batches x 20
+  - JAX command: `uv run --with 'jax[cpu]==0.9.2' --with numpy python` with
+    `jax_enable_x64=true`, JAX/JAXLIB 0.9.2, CPU backend, 12 batches x 20
     warmed iterations.
   - `tile_scalar_f32_1024x1024`: Rust criterion median 51.435 us vs JAX
-    batched median 204.302 us; ratio Rust/JAX 0.252, Rust 3.97x faster.
+    batched median 317.753 us; ratio Rust/JAX 0.162, Rust 6.18x faster.
   - `tile_scalar_complex128_1024x1024`: Rust criterion median 412.679 us vs
-    JAX batched median 495.802 us; ratio Rust/JAX 0.832, Rust 1.20x faster.
+    JAX batched median 579.030 us; ratio Rust/JAX 0.713, Rust 1.40x faster.
   - Decision: keep. No revert; both measured workloads beat the original JAX
     oracle under warmed CPU execution. Complex128 margin is modest enough that
     future retries must preserve this exact head-to-head guard.
@@ -236,15 +236,15 @@ ends are not rediscovered without new evidence.
   `eval/complex_f64_tensor_scalar_1m`.
 - Measured evidence (2026-06-19, same-host CPU):
   - Rust command: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b cargo bench -p fj-lax --bench lax_baseline -- eval/complex_f --sample-size 10 --warm-up-time 1 --measurement-time 3`.
-  - JAX command: `uv run --with 'jax[cpu]' --with numpy python` with
-    `jax_enable_x64=true`, JAX/JAXLIB 0.10.2, CPU backend, 12 batches x 20
+  - JAX command: `uv run --with 'jax[cpu]==0.9.2' --with numpy python` with
+    `jax_enable_x64=true`, JAX/JAXLIB 0.9.2, CPU backend, 12 batches x 20
     warmed iterations.
   - `complex_f32_tensor_scalar_1m`: Rust criterion median 1.379 ms vs JAX
-    batched median 1.071 ms; ratio Rust/JAX 1.287, Rust 1.29x slower. This is
+    batched median 1.272 ms; ratio Rust/JAX 1.084, Rust 1.08x slower. This is
     negative evidence for "dense constructor alone dominates original JAX" on
     Complex64/F32.
   - `complex_f64_tensor_scalar_1m`: Rust criterion median 0.914 ms vs JAX
-    batched median 1.855 ms; ratio Rust/JAX 0.493, Rust 2.03x faster.
+    batched median 3.730 ms; ratio Rust/JAX 0.245, Rust 4.08x faster.
   - Decision: keep, not revert. The cluster has one clear JAX win and one clear
     JAX loss; there is no same-run evidence that reverting the dense constructor
     improves the F32 result, and reverting would discard the measured F64 win.
@@ -263,3 +263,52 @@ ends are not rediscovered without new evidence.
   Do not merge with same-shape complex constructor, FFT extraction, complex
   binary tensor-scalar ops, or broader complex arithmetic work without fresh
   benchmark evidence and ownership check.
+
+## frankenjax-mcqr.105-.107 - Dense Clamp Mixed/Tensor Bounds
+
+- Date: 2026-06-19
+- Agent: cod-a / WildForge
+- Lever: verify the committed dense `clamp` fast paths for mixed scalar/tensor
+  F32/F64 bounds, mixed scalar/tensor BF16/F16 bounds, and same-shape BF16/F16
+  tensor bounds against both the Rust boxed reference path and original JAX CPU.
+- Status: measured keep internally; negative head-to-head result versus JAX for
+  all six measured workloads.
+- Evidence artifact:
+  `artifacts/performance/evidence/frankenjax_mcqr_105_107_clamp_gauntlet_2026-06-19.json`.
+- Benchmark guard: `crates/fj-lax/benches/clamp_gauntlet.rs`, 1,048,576
+  element vectors, Criterion sample size 20, warmed JAX CPU venv with 50 runs x
+  100 inner loops.
+- Measured evidence (2026-06-19, same-host CPU):
+  - Rust check: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo check -p fj-lax --bench clamp_gauntlet`.
+  - Rust bench: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo bench -p fj-lax --bench clamp_gauntlet -- --save-baseline frankenjax-mcqr-105-107`.
+  - JAX command: `benchmarks/jax_comparison/.venv/bin/python benchmarks/jax_comparison/clamp_gauntlet.py --runs 50 --warmup 10 --inner-loops 100 --output /tmp/frankenjax_mcqr_105_107_clamp_jax_raw.json`.
+  - JAX/JAXLIB: 0.10.1, CPU backend, `jax_enable_x64=true`.
+
+| Workload | Rust dense mean | Rust boxed mean | Dense/boxed | JAX mean | Rust/JAX | Outcome |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `f32_mixed_scalar_tensor_1m` | 159.383 us | 27.645 ms | 173.45x faster | 115.540 us | 1.38x slower | Keep internal win; JAX loss |
+| `f64_mixed_scalar_tensor_1m` | 996.940 us | 27.487 ms | 27.57x faster | 213.651 us | 4.67x slower | Keep internal win; JAX loss |
+| `bf16_mixed_scalar_tensor_1m` | 15.571 ms | 43.758 ms | 2.81x faster | 121.313 us | 128.35x slower | Keep internal win; JAX loss |
+| `f16_mixed_scalar_tensor_1m` | 19.859 ms | 41.186 ms | 2.07x faster | 371.729 us | 53.42x slower | Keep internal win; JAX loss |
+| `bf16_tensor_tensor_tensor_1m` | 15.652 ms | 35.451 ms | 2.26x faster | 183.707 us | 85.20x slower | Keep internal win; JAX loss |
+| `f16_tensor_tensor_tensor_1m` | 20.951 ms | 35.255 ms | 1.68x faster | 229.951 us | 91.11x slower | Keep internal win; JAX loss |
+
+- CV notes: Rust dense CV ranged from 5.75% to 13.73%; JAX CV ranged from
+  5.70% to 21.86%. Treat the F32 JAX loss as lower-confidence than the half
+  losses, but it remains directionally negative under the same-host run.
+- Conformance guard: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo test -p fj-lax clamp --lib`
+  passed 25 tests, 0 failed, 6 ignored benchmark tests. The passing set includes
+  `f32_f64_clamp_mixed_scalar_tensor_bounds_dense_matches_generic`,
+  `half_clamp_mixed_scalar_tensor_bounds_dense_matches_generic`, and
+  `half_clamp_same_shape_tensor_bounds_dense_matches_generic`.
+- Decision: keep, not revert. Every measured target clears the Rust boxed
+  reference keep gate by at least 1.68x, so reverting would discard a real
+  internal improvement. Do not claim original-JAX domination for this cluster.
+- Retry predicate: do not retry boxed-literal elision for these clamp shapes.
+  F32/F64 follow-up must attack SIMD/parallel clamp throughput or output
+  allocation/fusion directly. BF16/F16 follow-up must avoid the per-lane
+  `clamp_literal` widen/round path, for example with a raw half-bits proof
+  harness plus vectorized or table-assisted min/max semantics. Do not merge the
+  next attempt with broadcast-shape generalization, scalar-bound relu/relu6, or
+  unrelated dense constructor work without fresh focused Criterion evidence and
+  an updated JAX head-to-head row.

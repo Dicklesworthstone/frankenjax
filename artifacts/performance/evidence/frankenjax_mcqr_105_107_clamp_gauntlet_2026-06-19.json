@@ -1,0 +1,368 @@
+{
+  "agent_name": "WildForge",
+  "beads": [
+    "frankenjax-mcqr.105",
+    "frankenjax-mcqr.106",
+    "frankenjax-mcqr.107"
+  ],
+  "commands": [
+    "CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo check -p fj-lax --bench clamp_gauntlet",
+    "CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo bench -p fj-lax --bench clamp_gauntlet -- --save-baseline frankenjax-mcqr-105-107",
+    "benchmarks/jax_comparison/.venv/bin/python benchmarks/jax_comparison/clamp_gauntlet.py --runs 50 --warmup 10 --inner-loops 100 --output /tmp/frankenjax_mcqr_105_107_clamp_jax_raw.json"
+  ],
+  "comparison_rule": "Same host: Rust Criterion and JAX CPU venv both executed on local machine; rch not used for timing because remote cargo timings would not be same-host comparable with local JAX.",
+  "decision": "Keep clamp dense optimizations: every measured target beats the Rust boxed fallback by >=1.68x. Do not claim external domination: JAX is neutral/faster on this CPU gauntlet, especially half clamp.",
+  "environment": {
+    "criterion_baseline": "frankenjax-mcqr-105-107",
+    "jax": {
+      "jax_backend": "cpu",
+      "jax_devices": [
+        "cpu:0"
+      ],
+      "jax_version": "0.10.1",
+      "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.42",
+      "python_version": "3.13.7"
+    },
+    "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.42",
+    "python_version": "3.13.7",
+    "rust_target_dir": "/data/projects/.rch-targets/frankenjax-cod-a"
+  },
+  "git_head": "9f8d6b1e4eb75edc92bc44e57a3396468be6c05e",
+  "lever_cluster": "dense clamp mixed and same-shape tensor bounds for F32/F64/BF16/F16",
+  "recent_pending_commits": [
+    "9f8d6b1e frankenjax-1z7k9 perf: dense tensor-scalar complex constructor, code-first batch-test pending",
+    "2cb3f4d0 frankenjax-mcqr.107 perf: dense half clamp tensor bounds, code-first batch-test pending",
+    "d15cd4ba frankenjax-mcqr.106 perf: dense half clamp mixed bounds, code-first batch-test pending",
+    "922efd86 frankenjax-rl9ha perf: i64 broadcast fusion, code-first batch-test pending",
+    "6f043828 frankenjax-19wst perf: dense scalar tile fills, code-first batch-test pending",
+    "78896a35 frankenjax-mcqr.105 perf: dense F32/F64 clamp mixed bounds, code-first batch-test pending",
+    "ac8b8538 frankenjax-bjqfr perf: half (bf16/f16) broadcast fusion, code-first batch-test pending",
+    "63c5dcb2 frankenjax-dxqfj perf: lazy split_multi section buffers, code-first batch-test pending"
+  ],
+  "results": [
+    {
+      "dense_slower_than_jax_x": 128.35343584427,
+      "dense_vs_boxed_speedup_x": 2.810250907002274,
+      "element_count": 1048576,
+      "external_verdict": "loss_vs_jax",
+      "frankenjax_boxed_reference": {
+        "cv_pct": 13.90678235910726,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 41479642.31250001,
+          "upper_bound": 46622189.29583332
+        },
+        "mean_ns": 43758129.883333325,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 2680259.7146842857,
+          "upper_bound": 9075883.445390088
+        },
+        "std_dev_ns": 6085347.887290641
+      },
+      "frankenjax_dense": {
+        "cv_pct": 7.876193453762294,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 15029596.94479113,
+          "upper_bound": 16084486.640904117
+        },
+        "mean_ns": 15570897.877588663,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 815923.0785752552,
+          "upper_bound": 1518694.6064548045
+        },
+        "std_dev_ns": 1226394.0393266503
+      },
+      "jax_jit_cpu": {
+        "cv_pct": 6.666635775582373,
+        "engine": "jax_jit_cpu",
+        "inner_loops": 100,
+        "mean_ns": 121312.66900000001,
+        "name": "bf16_mixed_scalar_tensor_1m",
+        "p50_ns": 120997.48,
+        "p95_ns": 135734.224,
+        "p99_ns": 143487.58639999997,
+        "runs": 50,
+        "std_ns": 8087.473791867828,
+        "throughput_elements_per_sec": 8643581982.356682
+      },
+      "keep_gate": "keep_internal_win",
+      "vs_jax_speedup_x": 0.007790987389019258,
+      "workload": "bf16_mixed_scalar_tensor_1m"
+    },
+    {
+      "dense_slower_than_jax_x": 85.19967844884391,
+      "dense_vs_boxed_speedup_x": 2.2649920969599218,
+      "element_count": 1048576,
+      "external_verdict": "loss_vs_jax",
+      "frankenjax_boxed_reference": {
+        "cv_pct": 8.430628634215362,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 34188286.40791668,
+          "upper_bound": 36734038.823750004
+        },
+        "mean_ns": 35451110.0,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 2209354.884510976,
+          "upper_bound": 3582213.839207806
+        },
+        "std_dev_ns": 2988751.430807186
+      },
+      "frankenjax_dense": {
+        "cv_pct": 5.749067596458442,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 15253676.739891052,
+          "upper_bound": 16023414.704102727
+        },
+        "mean_ns": 15651758.806391675,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 611541.7945976594,
+          "upper_bound": 1093647.065706607
+        },
+        "std_dev_ns": 899830.1938140944
+      },
+      "jax_jit_cpu": {
+        "cv_pct": 6.5841133912741645,
+        "engine": "jax_jit_cpu",
+        "inner_loops": 100,
+        "mean_ns": 183706.7826,
+        "name": "bf16_tensor_tensor_tensor_1m",
+        "p50_ns": 182496.815,
+        "p95_ns": 203613.49649999998,
+        "p99_ns": 214226.68779999999,
+        "runs": 50,
+        "std_ns": 12095.462873845518,
+        "throughput_elements_per_sec": 5707878528.813775
+      },
+      "keep_gate": "keep_internal_win",
+      "vs_jax_speedup_x": 0.011737133498695372,
+      "workload": "bf16_tensor_tensor_tensor_1m"
+    },
+    {
+      "dense_slower_than_jax_x": 53.42333775466186,
+      "dense_vs_boxed_speedup_x": 2.0739429429217315,
+      "element_count": 1048576,
+      "external_verdict": "loss_vs_jax",
+      "frankenjax_boxed_reference": {
+        "cv_pct": 7.899564819726161,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 39836255.125,
+          "upper_bound": 42594092.21833332
+        },
+        "mean_ns": 41186423.55,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 2230376.018278651,
+          "upper_bound": 3986396.846314671
+        },
+        "std_dev_ns": 3253548.2252592104
+      },
+      "frankenjax_dense": {
+        "cv_pct": 6.570176395397377,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 19315140.02725,
+          "upper_bound": 20436637.259999998
+        },
+        "mean_ns": 19858995.490000002,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 807229.526048278,
+          "upper_bound": 1727697.7543814413
+        },
+        "std_dev_ns": 1304771.03404701
+      },
+      "jax_jit_cpu": {
+        "cv_pct": 6.560781564735819,
+        "engine": "jax_jit_cpu",
+        "inner_loops": 100,
+        "mean_ns": 371728.8422,
+        "name": "f16_mixed_scalar_tensor_1m",
+        "p50_ns": 374059.38,
+        "p95_ns": 411013.933,
+        "p99_ns": 415147.1021,
+        "runs": 50,
+        "std_ns": 24388.317349863508,
+        "throughput_elements_per_sec": 2820808828.8070965
+      },
+      "keep_gate": "keep_internal_win",
+      "vs_jax_speedup_x": 0.018718411129464433,
+      "workload": "f16_mixed_scalar_tensor_1m"
+    },
+    {
+      "dense_slower_than_jax_x": 91.10995328040097,
+      "dense_vs_boxed_speedup_x": 1.6827330610401863,
+      "element_count": 1048576,
+      "external_verdict": "loss_vs_jax",
+      "frankenjax_boxed_reference": {
+        "cv_pct": 9.035650089725893,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 34076153.441250004,
+          "upper_bound": 36780455.983333334
+        },
+        "mean_ns": 35254646.15,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 1300935.1385200082,
+          "upper_bound": 4765689.248337171
+        },
+        "std_dev_ns": 3185486.4664850207
+      },
+      "frankenjax_dense": {
+        "cv_pct": 7.583856482604117,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 20277160.30375,
+          "upper_bound": 21628167.4
+        },
+        "mean_ns": 20950825.158333335,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 1165736.8921176712,
+          "upper_bound": 1910863.3031638095
+        },
+        "std_dev_ns": 1588880.5119293167
+      },
+      "jax_jit_cpu": {
+        "cv_pct": 5.700016845488403,
+        "engine": "jax_jit_cpu",
+        "inner_loops": 100,
+        "mean_ns": 229951.0032,
+        "name": "f16_tensor_tensor_tensor_1m",
+        "p50_ns": 230316.52,
+        "p95_ns": 250296.205,
+        "p99_ns": 254939.8171,
+        "runs": 50,
+        "std_ns": 13107.245918769577,
+        "throughput_elements_per_sec": 4559997501.241603
+      },
+      "keep_gate": "keep_internal_win",
+      "vs_jax_speedup_x": 0.010975749234799728,
+      "workload": "f16_tensor_tensor_tensor_1m"
+    },
+    {
+      "dense_slower_than_jax_x": 1.3794700872033538,
+      "dense_vs_boxed_speedup_x": 173.45199279701387,
+      "element_count": 1048576,
+      "external_verdict": "loss_vs_jax",
+      "frankenjax_boxed_reference": {
+        "cv_pct": 7.270706394919446,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 26782646.156250004,
+          "upper_bound": 28502606.686874997
+        },
+        "mean_ns": 27645382.325,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 1449540.8521712723,
+          "upper_bound": 2442919.478849695
+        },
+        "std_dev_ns": 2010014.580603705
+      },
+      "frankenjax_dense": {
+        "cv_pct": 12.592282115255546,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 150740.53451243,
+          "upper_bound": 167912.88682777694
+        },
+        "mean_ns": 159383.4805769723,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 12436.3438870154,
+          "upper_bound": 25426.87580022458
+        },
+        "std_dev_ns": 20070.01751936588
+      },
+      "jax_jit_cpu": {
+        "cv_pct": 21.855475281213028,
+        "engine": "jax_jit_cpu",
+        "inner_loops": 100,
+        "mean_ns": 115539.6424,
+        "name": "f32_mixed_scalar_tensor_1m",
+        "p50_ns": 118800.175,
+        "p95_ns": 151465.93399999998,
+        "p99_ns": 156109.4823,
+        "runs": 50,
+        "std_ns": 25251.73798473393,
+        "throughput_elements_per_sec": 9075465166.923523
+      },
+      "keep_gate": "keep_internal_win",
+      "vs_jax_speedup_x": 0.7249160451368204,
+      "workload": "f32_mixed_scalar_tensor_1m"
+    },
+    {
+      "dense_slower_than_jax_x": 4.666200239492087,
+      "dense_vs_boxed_speedup_x": 27.57139864964927,
+      "element_count": 1048576,
+      "external_verdict": "loss_vs_jax",
+      "frankenjax_boxed_reference": {
+        "cv_pct": 11.034123806997822,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 26238969.10125,
+          "upper_bound": 28806664.0625
+        },
+        "mean_ns": 27487021.8625,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 2072351.1342251643,
+          "upper_bound": 3727037.0355178723
+        },
+        "std_dev_ns": 3032952.0231648088
+      },
+      "frankenjax_dense": {
+        "cv_pct": 13.732907178836786,
+        "mean_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 934921.4394916913,
+          "upper_bound": 1052516.612737227
+        },
+        "mean_ns": 996939.6986993134,
+        "std_dev_ci_ns": {
+          "confidence_level": 0.95,
+          "lower_bound": 85001.9811351636,
+          "upper_bound": 178605.1505772659
+        },
+        "std_dev_ns": 136908.80345135185
+      },
+      "jax_jit_cpu": {
+        "cv_pct": 9.34662784277542,
+        "engine": "jax_jit_cpu",
+        "inner_loops": 100,
+        "mean_ns": 213651.28960000002,
+        "name": "f64_mixed_scalar_tensor_1m",
+        "p50_ns": 213895.505,
+        "p95_ns": 246430.45499999996,
+        "p99_ns": 258443.5758,
+        "runs": 50,
+        "std_ns": 19969.19092020235,
+        "throughput_elements_per_sec": 4907885189.755485
+      },
+      "keep_gate": "keep_internal_win",
+      "vs_jax_speedup_x": 0.21430713400092946,
+      "workload": "f64_mixed_scalar_tensor_1m"
+    }
+  ],
+  "schema_version": "frankenjax.gauntlet.clamp.v1",
+  "summary": {
+    "external_loss_vs_jax_count": 6,
+    "external_neutral_vs_jax_count": 0,
+    "external_win_vs_jax_count": 0,
+    "internal_revert_count": 0,
+    "internal_rust_keep_count": 6,
+    "max_dense_slower_than_jax_x": 128.35343584427,
+    "max_dense_vs_boxed_speedup_x": 173.45199279701387,
+    "min_dense_vs_boxed_speedup_x": 1.6827330610401863
+  },
+  "timestamp": "2026-06-19T01:04:20.518924+00:00"
+}

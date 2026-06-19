@@ -34,3 +34,7 @@ harness = false
 [[bench]]
 name = "rng_bits_threading"
 harness = false
+
+[[bench]]
+name = "clamp_gauntlet"
+harness = false
