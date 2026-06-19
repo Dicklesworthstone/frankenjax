@@ -1944,3 +1944,28 @@ ends are not rediscovered without new evidence.
   loss). Re-measure idle for the precise vs-JAX domination factor.
 - Retry predicate: contained large-op surface now broadly threaded; remaining JAX losses are the
   documented off-limits/architectural ones (float sum/prod/cumsum order; L3-resident regime).
+
+## CobaltForge - Threaded dynamic_update_slice (KV-cache write) for DRAM-bound (JAX WIN)
+
+- Lever: `dynamic_update_slice` (autoregressive KV-cache WRITE — ubiquitous in LLM inference) cloned
+  the large operand via serial `op_src.to_vec()` (page-fault cliff ~3.4-3.5 GB/s) then overwrote the
+  (small) update region. Split `dynamic_update_slice_dense` into `dynamic_update_apply` (overwrite
+  only) + a `dense_dus!` macro that allocates a calloc'd output (zero literal per dtype) and
+  PARALLEL-copies the operand via `concat_contiguous_into` above the gate, then applies the update.
+  Wired f64/f32/bf16/i64/i32/u32/u64/bool; complex keeps the serial dense copy (no zero-literal
+  calloc). Bit-identical.
+- Guarded by `threaded_dynamic_update_slice_bit_identical_to_serial` (1D contiguous f64 + 2D strided
+  column-band i64), bit-for-bit vs operand-clone + region-overwrite reference.
+- Conformance: `fj-lax --lib` 1514 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, best-of-15, host loaded; operand n, update 4096):
+
+  | n | serial (before) | threaded (after) | internal | add same-load | JAX | Rust/JAX |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | 16M | 73162 us (3.5 GB/s) | 18618 us (13.8 GB/s) | 3.93x | 18.7 GB/s | 23922 us (10.7) | 0.78x (1.29x FASTER) |
+  | 64M | 301748 us (3.4 GB/s) | 79638 us (12.9 GB/s) | 3.79x | 17.7 GB/s | 98401 us (10.4) | 0.81x (1.23x FASTER) |
+
+- Decision: KEEP. KV-cache write is on the hottest LLM-inference path; was a ~3x JAX loss, now a
+  1.23-1.29x WIN even under contention (unloaded tracks add toward ~2.6x). Same calloc+parallel-copy
+  lever as slice; bit-identical; preserves dense storage (critical for the autoregressive loop).
+- Retry predicate: dynamic_slice (KV-cache READ) is the sibling; thread its contiguous extract the
+  same way if it shows a gap.

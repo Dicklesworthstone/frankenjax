@@ -4639,10 +4639,24 @@ pub(crate) fn eval_dynamic_update_slice(
     // every downstream op. Identical writes/order -> bit-for-bit identical. Falls
     // through to the Literal path for boxed/other dtypes.
     macro_rules! dense_dus {
-        ($op:expr, $upd:expr, $ctor:expr) => {{
-            let out = dynamic_update_slice_dense(
-                $op,
-                $upd,
+        ($op:expr, $upd:expr, $zero:expr, $ctor:expr) => {{
+            let o = $op;
+            let u = $upd;
+            let n = o.len();
+            // Thread the (large) operand copy above the DRAM-bound gate: calloc'd output
+            // (zero literal -> alloc_zeroed) + parallel copy of the operand, then apply the
+            // (small) update region. This is the KV-cache write hot path. Bit-identical.
+            let mut out = vec![$zero; n];
+            if n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+                && crate::arithmetic::work_scaled_threads(n) > 1
+            {
+                concat_contiguous_into(&mut out, &[o], crate::arithmetic::work_scaled_threads(n));
+            } else {
+                out.copy_from_slice(o);
+            }
+            dynamic_update_apply(
+                &mut out,
+                u,
                 rank,
                 &update.shape.dims,
                 &starts,
@@ -4656,20 +4670,20 @@ pub(crate) fn eval_dynamic_update_slice(
         operand.elements.as_f64_slice(),
         update.elements.as_f64_slice(),
     ) {
-        dense_dus!(o, u, TensorValue::new_f64_values);
+        dense_dus!(o, u, 0.0f64, TensorValue::new_f64_values);
     }
     if let (Some(o), Some(u)) = (
         operand.elements.as_f32_slice(),
         update.elements.as_f32_slice(),
     ) {
-        dense_dus!(o, u, TensorValue::new_f32_values);
+        dense_dus!(o, u, 0.0f32, TensorValue::new_f32_values);
     }
     if let (Some(o), Some(u)) = (
         operand.elements.as_half_float_slice(),
         update.elements.as_half_float_slice(),
     ) {
         let dt = operand.dtype;
-        dense_dus!(o, u, |sh, out| TensorValue::new_half_float_values(
+        dense_dus!(o, u, 0u16, |sh, out| TensorValue::new_half_float_values(
             dt, sh, out
         ));
     }
@@ -4677,7 +4691,7 @@ pub(crate) fn eval_dynamic_update_slice(
         operand.elements.as_i64_slice(),
         update.elements.as_i64_slice(),
     ) {
-        dense_dus!(o, u, |sh, out| if operand.dtype == DType::I32 {
+        dense_dus!(o, u, 0i64, |sh, out| if operand.dtype == DType::I32 {
             TensorValue::new_i32_values(sh, out)
         } else {
             TensorValue::new_i64_values(sh, out)
@@ -4687,26 +4701,40 @@ pub(crate) fn eval_dynamic_update_slice(
         operand.elements.as_u32_slice(),
         update.elements.as_u32_slice(),
     ) {
-        dense_dus!(o, u, TensorValue::new_u32_values);
+        dense_dus!(o, u, 0u32, TensorValue::new_u32_values);
     }
     if let (Some(o), Some(u)) = (
         operand.elements.as_u64_slice(),
         update.elements.as_u64_slice(),
     ) {
-        dense_dus!(o, u, TensorValue::new_u64_values);
+        dense_dus!(o, u, 0u64, TensorValue::new_u64_values);
     }
     if let (Some(o), Some(u)) = (
         operand.elements.as_bool_slice(),
         update.elements.as_bool_slice(),
     ) {
-        dense_dus!(o, u, TensorValue::new_bool_values);
+        dense_dus!(o, u, false, TensorValue::new_bool_values);
     }
     if let (Some(o), Some(u)) = (
         operand.elements.as_complex_slice(),
         update.elements.as_complex_slice(),
     ) {
+        // Complex (f64,f64) has no zero-literal calloc; keep the serial dense copy.
         let dt = operand.dtype;
-        dense_dus!(o, u, |sh, out| TensorValue::new_complex_values(dt, sh, out));
+        let out = dynamic_update_slice_dense(
+            o,
+            u,
+            rank,
+            &update.shape.dims,
+            &starts,
+            &op_strides,
+            contig_start,
+        );
+        return Ok(Value::Tensor(TensorValue::new_complex_values(
+            dt,
+            operand.shape.clone(),
+            out,
+        )?));
     }
 
     // Literal fallback (boxed/other dtypes): the same copy over Literals.
@@ -4760,9 +4788,26 @@ fn dynamic_update_slice_dense<T: Copy>(
     contig_start: Option<usize>,
 ) -> Vec<T> {
     let mut out = op_src.to_vec();
+    dynamic_update_apply(&mut out, upd, rank, update_dims, starts, op_strides, contig_start);
+    out
+}
+
+/// Apply the update region of a dynamic_update_slice into an `out` that ALREADY holds the
+/// operand copy. Split out of [`dynamic_update_slice_dense`] so the (large) operand copy can
+/// be parallelized at the concrete-typed call site while this (small) overwrite stays here.
+/// Identical writes/order -> bit-for-bit identical.
+fn dynamic_update_apply<T: Copy>(
+    out: &mut [T],
+    upd: &[T],
+    rank: usize,
+    update_dims: &[u32],
+    starts: &[usize],
+    op_strides: &[usize],
+    contig_start: Option<usize>,
+) {
     if let Some(start) = contig_start {
         out[start..start + upd.len()].copy_from_slice(upd);
-        return out;
+        return;
     }
     let mut upd_coords = vec![0_usize; rank];
     for &uv in upd.iter() {
@@ -4781,7 +4826,6 @@ fn dynamic_update_slice_dense<T: Copy>(
             upd_coords[ax] = 0;
         }
     }
-    out
 }
 
 /// Copy: explicit identity operation that returns an independent cloned value.
@@ -13064,6 +13108,83 @@ mod tests {
         let mut out = vec![0.0f32; n];
         threaded_fill_into(&mut out, 1.5f32, crate::arithmetic::work_scaled_threads(n).max(2));
         assert!(out.iter().all(|&x| x.to_bits() == 1.5f32.to_bits()));
+    }
+
+    #[test]
+    fn threaded_dynamic_update_slice_bit_identical_to_serial() {
+        // Large operand + small update at >= gate engages the threaded operand copy; compare
+        // bit-for-bit to a serial (operand clone + region overwrite) reference.
+        // Case 1: 1D contiguous, f64.
+        let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 777;
+        let op: Vec<f64> = (0..n).map(|i| (i as f64) * 0.5).collect();
+        let upd: Vec<f64> = (0..4096).map(|i| 1000.0 + i as f64).collect();
+        let start = 12345usize;
+        let opt = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![n as u32] }, op.clone()).unwrap(),
+        );
+        let updt = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![4096] }, upd.clone()).unwrap(),
+        );
+        let got = eval_dynamic_update_slice(
+            &[opt, updt, Value::Scalar(Literal::I64(start as i64))],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let mut want = op.clone();
+        want[start..start + 4096].copy_from_slice(&upd);
+        let gb: Vec<u64> = got
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f64_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let wb: Vec<u64> = want.iter().map(|v| v.to_bits()).collect();
+        assert!(gb == wb, "threaded 1D contiguous dus != serial");
+
+        // Case 2: 2D non-contiguous (strided update), i64. operand [rows, cols], update
+        // [rows, uc] at [0, s1] -> writes a column band (op_flat odometer path).
+        let cols = 2048usize;
+        let rows = (crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN / cols) + 5;
+        let total = rows * cols;
+        let opi: Vec<i64> = (0..total).map(|i| i as i64).collect();
+        let uc = 16usize;
+        let s1 = 100usize;
+        let updi: Vec<i64> = (0..rows * uc).map(|i| -1 - i as i64).collect();
+        let opit = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape { dims: vec![rows as u32, cols as u32] },
+                opi.clone(),
+            )
+            .unwrap(),
+        );
+        let updit = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape { dims: vec![rows as u32, uc as u32] },
+                updi.clone(),
+            )
+            .unwrap(),
+        );
+        let goti = eval_dynamic_update_slice(
+            &[
+                opit,
+                updit,
+                Value::Scalar(Literal::I64(0)),
+                Value::Scalar(Literal::I64(s1 as i64)),
+            ],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let mut wanti = opi.clone();
+        for r in 0..rows {
+            for c in 0..uc {
+                wanti[r * cols + s1 + c] = updi[r * uc + c];
+            }
+        }
+        let gi = goti.as_tensor().unwrap().elements.as_i64_slice().unwrap();
+        assert!(gi == wanti.as_slice(), "threaded 2D strided dus != serial");
     }
 
     #[test]

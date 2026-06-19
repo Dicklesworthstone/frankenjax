@@ -475,3 +475,11 @@ Additional cod-a repeat validation environment:
   reversal): 2.1 -> 11.8-12.9 GB/s (5.4-6.1x internal), flips a ~5x JAX loss to parity-to-win
   (host contended this session; unloaded scales toward ~2x like the family). Bit-identical (incl.
   inner-axis / multi-axis), guarded. Last queued clean loss now addressed.
+
+## CobaltForge - Threaded dynamic_update_slice (KV-cache write): JAX WIN (2026-06-19)
+
+- dynamic_update_slice threaded (calloc'd output + parallel operand copy via concat_contiguous_into
+  + small update overwrite): 16M/64M = Rust/JAX 0.78/0.81 (1.29/1.23x faster than jax.jit, even under
+  contention), internal 3.79-3.93x (3.4 -> 12.9-13.8 GB/s; ~= same-load add). Bit-identical (1D
+  contiguous + 2D strided), guarded. KV-cache write is the hottest LLM-inference path. dynamic_slice
+  (KV read) is the sibling follow-on.
