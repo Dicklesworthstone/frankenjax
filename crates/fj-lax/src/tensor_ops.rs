@@ -1039,6 +1039,17 @@ pub(crate) fn eval_transpose(
                             out,
                         )?));
                     }
+                    // bf16/f16 (u16-backed): attention/feature transposes in the training/
+                    // inference dtype. Same generic threaded blocked transpose; bit-identical.
+                    if let Some(s) = tensor.elements.as_half_float_slice() {
+                        let mut out = vec![0u16; total];
+                        transpose_2d_into(&mut out, s, rows, cols);
+                        return Ok(Value::Tensor(TensorValue::new_half_float_values(
+                            tensor.dtype,
+                            Shape { dims: new_dims },
+                            out,
+                        )?));
+                    }
                 }
                 dense_transpose!(transpose_2d_blocked(rows, cols, total));
                 let mut new_elements = vec![tensor.elements[0]; total];
@@ -1879,6 +1890,22 @@ pub(crate) fn eval_concatenate(
             let mut out = vec![0.0f32; total];
             concat_contiguous_into(&mut out, &srcs, threads);
             return Ok(Value::Tensor(TensorValue::new_f32_values(
+                Shape { dims: out_dims },
+                out,
+            )?));
+        }
+        // bf16/f16 (u16-backed): KV-cache append / feature concat in the dominant
+        // inference/training dtype. Same generic threaded copy; bit-identical.
+        if matches!(expected_dtype, DType::BF16 | DType::F16)
+            && let Some(srcs) = tensors
+                .iter()
+                .map(|t| t.elements.as_half_float_slice())
+                .collect::<Option<Vec<_>>>()
+        {
+            let mut out = vec![0u16; total];
+            concat_contiguous_into(&mut out, &srcs, threads);
+            return Ok(Value::Tensor(TensorValue::new_half_float_values(
+                expected_dtype,
                 Shape { dims: out_dims },
                 out,
             )?));
@@ -12914,6 +12941,49 @@ mod tests {
         let mut out = vec![0.0f32; n];
         threaded_fill_into(&mut out, 1.5f32, crate::arithmetic::work_scaled_threads(n).max(2));
         assert!(out.iter().all(|&x| x.to_bits() == 1.5f32.to_bits()));
+    }
+
+    #[test]
+    fn threaded_half_float_transpose_and_concat_bit_identical() {
+        // bf16/f16 (u16-backed) transpose + axis-0 concat threaded paths vs serial kernels.
+        // transpose [rows, cols] (non-square) at >= gate.
+        let rows = 6000usize;
+        let cols = 3000usize;
+        let total = rows * cols;
+        assert!(total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN);
+        let data: Vec<u16> = (0..total).map(|i| (i as u16).wrapping_mul(131)).collect();
+        let serial = transpose_2d_blocked(&data, rows, cols, total);
+        let mut threaded = vec![0u16; total];
+        transpose_2d_into(&mut threaded, &data, rows, cols);
+        assert!(serial == threaded, "bf16 threaded transpose != serial");
+        // end-to-end transpose via eval_primitive
+        let tin = Value::Tensor(
+            TensorValue::new_half_float_values(
+                DType::BF16,
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let mut tp = BTreeMap::new();
+        tp.insert("permutation".to_owned(), "1,0".to_owned());
+        let tout = eval_transpose(std::slice::from_ref(&tin), &tp).unwrap();
+        assert!(
+            tout.as_tensor().unwrap().elements.as_half_float_slice().unwrap() == serial.as_slice()
+        );
+
+        // concat axis 0 of two bf16 tensors at >= gate.
+        let a: Vec<u16> = (0..total).map(|i| (i as u16).wrapping_add(1)).collect();
+        let b: Vec<u16> = (0..total).map(|i| (i as u16).wrapping_add(7)).collect();
+        let mut want: Vec<u16> = Vec::with_capacity(total * 2);
+        want.extend_from_slice(&a);
+        want.extend_from_slice(&b);
+        let srcs: Vec<&[u16]> = vec![&a, &b];
+        let mut got = vec![0u16; total * 2];
+        concat_contiguous_into(&mut got, &srcs, crate::arithmetic::work_scaled_threads(total * 2));
+        assert!(got == want, "bf16 threaded concat != serial");
     }
 
     #[test]

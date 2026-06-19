@@ -421,3 +421,10 @@ Additional cod-a repeat validation environment:
   35.3-59.9 GB/s). Bit-identical (NaN/±0/±inf, f64+f32), guarded. Was a 1.3-2.3x loss. ReduceSum
   stays a loss (10.9 GB/s) but is bit-exact-pinned (non-associative) -> needs XLA-order matching,
   not threading.
+
+## CobaltForge - Threaded bf16/f16 transpose + concat (training dtype): JAX WIN (2026-06-19)
+
+- bf16/f16 rank-2 transpose + axis-0 concat threaded (calloc'd u16 output + parallel copy via the
+  generic _into helpers): bf16 transpose 13.6-20.2 GB/s, bf16 concat 13.1-17.0 GB/s (serial ~2-2.5
+  GB/s cliff -> ~5-8x). Bit-identical (incl. non-square transpose), guarded. bf16 attention
+  transpose + KV-cache concat are ubiquitous in LLM training/inference.

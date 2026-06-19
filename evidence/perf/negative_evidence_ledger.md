@@ -1767,3 +1767,28 @@ ends are not rediscovered without new evidence.
   XLA-order-matching swing, not threading.
 - Retry predicate: extend threaded minmax to bf16/f16 full reduce + argmax/argmin (needs
   first-index-preserving combine) and to axis reductions where the reduced extent is huge.
+
+## CobaltForge - Threaded bf16/f16 transpose + axis-0 concat (training/inference dtype) (JAX WIN)
+
+- Lever: extends the proven threaded rank-2 transpose (`transpose_2d_into`) and axis-0 concat
+  (`concat_contiguous_into`) to the bf16/f16 (u16-backed) dtype — bf16 attention transposes and
+  bf16 KV-cache / feature concat are ubiquitous in LLM training & inference, previously left on
+  the serial cliff (~2-2.5 GB/s). The helpers are already generic over T: Copy+Send+Sync (u16
+  qualifies); wired the half-float arms to a calloc'd vec![0u16; total]. Bit-identical (u16 copies).
+- Guarded by `threaded_half_float_transpose_and_concat_bit_identical` (bf16 transpose non-square
+  6000x3000 vs serial transpose_2d_blocked + end-to-end eval_transpose; bf16 2-operand axis-0 concat
+  vs serial).
+- Conformance: `fj-lax --lib` 1507 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, best-of-15):
+
+  | workload | threaded (after) | (serial was ~2-2.5 GB/s cliff) internal |
+  | --- | ---: | ---: |
+  | bf16 transpose 4096x4096 | 4927 us (13.6 GB/s) | ~5x |
+  | bf16 transpose 8192x8192 | 13283 us (20.2 GB/s) | ~8x |
+  | bf16 concat0 out=32.8M | 5006 us (13.1 GB/s) | ~6x |
+  | bf16 concat0 out=131M | 15446 us (17.0 GB/s) | ~8x |
+
+- Decision: KEEP. Same calloc+parallel-page-fault lever, now covering the training-dominant dtype
+  for transpose+concat (matching the bf16 broadcast+gather shipped in 3fe6f23a). Bit-identical.
+- Retry predicate: extend bf16/f16 to convert (half<->f32) and the i64/u32/u64 arms of all threaded
+  ops. Mechanical (concrete-zero calloc + existing generic _into helpers).
