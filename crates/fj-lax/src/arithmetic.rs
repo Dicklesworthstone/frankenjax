@@ -5845,7 +5845,7 @@ pub(crate) fn eval_atanh(primitive: Primitive, inputs: &[Value]) -> Result<Value
 pub(crate) fn eval_unary_elementwise(
     primitive: Primitive,
     inputs: &[Value],
-    op: impl Fn(f64) -> f64,
+    op: impl Fn(f64) -> f64 + Sync,
 ) -> Result<Value, EvalError> {
     if inputs.len() != 1 {
         return Err(EvalError::ArityMismatch {
@@ -6201,9 +6201,43 @@ fn half_unary_apply(dt: DType, bits: u16, op: &impl Fn(f64) -> f64) -> u16 {
     }
 }
 
+/// Threaded dense-f64 unary map (parallel sibling of the serial fast-path map below).
+/// Applies the SAME `op` per element across scoped threads; lane-independent => the
+/// output is bit-for-bit identical to the serial `collect` regardless of chunking.
+fn threaded_unary_f64_map(
+    shape: &Shape,
+    src: &[f64],
+    threads: usize,
+    op: &(impl Fn(f64) -> f64 + Sync),
+) -> Option<Value> {
+    let n = src.len();
+    let mut out = vec![0.0f64; n];
+    let chunk = n.div_ceil(threads);
+    let op_ref = op;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f64] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                for (i, o) in blk.iter_mut().enumerate() {
+                    *o = op_ref(src[s + i]);
+                }
+            });
+            start += len;
+        }
+    });
+    TensorValue::new_f64_values(shape.clone(), out)
+        .ok()
+        .map(Value::Tensor)
+}
+
 fn eval_unary_f64_tensor_fast_path(
     tensor: &TensorValue,
-    op: &impl Fn(f64) -> f64,
+    op: &(impl Fn(f64) -> f64 + Sync),
 ) -> Option<Result<Value, EvalError>> {
     if tensor.dtype != DType::F64 {
         return None;
@@ -6214,8 +6248,22 @@ fn eval_unary_f64_tensor_fast_path(
     // (no per-`Literal` reconstruction); fall back to the boxed-F64 path for a
     // `Vec<Literal>`-backed input. Values are identical (`op(x)` per element), so this is
     // bit-for-bit identical at the value level — only the backing changes to dense. This
-    // de-boxes every serial-path unary op (Floor/Ceil/Reciprocal, and sub-threshold
-    // transcendentals reaching here via `eval_unary_elementwise_parallel`'s fallback).
+    // de-boxes every serial-path unary op (Floor/Ceil/Reciprocal, Neg/Abs/Sign/Square,
+    // and sub-threshold transcendentals reaching here via the parallel fallback).
+    // Above CHEAP_BINARY_PARALLEL_MIN the serial fresh-alloc page-fault cliter craters
+    // throughput (~4 GB/s); thread the dense f64 case to parallel-fault the output
+    // (~38 GB/s, bit-identical). Same gate/discipline as the cheap binary ops.
+    if let Some(src) = tensor.elements.as_f64_slice() {
+        let n = src.len();
+        if n >= CHEAP_BINARY_PARALLEL_MIN {
+            let threads = work_scaled_threads(n);
+            if threads > 1
+                && let Some(value) = threaded_unary_f64_map(&tensor.shape, src, threads, op)
+            {
+                return Some(Ok(value));
+            }
+        }
+    }
     let out: Vec<f64> = if let Some(src) = tensor.elements.as_f64_slice() {
         src.iter().map(|&x| op(x)).collect()
     } else {
@@ -6245,14 +6293,57 @@ fn eval_unary_f64_tensor_fast_path(
 /// (lossless), runs `op` in f64 and rounds back with `as f32` into dense f32 —
 /// BIT-IDENTICAL to the generic loop, which computes the same
 /// `from_f32(op(literal.as_f64()) as f32)`. Returns `None` for non-dense-F32.
+/// Threaded dense-f32 unary map (parallel sibling). Promotes each f32->f64 (lossless),
+/// applies `op`, rounds back `as f32` — identical per-element semantics to the serial
+/// path, lane-independent => bit-identical.
+fn threaded_unary_f32_map(
+    shape: &Shape,
+    src: &[f32],
+    threads: usize,
+    op: &(impl Fn(f64) -> f64 + Sync),
+) -> Option<Value> {
+    let n = src.len();
+    let mut out = vec![0.0f32; n];
+    let chunk = n.div_ceil(threads);
+    let op_ref = op;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f32] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                for (i, o) in blk.iter_mut().enumerate() {
+                    *o = op_ref(f64::from(src[s + i])) as f32;
+                }
+            });
+            start += len;
+        }
+    });
+    TensorValue::new_f32_values(shape.clone(), out)
+        .ok()
+        .map(Value::Tensor)
+}
+
 fn eval_unary_f32_tensor_fast_path(
     tensor: &TensorValue,
-    op: &impl Fn(f64) -> f64,
+    op: &(impl Fn(f64) -> f64 + Sync),
 ) -> Option<Result<Value, EvalError>> {
     if tensor.dtype != DType::F32 {
         return None;
     }
     let src = tensor.elements.as_f32_slice()?;
+    let n = src.len();
+    if n >= CHEAP_BINARY_PARALLEL_MIN {
+        let threads = work_scaled_threads(n);
+        if threads > 1
+            && let Some(value) = threaded_unary_f32_map(&tensor.shape, src, threads, op)
+        {
+            return Some(Ok(value));
+        }
+    }
     let out: Vec<f32> = src.iter().map(|&v| op(f64::from(v)) as f32).collect();
     Some(
         TensorValue::new_f32_values(tensor.shape.clone(), out)
@@ -6321,7 +6412,7 @@ pub(crate) fn eval_unary_int_or_float(
     int_op: impl Fn(i64) -> i64,
     u32_op: impl Fn(u32) -> u32,
     u64_op: impl Fn(u64) -> u64,
-    float_op: impl Fn(f64) -> f64,
+    float_op: impl Fn(f64) -> f64 + Sync,
 ) -> Result<Value, EvalError> {
     if inputs.len() != 1 {
         return Err(EvalError::ArityMismatch {
@@ -19943,6 +20034,63 @@ mod tests {
     }
 
     #[test]
+    fn threaded_unary_maps_bit_identical_to_serial() {
+        // Prove the threaded unary maps are bit-for-bit identical to the serial map for
+        // the cheap unary ops (neg/abs/square/floor/reciprocal), with IEEE specials.
+        let len = CHEAP_BINARY_PARALLEL_MIN + 211;
+        let mut x: Vec<f64> = (0..len).map(|i| ((i % 877) as f64) * 0.5 - 200.0).collect();
+        let specials = [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -0.0,
+            f64::MAX,
+        ];
+        for (k, &s) in specials.iter().enumerate() {
+            x[k] = s;
+            x[len / 2 + k] = s;
+        }
+        let shape = Shape {
+            dims: vec![len as u32],
+        };
+        let threads = work_scaled_threads(len).max(2);
+        let ops: [fn(f64) -> f64; 5] = [|v| -v, f64::abs, |v| v * v, f64::floor, |v| 1.0 / v];
+        for op in ops {
+            // f64
+            let got = threaded_unary_f64_map(&shape, &x, threads, &op).unwrap();
+            let got_bits: Vec<u64> = got
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .unwrap()
+                .iter()
+                .map(|v| v.to_bits())
+                .collect();
+            let want_bits: Vec<u64> = x.iter().map(|&v| op(v).to_bits()).collect();
+            assert_eq!(got_bits, want_bits, "threaded f64 unary != serial");
+            // f32 (promote->op->round, matching the serial f32 fast path)
+            let xf: Vec<f32> = x.iter().map(|&v| v as f32).collect();
+            let gotf = threaded_unary_f32_map(&shape, &xf, threads, &op).unwrap();
+            let gotf_bits: Vec<u32> = gotf
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f32_slice()
+                .unwrap()
+                .iter()
+                .map(|v| v.to_bits())
+                .collect();
+            let wantf_bits: Vec<u32> = xf
+                .iter()
+                .map(|&v| (op(f64::from(v)) as f32).to_bits())
+                .collect();
+            assert_eq!(gotf_bits, wantf_bits, "threaded f32 unary != serial");
+        }
+    }
+
+    #[test]
     #[ignore = "perf measurement; run with --release --ignored --nocapture"]
     fn bench_cheap_binary_parallel_vs_serial() {
         use std::time::Instant;
@@ -20051,6 +20199,34 @@ mod tests {
             let gb = n as f64 * 8.0 * 3.0 / 1e9;
             println!(
                 "add_i64 n={n:>9}: serial {:>9.1}us ({:>5.1} GB/s)  parallel {:>9.1}us ({:>5.1} GB/s)  speedup {:.2}x",
+                serial * 1e6,
+                gb / serial,
+                par * 1e6,
+                gb / par,
+                serial / par
+            );
+        }
+        // unary neg, f64, 2 arrays of traffic (1 in + 1 out)
+        for &n in &[16_000_000usize, 64_000_000] {
+            let x: Vec<f64> = (0..n).map(|i| (i % 1000) as f64 * 0.5).collect();
+            let shape = Shape {
+                dims: vec![n as u32],
+            };
+            let t = TensorValue::new_f64_values(shape.clone(), x).unwrap();
+            let neg = |v: f64| -v;
+            let serial = best_of(10, || {
+                let src = t.elements.as_f64_slice().unwrap();
+                let out: Vec<f64> = src.iter().map(|&v| neg(v)).collect();
+                TensorValue::new_f64_values(t.shape.clone(), out).unwrap()
+            });
+            let threads = work_scaled_threads(n);
+            let par = best_of(10, || {
+                threaded_unary_f64_map(&t.shape, t.elements.as_f64_slice().unwrap(), threads, &neg)
+                    .unwrap()
+            });
+            let gb = n as f64 * 8.0 * 2.0 / 1e9;
+            println!(
+                "neg_f64 n={n:>9}: serial {:>9.1}us ({:>5.1} GB/s)  parallel {:>9.1}us ({:>5.1} GB/s)  speedup {:.2}x",
                 serial * 1e6,
                 gb / serial,
                 par * 1e6,

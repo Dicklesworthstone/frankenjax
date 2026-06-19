@@ -1508,3 +1508,44 @@ ends are not rediscovered without new evidence.
 - Retry predicate: do not re-measure the mimalloc-vs-glibc cliff (settled). Next step
   is the maintainer allocator decision + gate retune, or the compiled-jaxpr arena
   (which would subsume both by reusing a donated output buffer with no alloc at all).
+
+## CobaltForge - Threaded cheap unary f64/f32 (JAX WIN) + mimalloc framing CORRECTION
+
+- Lever: threads the serial dense f64/f32 unary fast paths (Neg/Abs/Sign/Square/Floor/
+  Ceil/Round/Reciprocal and any sub-threshold transcendental reaching the fast path) at
+  `n >= CHEAP_BINARY_PARALLEL_MIN` (1<<23), inside `eval_unary_f{64,32}_tensor_fast_path`
+  (the chokepoint for both unary callers). Needed `+ Sync` on `eval_unary_elementwise`
+  and `eval_unary_int_or_float`'s float_op bounds (non-breaking; all closures stateless).
+  Bit-identical (lane-independent); guarded by `threaded_unary_maps_bit_identical_to_serial`
+  (neg/abs/square/floor/reciprocal, NaN/±inf/±0/MAX, f64+f32).
+- Conformance: `fj-lax --lib` 1498 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured A/B (LOCAL, real path, best-of-10) + JAX (`jax.jit(lambda x:-x)` x64):
+
+  | Workload | serial (before) | parallel (after) | internal | JAX | Rust/JAX |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | neg_f64 16M | 59907 us (4.3 GB/s) | 7461 us (34.3 GB/s) | 8.03x | 15575 us | 0.48x (2.09x FASTER) |
+  | neg_f64 64M | 241451 us (4.2 GB/s) | 30260 us (33.8 GB/s) | 7.98x | 59500 us | 0.51x (1.97x FASTER) |
+
+- *** CORRECTION to the prior "mimalloc supersedes threading" entry/scorecard/bead oneqh ***
+  Re-measured on the REAL `eval_primitive` path (which already includes my threading) under
+  both allocators. mimalloc and threading are COMPLEMENTARY (different op sets), NOT
+  substitutes, and threading is the SUPERIOR lever for memory-bound ops:
+
+  | op @16M | glibc serial | glibc+threading (shipped) | mimalloc serial | mimalloc+threading |
+  | --- | ---: | ---: | ---: | ---: |
+  | Add (threaded) | (n/a) | 38.7 GB/s | (n/a) | 34.5 GB/s |
+  | Neg (was serial) | 4.4 GB/s | 34.3 GB/s (now threaded) | 20.5 GB/s | ~ |
+
+  - For ops I THREAD: glibc+threading (~38 GB/s, parallel page-faulting of the calloc
+    zero-pages) >= mimalloc (~24-34); mimalloc is ~neutral-to-slightly-negative there.
+  - For ops still SERIAL: mimalloc gives ~4.7x (Neg 4.4->20.5) — BUT threading gives more
+    (4.4->34.3, parallel faulting beats warm-span serial memset). So the better fix for
+    each serial op is to THREAD it, not adopt mimalloc.
+  - Therefore: KEEP the threading gate regardless of any allocator decision (removing it
+    craters these ops to 4-6 GB/s). mimalloc remains a modest COMPLEMENTARY win only for
+    large allocating ops that are hard to thread (and is superseded wherever threading is
+    applied). The round-4 "remove the gate if mimalloc adopted" guidance was WRONG.
+- Retry predicate: extend the same gate to the remaining serial large ops where it pays
+  (i64/u32/u64 unary; scalar-tensor i64; reduction outputs; transpose/gather/broadcast
+  outputs) — each is a 4.4->~34 GB/s, JAX-beating, mimalloc-beating win. Bead oneqh
+  updated to reflect the corrected (complementary, keep-gate) recommendation.

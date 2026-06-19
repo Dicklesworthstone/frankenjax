@@ -351,3 +351,14 @@ Additional cod-a repeat validation environment:
   CHEAP_BINARY_PARALLEL_MIN gate.
 - Gated because: workspace allocator policy + library #[global_allocator] conflicts
   with the PeakAlloc bench. Filed as a bead. Not committed unilaterally (cf. +fma).
+
+## CobaltForge - Threaded cheap unary (JAX WIN) + mimalloc CORRECTION (2026-06-19)
+
+- Cheap unary (Neg/Abs/Sign/Square/Floor/Ceil/Reciprocal) now threaded above the 8.39M
+  gate: neg_f64 16M/64M = Rust/JAX 0.48/0.51 (2.09x/1.97x faster than jax.jit), internal
+  8.03/7.98x (4.3->34.3 GB/s). Bit-identical.
+- CORRECTION to the round-4 mimalloc note: on the real eval_primitive path (with threading
+  shipped), threading BEATS mimalloc for memory-bound ops (parallel page-faulting ~34-38
+  GB/s > mimalloc warm-span serial ~20-24). mimalloc and threading are COMPLEMENTARY, not
+  substitutes; KEEP the threading gate regardless of allocator choice. mimalloc remains a
+  modest complementary win only for large allocating ops that are hard to thread.
