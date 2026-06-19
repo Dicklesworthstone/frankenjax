@@ -39,8 +39,12 @@ fn build_chain_jaxpr(n: usize, lit: Literal) -> Jaxpr {
     )
 }
 
-fn bench_one(group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-             tag: &str, jaxpr: &Jaxpr, args: &[Value]) {
+fn bench_one(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    tag: &str,
+    jaxpr: &Jaxpr,
+    args: &[Value],
+) {
     group.bench_function(format!("eager/{tag}"), |b| {
         b.iter(|| eval_jaxpr(black_box(jaxpr), black_box(args)).unwrap())
     });
@@ -48,6 +52,13 @@ fn bench_one(group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::W
     if let Some(compiled) = compile_jaxpr_for_repeated_eval(jaxpr) {
         group.bench_function(format!("compiled/{tag}"), |b| {
             b.iter(|| compiled.eval(black_box(args)).unwrap())
+        });
+        let mut runner = compiled.runner();
+        group.bench_function(format!("compiled_runner/{tag}"), |b| {
+            b.iter(|| {
+                let out = runner.eval(black_box(args)).unwrap();
+                black_box(out);
+            })
         });
     }
 }

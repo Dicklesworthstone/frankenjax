@@ -383,18 +383,21 @@ fn scenario_corrupt_read_bypass(temp_root: &Path) -> CacheLifecycleScenario {
 }
 
 fn scenario_failed_write_stays_miss(temp_root: &Path) -> CacheLifecycleScenario {
-    let missing_dir = temp_root.join("missing-write-dir").join("child");
+    let parent_file = temp_root.join("blocked-write-parent");
+    let marker_result = fs::write(&parent_file, b"not a directory");
+    let missing_dir = parent_file.join("child");
     let key = build_cache_key(&baseline_input(CompatibilityMode::Strict))
         .expect("strict key should build");
     let mut manager = CacheManager::file_backed(missing_dir);
     manager.put(&key, b"blocked write payload".to_vec());
     let lookup = manager.get(&key);
+    let put_failure_count = manager.put_failure_count();
     scenario!(
         "failed_write_stays_miss",
-        matches!(lookup, CacheLookup::Miss),
+        marker_result.is_ok() && matches!(lookup, CacheLookup::Miss) && put_failure_count == 1,
         "strict",
         "failed file-cache write is not visible as a stale hit",
-        format!("{lookup:?}"),
+        format!("{lookup:?}; put_failures={put_failure_count}"),
         Some(key.as_string()),
         None,
         &["stale-write-blocking"],

@@ -2153,3 +2153,43 @@ ends are not rediscovered without new evidence.
   streams. Levers to try (idle host): non-temporal/streaming stores, prefetch, thread-count/affinity
   tuning (work_scaled_threads may over-spawn at 64M), or NUMA-aware chunking. Or the compiled-jaxpr
   arena (buffer reuse removes the output alloc entirely). None attempted yet.
+
+## WildForge / cod-a - CompiledJaxpr reusable runner arena (4 JAX wins, 1 JAX loss)
+
+- Bead: `frankenjax-mcqr.110`.
+- Lever: add `CompiledJaxpr::runner()` / `CompiledJaxprRunner` so repeated dense-plan eval reuses
+  the slot environment plus scratch/output/scalar buffers instead of allocating them on every call.
+  This is the compiled-jaxpr arena lever called out by the same-load correction above.
+- Rust internal evidence: RCH Criterion `fj-interpreters/compiled_dispatch_speed`; baseline command
+  and candidate command used `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a`. Baseline
+  worker was `vmi1153651`; candidate worker was `hz2`, but the keep/reject proof is same-process
+  candidate `compiled/*` vs `compiled_runner/*`:
+
+  | workload | old compiled | runner | internal verdict |
+  | --- | ---: | ---: | --- |
+  | scalar/n=8 | 142.38 ns | 34.076 ns | runner 4.18x faster |
+  | scalar/n=32 | 244.26 ns | 85.634 ns | runner 2.85x faster |
+  | scalar/n=128 | 671.69 ns | 297.46 ns | runner 2.26x faster |
+  | tensor64/n=8 | 1.9011 us | 1.7920 us | runner 1.06x faster |
+  | tensor64/n=32 | 7.1392 us | 7.0183 us | runner 1.02x faster |
+
+- JAX head-to-head: warmed `jax.jit` CPU (`jax 0.10.1`, x64) using the same scalar and 64-lane
+  tensor add chains. Rust/JAX ratio is runner time divided by JAX p50:
+
+  | workload | runner | JAX p50 | Rust/JAX | verdict |
+  | --- | ---: | ---: | ---: | --- |
+  | scalar/n=8 | 34.076 ns | 4857.883 ns | 0.0070 | Rust wins 142.6x |
+  | scalar/n=32 | 85.634 ns | 4653.0505 ns | 0.0184 | Rust wins 54.3x |
+  | scalar/n=128 | 297.46 ns | 4627.832 ns | 0.0643 | Rust wins 15.6x |
+  | tensor64/n=8 | 1.7920 us | 4.554228 us | 0.3935 | Rust wins 2.54x |
+  | tensor64/n=32 | 7.0183 us | 4.5211495 us | 1.5523 | JAX wins 1.55x |
+
+- Decision: KEEP. Internal 5/0/0 vs the old compiled eval path; vs-JAX 4/1/0. This turns the
+  scalar repeated-compiled-eval lane from allocation-bound loss into domination. The tensor64/n=32
+  loss is real negative evidence: XLA fuses the add chain while the dense interpreter still steps it.
+- Validation: `fj-interpreters` check/focused runner parity test passed via RCH; `fj-conformance`
+  passed locally after stale harness repairs; scoped clippy passed for `fj-interpreters --lib
+  --no-deps` and `fj-conformance --tests --no-deps`. Full `fj-interpreters --all-targets` clippy is
+  still blocked by pre-existing `fj-trace`/`fj-lax` lints.
+- Retry predicate: target dense elementwise-chain fusion / tensor output reuse next, specifically the
+  remaining `tensor64/n=32` JAX loss.

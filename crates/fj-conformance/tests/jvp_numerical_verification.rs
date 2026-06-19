@@ -1860,19 +1860,19 @@ fn rsqrt_jvp_numerical_complex64() {
     assert_complex64_close(actual, expected, 1e-5, "rsqrt JVP at z=3+4i");
 }
 
-/// Complex64 Cbrt JVP: d/dz cbrt(z) = 1/(3*cbrt(z)²)
+/// Complex64 Cbrt JVP: cbrt is float-only, so complex input must fail closed.
 #[test]
 fn cbrt_jvp_numerical_complex64() {
     let z = make_complex64_scalar(8.0, 0.0);
     let dz = make_complex64_scalar(1.0, 0.0);
 
     let jaxpr = make_single_op_jaxpr(Primitive::Cbrt);
-    let jvp_result = fj_ad::jvp(&jaxpr, &[z], &[dz]).unwrap();
+    let result = fj_ad::jvp(&jaxpr, &[z], &[dz]);
 
-    // cbrt(8) = 2, d/dz cbrt(z) = 1/(3*z^(2/3)) = 1/(3*4) = 1/12 ≈ 0.0833
-    let expected = (1.0 / 12.0, 0.0);
-    let actual = extract_complex64_scalar(&jvp_result.tangents[0]);
-    assert_complex64_close(actual, expected, 1e-4, "cbrt JVP at z=8");
+    assert!(
+        result.is_err(),
+        "complex cbrt JVP must fail closed (JAX cbrt is float-only); got {result:?}"
+    );
 }
 
 /// Complex64 Asinh JVP: d/dz asinh(z) = 1/sqrt(1+z²)

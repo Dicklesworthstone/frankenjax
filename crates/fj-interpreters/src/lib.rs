@@ -6855,6 +6855,60 @@ impl CompiledJaxpr {
         let mut env: Vec<Option<Value>> = vec![None; self.plan.slots];
         run_dense_plan(&self.jaxpr, &[], args, &mut env, &self.plan)
     }
+
+    #[must_use]
+    pub fn runner(&self) -> CompiledJaxprRunner<'_> {
+        CompiledJaxprRunner {
+            compiled: self,
+            env: vec![None; self.plan.slots],
+            scratch: Vec::new(),
+            out: Vec::new(),
+            scalar_buffers: ScalarPlanBuffers::default(),
+        }
+    }
+}
+
+/// Reusable arena for hot repeated evaluations of one [`CompiledJaxpr`].
+///
+/// [`CompiledJaxpr::eval`] preserves the simple owned-`Vec` API, but it must build
+/// its slot environment and scratch buffers for each call. A runner keeps those
+/// allocations warm across calls and writes each result into its retained output
+/// vector. The primitive order and dense plan are exactly the same as
+/// [`CompiledJaxpr::eval`]; only allocation ownership changes.
+pub struct CompiledJaxprRunner<'a> {
+    compiled: &'a CompiledJaxpr,
+    env: Vec<Option<Value>>,
+    scratch: Vec<Value>,
+    out: Vec<Value>,
+    scalar_buffers: ScalarPlanBuffers,
+}
+
+impl<'a> CompiledJaxprRunner<'a> {
+    pub fn eval(&mut self, args: &[Value]) -> Result<&[Value], InterpreterError> {
+        if args.len() != self.compiled.jaxpr.invars.len() {
+            return Err(InterpreterError::InputArity {
+                expected: self.compiled.jaxpr.invars.len(),
+                actual: args.len(),
+            });
+        }
+
+        run_dense_plan_into(
+            &self.compiled.jaxpr,
+            &[],
+            args,
+            &mut self.env,
+            &self.compiled.plan,
+            &mut self.scratch,
+            &mut self.out,
+            &mut self.scalar_buffers,
+        )?;
+        Ok(&self.out)
+    }
+
+    pub fn eval_owned(&mut self, args: &[Value]) -> Result<Vec<Value>, InterpreterError> {
+        self.eval(args)?;
+        Ok(self.out.clone())
+    }
 }
 
 /// Compile a pure dense Jaxpr for repeated evaluation.
@@ -16581,11 +16635,18 @@ mod tests {
         // no JAX oracle needed.
         let check = |label: &str, jaxpr: &Jaxpr, args: &[Value]| {
             let eager = eval_jaxpr(jaxpr, args).expect("eager eval");
-            let compiled = super::compile_jaxpr_for_repeated_eval(jaxpr)
-                .expect("program should compile")
-                .eval(args)
-                .expect("compiled eval");
+            let compiled_jaxpr =
+                super::compile_jaxpr_for_repeated_eval(jaxpr).expect("program should compile");
+            let compiled = compiled_jaxpr.eval(args).expect("compiled eval");
             assert_eq!(compiled, eager, "{label}: compiled jit != eager eval_jaxpr");
+            let runner = compiled_jaxpr
+                .runner()
+                .eval_owned(args)
+                .expect("compiled runner eval");
+            assert_eq!(
+                runner, eager,
+                "{label}: compiled runner != eager eval_jaxpr"
+            );
         };
 
         // i64 add chain f(x) = (x + x) + x — triggers eager's scalar_i64_add_chain fast

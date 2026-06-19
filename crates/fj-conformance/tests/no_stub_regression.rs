@@ -87,10 +87,16 @@ const SUSPICIOUS_EMPTY_SUCCESS_PATTERNS: &[&str] =
 
 const REVIEWED_EMPTY_SUCCESS_FILES: &[&str] = &[
     "crates/fj-ad/src/lib.rs",
+    // transforms.rs: parse_i64_list_param returns an empty Vec for explicitly empty
+    // comma-list parameters; that is the parsed value, not an unimplemented path.
+    "crates/fj-api/src/transforms.rs",
     "crates/fj-core/src/lib.rs",
     "crates/fj-dispatch/src/batching.rs",
     "crates/fj-interpreters/src/partial_eval.rs",
     "crates/fj-interpreters/src/staging.rs",
+    // arithmetic.rs: parse_dim_list returns an empty Vec for dot_general's empty
+    // dimension-number lists; that is a valid arity-zero dimension list.
+    "crates/fj-lax/src/arithmetic.rs",
     "crates/fj-lax/src/tensor_ops.rs",
     // threefry.rs: random_choice returns Ok(Vec::new()) for the n_draws == 0 case
     // (drawing zero samples yields an empty index vector, matching JAX) — reviewed,

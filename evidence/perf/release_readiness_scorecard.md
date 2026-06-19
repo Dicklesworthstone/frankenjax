@@ -546,3 +546,16 @@ Additional cod-a repeat validation environment:
     complex (real-plane angle fn; apply_complex_binary returns Err, matching JAX). Dropped Atan2
     from the sweep (other 7 ops covered). Verified: passes on worker.
 - Both fixes are arithmetic.rs only; no perf impact. fj-lax conformance fully restored.
+
+## WildForge / cod-a - CompiledJaxpr runner arena (2026-06-19)
+
+- Scope: `fj-interpreters` repeated dense-plan eval, bead `frankenjax-mcqr.110`.
+- Result: KEEP. Same-process Criterion shows `compiled_runner` faster than old `compiled.eval` in all
+  5 workloads: scalar chains 2.26-4.18x faster, tensor64 chains 1.02-1.06x faster.
+- JAX head-to-head (`jax.jit` CPU 0.10.1, x64): 4 wins / 1 loss / 0 neutral. Rust wins scalar/n=8
+  142.6x, scalar/n=32 54.3x, scalar/n=128 15.6x, tensor64/n=8 2.54x; JAX wins tensor64/n=32 by
+  1.55x.
+- Gate status: `fj-conformance` green via RCH on `vmi1153651`; `fj-interpreters` check + focused
+  runner parity green via RCH; scoped no-deps clippy green for changed crates. Full
+  `fj-interpreters --all-targets` clippy remains blocked by pre-existing `fj-trace`/`fj-lax` lints.
+- Next loss target: tensor dense elementwise-chain fusion/output reuse for `tensor64/n=32`.
