@@ -55,11 +55,14 @@ ends are not rediscovered without new evidence.
   - `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc-local cargo bench
     -p fj-lax --bench lax_baseline -- eval/convert_16m --warm-up-time 1
     --measurement-time 8`, before (serial: bf16 guards forced off) vs after.
-  - vs-JAX not measured cleanly: host was contended (load ~4-6) all session, the
-    same condition that made the 2026-06-19 ledger correction reframe vs-JAX
-    elementwise ratios as cross-load artifacts. This row reports the trustworthy
-    same-binary serial->threaded ratio only; it inherits the established
-    "single-input DRAM-bound calloc + parallel page-fault" win class vs JAX.
+  - vs-JAX HEAD-TO-HEAD (measured 2026-06-19 later, same-load back-to-back at load
+    ~9 as the host wound down): Rust threaded 10.31 ms ([10.25, 10.36] Criterion)
+    vs JAX `jax.jit(lambda a: a.astype(jnp.bfloat16))` 13.94 ms mean (p50 14.04,
+    CV 5.6%) over the same 16M f64 input, jax 0.10.1 CPU x64, warmed
+    block_until_ready 20 runs x 20 inner. **Rust/JAX 0.74 = Rust 1.35x FASTER.**
+    Confirms the win class: the 8-byte source read is BW/page-fault-bound and
+    Rust's parallel page-fault beats XLA's CPU astype. (Earlier this session the
+    contended host blocked this row; the same-load back-to-back is now trustworthy.)
 - Conformance guard: `cargo test -p fj-lax --release --lib convert` plus the full
   `--lib` suite (see below) pass for all convert paths; bit-identity covered by
   `convert_element_type_dense_matches_generic_all_targets`.
