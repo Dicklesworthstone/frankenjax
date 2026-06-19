@@ -46,12 +46,19 @@ Additional current clamp gauntlet environment:
 | frankenjax-bjqfr | `fusion_bf16_broadcast_1m` | 10.776 ms | 146.9 us mean | 73.357 | Rust 73.36x slower (reverted) |
 | frankenjax-f62hx | `transpose_attn_BSHD_f32` (block-copy) | 791.5 us | 186.7 us mean | 4.239 | Rust 4.24x slower (10.3x vs naive) |
 | frankenjax-thnjs | `broadcast_bias_D768_to_4096x768_f32` (block-copy) | 283.75 us | 178.9 us mean | 1.586 | Rust 1.59x slower (21.8x vs naive) |
+| frankenjax-hfq7o | `integer_pow2_f64_1m` (v*v fix) | 405.45 us | 184.1 us mean | 2.202 | Rust 2.20x slower (was 12.9x) |
+| frankenjax-hfq7o | `integer_pow2_f32_1m` (v*v fix) | 169.61 us | 121.1 us mean | 1.400 | Rust 1.40x slower (was 21.8x) |
 
 ## Readiness
 
-- JAX domination score for this measured set: 25/100.
-- Basis: 3 of 14 measured realistic workloads beat warmed original JAX CPU
-  (broadcast block-copy at 1.59x is the nearest-miss).
+- JAX domination score for this measured set: 27/100.
+- Basis: 3 of 16 measured realistic workloads beat warmed original JAX CPU;
+  the nearest-misses are now a tight cluster: integer_pow2 f32 1.40x, broadcast
+  1.59x, integer_pow2 f64 2.20x — all bandwidth/store-bound, ~1.4-2.2x off JAX.
+- BEST gauntlet result: the integer_pow x**2 fix (hfq7o) — measurement caught a
+  runtime-`powi(2)` LIBCALL (~6.75 GB/s); replacing it with `v*v` (bit-identical)
+  gave 5.8x (f64) / 15.6x (f32) and closed the JAX gap from 12.9-21.8x to
+  1.4-2.2x. Pattern: any op taking a runtime small-int power must not call powi.
 - Contiguous-block memcpy cluster (f62hx/thnjs + siblings) is the BEST-performing
   lever family measured this conversation: genuine algorithmic wins (transpose
   10.3x, broadcast 21.8x vs the per-element odometer) with a JAX gap of only

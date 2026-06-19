@@ -475,3 +475,33 @@ ends are not rediscovered without new evidence.
   siblings (slice/gather/dynamic_slice/rev) on the same transform + bit-identity tests.
 - Retry predicate: broadcast's residual 1.6x to JAX is store throughput — would
   need SIMD/streaming-store output (non-temporal writes), not more block-copy.
+
+## frankenjax-hfq7o - Dense integer_pow x**2 (MEASURED FIX: powi libcall -> v*v)
+
+- Lever: dense integer_pow path (de-box) for the ubiquitous x**2 (variance/MSE/poly).
+- Workload: integer_pow[2] on 1M f64 and 1M f32 (integer_pow_gauntlet.rs + .py).
+- FINDING (gauntlet measurement caught a latent inefficiency): the original dense
+  path used `v.powi(exponent)` with `exponent` a RUNTIME i32, so LLVM could not
+  fold powi(2) to a mul -> a per-element powi LIBCALL, ~6.75 GB/s (10x below memory
+  bandwidth). FIXED to special-case exponent==2 -> `v*v` (f64) /
+  `(f64::from(v)*f64::from(v)) as f32`, bit-exactly equal to powi(2).
+- Conformance GUARD: GREEN. `cargo test -p fj-lax --lib integer_pow` 10/0; bench
+  asserts dense==boxed at 3 indices.
+- Measured evidence (2026-06-19, rch Criterion sample 30; JAX jax.jit CPU x64):
+
+  | Workload | dense BEFORE (powi) | dense AFTER (v*v) | fix speedup | JAX | Rust/JAX before -> after |
+  | --- | ---: | ---: | ---: | ---: | --- |
+  | integer_pow2_f64_1m | 2.3675 ms | 405.45 us | 5.84x | 184.1 us | 12.86x -> 2.20x slower |
+  | integer_pow2_f32_1m | 2.6444 ms | 169.61 us | 15.59x | 121.1 us | 21.83x -> 1.40x slower |
+
+  (Internal vs boxed Vec<Literal> path: f64 25.6ms/f32 27.5ms boxed -> 40-160x
+  faster dense; but the headline is the powi->v*v fix that made x**2 bandwidth-bound.)
+- Decision: KEEP + FIXED. The fix is the single biggest measured improvement of
+  the gauntlet: it closed the JAX gap from 12.9-21.8x to 1.4-2.2x (f32 near-parity)
+  by removing the runtime-powi libcall. x**2 is now bandwidth-bound (~40-47 GB/s,
+  vs JAX ~66-87 GB/s store); the residual 1.4-2.2x is store throughput (same gap as
+  the broadcast block-copy lever).
+- Retry predicate: the remaining 1.4-2.2x is memory-store vectorization (SIMD/
+  streaming stores) — the SAME residual as broadcast; NOT an algorithm issue. Apply
+  the same powi-runtime-arg lesson to any other op taking a runtime small-integer
+  power (none found in the hot path; integer_pow[3+] is rarer + needs powi grouping).
