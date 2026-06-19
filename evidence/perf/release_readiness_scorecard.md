@@ -436,3 +436,11 @@ Additional cod-a repeat validation environment:
   ops match/beat JAX across f64/f32/i64/bf16/f16 (fill/copy/reduce patterns). Remaining JAX losses
   are only the off-limits float non-associative reductions (sum/prod/cumsum) and the L3-resident
   regime — both need the multi-session compiled-jaxpr work, not threading.
+
+## CobaltForge - Threaded select/where (f64/f32 masking): JAX WIN (2026-06-19)
+
+- select/where dense f64/f32 fast paths threaded (both dense-Bool and bit-packed-BoolWords cond)
+  via new reusable threaded_index_fill_into: 16M/64M = Rust/JAX 0.46/0.57 (2.16/1.75x faster than
+  jax.jit where), internal 6.17-7.02x (1.9 -> 11.9-12.8 GB/s). Bit-identical (NaN/±0/±inf, both
+  cond backings), guarded. Masking is ubiquitous (attention/dropout/clip). i64/bf16 arms + select_n
+  are mechanical follow-ons.

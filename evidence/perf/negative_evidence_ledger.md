@@ -1827,3 +1827,27 @@ ends are not rediscovered without new evidence.
   documented off-limits/architectural ones: ReduceSum/ReduceProd & cumsum (float non-associative,
   bit-exact-pinned -> need XLA-order matching) and the L3-resident regime (needs compiled-jaxpr
   arena buffer reuse). Both are multi-session swings, NOT threading.
+
+## CobaltForge - Threaded f64/f32 select/where (masking) for DRAM-bound (JAX WIN)
+
+- Lever: `select`/`jnp.where` (masking — attention, dropout, clipping) ran its dense f64/f32 fast
+  paths serially (~1.8-1.9 GB/s, worse than the binop cliff: it reads cond + 2 branches + writes
+  output). New reusable `threaded_index_fill_into<T>(out, threads, pick)` fills a calloc'd output by
+  index across scoped threads; wired into both cond backings (dense Bool slice AND bit-packed
+  BoolWords from a comparison mask) of the f64 and f32 select fast paths, above
+  CHEAP_BINARY_PARALLEL_MIN. Bit-identical (per-index pick, lane-independent).
+- Guarded by `threaded_select_bit_identical_to_serial` (both cond backings, f64+f32, NaN/±0/±inf
+  branches), bit-for-bit vs a serial reference.
+- Conformance: `fj-lax --lib` 1509 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, with checksum, best-of-15) + JAX
+  (`jax.jit(jnp.where)` x64, /tmp/jax_sel.py):
+
+  | n | serial (before) | threaded (after) | internal | JAX | Rust/JAX |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 16M | 66376 us (1.9 GB/s) | 10753 us (11.9 GB/s) | 6.17x | 23242 us (5.5 GB/s) | 0.46x (2.16x FASTER) |
+  | 64M | 280863 us (1.8 GB/s) | 40010 us (12.8 GB/s) | 7.02x | 70142 us (7.3 GB/s) | 0.57x (1.75x FASTER) |
+
+- Decision: KEEP. select/where masking is ubiquitous; before, Rust LOST to JAX by ~2.9-4x; after,
+  DOMINATES by 1.75-2.16x. (Lower GB/s than 2-input ops — 3 inputs + 1 output of traffic — but
+  still beats JAX.) `threaded_index_fill_into` is now a reusable per-index parallel fill primitive.
+- Retry predicate: extend the same to i64/bf16/u32 select arms + select_n (multi-way). Mechanical.

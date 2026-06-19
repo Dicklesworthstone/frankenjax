@@ -6700,6 +6700,36 @@ pub(crate) fn eval_unary_int_or_float(
 /// `Ok(None)` if any condition element is not `Bool` or any operand element is
 /// not `F64Bits`, so the caller falls through to the generic path.
 #[inline]
+/// Fill a PRE-ALLOCATED `out` (caller allocates `vec![<concrete zero>; n]` = calloc'd
+/// zero pages) by writing `pick(i)` into each element across scoped-thread chunks.
+/// Parallel-faults the fresh output and parallelizes the per-index work. Lane-independent
+/// => bit-for-bit identical to the serial `(0..n).map(pick).collect()`.
+fn threaded_index_fill_into<T: Copy + Send + Sync>(
+    out: &mut [T],
+    threads: usize,
+    pick: impl Fn(usize) -> T + Sync,
+) {
+    let n = out.len();
+    let chunk = n.div_ceil(threads);
+    let pick = &pick;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [T] = out;
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(rest.len());
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                for (i, o) in blk.iter_mut().enumerate() {
+                    *o = pick(s + i);
+                }
+            });
+            start += len;
+        }
+    });
+}
+
 fn select_f64_same_shape_fast_path(
     cond: &TensorValue,
     on_true: &TensorValue,
@@ -6718,6 +6748,17 @@ fn select_f64_same_shape_fast_path(
         on_false.elements.as_f64_slice(),
     ) {
         if let Some(conds) = cond.elements.as_bool_slice() {
+            let n = conds.len();
+            if n >= CHEAP_BINARY_PARALLEL_MIN && work_scaled_threads(n) > 1 {
+                let mut out = vec![0.0f64; n];
+                threaded_index_fill_into(&mut out, work_scaled_threads(n), |i| {
+                    if conds[i] { t[i] } else { f[i] }
+                });
+                return Ok(Some(Value::Tensor(TensorValue::new_f64_values(
+                    cond.shape.clone(),
+                    out,
+                )?)));
+            }
             let out: Vec<f64> = conds
                 .iter()
                 .zip(t)
@@ -6737,6 +6778,20 @@ fn select_f64_same_shape_fast_path(
         // materialize_bool_words yields, so the selected value matches the
         // per-Literal path below.
         if let Some((words, len)) = cond.elements.as_bool_words() {
+            if len >= CHEAP_BINARY_PARALLEL_MIN && work_scaled_threads(len) > 1 {
+                let mut out = vec![0.0f64; len];
+                threaded_index_fill_into(&mut out, work_scaled_threads(len), |i| {
+                    if (words[i / 64] >> (i % 64)) & 1 != 0 {
+                        t[i]
+                    } else {
+                        f[i]
+                    }
+                });
+                return Ok(Some(Value::Tensor(TensorValue::new_f64_values(
+                    cond.shape.clone(),
+                    out,
+                )?)));
+            }
             let out: Vec<f64> = (0..len)
                 .map(|i| {
                     if (words[i / 64] >> (i % 64)) & 1 != 0 {
@@ -6880,6 +6935,17 @@ fn select_f32_same_shape_fast_path(
         return Ok(None);
     };
     if let Some(conds) = cond.elements.as_bool_slice() {
+        let n = conds.len();
+        if n >= CHEAP_BINARY_PARALLEL_MIN && work_scaled_threads(n) > 1 {
+            let mut out = vec![0.0f32; n];
+            threaded_index_fill_into(&mut out, work_scaled_threads(n), |i| {
+                if conds[i] { t[i] } else { f[i] }
+            });
+            return Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+                cond.shape.clone(),
+                out,
+            )?)));
+        }
         let out: Vec<f32> = conds
             .iter()
             .zip(t)
@@ -6894,6 +6960,20 @@ fn select_f32_same_shape_fast_path(
     // Bit-packed BoolWords predicate: bit-test directly (no Vec<Literal> mask
     // materialization). Bit-identical to the per-Literal path below.
     if let Some((words, len)) = cond.elements.as_bool_words() {
+        if len >= CHEAP_BINARY_PARALLEL_MIN && work_scaled_threads(len) > 1 {
+            let mut out = vec![0.0f32; len];
+            threaded_index_fill_into(&mut out, work_scaled_threads(len), |i| {
+                if (words[i / 64] >> (i % 64)) & 1 != 0 {
+                    t[i]
+                } else {
+                    f[i]
+                }
+            });
+            return Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+                cond.shape.clone(),
+                out,
+            )?)));
+        }
         let out: Vec<f32> = (0..len)
             .map(|i| {
                 if (words[i / 64] >> (i % 64)) & 1 != 0 {
@@ -20334,6 +20414,99 @@ mod tests {
         )
         .unwrap();
         assert!((extract_f64(&result) - 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn threaded_select_bit_identical_to_serial() {
+        // select/where at >= gate engages the threaded fill; compare bit-for-bit to a
+        // serial reference for BOTH cond backings (dense Bool + bit-packed BoolWords from
+        // a comparison) and f64/f32, with NaN/±0/±inf in the branches.
+        let n = CHEAP_BINARY_PARALLEL_MIN + 321;
+        let mut t: Vec<f64> = (0..n).map(|i| (i % 977) as f64 * 0.5 - 100.0).collect();
+        let mut f: Vec<f64> = (0..n).map(|i| (i % 853) as f64 * -0.3 + 50.0).collect();
+        for (k, &s) in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -0.0]
+            .iter()
+            .enumerate()
+        {
+            t[k] = s;
+            f[n - 1 - k] = s;
+        }
+        let shape = Shape {
+            dims: vec![n as u32],
+        };
+        let tt = TensorValue::new_f64_values(shape.clone(), t.clone()).unwrap();
+        let ff = TensorValue::new_f64_values(shape.clone(), f.clone()).unwrap();
+        let ttf = TensorValue::new_f32_values(shape.clone(), t.iter().map(|&x| x as f32).collect())
+            .unwrap();
+        let fff = TensorValue::new_f32_values(shape.clone(), f.iter().map(|&x| x as f32).collect())
+            .unwrap();
+
+        // dense-Bool cond
+        let flags: Vec<bool> = (0..n).map(|i| i % 3 == 0).collect();
+        let cond_dense =
+            Value::Tensor(TensorValue::new_bool_values(shape.clone(), flags.clone()).unwrap());
+        // bit-packed BoolWords cond from a comparison (a < b)
+        let a = Value::Tensor(
+            TensorValue::new_f64_values(shape.clone(), (0..n).map(|i| (i % 7) as f64).collect())
+                .unwrap(),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_f64_values(shape.clone(), (0..n).map(|i| (i % 5) as f64).collect())
+                .unwrap(),
+        );
+        let cond_words = crate::eval_primitive(Primitive::Lt, &[a, b], &BTreeMap::new()).unwrap();
+        let words_flags: Vec<bool> = cond_words
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| matches!(l, Literal::Bool(true)))
+            .collect();
+
+        for (cond, cflags) in [(cond_dense, &flags), (cond_words, &words_flags)] {
+            // f64
+            let got = eval_select(
+                Primitive::Select,
+                &[
+                    cond.clone(),
+                    Value::Tensor(tt.clone()),
+                    Value::Tensor(ff.clone()),
+                ],
+            )
+            .unwrap();
+            let gb: Vec<u64> = got
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .unwrap()
+                .iter()
+                .map(|x| x.to_bits())
+                .collect();
+            let wb: Vec<u64> = (0..n)
+                .map(|i| if cflags[i] { t[i] } else { f[i] }.to_bits())
+                .collect();
+            assert!(gb == wb, "threaded f64 select != serial");
+            // f32
+            let gotf = eval_select(
+                Primitive::Select,
+                &[cond, Value::Tensor(ttf.clone()), Value::Tensor(fff.clone())],
+            )
+            .unwrap();
+            let gfb: Vec<u32> = gotf
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f32_slice()
+                .unwrap()
+                .iter()
+                .map(|x| x.to_bits())
+                .collect();
+            let wfb: Vec<u32> = (0..n)
+                .map(|i| if cflags[i] { t[i] as f32 } else { f[i] as f32 }.to_bits())
+                .collect();
+            assert!(gfb == wfb, "threaded f32 select != serial");
+        }
     }
 
     #[test]
