@@ -189,6 +189,50 @@ ends are not rediscovered without new evidence.
   peer-owned fj-core dense-storage lanes without fresh same-worker benchmark
   evidence and ownership check.
 
+## frankenjax-mcqr.96/.98 - Dense U32/I64 Same-Width and Width-Changing Bitcasts
+
+- Date: 2026-06-19
+- Agent: cod-a / WildForge
+- Lever: verify the committed dense `BitcastConvertType` fast paths for
+  F32->U32, F64->I64, F64->U32, and U32->F64 against both the Rust boxed
+  literal reference path and original JAX CPU.
+- Status: measured mixed keep. One same-width row is a noisy external Rust win;
+  the remaining three rows are negative head-to-head results versus original
+  JAX. All four rows stay as internal keeps because they beat the boxed Rust
+  reference by 43.99-201.42x. No revert.
+- Evidence artifact:
+  `artifacts/performance/evidence/frankenjax_mcqr_96_98_bitcast_gauntlet_2026-06-19.json`.
+- Benchmark guard: `crates/fj-lax/benches/lax_baseline.rs`, 1,048,576 element
+  bitcast rows, Criterion sample size 20, warmed original-JAX CPU timing with
+  50 runs x 500 inner loops.
+- Measured evidence (2026-06-19, same-host CPU):
+  - Rust check: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo check -p fj-lax --bench lax_baseline`.
+  - Rust bench: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo bench -p fj-lax --bench lax_baseline -- 'eval/bitcast_(f32_u32|f64_i64|f64_u32|u32_f64)' --sample-size 20 --warm-up-time 1 --measurement-time 3 --save-baseline frankenjax-mcqr-96-98-bitcast`.
+  - JAX command: `benchmarks/jax_comparison/.venv/bin/python benchmarks/jax_comparison/bitcast_gauntlet.py --runs 50 --warmup 10 --inner-loops 500 --output /tmp/frankenjax_mcqr_96_98_bitcast_jax_raw_rerun.json`.
+  - JAX/JAXLIB: 0.10.1, CPU backend.
+
+| Workload | Rust dense mean | Rust literal mean | Dense/literal | JAX mean | Rust/JAX | Outcome |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `bitcast_f32_u32_1m` | 97.423 us | 19.623 ms | 201.42x faster | 113.430 us | 0.859 | Noisy JAX win; keep |
+| `bitcast_f64_i64_1m` | 270.586 us | 22.260 ms | 82.27x faster | 183.715 us | 1.473 | Keep internal win; JAX loss |
+| `bitcast_f64_u32_1m` | 1.272 ms | 60.757 ms | 47.76x faster | 186.831 us | 6.809 | Keep internal win; JAX loss |
+| `bitcast_u32_f64_1m` | 919.708 us | 40.456 ms | 43.99x faster | 189.478 us | 4.854 | Keep internal win; JAX loss |
+
+- CV notes: JAX CV ranged from 12.08% to 19.80%, so the F32->U32 Rust/JAX win
+  is directional rather than certification-grade. The three JAX losses are wide
+  enough to route follow-up even with the noisy oracle run.
+- Conformance guard: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo test -p fj-lax bitcast --lib`
+  passed 4 tests, 0 failed, 0 ignored, 1676 filtered out.
+- Decision: keep, not revert. The original code-first optimization is real
+  relative to the boxed Rust path, but only the F32->U32 row beat original JAX
+  and that result is noisy. Do not claim release-grade JAX domination for this
+  cluster.
+- Retry predicate: do not retry boxed-literal elision for F32->U32, F64->I64,
+  F64->U32, or U32->F64 bitcasts. Same-width follow-up must target raw output
+  buffer construction, store throughput, or JAX-like compiled buffer reuse.
+  Width-changing follow-up must target packed chunk layout and widening/narrowing
+  construction directly, not another dense-storage sibling.
+
 ## frankenjax-mcqr.103-.104 - Dense I64 Clamp Tensor and Mixed Bounds
 
 - Date: 2026-06-19

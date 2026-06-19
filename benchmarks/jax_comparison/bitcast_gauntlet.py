@@ -74,8 +74,19 @@ def workloads():
     f64 = f64_payload()
     i32 = jax.lax.bitcast_convert_type(f32, jnp.int32)
     u64 = jax.lax.bitcast_convert_type(f64, jnp.uint64)
+    u32_chunks = jax.lax.bitcast_convert_type(f64, jnp.uint32)
     bf16_chunks = jax.lax.bitcast_convert_type(f32, jnp.bfloat16)
     return [
+        (
+            "bitcast_f32_u32_1m",
+            lambda x: jax.lax.bitcast_convert_type(x, jnp.uint32),
+            f32,
+        ),
+        (
+            "bitcast_f64_i64_1m",
+            lambda x: jax.lax.bitcast_convert_type(x, jnp.int64),
+            f64,
+        ),
         (
             "bitcast_f32_i32_1m",
             lambda x: jax.lax.bitcast_convert_type(x, jnp.int32),
@@ -95,6 +106,16 @@ def workloads():
             "bitcast_u64_f64_1m",
             lambda x: jax.lax.bitcast_convert_type(x, jnp.float64),
             u64,
+        ),
+        (
+            "bitcast_f64_u32_1m",
+            lambda x: jax.lax.bitcast_convert_type(x, jnp.uint32),
+            f64,
+        ),
+        (
+            "bitcast_u32_f64_1m",
+            lambda x: jax.lax.bitcast_convert_type(x, jnp.float64),
+            u32_chunks,
         ),
         (
             "bitcast_f32_bf16_1m",

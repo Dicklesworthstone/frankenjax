@@ -1,0 +1,148 @@
+{
+  "artifact": "frankenjax_mcqr_96_98_bitcast_gauntlet_2026-06-19",
+  "date": "2026-06-19",
+  "agent": {
+    "assignee": "cod-a",
+    "mail_identity": "WildForge"
+  },
+  "repository": {
+    "path": "/data/projects/frankenjax",
+    "git_head": "19d1685b0dc2c1d2bb171aaecd89a018bf47d913"
+  },
+  "beads": [
+    "frankenjax-mcqr.96",
+    "frankenjax-mcqr.98"
+  ],
+  "scope": "VERIFY/GAUNTLET head-to-head for dense BitcastConvertType F32->U32, F64->I64, F64->U32, and U32->F64 fast paths versus original JAX CPU.",
+  "environment": {
+    "host": "thinkstation1",
+    "cpu": "AMD Ryzen Threadripper PRO 5975WX 32-Cores",
+    "rustc": "rustc 1.98.0-nightly (f20a92ec0 2026-06-07)",
+    "cargo_target_dir": "/data/projects/.rch-targets/frankenjax-cod-a",
+    "jax": {
+      "python": "3.13.7",
+      "jax_version": "0.10.1",
+      "jaxlib_version": "0.10.1",
+      "backend": "cpu",
+      "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.39"
+    }
+  },
+  "commands": {
+    "python_compile": "benchmarks/jax_comparison/.venv/bin/python -m py_compile benchmarks/jax_comparison/bitcast_gauntlet.py",
+    "jax_smoke": "benchmarks/jax_comparison/.venv/bin/python benchmarks/jax_comparison/bitcast_gauntlet.py --runs 1 --warmup 0 --inner-loops 1 --output /tmp/frankenjax_bitcast_96_98_jax_smoke.json",
+    "rust_check": "CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo check -p fj-lax --bench lax_baseline",
+    "rust_bench": "CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo bench -p fj-lax --bench lax_baseline -- 'eval/bitcast_(f32_u32|f64_i64|f64_u32|u32_f64)' --sample-size 20 --warm-up-time 1 --measurement-time 3 --save-baseline frankenjax-mcqr-96-98-bitcast",
+    "jax_bench": "benchmarks/jax_comparison/.venv/bin/python benchmarks/jax_comparison/bitcast_gauntlet.py --runs 50 --warmup 10 --inner-loops 500 --output /tmp/frankenjax_mcqr_96_98_bitcast_jax_raw_rerun.json",
+    "conformance": "CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo test -p fj-lax bitcast --lib"
+  },
+  "results": [
+    {
+      "bead": "frankenjax-mcqr.96",
+      "workload": "bitcast_f32_u32_1m",
+      "rust_dense_mean_ns": 97423.01869549902,
+      "rust_dense_ci_ns": [
+        94679.67064447972,
+        100190.8731608308
+      ],
+      "rust_literal_ref_mean_ns": 19623167.19400332,
+      "rust_literal_ref_ci_ns": [
+        18863616.260237727,
+        20398127.189960323
+      ],
+      "jax_mean_ns": 113430.07784,
+      "jax_p50_ns": 117781.812,
+      "jax_p95_ns": 144995.2002,
+      "jax_p99_ns": 154983.1262,
+      "jax_cv_percent": 19.801083502245678,
+      "dense_vs_literal_speedup": 201.422287,
+      "rust_to_jax_ratio": 0.858882,
+      "rust_vs_jax_speedup": 1.164305,
+      "outcome": "noisy_external_win_keep",
+      "decision": "Keep. The Rust dense path is 201.42x faster than the boxed reference and directionally 1.16x faster than original JAX, but the JAX CV is high enough that this is not a certification-grade win."
+    },
+    {
+      "bead": "frankenjax-mcqr.96",
+      "workload": "bitcast_f64_i64_1m",
+      "rust_dense_mean_ns": 270586.1836811785,
+      "rust_dense_ci_ns": [
+        253599.05059492652,
+        289080.1433205806
+      ],
+      "rust_literal_ref_mean_ns": 22260364.20739912,
+      "rust_literal_ref_ci_ns": [
+        21435525.893200576,
+        23096840.05425196
+      ],
+      "jax_mean_ns": 183715.36452,
+      "jax_p50_ns": 193820.77399999998,
+      "jax_p95_ns": 213559.9768,
+      "jax_p99_ns": 219089.31428,
+      "jax_cv_percent": 15.304851569957886,
+      "dense_vs_literal_speedup": 82.267187,
+      "rust_to_jax_ratio": 1.472855,
+      "rust_vs_jax_speedup": 0.678953,
+      "outcome": "external_jax_loss_keep_internal",
+      "decision": "Keep. The Rust dense path is 82.27x faster than the boxed reference but 1.47x slower than original JAX."
+    },
+    {
+      "bead": "frankenjax-mcqr.98",
+      "workload": "bitcast_f64_u32_1m",
+      "rust_dense_mean_ns": 1272106.117986999,
+      "rust_dense_ci_ns": [
+        1235147.9006695102,
+        1312103.4237567093
+      ],
+      "rust_literal_ref_mean_ns": 60756760.36666666,
+      "rust_literal_ref_ci_ns": [
+        59639538.79999999,
+        61912746.28958333
+      ],
+      "jax_mean_ns": 186830.55972,
+      "jax_p50_ns": 191888.862,
+      "jax_p95_ns": 214768.403,
+      "jax_p99_ns": 259386.26311999984,
+      "jax_cv_percent": 16.458735889901583,
+      "dense_vs_literal_speedup": 47.760764,
+      "rust_to_jax_ratio": 6.808876,
+      "rust_vs_jax_speedup": 0.146867,
+      "outcome": "external_jax_loss_keep_internal",
+      "decision": "Keep. The Rust dense path is 47.76x faster than the boxed reference but 6.81x slower than original JAX; the next attempt must target raw packed chunk construction or output layout."
+    },
+    {
+      "bead": "frankenjax-mcqr.98",
+      "workload": "bitcast_u32_f64_1m",
+      "rust_dense_mean_ns": 919708.3597987167,
+      "rust_dense_ci_ns": [
+        816854.3676880514,
+        1055678.3742563352
+      ],
+      "rust_literal_ref_mean_ns": 40455997.35,
+      "rust_literal_ref_ci_ns": [
+        38134156.8021875,
+        43377770.3415625
+      ],
+      "jax_mean_ns": 189478.00308,
+      "jax_p50_ns": 190458.654,
+      "jax_p95_ns": 221667.6363,
+      "jax_p99_ns": 226460.6542,
+      "jax_cv_percent": 12.080634767524852,
+      "dense_vs_literal_speedup": 43.987854,
+      "rust_to_jax_ratio": 4.853906,
+      "rust_vs_jax_speedup": 0.20602,
+      "outcome": "external_jax_loss_keep_internal",
+      "decision": "Keep. The Rust dense path is 43.99x faster than the boxed reference but 4.85x slower than original JAX; the next attempt must target widening layout and buffer construction, not another boxed-literal-elision sibling."
+    }
+  ],
+  "conformance": {
+    "command": "CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo test -p fj-lax bitcast --lib",
+    "result": "pass",
+    "tests_passed": 4,
+    "tests_failed": 0,
+    "tests_ignored": 0,
+    "tests_filtered_out": 1676
+  },
+  "decision": {
+    "keep_or_revert": "keep",
+    "reason": "All four measured dense paths beat the original Rust boxed/literal reference by 43.99x to 201.42x. Versus original JAX, one same-width row is a noisy directional Rust win and three rows are JAX wins, so the release ledger records mixed/negative external evidence and routes follow-up away from boxed-literal elision."
+  }
+}

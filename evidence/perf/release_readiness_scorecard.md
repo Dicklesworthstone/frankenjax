@@ -18,7 +18,7 @@ unmeasured `code-first batch-test pending` entries remain outside the score.
 - JAX timing protocol: warmed `block_until_ready()` execution, 12 batches x 20
   iterations per workload
 
-Additional current clamp gauntlet environment:
+Additional current clamp and bitcast gauntlet environment:
 
 - Agent: cod-a / WildForge
 - Cargo target dir: `/data/projects/.rch-targets/frankenjax-cod-a`
@@ -28,7 +28,8 @@ Additional current clamp gauntlet environment:
 - JAX oracle: `benchmarks/jax_comparison/.venv/bin/python`
 - JAX/JAXLIB: 0.10.1 / 0.10.1, `jax_enable_x64=true`, CPU backend
 - JAX timing protocol: warmed `block_until_ready()` execution, 50 runs x 100
-  inner loops per clamp workload; 30 runs x 50 inner loops per bitcast workload
+  inner loops per clamp workload; current `.96/.98` bitcast rows use 50 runs x
+  500 inner loops
 
 Additional current scalar broadcast environment:
 
@@ -79,6 +80,10 @@ Additional current fj-core stack environment:
 | frankenjax-mcqr.101 | `bitcast_u64_f64_1m` | 228.320 us mean | 175.404 us mean | 1.302 | Rust 1.30x slower (89.89x vs literal ref) |
 | frankenjax-mcqr.100 | `bitcast_f32_bf16_1m` | 2.710 ms mean | 138.058 us mean | 19.630 | Rust 19.63x slower (21.29x vs literal ref) |
 | frankenjax-mcqr.100 | `bitcast_bf16_f32_1m` | 669.626 us mean | 139.426 us mean | 4.803 | Rust 4.80x slower (47.11x vs literal ref) |
+| frankenjax-mcqr.96 | `bitcast_f32_u32_1m` | 97.423 us mean | 113.430 us mean | 0.859 | Rust 1.16x faster, noisy CV (201.42x vs literal ref) |
+| frankenjax-mcqr.96 | `bitcast_f64_i64_1m` | 270.586 us mean | 183.715 us mean | 1.473 | Rust 1.47x slower (82.27x vs literal ref) |
+| frankenjax-mcqr.98 | `bitcast_f64_u32_1m` | 1.272 ms mean | 186.831 us mean | 6.809 | Rust 6.81x slower (47.76x vs literal ref) |
+| frankenjax-mcqr.98 | `bitcast_u32_f64_1m` | 919.708 us mean | 189.478 us mean | 4.854 | Rust 4.85x slower (43.99x vs literal ref) |
 | frankenjax-e07uw | `fusion_arith8_f64_1m` (jit chain) | 3.320 ms fused | 272.7 us mean | 12.175 | Rust 12.18x slower |
 | frankenjax-bjqfr | `fusion_bf16_broadcast_1m` | 10.776 ms | 146.9 us mean | 73.357 | Rust 73.36x slower (reverted) |
 | frankenjax-f62hx | `transpose_attn_BSHD_f32` (block-copy) | 791.5 us | 186.7 us mean | 4.239 | Rust 4.24x slower (10.3x vs naive) |
@@ -104,7 +109,8 @@ Additional current fj-core stack environment:
 - JAX domination score (same-host corrected/measured estimate): ~38/100 — stack
   axis0 (0.083x), slice (corrected ~0.72x), and integer_pow2 f32 (corrected
   ~0.97x) beat or tie JAX same-host, with broadcast/complex_ctor within ~10%.
-  The six bitcast rows add internal wins but no external JAX wins.
+  The 10 bitcast rows add internal wins, one noisy external JAX win, and nine
+  external JAX losses.
 - The fj-core `stack_axis0` tensor concat-storage row is the strongest external
   Rust/JAX win in this scorecard (12.09x faster), but the actual lever is only a
   narrow 1.04x internal improvement over the literal-backed control. KEEP it for
@@ -155,10 +161,12 @@ Additional current fj-core stack environment:
   on all nine measured clamp workloads. The I64 rows lose by 3.10-3.64x versus
   JAX despite 23.59-42.12x internal wins over the boxed Rust reference; the
   worst gap remains half-precision tensor clamp.
-- Dense bitcast verification is a Rust-internal keep but an external JAX loss
-  on all six measured bitcast workloads. The f64/u64 same-width rows are
-  near the known memory-bandwidth residual (1.30-1.53x slower), while the BF16
-  width-changing row is not release-ready at 4.80-19.63x slower.
+- Dense bitcast verification is a Rust-internal keep with mixed external JAX
+  evidence across 10 measured bitcast workloads. The F32->U32 row is a noisy
+  same-host Rust win at Rust/JAX 0.859, but F64->I64 loses 1.47x and the
+  width-changing F64->U32/U32->F64 rows lose 4.85-6.81x. The f64/u64 same-width
+  rows remain near the known memory-bandwidth residual (1.30-1.53x slower),
+  while BF16 width-changing remains not release-ready at 4.80-19.63x slower.
 - eval_jaxpr (interpreter) is ~12-72x slower than jax.jit on elementwise
   chains; the interpreter-vs-compiler gap is the dominant release blocker for
   jit'd workloads.
@@ -176,7 +184,9 @@ Additional current fj-core stack environment:
   widen/round overhead with a raw-bit proof harness; F32/F64 and I64 clamp must
   target SIMD/parallel throughput, output allocation/fusion, or compiled-buffer
   reuse rather than another boxed-literal-elision retry.
-- Next bitcast gate: same-width f64/u64 should share the elementwise/store
-  throughput plan; half-width F32/BF16 needs a raw packed chunk builder that
-  avoids the current shape-changing construction overhead. Do not retry the
+- Next bitcast gate: same-width f32/u32 has only a noisy external win, and
+  f64/i64/u64 stays near the memory/store gap; both should share the
+  elementwise/store throughput plan. Width-changing F64/U32, U32/F64, and
+  half-width F32/BF16 need raw packed chunk builders plus output-layout work
+  that avoid the current shape-changing construction overhead. Do not retry the
   boxed-literal-elision bitcast family without fresh profiler evidence.
