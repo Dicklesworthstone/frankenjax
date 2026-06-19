@@ -3,6 +3,37 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-cc-threaded-integer-full-reduce - Threaded INTEGER full-reduce: JAX WIN (1.32x), bit-exact
+
+- Date: 2026-06-19
+- Agent: cc / CobaltForge
+- Lever: thread the dense INTEGER full-reduce (all-axes -> scalar) in `eval_reduce`.
+  Integer reduce ops (sum/prod/and/or/xor/max/min) are ASSOCIATIVE / order-invariant
+  and `int_init` is each op's identity, so a chunked partial-fold combined with
+  `int_op` is **BIT-IDENTICAL** to the sequential fold (mod 2^64 / mod 2^32 is a +,*
+  homomorphism; max/min order-free). A full reduce is a pure sequential read
+  (BW-bound): one core cannot saturate multi-channel DRAM, so split the read across
+  ~8 cores. **This is the float-reduce lever WITHOUT the float blocker** — integers
+  reassociate bit-exactly, so NO tolerance, NO golden churn, NO maintainer call.
+- Status: SHIPPED (measured, same-load at load ~3-5):
+  - frankenjax 16M i64 reduce_sum: serial 7.44 ms -> threaded (8-thread cap) **4.35 ms**
+    = 1.71x internal (17.2 -> 29.4 GB/s).
+  - vs JAX `jnp.sum` (int64, 16M) = 5.73 ms (mean, CV 10%): serial was Rust/JAX 1.30 =
+    JAX 1.28x faster (we LOST); threaded is **Rust/JAX 0.76 = Rust 1.32x FASTER**.
+    The lever FLIPS an integer-sum loss into a win.
+  - Thread count: `work_scaled_threads(n).min(8)` — 64 threads (the uncapped count)
+    REGRESSED to 5.66 ms (oversubscription + sequential combine; a pure read saturates
+    DRAM at ~8 cores). 8-thread cap is the keep.
+- Bit-identity guard: `threaded_integer_full_reduce_bit_identical_to_serial` (>= gate,
+  asserts threaded == sequential fold for sum/prod/and/or/xor/max/min incl. i64 wrap).
+  Bench `eval/reduce_sum_16m_i64_full`; reproducer `benchmarks/jax_comparison/isum_gauntlet.py`.
+  Signature: `int_op` gained `+ Sync` on `eval_reduce` + `eval_reduce_axes` (all callers
+  pass fn-pointers/uncapturing closures, already Sync).
+- Retry predicate: do NOT thread the FLOAT full-reduce (non-associative — see the
+  reduce_sum-jax-loss entry; that one stays blocked on the maintainer's multi-accumulator
+  decision). The integer win is independent and shipped. Do not raise the 8-thread cap
+  (more threads REGRESS a read-bound reduce).
+
 ## frankenjax-cc-reduce-sum-jax-loss - reduce_sum LOSES 2.87x to JAX (latency-bound sequential fold; multi-accumulator BLOCKED on maintainer)
 
 - Date: 2026-06-19

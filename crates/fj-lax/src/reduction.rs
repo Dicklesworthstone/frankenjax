@@ -1268,7 +1268,7 @@ pub(crate) fn eval_reduce(
     inputs: &[Value],
     int_init: i64,
     float_init: f64,
-    int_op: impl Fn(i64, i64) -> i64,
+    int_op: impl Fn(i64, i64) -> i64 + Sync,
     float_op: impl Fn(f64, f64) -> f64,
 ) -> Result<Value, EvalError> {
     if inputs.len() != 1 {
@@ -1387,11 +1387,53 @@ pub(crate) fn eval_reduce(
                 // enum stride. `as_i64_slice()` is `Some` for I64 dense storage
                 // (which also backs I32-dtype tensors), so both dtypes use it.
                 let acc = if let Some(values) = tensor.elements.as_i64_slice() {
-                    let mut acc = int_init;
-                    for &val in values {
-                        acc = int_op(acc, val);
+                    let n = values.len();
+                    // Integer reduce ops (sum/prod/and/or/xor/max/min) are ASSOCIATIVE
+                    // / order-invariant and `int_init` is the op's identity, so chunked
+                    // partial folds combined with `int_op` are BIT-IDENTICAL to the
+                    // sequential fold (mod 2^64 / mod 2^32 is a +,* homomorphism; max/min
+                    // order-free). A full reduce is a pure sequential read (BW-bound):
+                    // one core cannot saturate multi-channel DRAM, so split the read
+                    // across cores. Float can't do this (non-associative); integers can.
+                    if n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+                        && crate::arithmetic::work_scaled_threads(n) > 1
+                    {
+                        // A pure sequential read saturates multi-channel DRAM at ~8
+                        // cores; more threads just add spawn + sequential-combine
+                        // overhead (each reads a smaller chunk). Cap accordingly.
+                        let threads = crate::arithmetic::work_scaled_threads(n).min(8);
+                        let chunk = n.div_ceil(threads);
+                        let int_op_ref = &int_op;
+                        let partials: Vec<i64> = std::thread::scope(|scope| {
+                            let handles: Vec<_> = values
+                                .chunks(chunk)
+                                .map(|c| {
+                                    scope.spawn(move || {
+                                        let mut a = int_init;
+                                        for &v in c {
+                                            a = int_op_ref(a, v);
+                                        }
+                                        a
+                                    })
+                                })
+                                .collect();
+                            handles
+                                .into_iter()
+                                .map(|h| h.join().expect("reduce partial-fold thread"))
+                                .collect()
+                        });
+                        let mut acc = int_init;
+                        for p in partials {
+                            acc = int_op(acc, p);
+                        }
+                        acc
+                    } else {
+                        let mut acc = int_init;
+                        for &val in values {
+                            acc = int_op(acc, val);
+                        }
+                        acc
                     }
-                    acc
                 } else {
                     let mut acc = int_init;
                     for literal in &tensor.elements {
@@ -1770,7 +1812,7 @@ pub(crate) fn eval_reduce_axes(
     params: &std::collections::BTreeMap<String, String>,
     int_init: i64,
     float_init: f64,
-    int_op: impl Fn(i64, i64) -> i64,
+    int_op: impl Fn(i64, i64) -> i64 + Sync,
     float_op: impl Fn(f64, f64) -> f64 + Sync,
 ) -> Result<Value, EvalError> {
     if inputs.len() != 1 {
@@ -3631,6 +3673,42 @@ mod tests {
     use super::*;
     use fj_core::LiteralBuffer;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn threaded_integer_full_reduce_bit_identical_to_serial() {
+        // >= gate so the threaded integer full-reduce engages. Integer
+        // sum/prod/and/or/xor/max/min are associative / order-invariant, so the
+        // chunked partial-fold MUST equal the sequential fold EXACTLY (incl. i64
+        // wraparound), since `int_init` is each op's identity.
+        let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 4321;
+        let data: Vec<i64> = (0..n as i64)
+            .map(|i| i.wrapping_mul(2_654_435_761) ^ (i << 11))
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_i64_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+        );
+        let mut p = BTreeMap::new();
+        p.insert("axes".to_string(), "0".to_string());
+
+        let cases: [(Primitive, i64, fn(i64, i64) -> i64); 6] = [
+            (Primitive::ReduceSum, 0, i64::wrapping_add),
+            (Primitive::ReduceProd, 1, i64::wrapping_mul),
+            (Primitive::ReduceMax, i64::MIN, std::cmp::max),
+            (Primitive::ReduceMin, i64::MAX, std::cmp::min),
+            (Primitive::ReduceAnd, -1, |a, b| a & b),
+            (Primitive::ReduceXor, 0, |a, b| a ^ b),
+        ];
+        for (prim, init, op) in cases {
+            let got = eval_reduce(prim, std::slice::from_ref(&input), init, 0.0, op, |a, _| a)
+                .unwrap();
+            let got = match got {
+                Value::Scalar(l) => l.as_i64().expect("i64 scalar"),
+                other => panic!("expected scalar, got {other:?}"),
+            };
+            let want = data.iter().fold(init, |a, &v| op(a, v));
+            assert_eq!(got, want, "{prim:?} threaded full-reduce != sequential");
+        }
+    }
 
     #[test]
     fn threaded_reduce_minmax_bit_identical_to_serial() {
