@@ -30,6 +30,17 @@ Additional current clamp gauntlet environment:
 - JAX timing protocol: warmed `block_until_ready()` execution, 50 runs x 100
   inner loops per clamp workload; 30 runs x 50 inner loops per bitcast workload
 
+Additional current scalar broadcast environment:
+
+- Agent: cod-b / WildForge
+- Cargo target dir: `/data/projects/.rch-targets/frankenjax-cod-b`
+- Rust bench command: `cargo bench -p fj-lax --bench lax_baseline` with the
+  `eval/broadcast_scalar` filter, local same-host execution.
+- JAX oracle: `benchmarks/jax_comparison/.venv/bin/python`
+- JAX/JAXLIB: 0.10.1 / 0.10.1, `jax_enable_x64=true`, CPU backend
+- JAX timing protocol: warmed `block_until_ready()` execution, 60 runs x 1000
+  inner loops per scalar broadcast workload
+
 ## Measured Workloads
 
 | Bead | Workload | Rust timing | JAX timing | Rust/JAX | Outcome |
@@ -38,6 +49,9 @@ Additional current clamp gauntlet environment:
 | frankenjax-19wst | `tile_scalar_complex128_1024x1024` | 412.679 us | 579.030 us | 0.713 | Rust 1.40x faster |
 | frankenjax-1z7k9 | `complex_f32_tensor_scalar_1m` | 1.379 ms | 1.272 ms | 1.084 | Rust 1.08x slower |
 | frankenjax-1z7k9 | `complex_f64_tensor_scalar_1m` | 0.914 ms | 3.730 ms | 0.245 | Rust 4.08x faster |
+| frankenjax-alc0j | `broadcast_scalar_u32_1024x1024` | 51.307 us mean | 79.979 us mean | 0.642 | Rust 1.56x faster (noisy CV) |
+| frankenjax-alc0j | `broadcast_scalar_u64_1024x1024` | 104.911 us mean | 124.569 us mean | 0.842 | Rust 1.19x faster (noisy near-tie) |
+| frankenjax-alc0j | `broadcast_scalar_complex128_1024x1024` | 283.150 us mean | 245.381 us mean | 1.154 | Rust 1.15x slower (noisy loss) |
 | frankenjax-mcqr.105 | `f32_mixed_scalar_tensor_1m` | 159.383 us mean | 115.540 us mean | 1.379 | Rust 1.38x slower |
 | frankenjax-mcqr.105 | `f64_mixed_scalar_tensor_1m` | 996.940 us mean | 213.651 us mean | 4.666 | Rust 4.67x slower |
 | frankenjax-mcqr.106 | `bf16_mixed_scalar_tensor_1m` | 15.571 ms mean | 121.313 us mean | 128.353 | Rust 128.35x slower |
@@ -113,6 +127,10 @@ Additional current clamp gauntlet environment:
 - Release blockers for this set:
   - `complex_f32_tensor_scalar_1m` remains a near-parity JAX loss at Rust/JAX
     1.084.
+  - `broadcast_scalar_complex128_1024x1024` is a noisy JAX loss at Rust/JAX
+    1.154, while the U32/U64 scalar broadcast siblings are noisy wins. Treat the
+    scalar broadcast cluster as a mixed keep, not a release-grade pass, until a
+    low-CV rerun confirms the split.
 - Dense clamp verification is a Rust-internal keep but an external JAX loss
   on all six measured clamp workloads, with the worst gap in half-precision
   tensor clamp.

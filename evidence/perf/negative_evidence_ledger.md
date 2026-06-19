@@ -196,24 +196,54 @@ ends are not rediscovered without new evidence.
 
 ## frankenjax-alc0j - Dense Scalar Broadcast for U32/U64/Complex
 
-- Date: 2026-06-18
+- Date: 2026-06-19
 - Agent: cod-b / WildForge
 - Lever: route scalar `BroadcastInDim` fills for U32, U64, Complex64, and
   Complex128 through `new_u32_values`, `new_u64_values`, and
   `new_complex_values` instead of allocating a `Vec<Literal>` fill.
-- Status: batch-test pending.
+- Status: measured mixed/noisy against warmed JAX CPU. Keep the committed dense
+  fill path, but record negative head-to-head evidence for Complex128.
 - Benchmark guard: `eval/broadcast_scalar_u32_1024x1024`,
   `eval/broadcast_scalar_u64_1024x1024`,
   `eval/broadcast_scalar_complex128_1024x1024`.
+- Measured evidence (2026-06-19, same-host CPU):
+  - Rust command: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b cargo bench -p fj-lax --bench lax_baseline -- eval/broadcast_scalar --sample-size 100 --warm-up-time 1 --measurement-time 10`.
+  - JAX command: `benchmarks/jax_comparison/.venv/bin/python` inline scalar
+    broadcast harness with `jax_enable_x64=true`, JAX/JAXLIB 0.10.1, CPU
+    backend, 60 runs x 1000 warmed inner loops.
+  - `broadcast_scalar_u32_1024x1024`: Rust Criterion mean 51.307 us, slope
+    49.804 us, median 50.460 us, Rust CV 10.56%; JAX mean 79.979 us, p50
+    84.805 us, JAX CV 26.62%; Rust/JAX mean ratio 0.642, Rust 1.56x faster.
+    Classification: noisy win.
+  - `broadcast_scalar_u64_1024x1024`: Rust Criterion mean 104.911 us, slope
+    102.906 us, median 102.130 us, Rust CV 18.20%; JAX mean 124.569 us, p50
+    130.398 us, JAX CV 31.74%; Rust/JAX mean ratio 0.842, Rust 1.19x faster.
+    Classification: noisy win/near-tie.
+  - `broadcast_scalar_complex128_1024x1024`: Rust Criterion mean 283.150 us,
+    slope 263.538 us, median 276.539 us, Rust CV 18.07%; JAX mean 245.381 us,
+    p50 259.656 us, JAX CV 24.66%; Rust/JAX mean ratio 1.154, Rust 1.15x
+    slower. Classification: noisy loss.
+  - Decision: keep, not revert. The U32 and U64 scalar-fill rows beat JAX by
+    mean ratio, while Complex128 loses; all three rows are above the 5% CV
+    certification bar, so this is real negative/positive evidence but not a
+    release-grade perf certificate. There is no same-run evidence that reverting
+    the dense fill path improves the Complex128 row, and reverting would discard
+    the measured U32/U64 wins. The next Complex128 attempt must target complex
+    packed-fill/store throughput, not another boxed-literal-elision pass.
 - Conformance guard: scalar fills materialize to the same repeated literals and
   expose dense typed storage via `as_u32_slice`, `as_u64_slice`, or
   `as_complex_slice`.
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b cargo test -p fj-lax dense_broadcast_in_dim_matches_literal_path_and_stays_dense --lib`
+  passed 1 test, 0 failed.
 - Retry predicate: do not retry scalar `BroadcastInDim` dense-fill storage for
   these dtypes unless focused criterion evidence shows this path remains a
-  top-five `fj-lax` bottleneck or the dense constructor representation changes.
-  Do not merge it with FMA/SIMD exp, GEMM, QR, SVD, cumsum, OneHot, SelectN/iota,
-  or broader scalar-broadcast arithmetic work without fresh benchmark evidence
-  and ownership check.
+  top-five `fj-lax` bottleneck with both Rust and JAX CV below 5%, or the dense
+  constructor representation changes. For Complex128 specifically, do not
+  repeat the same `Vec<(f64, f64)>` dense fill lever; the next attempt must
+  attack packed complex output construction/store throughput directly. Do not
+  merge it with FMA/SIMD exp, GEMM, QR, SVD, cumsum, OneHot, SelectN/iota, or
+  broader scalar-broadcast arithmetic work without fresh benchmark evidence and
+  ownership check.
 
 ## frankenjax-dxqfj - Lazy SplitMulti Section Buffers
 
