@@ -337,3 +337,17 @@ Additional cod-a repeat validation environment:
   serial ~3.6-3.8x slower. Bit-identical via the exact int_op (wrapping/div-by-zero
   semantics preserved), guarded by same_shape_i64_parallel_bit_identical_to_serial.
   Required a non-breaking `+ Sync` on eval_binary_elementwise's int_op bound.
+
+## CobaltForge - Caching allocator (mimalloc): highest-EV lever, MAINTAINER-GATED (2026-06-19)
+
+- The ~6 GB/s serial fresh-alloc cliff behind every large-elementwise JAX loss is a
+  glibc page-fault artifact, not inherent. mimalloc (warm-span reuse) gives 3.7-3.9x
+  on serial large add (5.9->21.7 GB/s @16M, 6.0->23.4 @64M) = ~JAX PARITY with no
+  threading and no value change, and would help EVERY allocating op + the L3-resident
+  regime — broader than the 6 ops I hand-threaded.
+- Substitute interaction: under mimalloc, the shipped cheap-binop threading becomes a
+  no-op (1.02x @16M) and slightly regresses (0.93x @64M) because vec![0.0;n] re-zeroes
+  the warm span serially. Adopting mimalloc should be paired with raising/removing the
+  CHEAP_BINARY_PARALLEL_MIN gate.
+- Gated because: workspace allocator policy + library #[global_allocator] conflicts
+  with the PeakAlloc bench. Filed as a bead. Not committed unilaterally (cf. +fma).

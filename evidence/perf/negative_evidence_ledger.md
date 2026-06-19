@@ -1459,3 +1459,52 @@ ends are not rediscovered without new evidence.
 - Family status: same-shape f64/f32/i64 + scalar-tensor f64/f32 cheap binops now all
   threaded beyond L3 and all FASTER than JAX. Remaining unthreaded large-array cheap
   paths: i64 scalar-tensor + cheap unary (neg/abs/sign) — same pattern, lower priority.
+
+## CobaltForge - Caching allocator (mimalloc) eliminates the fresh-alloc page-fault cliff (MAINTAINER-GATED, measured)
+
+- THE finding: the serial ~6 GB/s cliff on >L3 fresh-output elementwise (root cause
+  behind all my threading wins) is NOT inherent — it is glibc returning fresh,
+  zero-faulted mmap pages per op (page faults serialized on first write). A caching
+  allocator (mimalloc) recycles warm, already-faulted spans across same-size
+  allocations, so the per-op fault cost disappears.
+- Measured (standalone, +avx2, best-of-20, serial `a+b` collect, fresh Vec/op,
+  2026-06-19; same Zen3 5975WX, JAX f64 add reference in prior rows):
+
+  | n | glibc serial | mimalloc serial | mimalloc speedup | JAX | mimalloc/JAX |
+  | ---: | ---: | ---: | ---: | ---: | ---: |
+  | 1M  | 92.3 GB/s | 88.5 GB/s | 0.96x (L3-resident, no cliff) | ~200 GB/s | (still lose) |
+  | 16M | 5.9 GB/s | 21.7 GB/s | 3.7x | 18099 us (21.2 GB/s) | ~PARITY |
+  | 64M | 6.0 GB/s | 23.4 GB/s | 3.9x | 57472 us (26.7 GB/s) | 1.14x slower |
+
+  mimalloc alone brings SERIAL large-add to ~JAX parity (no threading, no value change).
+- CRITICAL interaction — mimalloc and my shipped cheap-binop THREADING are SUBSTITUTES,
+  not complements (threaded `a+b`, all cores, fresh output, best-of-20):
+
+  | n | glibc thr/ser | mimalloc thr/ser |
+  | ---: | ---: | ---: |
+  | 16M | 6.32x (threading wins) | 1.02x (threading no-op) |
+  | 64M | 6.67x (threading wins) | 0.93x (threading REGRESSES) |
+
+  Mechanism: my threaded path's `vec![0.0; n]` (calloc) under glibc gets untouched
+  zero-pages that the worker WRITES fault IN PARALLEL (the win). Under mimalloc the
+  reused warm span is re-zeroed by calloc SERIALLY before the workers run, so the
+  serial memset caps the threaded path at serial speed. => If mimalloc is adopted,
+  the CHEAP_BINARY_PARALLEL_MIN threading gate should be RAISED/removed (it stops
+  helping and slightly hurts at 64M); mimalloc is the more general lever (every
+  allocating op + the L3-resident regime, not just the 6 ops I hand-threaded).
+- Why NOT unilaterally committed: (1) workspace-policy decision (global allocator
+  choice, like the +fma gate); (2) a library-level `#[global_allocator]` in fj-lax
+  would CONFLICT with the existing `PeakAlloc` global_allocator in
+  `crates/fj-interpreters/benches/eval_chain_memory.rs` (two global allocators per
+  binary = compile error); (3) it supersedes shipped threading, so adoption needs a
+  coordinated gate-retune. forbid(unsafe_code) is NOT a blocker — declaring an
+  external allocator's `#[global_allocator]` static is safe code.
+- Recommendation (filed as a bead): adopt mimalloc as the default global allocator
+  workspace-wide (resolve the PeakAlloc bench conflict by scoping/removing its
+  tracker or cfg-gating), then raise/remove the cheap-binop threading gate. Expected
+  ~3.7-3.9x on the allocation component of every large op and serial JAX parity on
+  large elementwise, plus likely gains across all fj-lax/fj-core ops that allocate a
+  fresh output. This is the single highest-EV lever measured in the campaign.
+- Retry predicate: do not re-measure the mimalloc-vs-glibc cliff (settled). Next step
+  is the maintainer allocator decision + gate retune, or the compiled-jaxpr arena
+  (which would subsume both by reusing a donated output buffer with no alloc at all).
