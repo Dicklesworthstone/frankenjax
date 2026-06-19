@@ -444,6 +444,212 @@ fn eval_f32_scalar_dense_map(
     ))
 }
 
+/// Threaded dense-f64 scalar⊗tensor map (parallel sibling of the serial scalar
+/// broadcast path). Applies the SAME closure `op` per element, honoring
+/// `scalar_on_left`, across scoped threads. Lane-independent => bit-identical to the
+/// serial `crate::dense::scalar_op` / `f64_scalar_broadcast_fn` output.
+fn threaded_scalar_f64_map(
+    shape: &Shape,
+    src: &[f64],
+    scalar: f64,
+    scalar_on_left: bool,
+    threads: usize,
+    op: impl Fn(f64, f64) -> f64 + Sync,
+) -> Option<Value> {
+    let n = src.len();
+    let mut out = vec![0.0f64; n];
+    let chunk = n.div_ceil(threads);
+    let op_ref = &op;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f64] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                for (i, o) in blk.iter_mut().enumerate() {
+                    let x = src[s + i];
+                    *o = if scalar_on_left {
+                        op_ref(scalar, x)
+                    } else {
+                        op_ref(x, scalar)
+                    };
+                }
+            });
+            start += len;
+        }
+    });
+    TensorValue::new_f64_values(shape.clone(), out)
+        .ok()
+        .map(Value::Tensor)
+}
+
+/// Threads the CHEAP f64 scalar⊗tensor binops (Add/Sub/Mul/Div/Max/Min, e.g. bias-add
+/// and scaling) once the tensor is DRAM-bound (see [`CHEAP_BINARY_PARALLEL_MIN`]). Uses
+/// the EXACT closures the serial scalar-broadcast path uses — `crate::dense::ArithOp`'s
+/// `a OP b` for Add/Sub/Mul/Div and the NaN-propagating `jax_max_f64`/`jax_min_f64` for
+/// Max/Min — so output is bit-identical. Returns `None` for other primitives, non-dense
+/// or non-F64 storage, or sub-threshold sizes (serial fallthrough).
+fn eval_f64_scalar_cheap_parallel(
+    primitive: Primitive,
+    scalar: Literal,
+    tensor: &TensorValue,
+    scalar_on_left: bool,
+) -> Option<Value> {
+    let Literal::F64Bits(bits) = scalar else {
+        return None;
+    };
+    if tensor.dtype != DType::F64 {
+        return None;
+    }
+    if !matches!(
+        primitive,
+        Primitive::Add
+            | Primitive::Sub
+            | Primitive::Mul
+            | Primitive::Div
+            | Primitive::Max
+            | Primitive::Min
+    ) {
+        return None;
+    }
+    let src = tensor.elements.as_f64_slice()?;
+    let n = src.len();
+    if n < CHEAP_BINARY_PARALLEL_MIN {
+        return None;
+    }
+    let threads = work_scaled_threads(n);
+    if threads <= 1 {
+        return None;
+    }
+    let s = f64::from_bits(bits);
+    let shape = &tensor.shape;
+    match primitive {
+        Primitive::Add => {
+            threaded_scalar_f64_map(shape, src, s, scalar_on_left, threads, |a, b| a + b)
+        }
+        Primitive::Sub => {
+            threaded_scalar_f64_map(shape, src, s, scalar_on_left, threads, |a, b| a - b)
+        }
+        Primitive::Mul => {
+            threaded_scalar_f64_map(shape, src, s, scalar_on_left, threads, |a, b| a * b)
+        }
+        Primitive::Div => {
+            threaded_scalar_f64_map(shape, src, s, scalar_on_left, threads, |a, b| a / b)
+        }
+        Primitive::Max => {
+            threaded_scalar_f64_map(shape, src, s, scalar_on_left, threads, crate::jax_max_f64)
+        }
+        Primitive::Min => {
+            threaded_scalar_f64_map(shape, src, s, scalar_on_left, threads, crate::jax_min_f64)
+        }
+        _ => None,
+    }
+}
+
+/// Threaded dense-f32 scalar⊗tensor map (parallel sibling of the serial f32 scalar
+/// broadcast). Promotes each f32->f64 (lossless), applies `op`, rounds `as f32` — the
+/// exact serial f32 contract, lane-independent => bit-identical.
+fn threaded_scalar_f32_map(
+    shape: &Shape,
+    src: &[f32],
+    scalar: f64,
+    scalar_on_left: bool,
+    threads: usize,
+    op: impl Fn(f64, f64) -> f64 + Sync,
+) -> Option<Value> {
+    let n = src.len();
+    let mut out = vec![0.0f32; n];
+    let chunk = n.div_ceil(threads);
+    let op_ref = &op;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f32] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                for (i, o) in blk.iter_mut().enumerate() {
+                    let x = f64::from(src[s + i]);
+                    *o = if scalar_on_left {
+                        op_ref(scalar, x) as f32
+                    } else {
+                        op_ref(x, scalar) as f32
+                    };
+                }
+            });
+            start += len;
+        }
+    });
+    TensorValue::new_f32_values(shape.clone(), out)
+        .ok()
+        .map(Value::Tensor)
+}
+
+/// f32 sibling of [`eval_f64_scalar_cheap_parallel`]. f32 is JAX's default float dtype,
+/// so bias-add / scaling on f32 activations is the hottest scalar-tensor path. Uses the
+/// EXACT f64-widen closures of the serial f32 scalar broadcast => bit-identical.
+fn eval_f32_scalar_cheap_parallel(
+    primitive: Primitive,
+    scalar: Literal,
+    tensor: &TensorValue,
+    scalar_on_left: bool,
+) -> Option<Value> {
+    let Literal::F32Bits(bits) = scalar else {
+        return None;
+    };
+    if tensor.dtype != DType::F32 {
+        return None;
+    }
+    if !matches!(
+        primitive,
+        Primitive::Add
+            | Primitive::Sub
+            | Primitive::Mul
+            | Primitive::Div
+            | Primitive::Max
+            | Primitive::Min
+    ) {
+        return None;
+    }
+    let src = tensor.elements.as_f32_slice()?;
+    let n = src.len();
+    if n < CHEAP_BINARY_PARALLEL_MIN {
+        return None;
+    }
+    let threads = work_scaled_threads(n);
+    if threads <= 1 {
+        return None;
+    }
+    let s = f64::from(f32::from_bits(bits));
+    let shape = &tensor.shape;
+    match primitive {
+        Primitive::Add => {
+            threaded_scalar_f32_map(shape, src, s, scalar_on_left, threads, |a, b| a + b)
+        }
+        Primitive::Sub => {
+            threaded_scalar_f32_map(shape, src, s, scalar_on_left, threads, |a, b| a - b)
+        }
+        Primitive::Mul => {
+            threaded_scalar_f32_map(shape, src, s, scalar_on_left, threads, |a, b| a * b)
+        }
+        Primitive::Div => {
+            threaded_scalar_f32_map(shape, src, s, scalar_on_left, threads, |a, b| a / b)
+        }
+        Primitive::Max => {
+            threaded_scalar_f32_map(shape, src, s, scalar_on_left, threads, crate::jax_max_f64)
+        }
+        Primitive::Min => {
+            threaded_scalar_f32_map(shape, src, s, scalar_on_left, threads, crate::jax_min_f64)
+        }
+        _ => None,
+    }
+}
+
 /// Binary elementwise operation dispatching on int/float paths.
 /// Supports full NumPy broadcasting: scalar-scalar, tensor-tensor (same shape),
 /// scalar-tensor, tensor-scalar, and multi-dim broadcasting.
@@ -602,12 +808,18 @@ pub(crate) fn eval_binary_elementwise(
             {
                 return Ok(value);
             }
+            if let Some(value) = eval_f64_scalar_cheap_parallel(primitive, *lhs, rhs, true) {
+                return Ok(value);
+            }
             if let Some(value) = eval_f64_scalar_broadcast_binop(primitive, *lhs, rhs, true)? {
                 return Ok(value);
             }
             if let Some(value) =
                 eval_f32_scalar_expensive_parallel(primitive, *lhs, rhs, true, &float_op)
             {
+                return Ok(value);
+            }
+            if let Some(value) = eval_f32_scalar_cheap_parallel(primitive, *lhs, rhs, true) {
                 return Ok(value);
             }
             if let Some(value) = eval_f32_scalar_broadcast_binop(primitive, *lhs, rhs, true)? {
@@ -651,12 +863,18 @@ pub(crate) fn eval_binary_elementwise(
             {
                 return Ok(value);
             }
+            if let Some(value) = eval_f64_scalar_cheap_parallel(primitive, *rhs, lhs, false) {
+                return Ok(value);
+            }
             if let Some(value) = eval_f64_scalar_broadcast_binop(primitive, *rhs, lhs, false)? {
                 return Ok(value);
             }
             if let Some(value) =
                 eval_f32_scalar_expensive_parallel(primitive, *rhs, lhs, false, &float_op)
             {
+                return Ok(value);
+            }
+            if let Some(value) = eval_f32_scalar_cheap_parallel(primitive, *rhs, lhs, false) {
                 return Ok(value);
             }
             if let Some(value) = eval_f32_scalar_broadcast_binop(primitive, *rhs, lhs, false)? {
@@ -19562,6 +19780,73 @@ mod tests {
     }
 
     #[test]
+    fn cheap_scalar_tensor_parallel_f64_bit_identical_to_serial() {
+        // Exercise the large-array threaded scalar-tensor path (bias-add / scaling) and
+        // prove bit-for-bit equality with the serial scalar-broadcast closures, in BOTH
+        // operand orders, with IEEE special values seeded.
+        let len = CHEAP_BINARY_PARALLEL_MIN + 129;
+        let mut data: Vec<f64> = (0..len).map(|i| ((i % 919) as f64) * 0.7 - 321.0).collect();
+        let specials = [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -0.0,
+            f64::MAX,
+        ];
+        for (k, &s) in specials.iter().enumerate() {
+            data[k] = s;
+            data[len / 3 + k] = s;
+        }
+        let shape = Shape {
+            dims: vec![len as u32],
+        };
+        let tensor = TensorValue::new_f64_values(shape.clone(), data.clone()).unwrap();
+        let scalar_val = 1.5f64;
+        let scalar = Literal::from_f64(scalar_val);
+        let cases: [(Primitive, fn(f64, f64) -> f64); 6] = [
+            (Primitive::Add, |a, b| a + b),
+            (Primitive::Sub, |a, b| a - b),
+            (Primitive::Mul, |a, b| a * b),
+            (Primitive::Div, |a, b| a / b),
+            (Primitive::Max, crate::jax_max_f64),
+            (Primitive::Min, crate::jax_min_f64),
+        ];
+        for (prim, op) in cases {
+            for scalar_on_left in [false, true] {
+                let got = eval_f64_scalar_cheap_parallel(prim, scalar, &tensor, scalar_on_left)
+                    .unwrap_or_else(|| {
+                        panic!("{prim:?} on_left={scalar_on_left}: threaded path did not engage")
+                    });
+                let got_bits: Vec<u64> = got
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_f64_slice()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect();
+                let want_bits: Vec<u64> = data
+                    .iter()
+                    .map(|&x| {
+                        if scalar_on_left {
+                            op(scalar_val, x)
+                        } else {
+                            op(x, scalar_val)
+                        }
+                        .to_bits()
+                    })
+                    .collect();
+                assert_eq!(
+                    got_bits, want_bits,
+                    "{prim:?} on_left={scalar_on_left}: threaded scalar-tensor != serial (bitwise)"
+                );
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "perf measurement; run with --release --ignored --nocapture"]
     fn bench_cheap_binary_parallel_vs_serial() {
         use std::time::Instant;
@@ -19621,6 +19906,32 @@ mod tests {
             let gb = n as f64 * 4.0 * 3.0 / 1e9;
             println!(
                 "add_f32 n={n:>9}: serial {:>9.1}us ({:>5.1} GB/s)  parallel {:>9.1}us ({:>5.1} GB/s)  speedup {:.2}x",
+                serial * 1e6,
+                gb / serial,
+                par * 1e6,
+                gb / par,
+                serial / par
+            );
+        }
+        // scalar-tensor (bias-add), f64, 2 arrays of traffic (1 in + 1 out)
+        for &n in &[16_000_000usize, 64_000_000] {
+            let data: Vec<f64> = (0..n).map(|i| (i % 919) as f64 * 0.7).collect();
+            let shape = Shape {
+                dims: vec![n as u32],
+            };
+            let t = TensorValue::new_f64_values(shape.clone(), data).unwrap();
+            let scalar = Literal::from_f64(1.5);
+            let serial = best_of(10, || {
+                eval_f64_scalar_broadcast_binop(Primitive::Add, scalar, &t, false)
+                    .unwrap()
+                    .unwrap()
+            });
+            let par = best_of(10, || {
+                eval_f64_scalar_cheap_parallel(Primitive::Add, scalar, &t, false).unwrap()
+            });
+            let gb = n as f64 * 8.0 * 2.0 / 1e9;
+            println!(
+                "biasadd_f64 n={n:>9}: serial {:>9.1}us ({:>5.1} GB/s)  parallel {:>9.1}us ({:>5.1} GB/s)  speedup {:.2}x",
                 serial * 1e6,
                 gb / serial,
                 par * 1e6,

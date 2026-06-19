@@ -316,3 +316,16 @@ Additional cod-a repeat validation environment:
   bandwidth (~200 vs ~70 GB/s). Threading regresses there and is correctly gated
   off. Closing the L3-resident gap needs compiled-jaxpr arena buffer reuse, not
   threading.
+
+## CobaltForge - Bias-add (scalar-tensor) threading: JAX WIN (frankenjax-aazu6, 2026-06-19)
+
+- Second JAX-dominating elementwise row. Threading the cheap scalar-tensor binops
+  (bias-add `x+c`, scaling `x*c`, max/min) above the 8.39M-element gate:
+  biasadd_f64 16M = Rust/JAX 0.56 (1.78x faster), 64M = 0.50 (2.00x faster), vs the
+  prior serial scalar-broadcast path which LOST to JAX by ~5.2-5.3x (it craters to
+  3.6-3.8 GB/s — broadcast overhead stacked on the fresh-alloc page-fault cliff).
+  Internal serial->parallel 9.18-10.63x. Bit-identical, guarded by
+  `cheap_scalar_tensor_parallel_f64_bit_identical_to_serial`. Closes aazu6.
+- Same gating discipline: L3-resident sizes stay serial (no regression). The
+  compiled-jaxpr arena buffer-reuse swing remains the only lever for the
+  L3-resident regime where JAX still wins on pure cache bandwidth.

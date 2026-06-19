@@ -1349,3 +1349,43 @@ ends are not rediscovered without new evidence.
   by threading. Next elementwise frontier: compiled-jaxpr arena buffer reuse to kill
   the per-op fresh allocation entirely (would also remove the page-fault cliff and
   help the L3-resident regime).
+
+## CobaltForge - Threaded cheap scalar-tensor binops / bias-add (frankenjax-aazu6, JAX WIN)
+
+- Lever: extends the same-shape threading win (commit 7b7924b7) to the SCALAR-TENSOR
+  cheap path (`tensor OP scalar` — bias-add `x+c`, scaling `x*c`, relu-ish max/min).
+  New `eval_f64_scalar_cheap_parallel` / `eval_f32_scalar_cheap_parallel` thread
+  Add/Sub/Mul/Div/Max/Min over a dense tensor + scalar when
+  `n >= CHEAP_BINARY_PARALLEL_MIN` (1<<23), honoring `scalar_on_left`. Inserted ahead
+  of the serial `eval_f{64,32}_scalar_broadcast_binop` in both operand orders.
+- Bit-identity: the serial f64 Add/Sub/Mul/Div path is `crate::dense::scalar_op` =
+  plain `iter().map(ArithOp::apply).collect()` (NOT a separate SIMD kernel, as the
+  aazu6 bead feared) — so the threaded path uses the IDENTICAL `a OP b` closures and
+  `jax_max_f64`/`jax_min_f64`; lane-independent => bit-for-bit identical. Guarded by
+  `cheap_scalar_tensor_parallel_f64_bit_identical_to_serial` (both operand orders,
+  NaN/±inf/±0/MAX seeds) — PASS.
+- Conformance: `fj-lax --lib` 1496 pass (+2 new bit-identity tests), 43 fail
+  (PRE-EXISTING, identical set on clean baseline) — 0 new failures.
+- Measured A/B (LOCAL same-binary, real `eval_*` fresh-alloc path, best-of-10;
+  `bench_cheap_binary_parallel_vs_serial`, 2026-06-19):
+
+  | Workload | serial (before) | parallel (after) | internal speedup |
+  | --- | ---: | ---: | ---: |
+  | biasadd_f64 n=16M | 67409 us (3.8 GB/s) | 7341 us (34.9 GB/s) | 9.18x |
+  | biasadd_f64 n=64M | 287772 us (3.6 GB/s) | 27074 us (37.8 GB/s) | 10.63x |
+
+- JAX head-to-head (LOCAL same host, `jax.jit(lambda x: x+1.5)` x64, /tmp/jax_bias.py):
+
+  | Workload | Rust after | JAX | Rust/JAX | verdict |
+  | --- | ---: | ---: | ---: | --- |
+  | biasadd_f64 n=16M | 7341 us | 13044 us | 0.56x | Rust 1.78x FASTER |
+  | biasadd_f64 n=64M | 27074 us | 54034 us | 0.50x | Rust 2.00x FASTER |
+
+- Decision: KEEP. Before: Rust LOST bias-add to JAX by ~5.2-5.3x (serial scalar
+  broadcast craters to 3.6-3.8 GB/s — even worse than the same-shape serial because
+  of the broadcast path overhead on top of the fresh-alloc page-fault cliff). After:
+  Rust DOMINATES by 1.78-2.00x. L3-resident sizes stay serial (gated). Closes bead
+  frankenjax-aazu6.
+- Retry predicate: same as the same-shape row — do NOT lower the gate. Remaining
+  unthreaded large-array cheap paths: i64 same-shape/scalar binops and cheap unary
+  (neg/abs/sign); same pattern would apply but lower priority (less common at scale).
