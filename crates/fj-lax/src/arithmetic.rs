@@ -7608,6 +7608,60 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
         )?)))
     }
 
+    // Mixed scalar/tensor I64 bounds, same-shape only. These are the common
+    // "global floor, per-element ceiling" and "per-element floor, global ceiling"
+    // clipping forms. They are bit-identical to clamp_literal's I64 arm and fall
+    // through for broadcasted or mixed-dtype inputs.
+    fn clamp_i64_scalar_lo_tensor_hi(
+        x: &TensorValue,
+        hi: &TensorValue,
+        lo: Literal,
+    ) -> Result<Option<Value>, EvalError> {
+        if x.dtype != DType::I64 || hi.dtype != DType::I64 || x.shape != hi.shape {
+            return Ok(None);
+        }
+        let Literal::I64(lov) = lo else {
+            return Ok(None);
+        };
+        let (Some(xs), Some(his)) = (x.elements.as_i64_slice(), hi.elements.as_i64_slice()) else {
+            return Ok(None);
+        };
+        let out: Vec<i64> = xs
+            .iter()
+            .zip(his)
+            .map(|(&xv, &hiv)| lov.max(xv).min(hiv))
+            .collect();
+        Ok(Some(Value::Tensor(TensorValue::new_i64_values(
+            x.shape.clone(),
+            out,
+        )?)))
+    }
+
+    fn clamp_i64_tensor_lo_scalar_hi(
+        lo: &TensorValue,
+        x: &TensorValue,
+        hi: Literal,
+    ) -> Result<Option<Value>, EvalError> {
+        if lo.dtype != DType::I64 || x.dtype != DType::I64 || lo.shape != x.shape {
+            return Ok(None);
+        }
+        let Literal::I64(hiv) = hi else {
+            return Ok(None);
+        };
+        let (Some(los), Some(xs)) = (lo.elements.as_i64_slice(), x.elements.as_i64_slice()) else {
+            return Ok(None);
+        };
+        let out: Vec<i64> = los
+            .iter()
+            .zip(xs)
+            .map(|(&lov, &xv)| lov.max(xv).min(hiv))
+            .collect();
+        Ok(Some(Value::Tensor(TensorValue::new_i64_values(
+            x.shape.clone(),
+            out,
+        )?)))
+    }
+
     match (&inputs[0], &inputs[1], &inputs[2]) {
         (Value::Scalar(lo), Value::Scalar(x), Value::Scalar(hi)) => {
             let result = clamp_literal(*lo, *x, *hi, None)
@@ -7773,6 +7827,9 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
         }
         // Scalar lo with tensor x and tensor hi (broadcasts lo)
         (Value::Scalar(lo), Value::Tensor(x), Value::Tensor(hi)) => {
+            if let Some(value) = clamp_i64_scalar_lo_tensor_hi(x, hi, *lo)? {
+                return Ok(value);
+            }
             let out_shape = broadcast_shape(&x.shape, &hi.shape).ok_or(EvalError::Unsupported {
                 primitive,
                 detail: format!(
@@ -7806,6 +7863,9 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
         }
         // Tensor lo with tensor x and scalar hi (broadcasts hi)
         (Value::Tensor(lo), Value::Tensor(x), Value::Scalar(hi)) => {
+            if let Some(value) = clamp_i64_tensor_lo_scalar_hi(lo, x, *hi)? {
+                return Ok(value);
+            }
             let out_shape = broadcast_shape(&x.shape, &lo.shape).ok_or(EvalError::Unsupported {
                 primitive,
                 detail: format!(
@@ -22829,6 +22889,75 @@ mod tests {
     }
 
     #[test]
+    fn i64_clamp_mixed_scalar_tensor_bounds_dense_matches_generic() {
+        // Same-shape I64 mixed-bound forms should skip the broadcast odometer
+        // while preserving the boxed Literal fallback exactly.
+        let p = std::collections::BTreeMap::new();
+        let x = [-10, -3, 0, 4, 10, i64::MAX];
+        let hi = [-1, 0, 1, 2, 8, i64::MAX - 1];
+        let expected_scalar_lo = vec![-3, -3, 0, 2, 8, i64::MAX - 1];
+        let scalar_lo = Value::Scalar(Literal::I64(-3));
+
+        let dense_scalar_lo = crate::eval_primitive(
+            Primitive::Clamp,
+            &[
+                scalar_lo.clone(),
+                i64_dense_vec(&x),
+                i64_dense_vec(&hi),
+            ],
+            &p,
+        )
+        .unwrap();
+        let boxed_scalar_lo = crate::eval_primitive(
+            Primitive::Clamp,
+            &[scalar_lo, i64_boxed_vec(&x), i64_boxed_vec(&hi)],
+            &p,
+        )
+        .unwrap();
+        assert!(
+            dense_scalar_lo
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_i64_slice()
+                .is_some()
+        );
+        assert_eq!(i64_vec(&dense_scalar_lo), expected_scalar_lo);
+        assert_eq!(i64_vec(&dense_scalar_lo), i64_vec(&boxed_scalar_lo));
+
+        let lo = [-10, 0, 5, -2, 6, i64::MAX - 3];
+        let x2 = [-20, 3, 10, -5, 9, i64::MAX];
+        let expected_scalar_hi = vec![-10, 3, 7, -2, 7, 7];
+        let scalar_hi = Value::Scalar(Literal::I64(7));
+        let dense_scalar_hi = crate::eval_primitive(
+            Primitive::Clamp,
+            &[
+                i64_dense_vec(&lo),
+                i64_dense_vec(&x2),
+                scalar_hi.clone(),
+            ],
+            &p,
+        )
+        .unwrap();
+        let boxed_scalar_hi = crate::eval_primitive(
+            Primitive::Clamp,
+            &[i64_boxed_vec(&lo), i64_boxed_vec(&x2), scalar_hi],
+            &p,
+        )
+        .unwrap();
+        assert!(
+            dense_scalar_hi
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_i64_slice()
+                .is_some()
+        );
+        assert_eq!(i64_vec(&dense_scalar_hi), expected_scalar_hi);
+        assert_eq!(i64_vec(&dense_scalar_hi), i64_vec(&boxed_scalar_hi));
+    }
+
+    #[test]
     #[ignore = "benchmark: run with --ignored --nocapture"]
     fn bench_f32_clamp_dense_vs_boxed() {
         use std::time::Instant;
@@ -22888,6 +23017,40 @@ mod tests {
         let dn = best(&dense);
         println!(
             "BENCH i64 clamp tensor bounds [{n}]: boxed={:.2}ms dense={:.2}ms speedup={:.2}x",
+            bx * 1e3,
+            dn * 1e3,
+            bx / dn
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_i64_clamp_mixed_scalar_tensor_bounds_dense_vs_boxed() {
+        use std::time::Instant;
+        let n = 1_000_000usize;
+        let x: Vec<i64> = (0..n)
+            .map(|i| (i as i64).wrapping_mul(1_103_515_245) % 100_000)
+            .collect();
+        let hi: Vec<i64> = (0..n).map(|i| 50 + (i as i64 % 211)).collect();
+        let scalar_lo = Value::Scalar(Literal::I64(0));
+        let dense = [scalar_lo.clone(), i64_dense_vec(&x), i64_dense_vec(&hi)];
+        let boxed = [scalar_lo, i64_boxed_vec(&x), i64_boxed_vec(&hi)];
+        let p = std::collections::BTreeMap::new();
+        let best = |inputs: &[Value]| {
+            let _ = crate::eval_primitive(Primitive::Clamp, inputs, &p).unwrap();
+            let mut tm = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                let o = crate::eval_primitive(Primitive::Clamp, inputs, &p).unwrap();
+                std::hint::black_box(o.as_tensor().unwrap().elements.len());
+                tm = tm.min(s.elapsed().as_secs_f64());
+            }
+            tm
+        };
+        let bx = best(&boxed);
+        let dn = best(&dense);
+        println!(
+            "BENCH i64 clamp mixed bounds [{n}]: boxed={:.2}ms dense={:.2}ms speedup={:.2}x",
             bx * 1e3,
             dn * 1e3,
             bx / dn
