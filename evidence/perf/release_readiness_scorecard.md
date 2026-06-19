@@ -55,7 +55,8 @@ Additional current fj-core stack/repeat/slice/extraction environment:
   `core/tensor_stack_axis0`, `core/scalar_stack_axis0`, and
   `core/tensor_repeat_axis0` filters, plus the `core/scalar_repeat_axis0`
   scalar-repeat control filter and `core/tensor_slice_axis0` slice filter,
-  plus the `core/tensor_to_i64_vec` extraction filter, local same-host
+  plus the `core/tensor_to_i64_vec` extraction filter and
+  `core/tensor_value_new` constructor/extraction filter, local same-host
   execution.
 - JAX oracle: `benchmarks/jax_comparison/.venv/bin/python`
 - JAX/JAXLIB: 0.10.1 / 0.10.1, `jax_enable_x64=true`, CPU backend
@@ -68,7 +69,9 @@ Additional current fj-core stack/repeat/slice/extraction environment:
   `jax.jit(lambda x: x[31, :])` and `jax.jit(lambda x: x[31, :] + 0.0)` over a
   64 x 1024 F64 matrix; 100 runs x 1000 inner loops for
   `jax.jit(lambda x: x)(x).block_until_ready()` and NumPy host-copy extraction
-  over a 4096-element I64 vector.
+  over a 4096-element I64 vector; 100 runs x 1000 inner loops for
+  `jnp.asarray(values, dtype=jnp.float64).block_until_ready()` and NumPy
+  host-copy extraction over a 1000-element F64 vector.
 
 Additional cod-a repeat validation environment:
 
@@ -100,6 +103,7 @@ Additional cod-a repeat validation environment:
 | frankenjax-cod-b-dense-tensor-repeat-axis0-jk3ed | `repeat_axis0_f64_1k_x64` cod-a tile validation | 2.887 us slope | 16.606 us mean | 0.174 | Rust 5.75x faster; JAX CV 29.61%, directional only |
 | frankenjax-cod-b-dense-slice-axis0-4bnj5 | `slice_axis0_f64_64x1k_row31` | 238.18 ns lazy / 513.73 ns +extract | 5.1409 us bare / 5.0677 us +0 mean | 0.0463 / 0.101 | Rust 21.58x faster lazy, 9.86x faster +extract (5.98x vs materializing control; JAX CV 7-11%) |
 | frankenjax-cod-b-dense-to-i64-vec-7xbu9 | `to_i64_vec_i64_4k` | 552.47 ns mean | 6.5825 us identity / 9.0209 us NumPy copy mean | 0.0839 / 0.0612 | Rust 11.92x faster vs identity lower-bound, 16.33x faster vs host copy (12.05x vs literal fallback; JAX CV 6.6-19.5%) |
+| frankenjax-mcqr.97 | `tensor_value_new_f64_1k` | 1.4152 us construct / 1.4131 us +extract | 48.5634 us ready / 55.9286 us host copy mean | 0.0291 / 0.0253 | External Rust win, internal mixed: 3.27x slower construction-only vs forced literal, 1.68x faster +extract |
 | frankenjax-mcqr.105 | `f32_mixed_scalar_tensor_1m` | 159.383 us mean | 115.540 us mean | 1.379 | Rust 1.38x slower |
 | frankenjax-mcqr.105 | `f64_mixed_scalar_tensor_1m` | 996.940 us mean | 213.651 us mean | 4.666 | Rust 4.67x slower |
 | frankenjax-mcqr.108 | `bf16_mixed_scalar_tensor_1m` | 3.616 ms mean | 122.705 us mean | 29.466 | Rust 29.47x slower (8.60x RCH same-worker speedup; 12.47x vs boxed ref) |
@@ -144,8 +148,9 @@ Additional cod-a repeat validation environment:
 - JAX domination score (same-host corrected/measured estimate): ~43/100 — scalar
   stack_axis0 (0.0055x), scalar repeat_axis0 (0.0143x), tensor stack_axis0
   (0.083x), tensor repeat_axis0 (0.276x), dense to_i64_vec host extraction
-  (0.061x-0.084x), slice (corrected ~0.72x), and integer_pow2 f32
-  (corrected ~0.97x) beat or tie JAX same-host, with
+  (0.061x-0.084x), TensorValue::new host construction/extraction
+  (0.025x-0.029x external but mixed internally), slice (corrected ~0.72x), and
+  integer_pow2 f32 (corrected ~0.97x) beat or tie JAX same-host, with
   broadcast/complex_ctor within ~10%. The 10 bitcast rows add internal wins,
   one noisy external JAX win, and nine external JAX losses.
 - The fj-core `stack_axis0` tensor concat-storage row is a strong external
@@ -175,6 +180,12 @@ Additional cod-a repeat validation environment:
   and beats JAX host extraction directionally by 11.92x-16.33x. Because the JAX
   identity and NumPy-copy rows have CV above 5%, use the external ratio as
   directional and the dense/literal Rust split as the hard keep criterion.
+- The fj-core `TensorValue::new` row is mixed: generic densification is a
+  construction-only regression versus forced literal construction (1.4152 us vs
+  432.80 ns, 3.27x slower), but it wins once the consumer extracts typed F64
+  values (1.4131 us vs 2.3787 us, 1.68x faster) and beats JAX construction/host
+  copy directionally by 34-40x. Keep it as a storage-enabling path, not as a
+  construction-only optimization.
 - The de-box category SPLITS: bandwidth-bound de-box (complex ctor, integer_pow
   f32) ties/beats JAX same-host; heavy-per-lane de-box (clamp half 53-128x) does
   not — there per-lane work, not boxing, dominates.

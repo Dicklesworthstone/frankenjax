@@ -249,21 +249,56 @@ ends are not rediscovered without new evidence.
 
 ## frankenjax-mcqr.97 - TensorValue::new Dense Literal Storage
 
-- Date: 2026-06-18
-- Agent: cod-b / TopazOrchid
+- Date: 2026-06-18; verified 2026-06-19
+- Agent: cod-b / TopazOrchid; verified by cod-b / WildForge
 - Lever: densify homogeneous F64/F32/Bool/BF16/F16/Complex literal vectors in
   `TensorValue::new` after element-count validation.
-- Status: batch-test pending.
+- Status: measured mixed. Keep the dense storage behavior for downstream typed
+  consumers, but record negative evidence for construction-only workloads:
+  generic densification is slower than forced literal construction until a dense
+  slice/vector consumer uses the packed storage.
 - Benchmark guard: `core/tensor_value_new_1k_f64_generic_dense`,
   `core/tensor_value_new_1k_f64_forced_literal`,
   `core/tensor_value_new_then_to_f64_vec_1k`,
-  `core/tensor_value_new_forced_literal_then_to_f64_vec_1k`.
+  `core/tensor_value_new_forced_literal_then_to_f64_vec_1k`, plus
+  `benchmarks/jax_comparison/core_tensor_value_new_gauntlet.py`.
+- Measured evidence (2026-06-19, same-host CPU):
+  - Rust command:
+    `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b cargo bench -p fj-core --bench core_baseline -- core/tensor_value_new --sample-size 100 --warm-up-time 1 --measurement-time 10 --save-baseline frankenjax-cod-b-tensor-value-new`.
+  - JAX command:
+    `benchmarks/jax_comparison/.venv/bin/python benchmarks/jax_comparison/core_tensor_value_new_gauntlet.py --runs 100 --warmup 10 --inner-loops 1000 --output /tmp/frankenjax_cod_b_tensor_value_new_jax_raw.json`.
+  - Rust generic dense construction mean estimate 1.4152 us
+    (`[1.4005, 1.4300]` us Criterion interval).
+  - Rust forced literal construction mean estimate 432.80 ns
+    (`[427.08, 438.80]` ns Criterion interval): generic dense / forced literal
+    3.27x, a real construction-only regression.
+  - Rust generic dense construction plus `to_f64_vec` mean estimate 1.4131 us
+    (`[1.3947, 1.4326]` us Criterion interval).
+  - Rust forced literal construction plus `to_f64_vec` mean estimate 2.3787 us
+    (`[2.3368, 2.4269]` us Criterion interval): dense / forced literal 0.594x,
+    dense 1.68x faster once extraction consumes typed storage.
+  - JAX `jnp.asarray(values).block_until_ready()` mean 48.5634 us
+    (p50 48.8473 us, p95 52.3213 us, p99 54.9046 us, CV 5.04%):
+    generic dense Rust/JAX 0.0291x, Rust 34.31x faster.
+  - JAX `jnp.asarray(values)` plus NumPy host copy mean 55.9286 us
+    (p50 56.1224 us, p95 60.8686 us, p99 63.5072 us, CV 5.23%):
+    dense Rust extraction / JAX host copy 0.0253x, Rust 39.58x faster. Treat
+    exact external ratios as directional because JAX CV is just above 5%.
 - Conformance guard: matching literal families materialize bit-identically;
   mismatched literal/dtype tensors remain literal-backed.
-- Retry predicate: do not retry FMA, SIMD exp, GEMM, QR, SVD, cumsum, or eager
-  concat/storage-copy families without fresh same-worker benchmark evidence.
-  Do not repeat the already committed stack/repeat/slice/to_i64 storage levers
-  unless a profile identifies a distinct call path.
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec -- cargo test -p fj-core tensor_new_densifies_matching_literal_families --lib`
+  passed 1 test, 0 failed on `ovh-a`. RCH
+  `cargo check -p fj-core --bench core_baseline` passed on `hz1`, RCH
+  `cargo clippy -p fj-core --bench core_baseline -- -D warnings` passed on
+  `vmi1149989`, `python -m py_compile benchmarks/jax_comparison/core_tensor_value_new_gauntlet.py`
+  passed, and `ubs --only=python benchmarks/jax_comparison/core_tensor_value_new_gauntlet.py`
+  returned 0 warnings.
+- Retry predicate: do not use `TensorValue::new` densification as a
+  construction-only performance lever; use direct typed constructors or
+  `new_with_literal_buffer` for hot paths that will not consume typed storage.
+  Do not repeat FMA, SIMD exp, GEMM, QR, SVD, cumsum, eager concat, or the
+  already committed stack/repeat/slice/to_i64 storage levers without fresh
+  same-worker benchmark evidence identifying a distinct call path.
 
 ## frankenjax-mcqr.99 - Direct Dense LiteralBuffer to_vec Materialization
 
