@@ -58,3 +58,7 @@ harness = false
 [[bench]]
 name = "gather_gauntlet"
 harness = false
+
+[[bench]]
+name = "complex_ctor_gauntlet"
+harness = false
