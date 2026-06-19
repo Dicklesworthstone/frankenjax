@@ -4667,6 +4667,36 @@ pub(crate) fn eval_complex(primitive: Primitive, inputs: &[Value]) -> Result<Val
         }
         (Value::Scalar(real), Value::Tensor(imag)) => {
             let out_dtype = complex_output_dtype(literal_dtype(*real), imag.dtype);
+            // Dense tensor-scalar constructor fast paths: `complex(const, tensor)`
+            // is common in signal prep and masks. Same dtype only, so this mirrors
+            // complex_literal_from_parts_fast exactly while skipping per-Literal IO.
+            if out_dtype == DType::Complex128
+                && let Literal::F64Bits(re_bits) = *real
+                && let Some(imag_values) = imag.elements.as_f64_slice()
+            {
+                let re = f64::from_bits(re_bits);
+                let out: Vec<(f64, f64)> = imag_values.iter().map(|&im| (re, im)).collect();
+                return Ok(Value::Tensor(TensorValue::new_complex_values(
+                    DType::Complex128,
+                    imag.shape.clone(),
+                    out,
+                )?));
+            }
+            if out_dtype == DType::Complex64
+                && let Literal::F32Bits(re_bits) = *real
+                && let Some(imag_values) = imag.elements.as_f32_slice()
+            {
+                let re = f64::from(f32::from_bits(re_bits));
+                let out: Vec<(f64, f64)> = imag_values
+                    .iter()
+                    .map(|&im| (re, f64::from(im)))
+                    .collect();
+                return Ok(Value::Tensor(TensorValue::new_complex_values(
+                    DType::Complex64,
+                    imag.shape.clone(),
+                    out,
+                )?));
+            }
             let mut elements = Vec::with_capacity(imag.elements.len());
             for im in imag.elements.iter().copied() {
                 elements.push(complex_literal_from_parts_fast(
@@ -4681,6 +4711,34 @@ pub(crate) fn eval_complex(primitive: Primitive, inputs: &[Value]) -> Result<Val
         }
         (Value::Tensor(real), Value::Scalar(imag)) => {
             let out_dtype = complex_output_dtype(real.dtype, literal_dtype(*imag));
+            // Dense tensor-scalar constructor fast paths: `complex(tensor, const)`.
+            if out_dtype == DType::Complex128
+                && let Some(real_values) = real.elements.as_f64_slice()
+                && let Literal::F64Bits(im_bits) = *imag
+            {
+                let im = f64::from_bits(im_bits);
+                let out: Vec<(f64, f64)> = real_values.iter().map(|&re| (re, im)).collect();
+                return Ok(Value::Tensor(TensorValue::new_complex_values(
+                    DType::Complex128,
+                    real.shape.clone(),
+                    out,
+                )?));
+            }
+            if out_dtype == DType::Complex64
+                && let Some(real_values) = real.elements.as_f32_slice()
+                && let Literal::F32Bits(im_bits) = *imag
+            {
+                let im = f64::from(f32::from_bits(im_bits));
+                let out: Vec<(f64, f64)> = real_values
+                    .iter()
+                    .map(|&re| (f64::from(re), im))
+                    .collect();
+                return Ok(Value::Tensor(TensorValue::new_complex_values(
+                    DType::Complex64,
+                    real.shape.clone(),
+                    out,
+                )?));
+            }
             let mut elements = Vec::with_capacity(real.elements.len());
             for re in real.elements.iter().copied() {
                 elements.push(complex_literal_from_parts_fast(
@@ -18910,6 +18968,91 @@ mod tests {
         };
         assert!((f64::from_bits(re) - 3.0).abs() < 1e-12);
         assert!((f64::from_bits(im) - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn complex_tensor_scalar_dense_matches_literal_path() {
+        let lits = |v: &Value| v.as_tensor().unwrap().elements.to_vec();
+
+        let f64_data = [-0.0, 1.25, -3.5, f64::from_bits(0x7ff8_0000_0000_0042)];
+        let f64_shape = Shape {
+            dims: vec![f64_data.len() as u32],
+        };
+        let f64_dense = Value::Tensor(
+            TensorValue::new_f64_values(f64_shape.clone(), f64_data.to_vec()).unwrap(),
+        );
+        let f64_boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::F64,
+                f64_shape,
+                fj_core::LiteralBuffer::new(
+                    f64_data.iter().copied().map(Literal::from_f64).collect(),
+                ),
+            )
+            .unwrap(),
+        );
+        for inputs in [
+            [f64_dense.clone(), s_f64(-0.5)],
+            [s_f64(-0.5), f64_dense.clone()],
+        ] {
+            let dense = eval_complex(Primitive::Complex, &inputs).unwrap();
+            let boxed_inputs = if matches!(&inputs[0], Value::Scalar(_)) {
+                [inputs[0].clone(), f64_boxed.clone()]
+            } else {
+                [f64_boxed.clone(), inputs[1].clone()]
+            };
+            let boxed = eval_complex(Primitive::Complex, &boxed_inputs).unwrap();
+            assert_eq!(lits(&dense), lits(&boxed), "f64 tensor-scalar complex");
+            assert!(
+                dense
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_complex_slice()
+                    .is_some(),
+                "f64 tensor-scalar complex stays dense"
+            );
+        }
+
+        let f32_data = [-0.0_f32, 1.25, -3.5, f32::from_bits(0x7fc0_0042)];
+        let f32_shape = Shape {
+            dims: vec![f32_data.len() as u32],
+        };
+        let f32_dense = Value::Tensor(
+            TensorValue::new_f32_values(f32_shape.clone(), f32_data.to_vec()).unwrap(),
+        );
+        let f32_boxed = Value::Tensor(
+            TensorValue::new_with_literal_buffer(
+                DType::F32,
+                f32_shape,
+                fj_core::LiteralBuffer::new(
+                    f32_data.iter().copied().map(Literal::from_f32).collect(),
+                ),
+            )
+            .unwrap(),
+        );
+        for inputs in [
+            [f32_dense.clone(), s_f32(-0.5)],
+            [s_f32(-0.5), f32_dense.clone()],
+        ] {
+            let dense = eval_complex(Primitive::Complex, &inputs).unwrap();
+            let boxed_inputs = if matches!(&inputs[0], Value::Scalar(_)) {
+                [inputs[0].clone(), f32_boxed.clone()]
+            } else {
+                [f32_boxed.clone(), inputs[1].clone()]
+            };
+            let boxed = eval_complex(Primitive::Complex, &boxed_inputs).unwrap();
+            assert_eq!(lits(&dense), lits(&boxed), "f32 tensor-scalar complex");
+            assert!(
+                dense
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_complex_slice()
+                    .is_some(),
+                "f32 tensor-scalar complex stays dense"
+            );
+        }
     }
 
     #[test]

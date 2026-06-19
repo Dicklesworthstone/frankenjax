@@ -210,3 +210,23 @@ ends are not rediscovered without new evidence.
   `BroadcastInDim`, dense tensor tile, FMA/SIMD exp, GEMM, QR, SVD, cumsum,
   OneHot, SelectN/iota, or broader shape/data movement work without fresh
   benchmark evidence and ownership check.
+
+## frankenjax-1z7k9 - Dense Tensor-Scalar Complex Constructor
+
+- Date: 2026-06-19
+- Agent: cod-b / WildForge
+- Lever: route matching F64/F32 `eval_complex` tensor-scalar and scalar-tensor
+  constructors through dense `new_complex_values` instead of rebuilding every
+  element as a boxed `Literal`.
+- Status: batch-test pending.
+- Benchmark guard: `eval/complex_f32_tensor_scalar_1m`,
+  `eval/complex_f64_tensor_scalar_1m`.
+- Conformance guard: dense tensor-scalar and scalar-tensor constructor outputs
+  materialize identically to explicit literal-backed references and expose dense
+  complex storage.
+- Retry predicate: do not retry tensor-scalar `eval_complex` constructor storage
+  unless focused criterion evidence shows this path remains a top-five
+  `fj-lax` bottleneck or mixed-dtype promotion becomes the measured hotspot.
+  Do not merge with same-shape complex constructor, FFT extraction, complex
+  binary tensor-scalar ops, or broader complex arithmetic work without fresh
+  benchmark evidence and ownership check.

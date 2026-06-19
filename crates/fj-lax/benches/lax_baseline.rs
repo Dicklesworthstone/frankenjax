@@ -4363,6 +4363,29 @@ fn bench_complex_ctor_1k(c: &mut Criterion) {
     });
 }
 
+fn bench_complex_tensor_scalar_dense_fill(c: &mut Criterion) {
+    let p = no_params();
+    let n = 1usize << 20;
+
+    let f32_data: Vec<f32> = (0..n).map(|i| (i as f32) * 0.001 - 500.0).collect();
+    let f32_real = Value::Tensor(
+        TensorValue::new_f32_values(Shape::vector(n as u32), f32_data).unwrap(),
+    );
+    let f32_inputs = [f32_real, Value::Scalar(Literal::from_f32(0.0))];
+    c.bench_function("eval/complex_f32_tensor_scalar_1m", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Complex, &f32_inputs, &p))
+    });
+
+    let f64_data: Vec<f64> = (0..n).map(|i| (i as f64) * 0.001 - 500.0).collect();
+    let f64_real = Value::Tensor(
+        TensorValue::new_f64_values(Shape::vector(n as u32), f64_data).unwrap(),
+    );
+    let f64_inputs = [f64_real, Value::Scalar(Literal::from_f64(0.0))];
+    c.bench_function("eval/complex_f64_tensor_scalar_1m", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Complex, &f64_inputs, &p))
+    });
+}
+
 fn bench_complex_conj_1k(c: &mut Criterion) {
     let input = complex_vector(1000);
     let p = no_params();
@@ -6432,6 +6455,7 @@ criterion_group!(
     bench_complex_mul_1m_literal,
     bench_complex_mul_1m_dense,
     bench_complex_ctor_1k,
+    bench_complex_tensor_scalar_dense_fill,
     bench_complex_conj_1k,
     bench_complex_neg_1k,
     bench_bf16_exp2_256k_dense,
