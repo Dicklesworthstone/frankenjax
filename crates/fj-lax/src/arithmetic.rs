@@ -7843,6 +7843,49 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
         )?)))
     }
 
+    fn clamp_half_same_shape_tensor_bounds(
+        primitive: Primitive,
+        lo: &TensorValue,
+        x: &TensorValue,
+        hi: &TensorValue,
+    ) -> Result<Option<Value>, EvalError> {
+        let dt = x.dtype;
+        if !matches!(dt, DType::BF16 | DType::F16)
+            || lo.dtype != dt
+            || hi.dtype != dt
+            || lo.shape != x.shape
+            || hi.shape != x.shape
+        {
+            return Ok(None);
+        }
+        let (Some(los), Some(xs), Some(his)) = (
+            lo.elements.as_half_float_slice(),
+            x.elements.as_half_float_slice(),
+            hi.elements.as_half_float_slice(),
+        ) else {
+            return Ok(None);
+        };
+        let mut out: Vec<u16> = Vec::with_capacity(xs.len());
+        for ((&lb, &xb), &hb) in los.iter().zip(xs).zip(his) {
+            let r = clamp_literal(
+                half_literal(dt, lb),
+                half_literal(dt, xb),
+                half_literal(dt, hb),
+                Some(dt),
+            )
+            .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?;
+            match r {
+                Literal::BF16Bits(b) | Literal::F16Bits(b) => out.push(b),
+                _ => return Ok(None),
+            }
+        }
+        Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+            dt,
+            x.shape.clone(),
+            out,
+        )?)))
+    }
+
     match (&inputs[0], &inputs[1], &inputs[2]) {
         (Value::Scalar(lo), Value::Scalar(x), Value::Scalar(hi)) => {
             let result = clamp_literal(*lo, *x, *hi, None)
@@ -7947,6 +7990,9 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                         x.shape.clone(),
                         out,
                     )?));
+                }
+                if let Some(value) = clamp_half_same_shape_tensor_bounds(primitive, lo, x, hi)? {
+                    return Ok(value);
                 }
                 if x.dtype == DType::I64
                     && lo.dtype == DType::I64
@@ -23452,6 +23498,73 @@ mod tests {
         );
     }
 
+    fn assert_half_same_shape_tensor_clamp_dense_matches_generic(
+        dtype: DType,
+        lo: &[u16],
+        x: &[u16],
+        hi: &[u16],
+    ) {
+        let p = std::collections::BTreeMap::new();
+        let dense = crate::eval_primitive(
+            Primitive::Clamp,
+            &[
+                half_dense_vec(dtype, lo),
+                half_dense_vec(dtype, x),
+                half_dense_vec(dtype, hi),
+            ],
+            &p,
+        )
+        .unwrap();
+        let boxed = crate::eval_primitive(
+            Primitive::Clamp,
+            &[
+                half_boxed_vec(dtype, lo),
+                half_boxed_vec(dtype, x),
+                half_boxed_vec(dtype, hi),
+            ],
+            &p,
+        )
+        .unwrap();
+        assert!(
+            dense
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_half_float_slice()
+                .is_some()
+        );
+        assert_eq!(
+            half_bits_vec(&dense),
+            half_bits_vec(&boxed),
+            "{dtype:?} clamp(min_tensor,x,max_tensor)"
+        );
+    }
+
+    #[test]
+    fn half_clamp_same_shape_tensor_bounds_dense_matches_generic() {
+        // Dense same-shape half tensor bounds should skip the broadcast odometer
+        // and boxed output while preserving every edge-bit result.
+        let bf16_lo = [0xbc00, 0x8000, 0x3f80, 0xc000, 0x40a0, 0x7fc1, 0x3f00, 0x0001];
+        let bf16_x = [0xc0a0, 0x0000, 0x4020, 0xc080, 0x4110, 0x3f80, 0x7fc1, 0x7f80];
+        let bf16_hi = [0xbf80, 0x0000, 0x4040, 0x4080, 0x40c0, 0x4000, 0xff80, 0x3f80];
+        assert_half_same_shape_tensor_clamp_dense_matches_generic(
+            DType::BF16,
+            &bf16_lo,
+            &bf16_x,
+            &bf16_hi,
+        );
+
+        let f16_lo = [0xbc00, 0x8000, 0x3c00, 0xc000, 0x4600, 0x7e00, 0x3800, 0x0001];
+        let f16_x = [0xc500, 0x0000, 0x4100, 0xc400, 0x4880, 0x3c00, 0x7e00, 0x7c00];
+        let f16_hi = [0xbc00, 0x0000, 0x4200, 0x4400, 0x4600, 0x4000, 0xfc00, 0x3c00];
+        assert_half_same_shape_tensor_clamp_dense_matches_generic(
+            DType::F16,
+            &f16_lo,
+            &f16_x,
+            &f16_hi,
+        );
+    }
+
     #[test]
     #[ignore = "benchmark: run with --ignored --nocapture"]
     fn bench_f32_clamp_dense_vs_boxed() {
@@ -23597,6 +23710,67 @@ mod tests {
 
         println!(
             "BENCH bf16/f16 clamp mixed bounds [{n}]: bf16 boxed={:.2}ms dense={:.2}ms speedup={:.2}x; f16 boxed={:.2}ms dense={:.2}ms speedup={:.2}x",
+            bx_bf16 * 1e3,
+            dn_bf16 * 1e3,
+            bx_bf16 / dn_bf16,
+            bx_f16 * 1e3,
+            dn_f16 * 1e3,
+            bx_f16 / dn_f16
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_half_clamp_same_shape_tensor_bounds_dense_vs_boxed() {
+        use std::time::Instant;
+        let n = 1_000_000usize;
+        let p = std::collections::BTreeMap::new();
+        let best = |inputs: &[Value]| {
+            let _ = crate::eval_primitive(Primitive::Clamp, inputs, &p).unwrap();
+            let mut tm = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                let o = crate::eval_primitive(Primitive::Clamp, inputs, &p).unwrap();
+                std::hint::black_box(o.as_tensor().unwrap().elements.len());
+                tm = tm.min(s.elapsed().as_secs_f64());
+            }
+            tm
+        };
+
+        let lo_bf16: Vec<u16> = (0..n).map(|i| 0x3f00u16 + (i % 64) as u16).collect();
+        let x_bf16: Vec<u16> = (0..n).map(|i| 0x3f80u16 + (i % 64) as u16).collect();
+        let hi_bf16: Vec<u16> = (0..n).map(|i| 0x4000u16 + (i % 64) as u16).collect();
+        let dense_bf16 = [
+            half_dense_vec(DType::BF16, &lo_bf16),
+            half_dense_vec(DType::BF16, &x_bf16),
+            half_dense_vec(DType::BF16, &hi_bf16),
+        ];
+        let boxed_bf16 = [
+            half_boxed_vec(DType::BF16, &lo_bf16),
+            half_boxed_vec(DType::BF16, &x_bf16),
+            half_boxed_vec(DType::BF16, &hi_bf16),
+        ];
+        let bx_bf16 = best(&boxed_bf16);
+        let dn_bf16 = best(&dense_bf16);
+
+        let lo_f16: Vec<u16> = (0..n).map(|i| 0x3800u16 + (i % 64) as u16).collect();
+        let x_f16: Vec<u16> = (0..n).map(|i| 0x3c00u16 + (i % 64) as u16).collect();
+        let hi_f16: Vec<u16> = (0..n).map(|i| 0x4000u16 + (i % 64) as u16).collect();
+        let dense_f16 = [
+            half_dense_vec(DType::F16, &lo_f16),
+            half_dense_vec(DType::F16, &x_f16),
+            half_dense_vec(DType::F16, &hi_f16),
+        ];
+        let boxed_f16 = [
+            half_boxed_vec(DType::F16, &lo_f16),
+            half_boxed_vec(DType::F16, &x_f16),
+            half_boxed_vec(DType::F16, &hi_f16),
+        ];
+        let bx_f16 = best(&boxed_f16);
+        let dn_f16 = best(&dense_f16);
+
+        println!(
+            "BENCH bf16/f16 clamp tensor bounds [{n}]: bf16 boxed={:.2}ms dense={:.2}ms speedup={:.2}x; f16 boxed={:.2}ms dense={:.2}ms speedup={:.2}x",
             bx_bf16 * 1e3,
             dn_bf16 * 1e3,
             bx_bf16 / dn_bf16,
