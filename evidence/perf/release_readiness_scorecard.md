@@ -559,3 +559,17 @@ Additional cod-a repeat validation environment:
   runner parity green via RCH; scoped no-deps clippy green for changed crates. Full
   `fj-interpreters --all-targets` clippy remains blocked by pre-existing `fj-trace`/`fj-lax` lints.
 - Next loss target: tensor dense elementwise-chain fusion/output reuse for `tensor64/n=32`.
+
+## CobaltForge - Conformance: cbea72b3 densify cleanup COMPLETE across workspace (2026-06-19, commit 672edfe8)
+
+- The cbea72b3 (mcqr.97, "code-first batch-test pending") densify of `TensorValue::new` broke
+  dense-vs-boxed guard tests in multiple crates; the deferred batch-test only ever partially landed.
+  Swept every checkable crate and restored GREEN:
+  - fj-lax: 40 guard tests (fixed 9bebc33c, cycle 1) — `cargo test --lib` 0 failed.
+  - fj-ad: 1 guard test `compiled_dense_f64_square_plus_linear_reducesum_matches_generic_bits`
+    (the "non-packed F64 falls back" assert — densify made the boxed reference packed). Fixed via
+    `new_with_literal_buffer(LiteralBuffer::new(..))`. Now 403/0.
+  - fj-core 161/0, fj-dispatch 304/0, fj-trace 150/0, fj-egraph 146/0 — all verified GREEN (no
+    densify damage / already fixed by the densify author).
+  - fj-interpreters: NOT swept (WildForge's reserved compiled-dispatch surface).
+- Net: every crate outside fj-interpreters has a fully-green `cargo test --lib` post-densify.
