@@ -2548,11 +2548,25 @@ fn eval_bitwise_tensor_same_shape(
             // identical to the loop below (same op, same order). `as_i64_slice` is
             // `Some` only for dense I64 storage.
             if let (Some(av), Some(bv)) = (a.elements.as_i64_slice(), b.elements.as_i64_slice()) {
-                let out: Vec<i64> = av
-                    .iter()
-                    .zip(bv)
-                    .map(|(&va, &vb)| apply_bitwise_binary_i64(primitive, va, vb))
-                    .collect();
+                let n = av.len();
+                // Thread the dense bitwise map above the DRAM-bound gate (calloc'd output +
+                // parallel page-fault); bit-identical (per-element apply_bitwise_binary_i64).
+                let out: Vec<i64> = if n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+                    && crate::arithmetic::work_scaled_threads(n) > 1
+                {
+                    let mut o = vec![0i64; n];
+                    crate::arithmetic::threaded_index_fill_into(
+                        &mut o,
+                        crate::arithmetic::work_scaled_threads(n),
+                        |i| apply_bitwise_binary_i64(primitive, av[i], bv[i]),
+                    );
+                    o
+                } else {
+                    av.iter()
+                        .zip(bv)
+                        .map(|(&va, &vb)| apply_bitwise_binary_i64(primitive, va, vb))
+                        .collect()
+                };
                 return Ok(Value::Tensor(
                     TensorValue::new_i64_values(a.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2585,11 +2599,23 @@ fn eval_bitwise_tensor_same_shape(
             // apply_bitwise_binary_i32 — ShiftRightLogical zero-fills from bit 31).
             // Dense as_i64_slice path → dense I32 output; boxed Literal::I64 fallback.
             if let (Some(av), Some(bv)) = (a.elements.as_i64_slice(), b.elements.as_i64_slice()) {
-                let out: Vec<i64> = av
-                    .iter()
-                    .zip(bv)
-                    .map(|(&va, &vb)| apply_bitwise_binary_i32(primitive, va, vb))
-                    .collect();
+                let n = av.len();
+                let out: Vec<i64> = if n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+                    && crate::arithmetic::work_scaled_threads(n) > 1
+                {
+                    let mut o = vec![0i64; n];
+                    crate::arithmetic::threaded_index_fill_into(
+                        &mut o,
+                        crate::arithmetic::work_scaled_threads(n),
+                        |i| apply_bitwise_binary_i32(primitive, av[i], bv[i]),
+                    );
+                    o
+                } else {
+                    av.iter()
+                        .zip(bv)
+                        .map(|(&va, &vb)| apply_bitwise_binary_i32(primitive, va, vb))
+                        .collect()
+                };
                 return Ok(Value::Tensor(
                     TensorValue::new_i32_values(a.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2618,11 +2644,23 @@ fn eval_bitwise_tensor_same_shape(
             // both inputs and output). Bit-identical to the per-Literal fallback below
             // (same op, same order). `as_u32_slice` is `Some` only for dense u32.
             if let (Some(av), Some(bv)) = (a.elements.as_u32_slice(), b.elements.as_u32_slice()) {
-                let out: Vec<u32> = av
-                    .iter()
-                    .zip(bv)
-                    .map(|(&va, &vb)| apply_bitwise_binary_u32(primitive, va, vb))
-                    .collect();
+                let n = av.len();
+                let out: Vec<u32> = if n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+                    && crate::arithmetic::work_scaled_threads(n) > 1
+                {
+                    let mut o = vec![0u32; n];
+                    crate::arithmetic::threaded_index_fill_into(
+                        &mut o,
+                        crate::arithmetic::work_scaled_threads(n),
+                        |i| apply_bitwise_binary_u32(primitive, av[i], bv[i]),
+                    );
+                    o
+                } else {
+                    av.iter()
+                        .zip(bv)
+                        .map(|(&va, &vb)| apply_bitwise_binary_u32(primitive, va, vb))
+                        .collect()
+                };
                 return Ok(Value::Tensor(
                     TensorValue::new_u32_values(a.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2652,11 +2690,23 @@ fn eval_bitwise_tensor_same_shape(
         fj_core::DType::U64 => {
             // Dense u64 path (mirror of the u32 arm above).
             if let (Some(av), Some(bv)) = (a.elements.as_u64_slice(), b.elements.as_u64_slice()) {
-                let out: Vec<u64> = av
-                    .iter()
-                    .zip(bv)
-                    .map(|(&va, &vb)| apply_bitwise_binary_u64(primitive, va, vb))
-                    .collect();
+                let n = av.len();
+                let out: Vec<u64> = if n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+                    && crate::arithmetic::work_scaled_threads(n) > 1
+                {
+                    let mut o = vec![0u64; n];
+                    crate::arithmetic::threaded_index_fill_into(
+                        &mut o,
+                        crate::arithmetic::work_scaled_threads(n),
+                        |i| apply_bitwise_binary_u64(primitive, av[i], bv[i]),
+                    );
+                    o
+                } else {
+                    av.iter()
+                        .zip(bv)
+                        .map(|(&va, &vb)| apply_bitwise_binary_u64(primitive, va, vb))
+                        .collect()
+                };
                 return Ok(Value::Tensor(
                     TensorValue::new_u64_values(a.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -6002,6 +6052,56 @@ mod tests {
     };
     use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value, ValueError};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn threaded_bitwise_bit_identical_to_serial() {
+        // i64/u64 and/or/xor at >= gate engage the threaded dense map; compare bit-for-bit
+        // to a serial reference.
+        let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 511;
+        let shape = Shape {
+            dims: vec![n as u32],
+        };
+        for prim in [
+            Primitive::BitwiseAnd,
+            Primitive::BitwiseOr,
+            Primitive::BitwiseXor,
+        ] {
+            let a: Vec<i64> = (0..n).map(|i| i as i64 * 3 - 7).collect();
+            let b: Vec<i64> = (0..n).map(|i| (i as i64) ^ 0x5555).collect();
+            let mki = |v: &[i64]| {
+                Value::Tensor(TensorValue::new_i64_values(shape.clone(), v.to_vec()).unwrap())
+            };
+            let got = eval_primitive(prim, &[mki(&a), mki(&b)], &no_params()).unwrap();
+            let gi = got.as_tensor().unwrap().elements.as_i64_slice().unwrap();
+            let want: Vec<i64> = a
+                .iter()
+                .zip(&b)
+                .map(|(&x, &y)| match prim {
+                    Primitive::BitwiseAnd => x & y,
+                    Primitive::BitwiseOr => x | y,
+                    _ => x ^ y,
+                })
+                .collect();
+            assert!(gi == want.as_slice(), "{prim:?} i64 threaded != serial");
+            let au: Vec<u64> = (0..n).map(|i| i as u64 * 13 + 1).collect();
+            let bu: Vec<u64> = (0..n).map(|i| (i as u64) ^ 0xF0F0).collect();
+            let mku = |v: &[u64]| {
+                Value::Tensor(TensorValue::new_u64_values(shape.clone(), v.to_vec()).unwrap())
+            };
+            let gotu = eval_primitive(prim, &[mku(&au), mku(&bu)], &no_params()).unwrap();
+            let gu = gotu.as_tensor().unwrap().elements.as_u64_slice().unwrap();
+            let wantu: Vec<u64> = au
+                .iter()
+                .zip(&bu)
+                .map(|(&x, &y)| match prim {
+                    Primitive::BitwiseAnd => x & y,
+                    Primitive::BitwiseOr => x | y,
+                    _ => x ^ y,
+                })
+                .collect();
+            assert!(gu == wantu.as_slice(), "{prim:?} u64 threaded != serial");
+        }
+    }
 
     fn no_params() -> BTreeMap<String, String> {
         BTreeMap::new()

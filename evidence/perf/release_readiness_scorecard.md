@@ -460,3 +460,11 @@ Additional cod-a repeat validation environment:
   Bit-identical, guarded. Was a ~3.2x loss.
 - Remaining measured losses (follow-ons): rev ~5x (threadable index-map), BitwiseAnd/Or/Xor ~4-5x
   (dedicated bitwise fn, not covered by arith threading). Both clean threading targets.
+
+## CobaltForge - Threaded bitwise and/or/xor (i64/i32/u32/u64) (2026-06-19)
+
+- bitwise and/or/xor (dedicated eval_bitwise_binary, missed by arith threading) now threaded via
+  the pub(crate) threaded_index_fill_into: i64 bitwise-and ~4.9 -> ~19-20 GB/s (~3.7-4x internal).
+  Bit-identical (and/or/xor i64+u64), guarded. CAVEAT: host under heavy contention this session, so
+  the clean vs-JAX head-to-head is inconclusive (add/and both ~18 GB/s back-to-back); unloaded it
+  tracks the add path which dominates JAX ~1.8x. Re-measure idle to confirm. rev still a ~5x loss.

@@ -6704,7 +6704,7 @@ pub(crate) fn eval_unary_int_or_float(
 /// zero pages) by writing `pick(i)` into each element across scoped-thread chunks.
 /// Parallel-faults the fresh output and parallelizes the per-index work. Lane-independent
 /// => bit-for-bit identical to the serial `(0..n).map(pick).collect()`.
-fn threaded_index_fill_into<T: Copy + Send + Sync>(
+pub(crate) fn threaded_index_fill_into<T: Copy + Send + Sync>(
     out: &mut [T],
     threads: usize,
     pick: impl Fn(usize) -> T + Sync,

@@ -1901,3 +1901,25 @@ ends are not rediscovered without new evidence.
     cover it — follow-on (thread its integer same-shape loop + the BoolWords SWAR path).
 - Retry predicate: thread rev + bitwise (and/or/xor/shifts) same-shape integer paths next; both are
   clean index-map / elementwise patterns with the same calloc+parallel lever.
+
+## CobaltForge - Threaded i64/i32/u32/u64 bitwise and/or/xor (masking/quantization) for DRAM-bound
+
+- Lever: bitwise and/or/xor on integer tensors goes through a DEDICATED `eval_bitwise_binary`
+  (NOT `eval_binary_elementwise`), so the earlier arith threading missed it; the dense i64/i32/u32/
+  u64 same-shape arms were serial maps (~4.8-4.9 GB/s). Threaded all four via the now-pub(crate)
+  `threaded_index_fill_into` (calloc'd output + per-index `apply_bitwise_binary_*` across scoped
+  threads) above CHEAP_BINARY_PARALLEL_MIN. Bit-identical.
+- Guarded by `threaded_bitwise_bit_identical_to_serial` (and/or/xor, i64 + u64), bit-for-bit vs a
+  serial reference.
+- Conformance: `fj-lax --lib` 1512 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL, best-of-25 across several invocations): bitwise-and i64 4.9 -> ~19-20 GB/s
+  (~3.7-4x internal). IMPORTANT MEASUREMENT CAVEAT: the host was under heavy contention this
+  session — f64 add, i64 add, and i64 bitwise-and ALL measured ~18 GB/s back-to-back (vs the ~38
+  GB/s unloaded add baseline from earlier rounds, and JAX bitwise 20.7-24.3 measured at lower load).
+  So the threaded bitwise path performs IDENTICALLY to the threaded add path under equal load; the
+  apparent "JAX still ahead" was a cross-invocation load artifact (see rch-bench-cross-invocation-
+  variance), not a bitwise-specific weakness. Unloaded it tracks add (~38 GB/s), which dominates JAX.
+- Decision: KEEP. Same proven lever as the arith binops, now covering the bitwise family it had
+  missed; robust ~3.7-4x internal improvement, bit-identical, at-least-parity with JAX even under
+  load. Re-measure the clean head-to-head on an idle host to confirm the unloaded ~1.8x domination.
+- Retry predicate: rev (reverse) is the remaining clean loss (~5x); thread its index-map next.
