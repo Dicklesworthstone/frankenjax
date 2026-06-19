@@ -49,17 +49,20 @@ Additional current clamp gauntlet environment:
 | frankenjax-hfq7o | `integer_pow2_f64_1m` (v*v fix) | 405.45 us | 184.1 us mean | 2.202 | Rust 2.20x slower (was 12.9x) |
 | frankenjax-hfq7o | `integer_pow2_f32_1m` (v*v fix) | 169.61 us | 121.1 us mean | 1.400 | Rust 1.40x slower (was 21.8x) |
 | frankenjax-idunl | `slice_crop_1024x1024_to_512x512_f32` (block-copy) | 45.97 us | 44.17 us mean | 1.041 | Rust 1.04x slower (TIE; 6.1x vs naive) |
+| (dense contiguous gather) | `gather_embed_16384x768_take4096_f32` | 1.145 ms | 271.3 us mean | 4.220 | Rust 4.22x slower (random-read-bound; 4.05x vs naive) |
 
 ## Readiness
 
-- JAX domination score for this measured set: 30/100.
-- Basis: 3 of 17 measured realistic workloads beat warmed original JAX CPU; slice
-  block-copy now TIES JAX (1.04x, within noise). Nearest-miss cluster: slice 1.04x
-  (tie), integer_pow2 f32 1.40x, broadcast 1.59x, integer_pow2 f64 2.20x — all
-  bandwidth/memcpy-bound, ~1.0-2.2x off JAX. The bandwidth-bound block-copy and
-  the de-box-fixed compute ops have CLOSED to JAX parity/near-parity; the
-  remaining losses are compute-bound transcendentals/matmul (+fma gated) and the
-  interpreter-vs-XLA gap on jit'd chains.
+- JAX domination score for this measured set: 28/100.
+- Basis: 3 of 18 measured realistic workloads beat warmed original JAX CPU; slice
+  TIES JAX (1.04x). Sharpened pattern from 4 measured structural ops: the JAX gap
+  is set by the READ access pattern, not the copy:
+    - SEQUENTIAL read (slice 1.04x TIE, broadcast 1.59x) — near-parity.
+    - RANDOM/STRIDED read (transpose 4.24x, gather/embedding 4.22x) — ~4x loss.
+  All are 4-22x internal wins. Plus the de-box-fixed compute (integer_pow2 f32
+  1.40x / f64 2.20x). Remaining JAX losses are: random/strided-read structural ops
+  (~4x, memory-access-pattern/prefetch gap), compute-bound transcendentals/matmul
+  (+fma gated), and the interpreter-vs-XLA gap on jit'd chains.
 - BEST gauntlet result: the integer_pow x**2 fix (hfq7o) — measurement caught a
   runtime-`powi(2)` LIBCALL (~6.75 GB/s); replacing it with `v*v` (bit-identical)
   gave 5.8x (f64) / 15.6x (f32) and closed the JAX gap from 12.9-21.8x to

@@ -530,3 +530,34 @@ ends are not rediscovered without new evidence.
   bandwidth/memcpy-bound block-copy ops TIE or near-tie JAX; the strided-read
   transpose is 4.24x (random-access read pattern). The block-copy lever family is
   the closest-to-JAX work in the codebase; KEEP all.
+
+## frankenjax (dense contiguous gather / embedding lookup) - random-access regime
+
+- Lever: dense contiguous gather memcpy's each [dim] row via extend_from_slice
+  (embedding lookup). Workload: table [16384,768] f32, gather 4096 random token
+  rows -> [4096,768] (3.1M output elems, random reads into a 50MB table).
+- Conformance GUARD: GREEN. `gather_gauntlet.rs` asserts dense == per-element
+  reference at 4 probe indices.
+- Measured evidence (2026-06-19, rch Criterion sample 30; JAX jnp.take CPU x64):
+
+  | Arm | median | vs naive | vs JAX |
+  | --- | ---: | ---: | ---: |
+  | dense (eval_primitive, row memcpy) | 1.1450 ms | 4.05x faster | 4.22x slower |
+  | naive per-element | 4.6382 ms | baseline | ~17x slower |
+  | JAX jit take | 271.3 us (cv 13%) | - | - |
+
+- Decision: KEEP. 4.05x internal win; the per-row memcpy is the correct bit-exact
+  approach. JAX-loss (4.22x) because gather is RANDOM-ACCESS-READ-bound (~11 GB/s
+  effective: each row read is a cache miss into the 50MB table); XLA hides that
+  latency better (prefetch / memory-level parallelism / SIMD gather).
+- REFINED CLUSTER PATTERN (4 block-copy/structural ops measured): the JAX gap is
+  set by the READ access pattern, not the copy:
+    - SEQUENTIAL read (slice 1.04x TIE, broadcast 1.59x): near-parity with JAX.
+    - RANDOM/STRIDED read (transpose 4.24x, gather 4.22x): ~4x JAX loss.
+  All are 4-22x internal wins over the per-element baseline. The block-copy lever
+  is correct; the residual ~4x on random/strided reads is a memory-access-pattern
+  gap (prefetch / SIMD-gather / cache-aware tiling), NOT the copy algorithm.
+- Retry predicate: closing the gather/transpose ~4x needs software prefetch or
+  memory-level-parallelism (interleaved multi-row gather) — blocked by forbid-unsafe
+  for raw prefetch intrinsics; would need a safe MLP-exposing restructure. NOT more
+  block-copy. Do NOT retry per-element or naive gather.
