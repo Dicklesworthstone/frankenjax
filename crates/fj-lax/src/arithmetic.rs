@@ -36,7 +36,7 @@ const EXPENSIVE_BINARY_PARALLEL_MIN: usize = 1 << 16; // 65_536
 /// op produces which bit). The gate is set well past the measured ~5M-element
 /// fresh-alloc cliff so only clearly DRAM-bound arrays thread; the benchmarked 1M
 /// size stays on the serial fast path (no regression).
-const CHEAP_BINARY_PARALLEL_MIN: usize = 1 << 23; // 8_388_608
+pub(crate) const CHEAP_BINARY_PARALLEL_MIN: usize = 1 << 23; // 8_388_608
 
 /// Right-size a parallel fan-out to the WORK, not the core count. `std::thread::
 /// scope` spawns each OS thread sequentially (~tens of µs apiece), so a flat

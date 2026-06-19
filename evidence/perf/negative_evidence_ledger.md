@@ -1549,3 +1549,35 @@ ends are not rediscovered without new evidence.
   (i64/u32/u64 unary; scalar-tensor i64; reduction outputs; transpose/gather/broadcast
   outputs) — each is a 4.4->~34 GB/s, JAX-beating, mimalloc-beating win. Bead oneqh
   updated to reflect the corrected (complementary, keep-gate) recommendation.
+
+## CobaltForge - Threaded f64/f32 broadcast_replicate for DRAM-bound outputs (JAX WIN)
+
+- Lever: `BroadcastInDim` (bias/feature replicate [C]->[B,C], [A,C]->[A,B,C], etc.) built the
+  large output via a SERIAL `extend_from_slice` loop — page-fault-bound at ~2.4 GB/s on a
+  fresh >L3 output (WORSE than the elementwise cliff). New `broadcast_replicate_into<T>` fills
+  a caller-allocated `vec![<concrete zero>; total]` (alloc_zeroed/calloc = untouched zero
+  pages) by splitting the outer block iterations across scoped threads — parallel page-faults
+  the output and copies the contiguous src blocks concurrently. Wired into the f64 + f32 arms
+  of `eval_broadcast_in_dim` (the calloc must be concrete-typed; generic `vec![T::default()]`
+  does NOT lower to calloc, so other dtypes keep the serial `broadcast_replicate`).
+- Bit-identity: each output block `o` is written from the SAME `src[base(o)..+block_len]` at the
+  SAME offset `o*block_len`; `base(o)` is the mixed-radix outer-coordinate->base mapping, equal
+  to the serial odometer. Guarded by `broadcast_replicate_into_bit_identical_to_serial`
+  (incl. a size-1-stretch multi-outer-axis case), compared bit-for-bit to the serial generic.
+- Conformance: `fj-lax --lib` 1499 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, [1024]->[N,1024], best-of-20) + JAX
+  (`jax.jit(jnp.broadcast_to)` x64, /tmp/jax_bcast.py):
+
+  | output | serial (before) | threaded (after) | internal | JAX | Rust/JAX |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 16.4M | 55417 us (2.4 GB/s) | 6097 us (21.5 GB/s) | 9.09x | 22254 us (5.9 GB/s) | 0.27x (3.65x FASTER) |
+  | 65.5M | 214491 us (2.4 GB/s) | 23130 us (22.7 GB/s) | 9.27x | 87049 us (6.0 GB/s) | 0.27x (3.76x FASTER) |
+
+- Decision: KEEP. Broadcast is ubiquitous (every bias/feature materialization). Before, Rust
+  LOST to JAX by 2.5x AND was catastrophically slow internally; after, Rust DOMINATES by 3.65-
+  3.76x. Note JAX's own broadcast_to materializes at only ~6 GB/s here. Same gate; small (<gate)
+  broadcasts stay serial (the calloc+serial-copy is bit-identical, negligible overhead).
+- Retry predicate: extend `_into` to i64/u32/u64/bool/half broadcast arms (each allocates a
+  concrete-zero vec -> calloc, so the same threaded fill applies) when those dtypes show up
+  large. Confirms the general principle: every large fresh-output op wins from calloc +
+  parallel page-faulting; threading beats both serial-glibc and mimalloc.

@@ -1184,8 +1184,11 @@ pub(crate) fn eval_broadcast_in_dim(
             // replication index math is identical to the generic path
             // (broadcast_replicate), so the output is bit-for-bit unchanged.
             if let Some(src) = tensor.elements.as_f64_slice() {
-                let out = broadcast_replicate(
-                    total,
+                // calloc'd output (untouched zero pages) + threaded parallel fill above
+                // the DRAM-bound threshold; serial copy otherwise. Bit-identical.
+                let mut out = vec![0.0f64; total];
+                broadcast_replicate_into(
+                    &mut out,
                     out_rank,
                     &target_dims,
                     &out_to_in,
@@ -1237,8 +1240,9 @@ pub(crate) fn eval_broadcast_in_dim(
             // dense output — avoiding the input Literal materialization + boxed
             // output of the generic path below. Pure replication, bit-identical.
             if let Some(src) = tensor.elements.as_f32_slice() {
-                let out = broadcast_replicate(
-                    total,
+                let mut out = vec![0.0f32; total];
+                broadcast_replicate_into(
+                    &mut out,
                     out_rank,
                     &target_dims,
                     &out_to_in,
@@ -1401,6 +1405,103 @@ fn broadcast_replicate<T: Copy>(
         }
     }
     out
+}
+
+/// Threaded broadcast-replicate that fills a PRE-ALLOCATED `out` slice (the caller
+/// allocates `vec![<concrete zero>; total]`, which lowers to `alloc_zeroed`/calloc =
+/// untouched zero pages). Above [`CHEAP_BINARY_PARALLEL_MIN`] the serial replicate is
+/// page-fault-bound (~2.4 GB/s on a fresh large output); splitting the outer iterations
+/// across scoped threads parallel-faults the output (~34 GB/s) and copies block runs
+/// concurrently. Bit-for-bit identical to [`broadcast_replicate`]: each output block `o`
+/// is written from the SAME `src[base(o)..base(o)+block_len]` at the SAME offset
+/// `o*block_len`, computed via the same mixed-radix outer-coordinate -> base mapping.
+fn broadcast_replicate_into<T: Copy + Send + Sync>(
+    out: &mut [T],
+    out_rank: usize,
+    target_dims: &[u32],
+    out_to_in: &[Option<usize>],
+    in_dims: &[u32],
+    in_strides: &[usize],
+    src: &[T],
+) {
+    let total = out.len();
+    let in_rank = in_dims.len();
+    // Identical block geometry to `broadcast_replicate`.
+    let mut block_len = 1_usize;
+    let mut block_start = out_rank;
+    let mut expected_in = in_rank;
+    for a in (0..out_rank).rev() {
+        if expected_in == 0 {
+            break;
+        }
+        match out_to_in[a] {
+            Some(in_axis)
+                if in_axis + 1 == expected_in
+                    && in_dims[in_axis] as usize == target_dims[a] as usize =>
+            {
+                block_len *= target_dims[a] as usize;
+                block_start = a;
+                expected_in = in_axis;
+            }
+            _ => break,
+        }
+    }
+    let block_len = block_len.max(1);
+    let outer_total = total / block_len;
+
+    // base offset into `src` for outer block index `o` (mixed-radix decomposition over
+    // the outer axes [0, block_start); axis 0 most significant, matching row-major).
+    let base_of = |o: usize| -> usize {
+        let mut rem = o;
+        let mut base = 0_usize;
+        for a in (0..block_start).rev() {
+            let radix = target_dims[a] as usize;
+            let coord = rem % radix;
+            rem /= radix;
+            if let Some(in_axis) = out_to_in[a]
+                && in_dims[in_axis] as usize != 1
+            {
+                base += coord * in_strides[in_axis];
+            }
+        }
+        base
+    };
+
+    let threads = if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN && outer_total >= 2 {
+        crate::arithmetic::work_scaled_threads(total).min(outer_total)
+    } else {
+        1
+    };
+
+    if threads <= 1 {
+        for o in 0..outer_total {
+            let base = base_of(o);
+            out[o * block_len..o * block_len + block_len]
+                .copy_from_slice(&src[base..base + block_len]);
+        }
+        return;
+    }
+
+    let outer_per = outer_total.div_ceil(threads);
+    let base_of = &base_of;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [T] = out;
+        let mut o0 = 0usize;
+        while o0 < outer_total {
+            let o1 = (o0 + outer_per).min(outer_total);
+            let len = (o1 - o0) * block_len;
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            scope.spawn(move || {
+                for (k, o) in (o0..o1).enumerate() {
+                    let base = base_of(o);
+                    blk[k * block_len..k * block_len + block_len]
+                        .copy_from_slice(&src[base..base + block_len]);
+                }
+            });
+            o0 = o1;
+        }
+    });
 }
 
 fn parse_broadcast_target_dims(
@@ -12409,6 +12510,67 @@ fn tile_recursive(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn broadcast_replicate_into_bit_identical_to_serial() {
+        // Each case: (in_dims, target_dims, out_to_in). Output >= gate so the threaded
+        // path engages; compare the threaded `_into` fill to the serial generic replicate.
+        let cases: [(Vec<u32>, Vec<u32>, Vec<Option<usize>>); 3] = [
+            // [C] -> [rows, C], broadcast_dimensions=[1]
+            (vec![1024], vec![16_384, 1024], vec![None, Some(0)]),
+            // [A, C] -> [A, B, C], broadcast_dimensions=[0,2]
+            (
+                vec![4, 1024],
+                vec![4, 2560, 1024],
+                vec![Some(0), None, Some(1)],
+            ),
+            // size-1 stretch: [A,1,C] -> [A,B,C], broadcast_dimensions=[0,1,2]
+            (
+                vec![2, 1, 1024],
+                vec![2, 5000, 1024],
+                vec![Some(0), Some(1), Some(2)],
+            ),
+        ];
+        for (in_dims, target_dims, out_to_in) in cases {
+            let out_rank = target_dims.len();
+            let in_strides =
+                checked_row_major_strides(Primitive::BroadcastInDim, "broadcast_in_dim", &in_dims)
+                    .unwrap();
+            let in_total: usize = in_dims.iter().map(|&d| d as usize).product();
+            let src: Vec<f64> = (0..in_total).map(|i| i as f64 * 0.5 - 7.0).collect();
+            let total: usize = target_dims.iter().map(|&d| d as usize).product();
+            assert!(
+                total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN,
+                "case total {total} below gate — threaded path would not engage"
+            );
+            let serial = broadcast_replicate(
+                total,
+                out_rank,
+                &target_dims,
+                &out_to_in,
+                &in_dims,
+                &in_strides,
+                &src,
+            );
+            let mut threaded = vec![0.0f64; total];
+            broadcast_replicate_into(
+                &mut threaded,
+                out_rank,
+                &target_dims,
+                &out_to_in,
+                &in_dims,
+                &in_strides,
+                &src,
+            );
+            assert_eq!(serial.len(), threaded.len());
+            let sb: Vec<u64> = serial.iter().map(|v| v.to_bits()).collect();
+            let tb: Vec<u64> = threaded.iter().map(|v| v.to_bits()).collect();
+            assert!(
+                sb == tb,
+                "threaded broadcast != serial for target {target_dims:?}"
+            );
+        }
+    }
 
     fn v_f64(data: &[f64]) -> Value {
         Value::Tensor(

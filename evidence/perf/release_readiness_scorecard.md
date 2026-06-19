@@ -362,3 +362,11 @@ Additional cod-a repeat validation environment:
   GB/s > mimalloc warm-span serial ~20-24). mimalloc and threading are COMPLEMENTARY, not
   substitutes; KEEP the threading gate regardless of allocator choice. mimalloc remains a
   modest complementary win only for large allocating ops that are hard to thread.
+
+## CobaltForge - Threaded broadcast: JAX WIN (2026-06-19)
+
+- BroadcastInDim f64/f32 large-output replicate now threaded (calloc'd output + parallel
+  page-faulting): [1024]->[16K/64K,1024] = Rust/JAX 0.27 (3.65-3.76x faster than jax.jit
+  broadcast_to), internal 9.1-9.3x (2.4->~22 GB/s). Bit-identical, guarded. Broadcast is
+  ubiquitous (bias/feature materialization). Other dtypes keep the serial path (calloc needs
+  a concrete element type); easy follow-on.
