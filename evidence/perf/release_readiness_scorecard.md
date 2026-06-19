@@ -385,3 +385,10 @@ Additional cod-a repeat validation environment:
   12.3-13.0x (2.2 -> 27.6-28.9 GB/s). Bit-identical (incl. non-square), guarded. "Tiling
   regresses" was about cache-blocking, not threading — this keeps tiling and adds threads.
   Other dtypes / N-D transpose are easy follow-ons.
+
+## CobaltForge - Threaded gather (f64/f32 embedding lookup): JAX WIN (2026-06-19)
+
+- Contiguous-row gather (embedding lookup) threaded (calloc'd output + parallel row memcpy):
+  f32 [16384,1024] nidx 16384/65536 = Rust/JAX 0.57/0.48 (1.74-2.07x faster than jax.jit gather),
+  internal 6.5-8.4x (2.2 -> 14-18 GB/s). Bit-identical (incl. OOB fill), guarded. Embedding
+  lookup is ubiquitous in NLP. Other dtypes / strided gather are easy follow-ons.

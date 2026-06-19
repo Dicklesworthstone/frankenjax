@@ -1638,3 +1638,30 @@ ends are not rediscovered without new evidence.
 - Retry predicate: extend `transpose_2d_into` to i64/u32/u64/half/complex rank-2 arms (concrete
   zero -> calloc) and thread the N-D `transpose_general` outer odometer the same way (base_of
   decomposition, like broadcast). Same campaign principle.
+
+## CobaltForge - Threaded f64/f32 contiguous gather (embedding lookup) for DRAM-bound (JAX WIN)
+
+- Lever: the contiguous full-row gather (embedding lookup, slice_sizes [1,DIM]) built its large
+  output via a serial per-index `extend_from_slice`, page-fault-bound at ~2.1-2.2 GB/s. New
+  `gather_contiguous_into<T>` fills a caller-allocated calloc'd output by splitting the index
+  range across scoped threads (each does its rows' memcpy / OOB-fill). Wired into the f64/f32
+  contiguous arms above `CHEAP_BINARY_PARALLEL_MIN`; pre-validates bounds and returns false
+  (caller falls to the serial path -> identical error) if any in-bounds index would exceed src.
+- Bit-identity: index i -> out[i*slice_elems..], Some(idx)->src row copy, None->fill, exactly the
+  serial contiguous copy. Guarded by `gather_contiguous_into_bit_identical_to_serial` (mix of
+  in-bounds Some + OOB None/fill at total >= gate), bit-for-bit vs a serial reference.
+- Conformance: `fj-lax --lib` 1502 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, [16384,1024] f32 table, best-of-15) + JAX
+  (`jax.jit(lambda t,i: t[i])` x64, /tmp/jax_g.py):
+
+  | nidx (out elems) | serial (before) | threaded (after) | internal | JAX | Rust/JAX |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 16384 (16.8M) | 31161 us (2.2 GB/s) | 4781 us (14.0 GB/s) | 6.52x | 8336 us (8.1 GB/s) | 0.57x (1.74x FASTER) |
+  | 65536 (67M) | 125562 us (2.1 GB/s) | 15007 us (17.9 GB/s) | 8.37x | 31003 us (8.7 GB/s) | 0.48x (2.07x FASTER) |
+
+- Decision: KEEP. Embedding gather is huge in NLP; before, Rust LOST to JAX by ~3.7-4x; after,
+  DOMINATES by 1.74-2.07x. (Gather hits 14-18 GB/s vs ~34 for streaming ops — random table reads
+  miss cache — but still beats JAX, which is also gather-cache-bound at ~8 GB/s.) Same gate.
+- Retry predicate: extend `gather_contiguous_into` to i64/i32/u32/u64/half/complex contiguous
+  arms (concrete-zero calloc) and to the strided `gather_window_blocks` (per-index independent;
+  same index-range split). Same campaign principle.

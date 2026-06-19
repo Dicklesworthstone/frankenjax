@@ -2699,6 +2699,76 @@ fn gather_fill_literal(dtype: DType) -> Literal {
 /// overflow / out-of-bounds read (caller maps to an error). Bit-identical to the
 /// per-element odometer: same flat indices, same row-major order, same OOB fill.
 #[allow(clippy::too_many_arguments)]
+/// Threaded contiguous-row gather (embedding lookup) into a PRE-ALLOCATED `out` (caller
+/// allocates `vec![<concrete zero>; total]` = calloc'd zero pages; every element is then
+/// overwritten). Index `i` produces `out[i*slice_elems .. (i+1)*slice_elems]`: a copy of
+/// `src[idx*slice_elems ..]` for `Some(idx)`, or `slice_elems` copies of `fill` for `None`
+/// (OOB). Splits the index range across scoped threads -> parallel page-faults the fresh
+/// output and parallelizes the row memcpys (serial is ~2.2 GB/s, page-fault bound).
+/// Returns `false` (caller falls back to the serial path, which raises the proper error) if
+/// any in-bounds index would exceed `src` — so bounds behaviour is unchanged. Bit-for-bit
+/// identical to the serial contiguous copy.
+fn gather_contiguous_into<T: Copy + Send + Sync>(
+    out: &mut [T],
+    src: &[T],
+    resolved: &[Option<usize>],
+    fill: T,
+    slice_elems: usize,
+) -> bool {
+    if slice_elems == 0 || resolved.is_empty() {
+        return false;
+    }
+    // Pre-validate every Some(idx): the serial path errors on the first OOB; if any is OOB
+    // we bail to it so the identical error is produced (no partial threaded writes kept).
+    for &r in resolved {
+        if let Some(idx) = r {
+            let in_bounds = idx
+                .checked_mul(slice_elems)
+                .and_then(|base| base.checked_add(slice_elems))
+                .is_some_and(|end| end <= src.len());
+            if !in_bounds {
+                return false;
+            }
+        }
+    }
+    let threads = crate::arithmetic::work_scaled_threads(out.len()).min(resolved.len());
+    if threads <= 1 {
+        return false;
+    }
+    let idx_per = resolved.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [T] = out;
+        let mut r0 = 0usize;
+        while r0 < resolved.len() {
+            let r1 = (r0 + idx_per).min(resolved.len());
+            let len = (r1 - r0) * slice_elems;
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let sub = &resolved[r0..r1];
+            scope.spawn(move || {
+                let mut pos = 0usize;
+                for &r in sub {
+                    match r {
+                        Some(idx) => {
+                            let base = idx * slice_elems;
+                            blk[pos..pos + slice_elems]
+                                .copy_from_slice(&src[base..base + slice_elems]);
+                        }
+                        None => {
+                            for x in &mut blk[pos..pos + slice_elems] {
+                                *x = fill;
+                            }
+                        }
+                    }
+                    pos += slice_elems;
+                }
+            });
+            r0 = r1;
+        }
+    });
+    true
+}
+
 fn gather_window_blocks<T: Copy>(
     src: &[T],
     resolved: &[Option<usize>],
@@ -2920,6 +2990,17 @@ pub(crate) fn eval_gather(
         if operand.dtype == DType::F64
             && let Some(src) = operand.elements.as_f64_slice()
         {
+            // Threaded contiguous gather above the DRAM-bound gate (calloc'd output +
+            // parallel row memcpy); bit-identical, falls through to serial on OOB/small.
+            if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+                let mut out = vec![0.0f64; total];
+                if gather_contiguous_into(&mut out, src, &resolved, f64::NAN, slice_elems) {
+                    return Ok(Value::Tensor(TensorValue::new_f64_values(
+                        Shape { dims: out_dims },
+                        out,
+                    )?));
+                }
+            }
             dense_contiguous_gather!(src, f64::NAN, TensorValue::new_f64_values);
         }
         // Dense F32 gather (the embedding-lookup case: gather rows of an
@@ -2930,6 +3011,15 @@ pub(crate) fn eval_gather(
         if operand.dtype == DType::F32
             && let Some(src) = operand.elements.as_f32_slice()
         {
+            if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+                let mut out = vec![0.0f32; total];
+                if gather_contiguous_into(&mut out, src, &resolved, f32::NAN, slice_elems) {
+                    return Ok(Value::Tensor(TensorValue::new_f32_values(
+                        Shape { dims: out_dims },
+                        out,
+                    )?));
+                }
+            }
             dense_contiguous_gather!(src, f32::NAN, TensorValue::new_f32_values);
         }
         if operand.dtype == DType::I64
@@ -12652,6 +12742,43 @@ fn tile_recursive(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn gather_contiguous_into_bit_identical_to_serial() {
+        // Embedding-style row gather, total >= gate, with a mix of in-bounds Some(idx) and
+        // OOB None (fill) entries; compare the threaded helper to a serial reference.
+        let vocab = 4096usize;
+        let slice_elems = 256usize;
+        let nidx = 33_000usize; // nidx*slice_elems = 8.448M >= gate
+        let total = nidx * slice_elems;
+        assert!(total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN);
+        let src: Vec<f32> = (0..vocab * slice_elems)
+            .map(|i| (i as f32) * 1e-4 - 3.0)
+            .collect();
+        let resolved: Vec<Option<usize>> = (0..nidx)
+            .map(|i| {
+                if i % 97 == 0 {
+                    None // OOB -> fill
+                } else {
+                    Some((i * 1301) % vocab)
+                }
+            })
+            .collect();
+        let fill = f32::NAN;
+        // serial reference
+        let mut want: Vec<f32> = Vec::with_capacity(total);
+        for &r in &resolved {
+            match r {
+                Some(idx) => want.extend_from_slice(&src[idx * slice_elems..(idx + 1) * slice_elems]),
+                None => want.extend(std::iter::repeat_n(fill, slice_elems)),
+            }
+        }
+        let mut got = vec![0.0f32; total];
+        assert!(gather_contiguous_into(&mut got, &src, &resolved, fill, slice_elems));
+        let gb: Vec<u32> = got.iter().map(|v| v.to_bits()).collect();
+        let wb: Vec<u32> = want.iter().map(|v| v.to_bits()).collect();
+        assert!(gb == wb, "threaded gather != serial");
+    }
 
     #[test]
     fn transpose_2d_into_bit_identical_to_serial() {
