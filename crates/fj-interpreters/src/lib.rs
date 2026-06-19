@@ -1646,6 +1646,27 @@ fn try_fuse_elementwise_chain_f64(
                 break;
             };
             (CheapOp::Mul, a, a)
+        } else if eqn.primitive == Primitive::Reciprocal {
+            // Reciprocal(x) == Div(1, x): eval_reciprocal is eval_unary_elementwise(|x| 1.0/x),
+            // and the f64 fused Div computes 1.0/x identically — so emit Div(Scalar(1.0), x),
+            // reusing the proven Div machinery. The classify guard requires a dense-f64 input,
+            // so an i64/other input (whose eval_reciprocal widens to f64) bails to generic.
+            if eqn.inputs.len() != 1 {
+                break;
+            }
+            let Some(b) = classify_fusion_operand(
+                &eqn.inputs[0],
+                chain_var,
+                env,
+                &mut ext,
+                &mut ext_vars,
+                &mut shape,
+            ) else {
+                ext.truncate(ext_mark);
+                ext_vars.truncate(vars_mark);
+                break;
+            };
+            (CheapOp::Div, FOperand::Scalar(1.0), b)
         } else {
             let Some(op) = cheap_op(eqn.primitive) else {
                 break;
@@ -2177,6 +2198,26 @@ fn try_fuse_elementwise_chain_f32(
                 break;
             };
             (CheapOp::Mul, a, a)
+        } else if eqn.primitive == Primitive::Reciprocal {
+            // Reciprocal(x) == Div(1, x); the f32 fused Div uses the f32->f64->f32
+            // contract matching eval_reciprocal (eval_unary_elementwise f64-widen). See
+            // the f64 builder. Dense-f32 input required (else bails to generic).
+            if eqn.inputs.len() != 1 {
+                break;
+            }
+            let Some(b) = classify_f32_fusion_operand(
+                &eqn.inputs[0],
+                chain_var,
+                env,
+                &mut ext,
+                &mut ext_vars,
+                &mut shape,
+            ) else {
+                ext.truncate(ext_mark);
+                ext_vars.truncate(vars_mark);
+                break;
+            };
+            (CheapOp::Div, F32Operand::Scalar(1.0), b)
         } else {
             let Some(op) = cheap_op(eqn.primitive) else {
                 break;
