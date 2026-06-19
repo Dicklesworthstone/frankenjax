@@ -561,3 +561,28 @@ ends are not rediscovered without new evidence.
   memory-level-parallelism (interleaved multi-row gather) — blocked by forbid-unsafe
   for raw prefetch intrinsics; would need a safe MLP-exposing restructure. NOT more
   block-copy. Do NOT retry per-element or naive gather.
+
+## frankenjax-7eqrs - Dense Complex Constructor lax.complex(re,im) (de-box, near-parity)
+
+- Lever: dense complex constructor zips two f64 slices into packed (re,im) storage
+  via new_complex_values (FFT/signal real+imag combine), vs the boxed per-Literal
+  path. Workload: re[1M]+im[1M] f64 -> complex128[1M] (32MB traffic).
+- Conformance GUARD: GREEN. `complex_ctor_gauntlet.rs` asserts dense == boxed.
+- Measured evidence (2026-06-19, rch Criterion sample 30; JAX jax.lax.complex CPU x64):
+
+  | Arm | median | vs boxed | vs JAX |
+  | --- | ---: | ---: | ---: |
+  | dense (new_complex_values) | 775.72 us | 25.2x faster | 1.56x slower |
+  | boxed (per-Literal) | 19.558 ms | baseline | ~39x slower |
+  | JAX jit lax.complex | 497.34 us (cv 6%) | - | - |
+
+- Decision: KEEP. 25.2x internal de-box win and ~1.56x off JAX (NEAR-PARITY,
+  bandwidth-bound at 41 vs 64 GB/s — the same store-throughput gap as broadcast).
+- REFINES the de-box category split: de-box of DATA-MOVEMENT/simple ops (complex
+  ctor 1.56x, integer_pow-after-v*v-fix 1.40x) APPROACHES JAX (bandwidth-bound);
+  de-box of HEAVY-PER-LANE ops (clamp half 53-128x JAX loss, mcqr.106/.107) does
+  NOT — there the per-lane decode/encode/compute dominates, not the boxing. So
+  "de-box helps reach JAX" iff the op is bandwidth-bound, not per-lane-compute-bound.
+- Retry predicate: complex ctor residual 1.56x is store throughput (same as
+  broadcast) — SIMD/streaming stores, not algorithm. Conj/real/imag (1ylsj) and
+  complex elementwise (same dense storage) expected to behave the same; KEEP.

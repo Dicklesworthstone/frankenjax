@@ -50,12 +50,16 @@ Additional current clamp gauntlet environment:
 | frankenjax-hfq7o | `integer_pow2_f32_1m` (v*v fix) | 169.61 us | 121.1 us mean | 1.400 | Rust 1.40x slower (was 21.8x) |
 | frankenjax-idunl | `slice_crop_1024x1024_to_512x512_f32` (block-copy) | 45.97 us | 44.17 us mean | 1.041 | Rust 1.04x slower (TIE; 6.1x vs naive) |
 | (dense contiguous gather) | `gather_embed_16384x768_take4096_f32` | 1.145 ms | 271.3 us mean | 4.220 | Rust 4.22x slower (random-read-bound; 4.05x vs naive) |
+| frankenjax-7eqrs | `complex_ctor_re_im_to_c128_1m` (de-box) | 775.72 us | 497.34 us mean | 1.561 | Rust 1.56x slower (near-parity; 25.2x vs boxed) |
 
 ## Readiness
 
-- JAX domination score for this measured set: 28/100.
-- Basis: 3 of 18 measured realistic workloads beat warmed original JAX CPU; slice
-  TIES JAX (1.04x). Sharpened pattern from 4 measured structural ops: the JAX gap
+- JAX domination score for this measured set: 30/100.
+- Basis: 3 of 19 measured realistic workloads beat warmed original JAX CPU; slice
+  TIES JAX (1.04x); complex constructor near-parity (1.56x). The de-box category
+  SPLITS: de-box of bandwidth-bound/simple ops (complex ctor 1.56x, integer_pow
+  f32 1.40x) approaches JAX, but de-box of heavy-per-lane ops (clamp half 53-128x)
+  does not — there the per-lane work, not boxing, dominates. Sharpened pattern from 4 measured structural ops: the JAX gap
   is set by the READ access pattern, not the copy:
     - SEQUENTIAL read (slice 1.04x TIE, broadcast 1.59x) — near-parity.
     - RANDOM/STRIDED read (transpose 4.24x, gather/embedding 4.22x) — ~4x loss.
