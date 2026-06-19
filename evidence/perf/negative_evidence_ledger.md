@@ -3,6 +3,35 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-cc-threaded-integer-axis-reduce - Threaded INTEGER axis-reduce: trailing JAX WIN, leading 2.13x (bit-exact)
+
+- Date: 2026-06-19
+- Agent: cc / CobaltForge
+- Lever: thread the dense INTEGER axis-reduce (separate `int_op` path, not the float
+  `dense_f64_axis_reduce`). Two bit-exact strategies, both exploiting integer
+  associativity:
+  - TRAILING axis (`inner==1`, e.g. sum over last axis): outputs are independent
+    contiguous blocks -> thread over OUTPUT rows (contiguous reads).
+  - LEADING axis (`inner>1, outer==1`, e.g. sum over axis 0): column accumulation.
+    Integer add is ASSOCIATIVE, so thread the REDUCE dimension with CONTIGUOUS reads
+    (each thread folds a row-band into a local `inner`-wide partial, combine partials
+    in chunk order). This is the CONTIGUOUS win the float column reduce can't get
+    (float reassociates -> only strided column threading, see threaded-leading-axis-reduce).
+- Status: SHIPPED (measured, [16384,1024] i64, same-load at load ~3):
+  - axis 1 (trailing): serial 8.77 ms -> threaded 4.34 ms (2.02x). vs JAX 5.20 ms:
+    **Rust/JAX 0.83 = Rust 1.20x FASTER (WIN).**
+  - axis 0 (leading): serial 9.53 ms -> threaded 4.47 ms (2.13x). vs JAX 3.55 ms:
+    Rust/JAX 1.26 — still a small JAX loss but the gap shrank from 2.68x to 1.26x
+    (contiguous reduce-chunking; the residual is partial-combine + BW efficiency).
+  - 8-thread cap (read-bound saturation, consistent with the other reduce levers).
+- Bit-identity guard: `threaded_integer_axis_reduce_bit_identical_to_serial` (>= gate,
+  both axes incl i64 wrap). Reduce tests 137/0, clippy clean. Benches
+  `eval/reduce_sum_16kx1k_axis{0,1}_i64`; reproducer
+  `benchmarks/jax_comparison/reduce_int_axes_gauntlet.py`.
+- Retry predicate: middle-axis integer reduce (`inner>1 && outer>1`) stays serial
+  (less common; thread over `outer` is the follow-on if a profile shows it). Do not
+  raise the 8-thread cap (read-bound).
+
 ## frankenjax-cc-threaded-leading-axis-reduce - Threaded sum-over-axis-0: 1.50x bit-exact (narrows JAX loss 2.38x -> 1.59x)
 
 - Date: 2026-06-19

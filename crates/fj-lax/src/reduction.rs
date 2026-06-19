@@ -2291,14 +2291,89 @@ pub(crate) fn eval_reduce_axes(
                 let block =
                     dense_i64.zip(contiguous_reduce_block(&tensor.shape.dims, &axes_sorted));
                 if let Some((values, (outer, reduce, inner))) = block {
+                    let par = values.len() >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+                        && crate::arithmetic::work_scaled_threads(values.len()) > 1;
                     if inner == 1 {
-                        for (o, slot) in result.iter_mut().enumerate() {
-                            let base = o * reduce;
-                            let mut acc = int_init;
-                            for &v in &values[base..base + reduce] {
-                                acc = int_op(acc, v);
+                        // Trailing-axis integer reduce: each output element folds one
+                        // contiguous `reduce`-run; the outputs are INDEPENDENT, so thread
+                        // over them (contiguous reads, bit-identical — each block keeps
+                        // its ascending fold). A read-bound pass saturates DRAM at ~8 cores.
+                        let outer_n = result.len();
+                        if par && outer_n > 1 {
+                            let threads =
+                                crate::arithmetic::work_scaled_threads(values.len()).min(outer_n).min(8);
+                            let rows_per = outer_n.div_ceil(threads);
+                            let op_ref = &int_op;
+                            std::thread::scope(|scope| {
+                                let mut res_rest: &mut [i64] = result.as_mut_slice();
+                                let mut o0 = 0usize;
+                                while o0 < outer_n {
+                                    let rows = rows_per.min(outer_n - o0);
+                                    let (res_blk, res_tail) = res_rest.split_at_mut(rows);
+                                    res_rest = res_tail;
+                                    let vblk = &values[o0 * reduce..(o0 + rows) * reduce];
+                                    o0 += rows;
+                                    scope.spawn(move || {
+                                        for (r, slot) in res_blk.iter_mut().enumerate() {
+                                            let mut acc = int_init;
+                                            for &v in &vblk[r * reduce..r * reduce + reduce] {
+                                                acc = op_ref(acc, v);
+                                            }
+                                            *slot = acc;
+                                        }
+                                    });
+                                }
+                            });
+                        } else {
+                            for (o, slot) in result.iter_mut().enumerate() {
+                                let base = o * reduce;
+                                let mut acc = int_init;
+                                for &v in &values[base..base + reduce] {
+                                    acc = int_op(acc, v);
+                                }
+                                *slot = acc;
                             }
-                            *slot = acc;
+                        }
+                    } else if outer == 1 && par && reduce > 1 {
+                        // Leading-axis integer reduce (sum over axis 0): column
+                        // accumulation over `reduce` rows. Integer add/etc. is ASSOCIATIVE,
+                        // so unlike the float column reduce we can thread the REDUCE
+                        // dimension with CONTIGUOUS reads: each thread folds a row-band into
+                        // a local `inner`-wide partial, then combine partials in chunk order
+                        // (== ascending). Bit-identical (associativity); contiguous beats the
+                        // strided column threading the float path is limited to.
+                        let threads =
+                            crate::arithmetic::work_scaled_threads(values.len()).min(reduce).min(8);
+                        let rows_per = reduce.div_ceil(threads);
+                        let op_ref = &int_op;
+                        let partials: Vec<Vec<i64>> = std::thread::scope(|scope| {
+                            let mut handles = Vec::new();
+                            let mut r0 = 0usize;
+                            while r0 < reduce {
+                                let r1 = (r0 + rows_per).min(reduce);
+                                let vchunk = &values[r0 * inner..r1 * inner];
+                                let rows = r1 - r0;
+                                r0 = r1;
+                                handles.push(scope.spawn(move || {
+                                    let mut local = vec![int_init; inner];
+                                    for r in 0..rows {
+                                        let in_row = &vchunk[r * inner..r * inner + inner];
+                                        for (slot, &v) in local.iter_mut().zip(in_row) {
+                                            *slot = op_ref(*slot, v);
+                                        }
+                                    }
+                                    local
+                                }));
+                            }
+                            handles
+                                .into_iter()
+                                .map(|h| h.join().expect("reduce partial thread"))
+                                .collect()
+                        });
+                        for partial in &partials {
+                            for (slot, &v) in result.iter_mut().zip(partial.iter()) {
+                                *slot = int_op(*slot, v);
+                            }
                         }
                     } else {
                         for o in 0..outer {
@@ -3744,6 +3819,60 @@ mod tests {
         }
         let want: Vec<u64> = want.iter().map(|v| v.to_bits()).collect();
         assert_eq!(got, want, "threaded leading-axis reduce != serial column fold");
+    }
+
+    #[test]
+    fn threaded_integer_axis_reduce_bit_identical_to_serial() {
+        // Large 2D i64 reduce over axis 0 (leading -> reduce-dim chunking) and axis 1
+        // (trailing -> output threading). Integer reduce is associative, so both threaded
+        // paths MUST equal the serial column/block fold exactly (incl. i64 wraparound).
+        // rows*cols exceeds the 1<<23 gate so the threaded paths engage.
+        let (rows, cols) = (8192usize, 1100usize); // 9_011_200 > 8_388_608 gate
+        let data: Vec<i64> = (0..(rows * cols) as i64)
+            .map(|i| i.wrapping_mul(6_364_136_223_846_793_005) ^ (i << 7))
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        // axis 0 (leading): out[c] = sum_r data[r*cols + c]
+        let mut p0 = BTreeMap::new();
+        p0.insert("axes".to_string(), "0".to_string());
+        let got0 = crate::eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &p0)
+            .unwrap();
+        let got0: Vec<i64> = match got0 {
+            Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
+            _ => panic!(),
+        };
+        let mut want0 = vec![0i64; cols];
+        for r in 0..rows {
+            for c in 0..cols {
+                want0[c] = want0[c].wrapping_add(data[r * cols + c]);
+            }
+        }
+        assert_eq!(got0, want0, "axis0 threaded leading reduce != serial");
+        // axis 1 (trailing): out[r] = sum_c data[r*cols + c]
+        let mut p1 = BTreeMap::new();
+        p1.insert("axes".to_string(), "1".to_string());
+        let got1 = crate::eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &p1)
+            .unwrap();
+        let got1: Vec<i64> = match got1 {
+            Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
+            _ => panic!(),
+        };
+        let want1: Vec<i64> = (0..rows)
+            .map(|r| {
+                data[r * cols..r * cols + cols]
+                    .iter()
+                    .fold(0i64, |a, &v| a.wrapping_add(v))
+            })
+            .collect();
+        assert_eq!(got1, want1, "axis1 threaded trailing reduce != serial");
     }
 
     #[test]

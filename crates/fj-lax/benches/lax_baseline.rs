@@ -2203,6 +2203,27 @@ fn bench_reduce_sum_16k_x_1k_axis0_f64(c: &mut Criterion) {
     });
 }
 
+// reduce_sum over a [16384, 1024] i64 tensor along axis 0 (leading) and axis 1
+// (trailing). Integer reduce is ASSOCIATIVE, so these can thread bit-exactly (incl
+// contiguous reduce-dimension chunking for the leading case).
+fn bench_reduce_sum_16k_x_1k_i64_axes(c: &mut Criterion) {
+    let (rows, cols) = (16_384usize, 1_024usize);
+    let data: Vec<i64> = (0..(rows * cols) as i64).map(|i| (i % 977) - 488).collect();
+    let input = Value::Tensor(
+        TensorValue::new_i64_values(Shape { dims: vec![rows as u32, cols as u32] }, data).unwrap(),
+    );
+    let mut p0 = BTreeMap::new();
+    p0.insert("axes".to_string(), "0".to_string());
+    c.bench_function("eval/reduce_sum_16kx1k_axis0_i64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &p0))
+    });
+    let mut p1 = BTreeMap::new();
+    p1.insert("axes".to_string(), "1".to_string());
+    c.bench_function("eval/reduce_sum_16kx1k_axis1_i64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &p1))
+    });
+}
+
 fn bench_reduce_sum_64k_i64_literal_reference(c: &mut Criterion) {
     let elements: Vec<Literal> = (0..LARGE_ELEMENTWISE_LEN as i64)
         .map(Literal::I64)
@@ -6505,6 +6526,7 @@ criterion_group!(
     bench_reduce_sum_16m_f64_full,
     bench_reduce_sum_16m_i64_full,
     bench_reduce_sum_16k_x_1k_axis0_f64,
+    bench_reduce_sum_16k_x_1k_i64_axes,
     bench_reduce_sum_64k_i64_literal_reference,
     bench_reduce_sum_64k_f32_dense,
     bench_reduce_sum_64k_f32_literal_reference,
