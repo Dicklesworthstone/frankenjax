@@ -2795,8 +2795,6 @@ fn try_fuse_elementwise_chain_i64(
 enum HalfOperand {
     Chain,
     Ext(usize),
-    RowBroadcast(usize),
-    ColBroadcast { idx: usize, cols: usize },
     Scalar(u16),
 }
 
@@ -2917,25 +2915,7 @@ fn classify_half_fusion_operand<'e>(
                     match shape {
                         None => *shape = Some(t.shape.clone()),
                         Some(s) if *s == t.shape => {}
-                        Some(s) => {
-                            // Trailing-axis [C] row broadcast or [...,1] col broadcast
-                            // (bf16 bias/scale add [B,S,D]+[D]) — shape detectors shared
-                            // with the f64/f32 scanners; values read with the same half
-                            // widen/round as the Ext path, bit-identical.
-                            if row_broadcast_len(s, &t.shape).is_some() {
-                                let idx = ext.len();
-                                ext.push(slice);
-                                ext_vars.push(*v);
-                                return Some(HalfOperand::RowBroadcast(idx));
-                            }
-                            if let Some(cols) = col_broadcast_cols(s, &t.shape) {
-                                let idx = ext.len();
-                                ext.push(slice);
-                                ext_vars.push(*v);
-                                return Some(HalfOperand::ColBroadcast { idx, cols });
-                            }
-                            return None;
-                        }
+                        Some(_) => return None,
                     }
                     let idx = ext.len();
                     ext.push(slice);
@@ -2944,109 +2924,6 @@ fn classify_half_fusion_operand<'e>(
                 }
             }
         }
-    }
-}
-
-/// Seed `out` from a half row-broadcast vector (raw half bits): element `(…, c)`
-/// takes `row[c]`, `c` cycling `0..C` from the chunk's flattened `base`. Mirrors
-/// `seed_f32_row_broadcast` (pure bit copy, no arithmetic).
-#[inline]
-fn seed_half_row_broadcast(out: &mut [u16], row: &[u16], base: usize) {
-    if out.is_empty() {
-        return;
-    }
-    let row_len = row.len();
-    let mut done = 0;
-    let mut col = base % row_len;
-    while done < out.len() {
-        let take = (row_len - col).min(out.len() - done);
-        out[done..done + take].copy_from_slice(&row[col..col + take]);
-        done += take;
-        col = 0;
-    }
-}
-
-/// Apply a half row-broadcast NON-chain operand: `out[i] OP row[i % C]`, widening
-/// both to f64 and rounding to half — exactly `apply_half_fusion_other`'s Ext arm
-/// with row-cycled indexing. Mirrors `apply_f32_row_broadcast_other`.
-#[inline]
-fn apply_half_row_broadcast_other(
-    dt: DType,
-    out: &mut [u16],
-    op: CheapOp,
-    chain_left: bool,
-    row: &[u16],
-    base: usize,
-) {
-    if out.is_empty() {
-        return;
-    }
-    let row_len = row.len();
-    let mut done = 0;
-    let mut col = base % row_len;
-    while done < out.len() {
-        let take = (row_len - col).min(out.len() - done);
-        let out_part = &mut out[done..done + take];
-        let row_part = &row[col..col + take];
-        match chain_left {
-            true => out_part.iter_mut().zip(row_part).for_each(|(o, e)| {
-                *o = half_fused_binary(dt, op, half_fusion_widen(dt, *o), half_fusion_widen(dt, *e))
-            }),
-            false => out_part.iter_mut().zip(row_part).for_each(|(o, e)| {
-                *o = half_fused_binary(dt, op, half_fusion_widen(dt, *e), half_fusion_widen(dt, *o))
-            }),
-        }
-        done += take;
-        col = 0;
-    }
-}
-
-/// Seed `out` from a half col-broadcast vector: element flat-index `i` takes
-/// `col_values[i / C]`. Mirrors `seed_f32_col_broadcast` (pure bit fill).
-#[inline]
-fn seed_half_col_broadcast(out: &mut [u16], col_values: &[u16], cols: usize, base: usize) {
-    let mut done = 0;
-    let mut linear = base;
-    while done < out.len() {
-        let row = linear / cols;
-        let col = linear % cols;
-        let take = (cols - col).min(out.len() - done);
-        out[done..done + take].fill(col_values[row]);
-        done += take;
-        linear += take;
-    }
-}
-
-/// Apply a half col-broadcast NON-chain operand: `out[i] OP col_values[i / C]`,
-/// widening both to f64 and rounding to half. Mirrors `apply_f32_col_broadcast_other`.
-#[inline]
-fn apply_half_col_broadcast_other(
-    dt: DType,
-    out: &mut [u16],
-    op: CheapOp,
-    chain_left: bool,
-    col_values: &[u16],
-    cols: usize,
-    base: usize,
-) {
-    let mut done = 0;
-    let mut linear = base;
-    while done < out.len() {
-        let row = linear / cols;
-        let col = linear % cols;
-        let take = (cols - col).min(out.len() - done);
-        let scalar = half_fusion_widen(dt, col_values[row]);
-        let out_part = &mut out[done..done + take];
-        match chain_left {
-            true => out_part
-                .iter_mut()
-                .for_each(|o| *o = half_fused_binary(dt, op, half_fusion_widen(dt, *o), scalar)),
-            false => out_part
-                .iter_mut()
-                .for_each(|o| *o = half_fused_binary(dt, op, scalar, half_fusion_widen(dt, *o))),
-        }
-        done += take;
-        linear += take;
     }
 }
 
@@ -3096,12 +2973,6 @@ fn apply_half_fusion_other(
                 }),
             }
         }
-        HalfOperand::RowBroadcast(i) => {
-            apply_half_row_broadcast_other(dt, out, op, chain_left, ext[i], base);
-        }
-        HalfOperand::ColBroadcast { idx, cols } => {
-            apply_half_col_broadcast_other(dt, out, op, chain_left, ext[idx], cols, base);
-        }
         HalfOperand::Chain => {}
     }
 }
@@ -3134,10 +3005,6 @@ fn apply_half_fusion_chunk(
     let s0 = &tape[0];
     match s0.a {
         HalfOperand::Ext(i) => out.copy_from_slice(&ext[i][base..base + out.len()]),
-        HalfOperand::RowBroadcast(i) => seed_half_row_broadcast(out, ext[i], base),
-        HalfOperand::ColBroadcast { idx, cols } => {
-            seed_half_col_broadcast(out, ext[idx], cols, base)
-        }
         HalfOperand::Scalar(bits) => out.fill(bits),
         HalfOperand::Chain => {}
     }
