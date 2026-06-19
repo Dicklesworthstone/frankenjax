@@ -1581,3 +1581,30 @@ ends are not rediscovered without new evidence.
   concrete-zero vec -> calloc, so the same threaded fill applies) when those dtypes show up
   large. Confirms the general principle: every large fresh-output op wins from calloc +
   parallel page-faulting; threading beats both serial-glibc and mimalloc.
+
+## CobaltForge - Threaded f64<->f32 convert (ConvertElementType) for DRAM-bound arrays (JAX WIN)
+
+- Lever: the hot mixed-precision casts f64->f32 (downcast) and f32->f64 (upcast) built their
+  large output via a serial `.iter().map(cast).collect()`, page-fault-bound at ~5.9 / ~3.4 GB/s.
+  New `threaded_convert_into<S,D>` fills a caller-allocated calloc'd output
+  (`vec![0.0f32; n]` / `vec![0.0f64; n]`) by splitting into scoped-thread chunks applying the
+  per-element cast. Wired as early returns in the f64-source (->F32) and f32-source (->F64) arms
+  of `eval_convert_element_type`, above `CHEAP_BINARY_PARALLEL_MIN`. Other casts keep serial
+  (each could thread the same way — caller allocates a concrete-zero vec for calloc).
+- Bit-identity: per-element `v as f32` / `f64::from(v)`, lane-independent => identical to serial.
+  Guarded by `threaded_convert_bit_identical_to_serial` (NaN/±inf/±0, both directions).
+- Conformance: `fj-lax --lib` 1500 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, best-of-20) + JAX (`x.astype(...)` x64, /tmp/jax_conv.py):
+
+  | cast | serial (before) | threaded (after) | internal | JAX | Rust/JAX |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | f64->f32 16M | 32280 us (5.9 GB/s) | 5328 us (36.0 GB/s) | 6.06x | 11422 us | 0.47x (2.14x FASTER) |
+  | f64->f32 64M | 129841 us (5.9 GB/s) | 19965 us (38.5 GB/s) | 6.50x | 32748 us | 0.61x (1.64x FASTER) |
+  | f32->f64 16M | 55907 us (3.4 GB/s) | 6800 us (28.2 GB/s) | 8.22x | 13499 us | 0.50x (1.99x FASTER) |
+  | f32->f64 64M | 226888 us (3.4 GB/s) | 26645 us (28.8 GB/s) | 8.51x | 58869 us | 0.45x (2.21x FASTER) |
+
+- Decision: KEEP. Mixed-precision casts are ubiquitous; before, Rust LOST to JAX by 1.6-4.2x;
+  after, Rust DOMINATES by 1.64-2.21x. Same gate; small casts stay serial.
+- Retry predicate: extend the same calloc+threaded fill to the other hot casts (f64->i32/i64
+  quantization, f32->i32, half<->f32) — each allocates a concrete-zero output so the same
+  helper applies. Confirms the campaign principle across yet another op family.

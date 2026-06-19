@@ -370,3 +370,10 @@ Additional cod-a repeat validation environment:
   broadcast_to), internal 9.1-9.3x (2.4->~22 GB/s). Bit-identical, guarded. Broadcast is
   ubiquitous (bias/feature materialization). Other dtypes keep the serial path (calloc needs
   a concrete element type); easy follow-on.
+
+## CobaltForge - Threaded convert (f64<->f32): JAX WIN (2026-06-19)
+
+- ConvertElementType hot casts threaded (calloc'd output + parallel page-faulting):
+  f64->f32 = Rust/JAX 0.47-0.61 (1.64-2.14x faster), f32->f64 = 0.45-0.50 (1.99-2.21x faster);
+  internal 6.0-8.5x (5.9/3.4 -> 28-38 GB/s). Bit-identical, guarded. Mixed-precision casts are
+  everywhere. Other casts (int/half) are easy follow-ons (same calloc+thread helper).

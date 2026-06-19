@@ -4492,6 +4492,39 @@ fn convert_bool_source_dense(
     Ok(Some(Value::Tensor(tv.map_err(EvalError::InvalidTensor)?)))
 }
 
+/// Threaded element-cast into a PRE-ALLOCATED `out` slice (caller allocates
+/// `vec![<concrete zero>; n]` = calloc'd zero pages). Splits into contiguous chunks on
+/// scoped threads, each applying `f` per element. Lane-independent => bit-for-bit identical
+/// to the serial `src.iter().map(f).collect()`. Above [`CHEAP_BINARY_PARALLEL_MIN`] this
+/// parallel-faults the fresh output (~6 -> ~22-34 GB/s), the same lever as the elementwise
+/// and broadcast paths; below the gate the caller uses the serial map.
+fn threaded_convert_into<S: Copy + Send + Sync, D: Send>(
+    out: &mut [D],
+    src: &[S],
+    threads: usize,
+    f: impl Fn(S) -> D + Sync,
+) {
+    let n = out.len();
+    let chunk = n.div_ceil(threads);
+    let f = &f;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [D] = out;
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                for (i, o) in blk.iter_mut().enumerate() {
+                    *o = f(src[s + i]);
+                }
+            });
+            start += len;
+        }
+    });
+}
+
 pub(crate) fn eval_convert_element_type(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -4520,6 +4553,21 @@ pub(crate) fn eval_convert_element_type(
             // output build. Values are exactly what convert_literal produces.
             let shape = tensor.shape.clone();
             if let Some(values) = tensor.elements.as_f64_slice() {
+                // Threaded hot downcast f64->f32 (the dominant mixed-precision cast):
+                // serial is page-fault-bound (~5.9 GB/s) on the fresh output. calloc'd
+                // output + parallel fill is bit-identical (per-element `v as f32`).
+                let n = values.len();
+                if target_dtype == DType::F32 && n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+                    let threads = crate::arithmetic::work_scaled_threads(n);
+                    if threads > 1 {
+                        let mut out = vec![0.0f32; n];
+                        threaded_convert_into(&mut out, values, threads, |v| v as f32);
+                        return Ok(Value::Tensor(
+                            TensorValue::new_f32_values(shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
+                }
                 let dense = match target_dtype {
                     // from_f64(v): identity in value.
                     DType::F64 => Some(TensorValue::new_f64_values(shape.clone(), values.to_vec())),
@@ -4574,6 +4622,21 @@ pub(crate) fn eval_convert_element_type(
                 // cast hot path. convert_literal routes F32 through f64_val =
                 // f64::from(v) for float targets, but I64 uses `v as i64` on the
                 // f32 directly and Bool uses `v != 0.0` — replicated exactly here.
+                // Threaded hot upcast f32->f64 (mixed-precision promote): serial is
+                // page-fault-bound (~3.4 GB/s) on the fresh 8-byte output. calloc'd output
+                // + parallel fill is bit-identical (per-element `f64::from(v)`).
+                let n = values.len();
+                if target_dtype == DType::F64 && n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+                    let threads = crate::arithmetic::work_scaled_threads(n);
+                    if threads > 1 {
+                        let mut out = vec![0.0f64; n];
+                        threaded_convert_into(&mut out, values, threads, f64::from);
+                        return Ok(Value::Tensor(
+                            TensorValue::new_f64_values(shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
+                }
                 let dense = match target_dtype {
                     DType::F32 => Some(TensorValue::new_f32_values(shape.clone(), values.to_vec())),
                     DType::F64 => Some(TensorValue::new_f64_values(
@@ -12510,6 +12573,53 @@ fn tile_recursive(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn threaded_convert_bit_identical_to_serial() {
+        // f64->f32 and f32->f64 at >= gate exercise the threaded convert path; compare
+        // bit-for-bit to the serial per-element cast (incl. IEEE specials).
+        let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 137;
+        let mut xf64: Vec<f64> = (0..n).map(|i| (i as f64) * 1e-3 - 500.0).collect();
+        let specials = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -0.0];
+        for (k, &s) in specials.iter().enumerate() {
+            xf64[k] = s;
+            xf64[n / 2 + k] = s;
+        }
+        let shape = Shape { dims: vec![n as u32] };
+        // f64 -> f32
+        let inp = Value::Tensor(TensorValue::new_f64_values(shape.clone(), xf64.clone()).unwrap());
+        let mut p = BTreeMap::new();
+        p.insert("new_dtype".to_owned(), "f32".to_owned());
+        let got = eval_convert_element_type(std::slice::from_ref(&inp), &p).unwrap();
+        let got_bits: Vec<u32> = got
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f32_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let want_bits: Vec<u32> = xf64.iter().map(|&v| (v as f32).to_bits()).collect();
+        assert!(got_bits == want_bits, "threaded f64->f32 != serial");
+        // f32 -> f64
+        let xf32: Vec<f32> = xf64.iter().map(|&v| v as f32).collect();
+        let inp2 = Value::Tensor(TensorValue::new_f32_values(shape, xf32.clone()).unwrap());
+        let mut p2 = BTreeMap::new();
+        p2.insert("new_dtype".to_owned(), "f64".to_owned());
+        let got2 = eval_convert_element_type(std::slice::from_ref(&inp2), &p2).unwrap();
+        let got2_bits: Vec<u64> = got2
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f64_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let want2_bits: Vec<u64> = xf32.iter().map(|&v| f64::from(v).to_bits()).collect();
+        assert!(got2_bits == want2_bits, "threaded f32->f64 != serial");
+    }
 
     #[test]
     fn broadcast_replicate_into_bit_identical_to_serial() {
