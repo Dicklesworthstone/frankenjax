@@ -2104,7 +2104,34 @@ pub(crate) fn eval_pad(
         && (0..rank).all(|ax| {
             lows[ax] >= 0 && (lows[ax] as usize + in_dims[ax] as usize) <= out_dims[ax] as usize
         });
+    // The operand occupies ONE contiguous output block iff padding is only on the leading
+    // axis (every other axis full + zero low). Common: zero-pad a sequence/feature map on
+    // axis 0 for conv/attention. Combined with a ZERO pad value (calloc gives the pad region
+    // free), the whole op is a calloc'd output + a single parallel copy of the operand block.
+    let operand_contiguous = row_copyable
+        && (1..rank).all(|ax| lows[ax] == 0 && in_dims[ax] as usize == out_dims[ax] as usize);
+    let operand_off = if rank > 0 {
+        (lows[0].max(0) as usize) * out_strides[0]
+    } else {
+        0
+    };
+    let in_total: usize = in_dims.iter().map(|&d| d as usize).product();
+    let par_pad = operand_contiguous
+        && in_total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+        && crate::arithmetic::work_scaled_threads(in_total) > 1;
     if let (Some(src), Some(pad)) = (operand.elements.as_f64_slice(), pad_literal.as_f64()) {
+        if par_pad && pad.to_bits() == 0 {
+            let mut out = vec![0.0f64; out_total];
+            concat_contiguous_into(
+                &mut out[operand_off..operand_off + in_total],
+                &[src],
+                crate::arithmetic::work_scaled_threads(in_total),
+            );
+            return Ok(Value::Tensor(TensorValue::new_f64_values(
+                Shape { dims: out_dims },
+                out,
+            )?));
+        }
         let out = if row_copyable {
             pad_copy_rows(src, pad, out_total, rank, in_dims, &lows, &out_strides)
         } else {
@@ -2157,6 +2184,18 @@ pub(crate) fn eval_pad(
     // is the pad_literal's exact bit pattern: f32::from_bits / the raw u16).
     if let (Some(src), Literal::F32Bits(pb)) = (operand.elements.as_f32_slice(), pad_literal) {
         let pad = f32::from_bits(pb);
+        if par_pad && pb == 0 {
+            let mut out = vec![0.0f32; out_total];
+            concat_contiguous_into(
+                &mut out[operand_off..operand_off + in_total],
+                &[src],
+                crate::arithmetic::work_scaled_threads(in_total),
+            );
+            return Ok(Value::Tensor(TensorValue::new_f32_values(
+                Shape { dims: out_dims },
+                out,
+            )?));
+        }
         let out = if row_copyable {
             pad_copy_rows(src, pad, out_total, rank, in_dims, &lows, &out_strides)
         } else {
@@ -2180,6 +2219,19 @@ pub(crate) fn eval_pad(
     if let (Some(src), Literal::BF16Bits(pb) | Literal::F16Bits(pb)) =
         (operand.elements.as_half_float_slice(), pad_literal)
     {
+        if par_pad && pb == 0 {
+            let mut out = vec![0u16; out_total];
+            concat_contiguous_into(
+                &mut out[operand_off..operand_off + in_total],
+                &[src],
+                crate::arithmetic::work_scaled_threads(in_total),
+            );
+            return Ok(Value::Tensor(TensorValue::new_half_float_values(
+                operand.dtype,
+                Shape { dims: out_dims },
+                out,
+            )?));
+        }
         let out = if row_copyable {
             pad_copy_rows(src, pb, out_total, rank, in_dims, &lows, &out_strides)
         } else {
@@ -13143,6 +13195,60 @@ mod tests {
         let mut out = vec![0.0f32; n];
         threaded_fill_into(&mut out, 1.5f32, crate::arithmetic::work_scaled_threads(n).max(2));
         assert!(out.iter().all(|&x| x.to_bits() == 1.5f32.to_bits()));
+    }
+
+    #[test]
+    fn threaded_zero_pad_bit_identical_to_serial() {
+        // Axis-0 zero-pad at >= gate engages the threaded operand placement; compare to a
+        // manual zeros + operand-block reference, f64 + bf16.
+        let cols = 1024usize;
+        let rows = 8500usize; // in_total = 8.7M >= gate
+        let in_total = rows * cols;
+        assert!(in_total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN);
+        let low = 100usize;
+        let high = 50usize;
+        let out_rows = low + rows + high;
+        let out_total = out_rows * cols;
+        let mut params = BTreeMap::new();
+        params.insert("padding_low".to_owned(), format!("{low},0"));
+        params.insert("padding_high".to_owned(), format!("{high},0"));
+        // f64
+        let dataf: Vec<f64> = (0..in_total).map(|i| (i as f64) * 0.5 - 3.0).collect();
+        let opf = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![rows as u32, cols as u32] }, dataf.clone())
+                .unwrap(),
+        );
+        let got = eval_pad(&[opf, Value::Scalar(Literal::from_f64(0.0))], &params).unwrap();
+        let mut wantf = vec![0.0f64; out_total];
+        wantf[low * cols..low * cols + in_total].copy_from_slice(&dataf);
+        let gb: Vec<u64> = got
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f64_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let wb: Vec<u64> = wantf.iter().map(|v| v.to_bits()).collect();
+        assert!(gb == wb, "threaded f64 zero-pad != serial");
+        // bf16 (pad value +0.0 = bits 0)
+        let datah: Vec<u16> = (0..in_total).map(|i| (i as u16).wrapping_mul(41)).collect();
+        let oph = Value::Tensor(
+            TensorValue::new_half_float_values(
+                DType::BF16,
+                Shape { dims: vec![rows as u32, cols as u32] },
+                datah.clone(),
+            )
+            .unwrap(),
+        );
+        let goth = eval_pad(&[oph, Value::Scalar(Literal::BF16Bits(0))], &params).unwrap();
+        let mut wanth = vec![0u16; out_total];
+        wanth[low * cols..low * cols + in_total].copy_from_slice(&datah);
+        assert!(
+            goth.as_tensor().unwrap().elements.as_half_float_slice().unwrap() == wanth.as_slice(),
+            "threaded bf16 zero-pad != serial"
+        );
     }
 
     #[test]

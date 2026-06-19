@@ -1994,3 +1994,24 @@ ends are not rediscovered without new evidence.
   convert/transpose/gather/concat/slice/dynamic_slice/dynamic_update_slice/rev/select/clamp/bitwise/
   max-min-reduce) is now broadly threaded f64/f32/i64 (+bf16/u where wired). Remaining JAX losses are
   the documented off-limits/architectural ones (float sum/prod/cumsum order; L3-resident regime).
+
+## CobaltForge - Threaded zero-pad (axis-0 contiguous) f64/f32/bf16 for DRAM-bound (JAX WIN)
+
+- Lever: `pad` (zero-padding for conv/attention) built its output via `pad_copy_rows` = `vec![pad;
+  total]` + serial per-row copies (~4.1 GB/s). For the common case — padding only on the leading
+  axis (operand is ONE contiguous output block) AND a ZERO pad value — the whole op is a calloc'd
+  output (pad region free) + a single PARALLEL copy of the operand block via `concat_contiguous_into`.
+  Gated on `in_total >= CHEAP_BINARY_PARALLEL_MIN`. Wired f64/f32/bf16 (pad bits == 0). Non-leading
+  padding / interior / non-zero pad fall to the existing pad_copy_rows / pad_fill_place. Bit-identical.
+- Guarded by `threaded_zero_pad_bit_identical_to_serial` (f64 + bf16, low+high axis-0 pad), bit-for-
+  bit vs a zeros + operand-block reference.
+- Conformance: `fj-lax --lib` 1516 pass (+1 new), 43 fail (PRE-EXISTING) — 0 new failures.
+- Measured (LOCAL real eval_primitive path, best-of-15; output = 2x operand, half is calloc'd pad):
+  pad0 f64 out=32M 12.7 GB/s, out=131M 13.2 GB/s (was ~4.1 -> ~3x internal). vs JAX pad 5.6 GB/s
+  (round-11, lower load) ~2.3x faster (the calloc'd pad region is free; the operand copy threads).
+- Decision: KEEP. Zero-padding is ubiquitous (conv, attention masks); was a ~1.35x JAX loss, now a
+  ~2.3x win for the common axis-0 zero-pad case. Same calloc+parallel-copy lever.
+- Retry predicate: the contained large-op data-movement surface is now broadly threaded across the
+  common shapes/dtypes. Non-leading-axis pad, interior/dilated pad, and non-zero pad-value remain on
+  the serial path (lower priority). The remaining JAX losses are the documented off-limits/
+  architectural ones (float sum/prod/cumsum reduction order; L3-resident regime).

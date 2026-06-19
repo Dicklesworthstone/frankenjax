@@ -490,3 +490,10 @@ Additional cod-a repeat validation environment:
   0.66 (1.52x faster than jax.jit), internal ~5x (3.4 -> 17.3 GB/s). Bit-identical (f64+i64), guarded.
   Sub-gate outputs (e.g. 8M) correctly stay serial. Completes the KV-cache loop (read+write both
   threaded). Contained large-op data-movement surface now broadly threaded.
+
+## CobaltForge - Threaded zero-pad (axis-0 f64/f32/bf16): JAX WIN (2026-06-19)
+
+- pad with axis-0 padding + zero pad value threaded (calloc'd output, pad region free, parallel
+  operand-block copy): out 32M/131M f64 = 12.7-13.2 GB/s (was ~4.1, ~3x internal), ~2.3x faster than
+  jax.jit pad (5.6). Bit-identical (f64+bf16), guarded. Zero-padding is ubiquitous (conv/attention).
+  Non-leading / interior / non-zero pad stay serial (follow-ons).
