@@ -7585,6 +7585,49 @@ fn eval_arg_extremum(
     }
 }
 
+/// Fill `outer_count` independent argmin/argmax output indices, threading over the
+/// output rows once the total work is DRAM-bound. `row_best(outer)` returns the best
+/// index for output `outer` (its input slice is independent), so the result is
+/// BIT-IDENTICAL to the serial loop for ANY partition. Used by the contiguous
+/// (axis_stride == 1) dense paths, where each row is `values[outer*axis_dim..]`.
+fn parallel_argmax_fill(
+    outer_count: usize,
+    total_elems: usize,
+    row_best: impl Fn(usize) -> i64 + Sync,
+) -> Vec<i64> {
+    let mut result = vec![0i64; outer_count];
+    let threads = if total_elems >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN && outer_count > 1 {
+        crate::arithmetic::work_scaled_threads(total_elems).min(outer_count).min(16)
+    } else {
+        1
+    };
+    if threads <= 1 {
+        for (o, slot) in result.iter_mut().enumerate() {
+            *slot = row_best(o);
+        }
+        return result;
+    }
+    let rows_per = outer_count.div_ceil(threads);
+    let f = &row_best;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [i64] = result.as_mut_slice();
+        let mut o0 = 0usize;
+        while o0 < outer_count {
+            let rows = rows_per.min(outer_count - o0);
+            let (blk, tail) = rest.split_at_mut(rows);
+            rest = tail;
+            let base_o = o0;
+            o0 += rows;
+            scope.spawn(move || {
+                for (j, slot) in blk.iter_mut().enumerate() {
+                    *slot = f(base_o + j);
+                }
+            });
+        }
+    });
+    result
+}
+
 fn extremum_along_axis(
     primitive: Primitive,
     tensor: &TensorValue,
@@ -7661,25 +7704,28 @@ fn extremum_along_axis(
     // IEEE compare + sign-agnostic first-NaN); I64 uses strict cmp with
     // first-occurrence tie-break (no NaN for integers).
     if let Some(values) = tensor.elements.as_f64_slice() {
+        if axis_stride == 1 {
+            // Contiguous (argmax over the innermost axis — the hot logits case): each
+            // output row is the INDEPENDENT block `values[outer*axis_dim..]`, so thread
+            // over output rows. `base = outer*axis_dim <= total` (no overflow/OOB).
+            // Bit-identical to the serial loop (each row's argmax is order-deterministic).
+            let idx = parallel_argmax_fill(outer_count, total, |outer| {
+                let base = outer * axis_dim;
+                arg_extreme_f64_contiguous_simd(&values[base..base + axis_dim], find_max) as i64
+            });
+            // Rank-0 result (1D input -> scalar) must return Value::Scalar to match
+            // the finalization contract below; a rank-0 tensor breaks as_i64_scalar.
+            if result_shape.dims.is_empty() {
+                return Ok(Value::Scalar(Literal::I64(idx[0])));
+            }
+            return Ok(Value::Tensor(
+                TensorValue::new_i64_values(result_shape, idx).map_err(EvalError::InvalidTensor)?,
+            ));
+        }
         for outer in 0..outer_count {
             let base = base_of(outer)?;
-            let best_idx = if axis_stride == 1 {
-                let end = base
-                    .checked_add(axis_dim)
-                    .ok_or_else(|| EvalError::Unsupported {
-                        primitive,
-                        detail: "argmin/argmax contiguous axis slice overflowed".to_owned(),
-                    })?;
-                let row = values.get(base..end).ok_or_else(|| EvalError::Unsupported {
-                    primitive,
-                    detail: format!(
-                        "argmin/argmax contiguous slice {base}..{end} out of bounds for {total} elements"
-                    ),
-                })?;
-                arg_extreme_f64_contiguous_simd(row, find_max)
-            } else {
-                arg_extreme_float(axis_dim, find_max, |i| values[base + i * axis_stride])
-            };
+            let best_idx =
+                arg_extreme_float(axis_dim, find_max, |i| values[base + i * axis_stride]);
             result_elements.push(Literal::I64(best_idx as i64));
         }
     } else if let Some(values) = tensor.elements.as_i64_slice() {
@@ -7704,27 +7750,26 @@ fn extremum_along_axis(
         // a `Literal` via `tensor.elements.get(..)` per element then `as_f64()`
         // (= `f64::from(f32)`); same `arg_extreme_float` reducer -> identical
         // -NaN/±0.0 tie behavior.
+        if axis_stride == 1 {
+            // Contiguous f32 argmax-over-logits (JAX's default float): thread over the
+            // independent output rows. Bit-identical to the serial loop.
+            let idx = parallel_argmax_fill(outer_count, total, |outer| {
+                let base = outer * axis_dim;
+                arg_extreme_f32_contiguous_simd(&values[base..base + axis_dim], find_max) as i64
+            });
+            // Rank-0 result (1D input -> scalar) must return Value::Scalar to match
+            // the finalization contract below; a rank-0 tensor breaks as_i64_scalar.
+            if result_shape.dims.is_empty() {
+                return Ok(Value::Scalar(Literal::I64(idx[0])));
+            }
+            return Ok(Value::Tensor(
+                TensorValue::new_i64_values(result_shape, idx).map_err(EvalError::InvalidTensor)?,
+            ));
+        }
         for outer in 0..outer_count {
             let base = base_of(outer)?;
-            let best_idx = if axis_stride == 1 {
-                let end = base
-                    .checked_add(axis_dim)
-                    .ok_or_else(|| EvalError::Unsupported {
-                        primitive,
-                        detail: "argmin/argmax contiguous axis slice overflowed".to_owned(),
-                    })?;
-                let row = values.get(base..end).ok_or_else(|| EvalError::Unsupported {
-                    primitive,
-                    detail: format!(
-                        "argmin/argmax contiguous slice {base}..{end} out of bounds for {total} elements"
-                    ),
-                })?;
-                arg_extreme_f32_contiguous_simd(row, find_max)
-            } else {
-                arg_extreme_float(axis_dim, find_max, |i| {
-                    f64::from(values[base + i * axis_stride])
-                })
-            };
+            let best_idx =
+                arg_extreme_float(axis_dim, find_max, |i| f64::from(values[base + i * axis_stride]));
             result_elements.push(Literal::I64(best_idx as i64));
         }
     } else if let Some(values) = tensor.elements.as_half_float_slice() {

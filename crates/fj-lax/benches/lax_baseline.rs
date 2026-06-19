@@ -2224,6 +2224,21 @@ fn bench_reduce_sum_16k_x_1k_i64_axes(c: &mut Criterion) {
     });
 }
 
+// argmax over axis 1 of a [16384, 1024] f64 tensor -> [16384]. Each output row's
+// argmax is INDEPENDENT, so the along-axis scan can thread over output rows bit-exactly.
+fn bench_argmax_16k_x_1k_axis1_f64(c: &mut Criterion) {
+    let (rows, cols) = (16_384usize, 1_024usize);
+    let data: Vec<f64> = (0..rows * cols).map(|i| ((i as f64) * 1.7e-5).sin()).collect();
+    let input = Value::Tensor(
+        TensorValue::new_f64_values(Shape { dims: vec![rows as u32, cols as u32] }, data).unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("axis".to_string(), "1".to_string());
+    c.bench_function("eval/argmax_16kx1k_axis1_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Argmax, std::slice::from_ref(&input), &p))
+    });
+}
+
 fn bench_reduce_sum_64k_i64_literal_reference(c: &mut Criterion) {
     let elements: Vec<Literal> = (0..LARGE_ELEMENTWISE_LEN as i64)
         .map(Literal::I64)
@@ -6527,6 +6542,7 @@ criterion_group!(
     bench_reduce_sum_16m_i64_full,
     bench_reduce_sum_16k_x_1k_axis0_f64,
     bench_reduce_sum_16k_x_1k_i64_axes,
+    bench_argmax_16k_x_1k_axis1_f64,
     bench_reduce_sum_64k_i64_literal_reference,
     bench_reduce_sum_64k_f32_dense,
     bench_reduce_sum_64k_f32_literal_reference,
