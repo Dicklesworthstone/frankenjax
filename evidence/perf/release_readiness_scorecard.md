@@ -221,6 +221,31 @@ Additional cod-b FFT radix-4 no-ship environment:
   showed radix-4 plan 2.13x faster than radix-2 plan, but full `eval_primitive`
   rows on `vmi1153651` regressed; source was reverted before commit.
 
+Additional cod-b matmul/GEMM persistent-pool no-ship environment:
+
+- Agent: cod-b / CrimsonOtter
+- Cargo target dirs: `/data/projects/.rch-targets/frankenjax-cod-b` for the
+  first RCH baseline and `/data/projects/frankenjax/.rch-target-hz1-pool-2c4c1e3cedb9e85b9ef3ec50058a8f92`
+  for direct `hz1` candidate reruns from clean worktree source.
+- Rust bench command: `cargo bench -p fj-lax --bench lax_baseline` with the
+  `linalg/(matmul_2d_256x256x256_f64|matmul_2d_512x512x512_f64|strassen_ab_1024_(matmul2d|strassen))`
+  filter, sample size 15, 1s warm-up, 3s measurement.
+- Same-worker timing proof and rejection worker: RCH worker `hz1`; candidates
+  were synced with `rch cache warm --workers hz1` and executed via SSH under the
+  warmed `/tmp/rch/frankenjax-cod-b/...` tree to avoid rch queue worker drift.
+- JAX oracle: `/data/projects/frankenjax/benchmarks/jax_comparison/.venv/bin/python`
+  inline warmed `jax.jit(lambda x, y: x @ y)` comparator.
+- JAX/JAXLIB: 0.10.1 / 0.10.1, `jax_enable_x64=true`, CPU backend.
+- Candidate caveat: the first all-Rayon pass improved 256/512 internally but
+  regressed 1024; narrower fallback/gating passes then regressed the rowset. All
+  Rayon source and lockfile changes were reverted before commit.
+- Gates: clean-worktree `cargo check -p fj-lax --benches` passed on RCH
+  `vmi1293453`; `cargo test -p fj-lax matmul_2d --lib --release -- --nocapture`
+  passed 23 tests with 2 ignored microbenches on RCH `vmi1167313`; final
+  docs-only `cargo test -p fj-conformance --lib` passed 45/45 on RCH `hz2`.
+  `cargo fmt -p fj-lax --check` remains blocked by pre-existing unrelated
+  formatting drift.
+
 Additional cod-a fj-dispatch vmap gather environment:
 
 - Agent: cod-a / WildForge
@@ -315,6 +340,15 @@ Additional cod-a FFT SoA gate recheck environment:
 | frankenjax-murmw | `fft_batch_2048x256_complex128` gate-off probe | 16.346 ms midpoint | 314.5745 us mean | 51.96 | REJECTED/REVERTED: +71.553% same-worker regression |
 | frankenjax-murmw | `fft_batch_2048x256_complex128_dense_input` gate-off probe | 15.177 ms midpoint | 314.5745 us mean | 48.25 | REJECTED/REVERTED: +84.904% same-worker regression |
 | frankenjax-murmw | `irfft_batch_2048x256_complex128` gate-off probe | 14.645 ms midpoint | 506.1776 us mean | 28.93 | REJECTED/REVERTED: +202.33% same-worker regression |
+| frankenjax-ifou2 | `matmul_2d_256x256x256_f64` production | 1.3226 ms midpoint | 0.264947 ms mean | 4.992 | Active JAX loss; Rayon pool no-ship |
+| frankenjax-ifou2 | `matmul_2d_512x512x512_f64` production | 6.3494 ms midpoint | 0.576574 ms mean | 11.012 | Active JAX loss; Rayon pool no-ship |
+| frankenjax-ifou2 | `strassen_ab_1024_matmul2d` production | 33.919 ms midpoint | 2.665036 ms mean | 12.727 | Active JAX loss; Rayon pool no-ship |
+| frankenjax-ifou2 | all-Rayon pool `matmul_2d_256x256x256_f64` | 0.98603 ms midpoint | 0.264947 ms mean | 3.722 | REJECTED/REVERTED: early win did not survive rowset gate |
+| frankenjax-ifou2 | all-Rayon pool `matmul_2d_512x512x512_f64` | 6.1108 ms midpoint | 0.576574 ms mean | 10.598 | REJECTED/REVERTED: small internal win, still JAX loss |
+| frankenjax-ifou2 | all-Rayon pool `strassen_ab_1024_matmul2d` | 54.996 ms midpoint | 2.665036 ms mean | 20.636 | REJECTED/REVERTED: +52.148% same-worker regression |
+| frankenjax-ifou2 | `<=512` Rayon gate `matmul_2d_256x256x256_f64` | 3.0695 ms midpoint | 0.264947 ms mean | 11.585 | REJECTED/REVERTED: final gate regressed |
+| frankenjax-ifou2 | `<=512` Rayon gate `matmul_2d_512x512x512_f64` | 12.894 ms midpoint | 0.576574 ms mean | 22.363 | REJECTED/REVERTED: final gate regressed |
+| frankenjax-ifou2 | `<=512` Rayon gate `strassen_ab_1024_matmul2d` | 94.836 ms midpoint | 2.665036 ms mean | 35.585 | REJECTED/REVERTED: final gate regressed |
 | frankenjax-xjbvr | `floor_f64_1m_add_unary_chain/n=4` | 2.5597 ms midpoint | 199.892 us mean | 12.805 | Same-worker Rust 8.29x faster than baseline; still JAX loss |
 | frankenjax-xjbvr | `round_f64_1m_add_unary_chain/n=4` | 1.8803 ms midpoint | 186.162 us mean | 10.100 | Same-worker Rust 10.91x faster than baseline; still JAX loss |
 | frankenjax-xjbvr | `sign_f64_1m_add_unary_chain/n=4` | 2.7290 ms midpoint | 342.029 us mean | 7.979 | Same-worker Rust 4.01x faster than baseline; still JAX loss |
@@ -435,6 +469,16 @@ Additional cod-a FFT SoA gate recheck environment:
   51.96x / 48.25x / 28.93x slower. Source was reverted. This pass score is
   0 wins / 3 losses / 0 neutral vs JAX for production rows and 0 wins / 3
   losses / 0 neutral for rejected candidates.
+- ifou2 Rayon persistent-pool GEMM is a measured no-ship. On `hz1`, production
+  remains a JAX loss at 256/512/1024 (Rust/JAX 4.992 / 11.012 / 12.727). The
+  first all-Rayon pass improved 256 and 512 internally but regressed the 1024
+  matmul2d row to 54.996 ms (+52.148%, Rust/JAX 20.636). Follow-up block-k
+  fallback and `<=512` gating attempts failed the repeated gate, with the final
+  gate regressing 256/512/1024 to Rust/JAX 11.585 / 22.363 / 35.585. Source and
+  lockfile changes were reverted. The pass score is 0 production wins / 4
+  production losses / 0 neutral vs JAX, and 0 candidate wins / 12 candidate
+  losses / 0 neutral vs JAX. Next route must be quiet-host profile plus real
+  GEMM backend/codegen/target-feature work, not generic Rayon row scheduling.
 - cod-b width-changing bitcast presized-fill flips two active release losses to
   wins. Same-worker RCH `vmi1227854` improved `bitcast_f32_bf16_1m` from
   978.58 us to 125.40 us (7.80x) and `bitcast_bf16_f32_1m` from 533.82 us to

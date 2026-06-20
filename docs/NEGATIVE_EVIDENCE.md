@@ -30,6 +30,59 @@ interleaved measurement on a quiet worker. A naive serial-only gate (skip SoA
 once the batch threads) was prototyped and rejected for exactly this reason — it
 would forfeit the measured threaded win.
 
+## 2026-06-20 - frankenjax-ifou2 Rayon persistent-pool GEMM no-ship
+
+The BOLD-VERIFY pass targeted the current `matmul_2d`/GEMM loss after
+`frankenjax-ifou2` identified per-call scoped thread spawning as the suspected
+mid-size tax. The radical safe lever was to route the existing row-block split
+and packed-B panel fanout through Rayon's persistent global worker pool. Rayon is
+already used by `fj-backend-cpu`, so this was a dependency-surface-light way to
+test the persistent-pool hypothesis without unsafe code. Every source change was
+reverted before commit.
+
+Same-worker Rust timing used RCH worker `hz1`, the clean worktree
+`/data/projects/frankenjax-cod-b`, and:
+
+```bash
+cargo bench -p fj-lax --bench lax_baseline -- \
+  'linalg/(matmul_2d_256x256x256_f64|matmul_2d_512x512x512_f64|strassen_ab_1024_(matmul2d|strassen))' \
+  --warm-up-time 1 --measurement-time 3 --sample-size 15 --noplot
+```
+
+JAX ratios use fresh local CPU JAX/JAXLIB 0.10.1 x64 measurements:
+256 mean 0.264947 ms, 512 mean 0.576574 ms, 1024 mean 2.665036 ms.
+
+| Row | Production Rust | Best/Final Candidate Rust | JAX mean | Production/JAX | Candidate/JAX | Verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `matmul_2d_256x256x256_f64` | 1.3226 ms | best 0.98603 ms; final 3.0695 ms | 0.264947 ms | 4.992 | best 3.722; final 11.585 | Reverted: unstable, final regression |
+| `matmul_2d_512x512x512_f64` | 6.3494 ms | best 6.1108 ms; final 12.894 ms | 0.576574 ms | 11.012 | best 10.598; final 22.363 | Reverted: no durable win |
+| `strassen_ab_1024_matmul2d` | 33.919 ms | best 54.996 ms; final 94.836 ms | 2.665036 ms | 12.727 | best 20.636; final 35.585 | Reverted: repeated regression |
+| `strassen_ab_1024_strassen` | 79.752 ms | best 84.003 ms; final 209.53 ms | 2.665036 ms | 29.925 | best 31.520; final 78.622 | Existing no-ship remains |
+
+The first all-Rayon cut looked attractive at 256/512, but it regressed 1024
+matmul2d by 52.148%. A narrowed `block_k` fallback still regressed 1024
+(65.353 ms, Rust/JAX 24.522), and an explicit `<=512` gate then regressed every
+measured row. The likely read is that the current scoped fanout is not a
+standalone safe-Rust pool swap; worker-pool scheduling, cache residency, and
+host contention interact enough that this family needs a quiet-host profile and
+backend-level design before another attempt.
+
+Validation while the candidate existed: clean-worktree `cargo check -p fj-lax
+--benches` passed through RCH `vmi1293453`; clean-worktree `cargo test -p
+fj-lax matmul_2d --lib --release -- --nocapture` passed 23 tests with 2 ignored
+microbenches on RCH `vmi1167313`; final docs-only conformance gate `cargo test
+-p fj-conformance --lib` passed 45/45 on RCH `hz2`. `cargo fmt -p fj-lax
+--check` remains blocked on pre-existing unrelated formatting drift in clean
+HEAD (`fft.rs`, `lib.rs`, and other crates); no source hunk from this pass
+shipped.
+
+Retry predicate: do not retry a generic Rayon/global-pool replacement for
+`matmul_2d` row chunks or packed-B fanout. Reopen only with a quiet-host profile
+showing thread creation still dominates, or with a deeper backend/codegen route:
+BLAS-class microkernel, target-feature-specialized FMA kernel, owned arena
+handoff, or an approved safe scoped-pool design with same-worker 256/512/1024
+proof and JAX ratios.
+
 ## 2026-06-20 - frankenjax-murmw SoA gate-disable no-ship
 
 The BOLD-VERIFY pass retested the current power-of-two batched FFT dispatcher

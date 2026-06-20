@@ -3,6 +3,80 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-ifou2 - Rayon persistent-pool matmul_2d no-ship
+
+- Date: 2026-06-20
+- Agent: cod-b / CrimsonOtter
+- Target gap: `fj-lax` f64 GEMM/matmul rows remain large JAX losses even after
+  previous register tiling, B-panel packing, and scoped row-block threading.
+  Fresh local JAX 0.10.1 x64 rows measured 0.264947 ms for 256^3, 0.576574 ms
+  for 512^3, and 2.665036 ms for 1024^3.
+- Alien-graveyard/extreme-optimization route used: runtime scheduling and
+  persistent worker reuse, not another scalar microkernel tweak. Hypothesis:
+  replacing per-call `std::thread::scope` spawning with a persistent safe pool
+  would remove the suspected mid-size thread-creation tax while preserving
+  bit-identical row-block accumulation.
+- Lever rejected and reverted: add `rayon = "1.11"` to `fj-lax`, use
+  `par_chunks_mut` for packed-B full-panel fanout and output row chunks, then
+  narrow the route after observing 1024 regressions. All source and lockfile
+  changes were restored before commit.
+
+Production baseline command on RCH worker `hz1`:
+
+```text
+AGENT_NAME=CrimsonOtter BR_AGENT_NAME=cod-b \
+  CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+  rch exec -- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+  cargo bench -p fj-lax --bench lax_baseline -- \
+  'linalg/(matmul_2d_256x256x256_f64|matmul_2d_512x512x512_f64|strassen_ab_1024_(matmul2d|strassen))' \
+  --warm-up-time 1 --measurement-time 3 --sample-size 15 --noplot
+```
+
+Candidate reruns used the clean worktree `/data/projects/frankenjax-cod-b`
+warmed to `hz1` with `rch cache warm --workers hz1`, then direct `ssh` execution
+under `/tmp/rch/frankenjax-cod-b/686cb8c44dc7ea3b` with the same Criterion
+filter/settings.
+
+| workload / lever | Rust midpoint | same-worker delta | JAX mean | Rust/JAX | verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| baseline `matmul_2d_256x256x256_f64` | 1.3226 ms | baseline | 0.264947 ms | 4.992 | Active JAX loss |
+| baseline `matmul_2d_512x512x512_f64` | 6.3494 ms | baseline | 0.576574 ms | 11.012 | Active JAX loss |
+| baseline `strassen_ab_1024_matmul2d` | 33.919 ms | baseline | 2.665036 ms | 12.727 | Active JAX loss |
+| baseline `strassen_ab_1024_strassen` | 79.752 ms | baseline | 2.665036 ms | 29.925 | Existing Strassen no-ship |
+| all-Rayon pool `matmul_2d_256x256x256_f64` | 0.98603 ms | -29.810%, p<0.05 | 0.264947 ms | 3.722 | Looked good, not enough to ship |
+| all-Rayon pool `matmul_2d_512x512x512_f64` | 6.1108 ms | -6.854%, p<0.05 | 0.576574 ms | 10.598 | Small internal win, still JAX loss |
+| all-Rayon pool `strassen_ab_1024_matmul2d` | 54.996 ms | +52.148%, p<0.05 | 2.665036 ms | 20.636 | REVERT |
+| all-Rayon pool `strassen_ab_1024_strassen` | 84.003 ms | neutral, p=0.22 | 2.665036 ms | 31.520 | No keep |
+| block-k fallback `matmul_2d_256x256x256_f64` | 0.96878 ms | neutral vs prior candidate | 0.264947 ms | 3.657 | Not durable proof |
+| block-k fallback `matmul_2d_512x512x512_f64` | 9.0076 ms | noisy/no change vs prior candidate | 0.576574 ms | 15.623 | REVERT |
+| block-k fallback `strassen_ab_1024_matmul2d` | 65.353 ms | +21.307%, p<0.05 | 2.665036 ms | 24.522 | REVERT |
+| block-k fallback `strassen_ab_1024_strassen` | 194.18 ms | +131.16%, p<0.05 | 2.665036 ms | 72.862 | REVERT |
+| `<=512` Rayon gate `matmul_2d_256x256x256_f64` | 3.0695 ms | +218.92%, p<0.05 | 0.264947 ms | 11.585 | REVERT |
+| `<=512` Rayon gate `matmul_2d_512x512x512_f64` | 12.894 ms | +77.588%, p<0.05 | 0.576574 ms | 22.363 | REVERT |
+| `<=512` Rayon gate `strassen_ab_1024_matmul2d` | 94.836 ms | +45.113%, p<0.05 | 2.665036 ms | 35.585 | REVERT |
+| `<=512` Rayon gate `strassen_ab_1024_strassen` | 209.53 ms | neutral/no keep vs prior noisy row | 2.665036 ms | 78.622 | REVERT |
+
+- Ratio scorecard for retained production matmul rows: **0 wins / 4 losses / 0
+  neutral vs JAX**. Rejected candidate score: **0 wins / 12 losses / 0 neutral
+  vs JAX** on the rows above, despite two early internal improvements.
+- Root-cause read from the failed lever: a generic safe persistent pool is not a
+  drop-in win for this kernel family. The 256/512 apparent win did not survive
+  the repeated gate, and larger flat-packed GEMM regressed hard. The current
+  scoped spawn tax may still matter on quiet hardware, but the schedule/cache
+  interaction is too unstable to ship without a deeper design.
+- Validation while the candidate existed: `cargo check -p fj-lax --benches`
+  passed through RCH `vmi1293453`; `cargo test -p fj-lax matmul_2d --lib
+  --release -- --nocapture` passed 23 tests with 2 ignored microbenches through
+  RCH `vmi1167313`; final docs-only conformance gate `cargo test -p
+  fj-conformance --lib` passed 45/45 through RCH `hz2`. `cargo fmt -p fj-lax
+  --check` is red on pre-existing clean HEAD formatting drift outside this
+  pass. Source was reverted before commit.
+- Retry predicate: do not retry Rayon/global-pool row chunks, Rayon packed-B
+  fanout, or a `<=512` size gate. The next credible ifou2 route must start with
+  a quiet-host profile and then move to a real GEMM backend lever: BLAS-class
+  microkernel, target-feature-specialized/FMA codegen, owned arena handoff, or a
+  carefully designed safe scoped pool with 256/512/1024 same-worker proof.
+
 ## frankenjax-murmw - FFT batch final-buffer writes and persistent row pool no-ships
 
 - Date: 2026-06-20
