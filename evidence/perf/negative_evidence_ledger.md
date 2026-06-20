@@ -82,7 +82,85 @@ the `frankenjax-murmw` JAX 0.10.2 x64 measurements from AzureLynx: `fft_256`
   SIMD radix-4/8 butterflies, native mixed-radix factorization for non-pow2 sizes,
   cache-blocked multi-row transforms, or generated length-specialized kernels,
   all gated by same-worker before/after plus the JAX ratio ledger.
+## frankenjax-ur4h3 - small real-eigh cyclic-Jacobi gate rejected
 
+- Date: 2026-06-20
+- Agent: cod-b / WildForge
+- Target gap: `fj-lax` 48x48 real symmetric `eigh` still loses to warmed JAX
+  CPU after the earlier large-n tridiagonal/QL cache fixes; the same sweep
+  showed 48x48 SVD is already a Rust win and should not be attacked in this
+  pass.
+- Profiling/hypothesis route used: alien-graveyard communication-avoiding and
+  small-kernel specialization thinking. Hypothesis: below 64x64, cyclic Jacobi
+  might beat the two-stage Householder/tridiagonal QL path by keeping the whole
+  matrix resident and avoiding setup/transpose constants.
+- Lever rejected and reverted: a guarded `m <= 64` real-`eigh` route through
+  `jacobi_eigendecomposition_cyclic`. Focused correctness passed, but
+  same-worker release timing regressed the real benchmark by 3.83x, so the
+  source hunk was restored before commit.
+
+Initial head-to-head command:
+
+```text
+AGENT_NAME=WildForge RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline -- \
+  'linalg/(svd_48x48_f64|eigh_48x48_f64)' \
+  --sample-size 15 --warm-up-time 1 --measurement-time 3 --noplot \
+  --save-baseline cod-b-ur4h3-head-48
+```
+
+Rejected candidate command:
+
+```text
+AGENT_NAME=WildForge RCH_FORCE_REMOTE=1 RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1293453 \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline -- \
+  'linalg/eigh_48x48_f64' --sample-size 15 --warm-up-time 1 \
+  --measurement-time 3 --noplot
+```
+
+RCH ignored the requested `vmi1293453` pin and selected `vmi1152480`; a
+production rerun was therefore taken on the same selected worker after source
+revert.
+
+Production rerun command:
+
+```text
+AGENT_NAME=WildForge RCH_FORCE_REMOTE=1 RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1152480 \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline -- \
+  'linalg/eigh_48x48_f64' --sample-size 15 --warm-up-time 1 \
+  --measurement-time 3 --noplot
+```
+
+JAX comparator used
+`/data/projects/frankenjax/benchmarks/jax_comparison/.venv/bin/python` with
+JAX/JAXLIB 0.10.1, CPU backend, and `jax_enable_x64=true`.
+
+| workload | production Rust midpoint | candidate Rust midpoint | same-worker delta | JAX mean | production/JAX | candidate/JAX | verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `linalg/eigh_48x48_f64` | 237.78 us | 910.28 us | 3.83x slower | 160.423 us | 1.482 | 5.674 | REVERT |
+
+Initial routing rows:
+
+| workload | Rust midpoint | JAX mean | Rust/JAX | verdict |
+| --- | ---: | ---: | ---: | --- |
+| `linalg/svd_48x48_f64` | 263.72 us | 460.886 us | 0.572 | Existing Rust win; not targeted |
+| `linalg/eigh_48x48_f64` first RCH route | 626.00 us | 160.423 us | 3.902 | Existing loss; same-worker rerun above supersedes for rejection |
+
+- Ratio scorecard for retained production 48x48 linalg rows: **1 win / 1 loss
+  / 0 neutral vs JAX**. Rejected candidate score: **0 wins / 1 loss / 0
+  neutral vs JAX**. Production score: **0 kept wins / 0 shipped regressions**.
+- Validation: focused `cargo test -p fj-lax eigh -- --nocapture` passed on RCH
+  `vmi1149989`; full `cargo test -p fj-conformance` passed on RCH `hz2`;
+  `cargo build --release -p fj-lax --benches` passed on RCH `hz2`.
+- Retry predicate: do not retry small-`m` cyclic-Jacobi routing. The remaining
+  credible `eigh` lever is a symmetry-specialized tridiagonal reduction or a
+  blocked/panel Householder route that reduces setup without returning to
+  sweep-heavy Jacobi.
 ## frankenjax-murmw - radix-4 power-of-four FFT no-ship
 
 - Date: 2026-06-20

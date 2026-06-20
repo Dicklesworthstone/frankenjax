@@ -1000,3 +1000,24 @@ Additional cod-a FFT batch no-ship environment:
   and no build-policy change. The maintainer gate is now sharper: `+fma` alone does not close the gap;
   the missing lever is an approved SIMD/fast-exp softmax/attention contract or continued acceptance of
   the bit-exact scalar-exp path.
+
+## WildForge / cod-b - ur4h3 small-eigh Jacobi no-ship (2026-06-20)
+
+- Scope: `frankenjax-ur4h3`, fresh 48x48 linalg head-to-head after the prior
+  large-n `eigh` cache fixes.
+- Current production rows:
+  - `linalg/svd_48x48_f64`: Rust 263.72 us vs JAX 460.886 us, Rust/JAX 0.572
+    (WIN; not targeted).
+  - `linalg/eigh_48x48_f64`: same-worker production rerun 237.78 us vs JAX
+    160.423 us, Rust/JAX 1.482 (LOSS).
+- Rejected lever: route real `eigh` with `m <= 64` through cyclic Jacobi to
+  avoid two-stage setup. Same-worker RCH `vmi1152480`: production 237.78 us,
+  candidate 910.28 us, candidate 3.83x slower and 5.674x JAX. Source reverted.
+- Gate status: focused `cargo test -p fj-lax eigh -- --nocapture` passed on
+  RCH `vmi1149989`; full `cargo test -p fj-conformance` passed on RCH `hz2`;
+  `cargo build --release -p fj-lax --benches` passed on RCH `hz2`.
+- Scorecard for retained production 48x48 linalg rows: 1 win / 1 loss / 0
+  neutral vs JAX. Rejected candidate score: 0 wins / 1 loss / 0 neutral.
+  Production decision: no source change. Remaining `eigh` release gap should
+  route to symmetry-specialized tridiagonal reduction or blocked/panel
+  Householder work, not small-Jacobi routing.

@@ -39,7 +39,36 @@ batched pow2 complex FFT without fresh cache-miss evidence. The remaining
 credible route is a real kernel rewrite: SIMD radix-4/8 butterflies, native
 mixed-radix factors for non-pow2 lengths, cache-blocked row batches, or generated
 specialized kernels with same-worker before/after proof.
+## 2026-06-20 - frankenjax-ur4h3 small-eigh Jacobi route no-ship
 
+The BOLD-VERIFY pass retargeted `frankenjax-ur4h3` after the prior large-n
+`eigh` cache fixes. The fresh 48x48 head-to-head showed `svd_48x48_f64` is not
+a current JAX loss, but `eigh_48x48_f64` still is. The attempted radical lever
+was a small-matrix algorithm-family switch: route real `eigh` with `m <= 64`
+through cyclic Jacobi to keep the matrix resident and avoid the
+Householder/tridiagonal setup cost. Same-worker proof rejected it.
+
+JAX timing used `/data/projects/frankenjax/benchmarks/jax_comparison/.venv/bin/python`
+with JAX/JAXLIB 0.10.1, CPU backend, and `jax_enable_x64=true`.
+
+| Row | Production Rust | Candidate Rust | Internal delta | JAX mean | Production/JAX | Candidate/JAX | Verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `linalg/eigh_48x48_f64` | 237.78 us | 910.28 us | 3.83x slower | 160.423 us | 1.482 | 5.674 | Revert: small-Jacobi gate regressed |
+
+Additional routing rows from the initial RCH/JAX sweep:
+
+| Row | Rust midpoint | JAX mean | Rust/JAX | Verdict |
+| --- | ---: | ---: | ---: | --- |
+| `linalg/svd_48x48_f64` | 263.72 us | 460.886 us | 0.572 | Existing Rust win; not the target |
+| `linalg/eigh_48x48_f64` first RCH route | 626.00 us | 160.423 us | 3.902 | Existing loss; remeasured same-worker before rejection |
+
+Validation: focused `cargo test -p fj-lax eigh -- --nocapture` passed on RCH
+`vmi1149989`; full `cargo test -p fj-conformance` passed on RCH `hz2`; `cargo
+build --release -p fj-lax --benches` passed on RCH `hz2`. Ratio scorecard for
+this pass: production rows 1 win / 1 loss / 0 neutral vs JAX; rejected
+candidate rows 0 wins / 1 loss / 0 neutral. Production decision: no source
+change. Retry only with the deeper symmetric-tridiagonal reduction or blocked
+panel route; do not retry `m <= 64` cyclic-Jacobi routing.
 ## 2026-06-20 - frankenjax-murmw radix-4 power-of-four FFT no-ship
 
 The BOLD-VERIFY pass retargeted the current FFT losses after the earlier
