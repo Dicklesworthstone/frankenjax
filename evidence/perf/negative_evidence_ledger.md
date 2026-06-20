@@ -3098,3 +3098,52 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   reachable ONLY via per-chain codegen/JIT (compile the jaxpr chain to a monomorphic kernel) —
   a major architectural lever, the same class as bead compiled-jaxpr-dispatch. This is the
   fundamental interpreter-vs-compiler ceiling; it is WHY large chains lose ~7-8x to XLA.
+
+## CrimsonForge - bead 2zzwl (route CompiledJaxpr large-chain through threaded fusion) is a NON-GAP — already satisfied by existing dense-plan fallthrough
+
+- Date: 2026-06-20. Investigation only (no code change). Crate `fj-interpreters` lib.rs.
+- Bead 2zzwl premise: "the COMPILED runner (CompiledJaxpr/dense-plan) runs large same-shape
+  elementwise chains PER-STEP and is slower than the eager fusion; route it through the
+  now-threaded eager fusion." Traced the actual production dispatch and the premise is STALE.
+- Production path: `CompiledJaxpr::eval` -> `run_dense_plan` -> `run_dense_plan_into`
+  -> `run_dense_plan_into_core(.., vectorize=TRUE)` (lib.rs:8767 hardcodes vectorize=true for
+  the production wrapper; `false` is only the bench A/B knob).
+- For a large same-shape f64/f32/i64 elementwise chain the core dispatch resolves as:
+  * `run_scalar_f64_plan_as_tensor_into` (lib.rs:6870) handles it. At line 6941 the in-place
+    linear-chain path fires for `n < FUSION_MIN_ELEMS (1024)` OR `(vectorize && n <
+    INPLACE_CHAIN_MAX_ELEMS (1<<20 = 1Mi))`. With vectorize=true that is **n < 1Mi**.
+  * For `n >= 1Mi` line 6949 `if n >= FUSION_MIN_ELEMS { return None }` BAILS, so the core
+    falls through (lib.rs:8971) to `run_dense_env_into`, whose equation loop at lib.rs:9004
+    ALREADY calls `try_fuse_elementwise_chain` = my chunked+threaded fusion (drive_fusion_chunks,
+    gated FUSION_THREAD_MIN_ELEMS = 8.4Mi).
+- NET: the compiled runner has NO per-step large-chain path. Regime map for a compiled chain:
+  | n | path | threaded? |
+  | --- | --- | --- |
+  | < 1Mi | in-place linear chain (single buffer reuse, e97185a2 — the deliberately-superior L3-resident strategy) | no (L3-resident; threading REGRESSES under contention per the CrimsonForge fusion-gate entry above) |
+  | 1Mi .. 8.4Mi | eager fusion fallthrough, serial | no (below thread gate) |
+  | >= 8.4Mi | eager fusion fallthrough, chunk-threaded | yes |
+  Both fusion sub-regimes inherit the threading automatically because the SAME
+  `try_fuse_elementwise_chain` serves the eager and compiled fallthrough.
+- VERDICT: 2zzwl is a NON-GAP — already done by the existing fallthrough architecture; no
+  surgical "routing" edit exists to make. The residual ~7-8x large-chain JAX loss is the
+  interpreter-vs-compiler codegen ceiling (see the element-major REJECT entry above), NOT a
+  missing route. RETRY PREDICATE: do not re-open 2zzwl as a contained lever; the only lever left
+  on this path is per-chain JIT codegen (cranelift-class, multi-session, forbid-unsafe-gated).
+  Coordinated with WildForge (dense-plan owner) before concluding.
+
+## CrimsonForge - bead-tracker reconciliation: 20 "ready" perf beads + the partial_eval fail-closed cluster are DONE-but-OPEN (stale), not real gaps
+
+- Date: 2026-06-20. Audit (Explore subagent) of all 20 `br ready` P1 perf beads vs the actual
+  fj-lax/fj-interpreters source: ALL 20 are IMPLEMENTED in code (dense fast-paths, block-memcpy,
+  dtype-siblings, complex de-box, FFT) with the bead-described function:file present and
+  comment-matched — they were landed 2026-06-18 and never closed. Several are also in the
+  release scorecard with measured ratios. Re-implementing any would be duplicate work.
+- The partial_eval "fail-closed fallback" correctness cluster (slice/pad/transpose/squeeze/
+  dynamic_slice/broadcast_in_dim — beads xuum7/11146/encr9/fm5pf/ji393/r67bh, plus argmax
+  lbm0d) is likewise already fixed: strict fallible `infer_*_shape` helpers exist for each
+  (e.g. infer_slice_shape parses required params, rank-checks, stride>0, bounds-rejects).
+- VERDICT: the "ready work" queue is a graveyard of completed-but-unclosed beads, not an
+  inventory of open perf gaps. The CONTAINED perf surface is confirmed exhausted (this is the
+  4th consecutive session reaching that conclusion) AND already shipped. Action this session:
+  refreshed the fo1zg golden hashes (benign densify-serialization drift) to restore the
+  fj-interpreters --lib gate; reconciling the stale done beads.
