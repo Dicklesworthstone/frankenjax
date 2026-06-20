@@ -560,6 +560,25 @@ Additional cod-a repeat validation environment:
   `fj-interpreters --all-targets` clippy remains blocked by pre-existing `fj-trace`/`fj-lax` lints.
 - Next loss target: tensor dense elementwise-chain fusion/output reuse for `tensor64/n=32`.
 
+## WildForge / cod-a - Small dense f64 linear chain runner (2026-06-20)
+
+- Scope: `fj-interpreters` repeated compiled small dense-f64 tensor chains, bead
+  `frankenjax-mcqr.111`.
+- Result: KEEP. Same-worker RCH (`vmi1152480`) `compiled_dispatch/compiled_runner/tensor64/n=32`
+  improved 8.3991 us -> 4.4519 us (1.89x). `tensor64/n=8` improved 2.2213 us -> 1.1623 us (1.91x).
+- JAX head-to-head (`jax.jit` CPU 0.10.1, x64): current compiled-runner scorecard is 5 wins / 0
+  losses / 0 neutral. The important formerly-losing row is now narrow: tensor64/n=32 Rust 4.4519 us
+  vs JAX mean 4.7659 us, Rust/JAX 0.934 (Rust 1.07x faster by mean).
+- Gate status: focused `fj-interpreters` dense f64 arena parity test green via RCH; scoped
+  `fj-interpreters --lib --no-deps` clippy green; `fj-interpreters` release build green; `fj-conformance`
+  green via RCH. Full `fj-interpreters --lib` remains blocked by pre-existing stale golden digest
+  asserts in this scratch path; `cargo fmt --check` remains blocked by pre-existing unformatted
+  interpreter regions. Staged UBS ran and remains nonzero on pre-existing whole-file
+  `fj-interpreters` panic/assert/indexing inventory; its build/check/clippy/fmt sections were green.
+  `git diff --check` is clean.
+- Risk note: this is an allocation/liveness specialization, not algebraic folding. It keeps original
+  per-step `apply_scalar_f64_binary` order; non-linear or multi-tensor bodies fall back.
+
 ## CobaltForge - Conformance: cbea72b3 densify cleanup COMPLETE across workspace (2026-06-19, commit 672edfe8)
 
 - The cbea72b3 (mcqr.97, "code-first batch-test pending") densify of `TensorValue::new` broke

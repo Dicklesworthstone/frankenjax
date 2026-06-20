@@ -6361,6 +6361,127 @@ fn resolve_dense_operand<'a>(
     }
 }
 
+fn scalar_dense_f64_operand(cells: &[DenseF64Cell], operand: ScalarF64Operand) -> Option<f64> {
+    match operand {
+        ScalarF64Operand::Literal(v) => Some(v),
+        ScalarF64Operand::Slot(s) => match cells.get(s)? {
+            DenseF64Cell::Scalar(v) => Some(*v),
+            _ => None,
+        },
+    }
+}
+
+fn operand_is_slot(operand: ScalarF64Operand, slot: usize) -> bool {
+    matches!(operand, ScalarF64Operand::Slot(s) if s == slot)
+}
+
+fn run_linear_scalar_f64_tensor_chain_into(
+    plan: &ScalarF64Plan,
+    shape: &Shape,
+    out: &mut Vec<Value>,
+    cells: &mut [DenseF64Cell],
+) -> Option<Result<(), InterpreterError>> {
+    if plan.out_slots.len() != 1 || plan.steps.is_empty() {
+        return None;
+    }
+
+    let mut tensor_slot = None;
+    for (slot, cell) in cells.iter().enumerate() {
+        if matches!(cell, DenseF64Cell::Tensor(_)) {
+            if tensor_slot.is_some() {
+                return None;
+            }
+            tensor_slot = Some(slot);
+        }
+    }
+
+    let tensor_slot = tensor_slot?;
+    let mut current_slot = tensor_slot;
+    for step in &plan.steps {
+        let lhs_is_current = operand_is_slot(step.lhs, current_slot);
+        match step.rhs {
+            Some(rhs) => {
+                let rhs_is_current = operand_is_slot(rhs, current_slot);
+                match (lhs_is_current, rhs_is_current) {
+                    (true, true) => {}
+                    (true, false) => {
+                        scalar_dense_f64_operand(cells, rhs)?;
+                    }
+                    (false, true) => {
+                        scalar_dense_f64_operand(cells, step.lhs)?;
+                    }
+                    (false, false) => return None,
+                }
+            }
+            None => {
+                if !lhs_is_current {
+                    return None;
+                }
+            }
+        }
+        current_slot = step.out_slot;
+    }
+
+    if plan.out_slots[0] != current_slot {
+        return None;
+    }
+
+    let DenseF64Cell::Tensor(mut values) =
+        std::mem::replace(&mut cells[tensor_slot], DenseF64Cell::Missing)
+    else {
+        unreachable!("validated single dense-f64 tensor slot")
+    };
+
+    let mut current_slot = tensor_slot;
+    for step in &plan.steps {
+        let lhs_is_current = operand_is_slot(step.lhs, current_slot);
+        match step.rhs {
+            Some(rhs) => {
+                let rhs_is_current = operand_is_slot(rhs, current_slot);
+                match (lhs_is_current, rhs_is_current) {
+                    (true, true) => {
+                        for value in &mut values {
+                            *value = apply_scalar_f64_binary(step.op, *value, *value);
+                        }
+                    }
+                    (true, false) => {
+                        let rhs_scalar = scalar_dense_f64_operand(cells, rhs)?;
+                        for value in &mut values {
+                            *value = apply_scalar_f64_binary(step.op, *value, rhs_scalar);
+                        }
+                    }
+                    (false, true) => {
+                        let lhs_scalar = scalar_dense_f64_operand(cells, step.lhs)?;
+                        for value in &mut values {
+                            *value = apply_scalar_f64_binary(step.op, lhs_scalar, *value);
+                        }
+                    }
+                    (false, false) => unreachable!("validated linear tensor chain"),
+                }
+            }
+            None => {
+                debug_assert!(lhs_is_current);
+                for value in &mut values {
+                    *value = apply_scalar_f64_binary(step.op, *value, *value);
+                }
+            }
+        }
+        current_slot = step.out_slot;
+    }
+
+    let tensor = match TensorValue::new_f64_values(shape.clone(), values) {
+        Ok(t) => t,
+        Err(e) => {
+            return Some(Err(InterpreterError::Primitive(EvalError::InvalidTensor(
+                e,
+            ))));
+        }
+    };
+    out.clear();
+    out.push(Value::Tensor(tensor));
+    Some(Ok(()))
+}
+
 fn run_scalar_f64_plan_as_tensor_into(
     plan: &ScalarF64Plan,
     const_values: &[Value],
@@ -6426,6 +6547,10 @@ fn run_scalar_f64_plan_as_tensor_into(
     // Large tensors are owned by the chunked/threaded fusion; only small bodies here.
     if n >= FUSION_MIN_ELEMS {
         return None;
+    }
+
+    if let Some(result) = run_linear_scalar_f64_tensor_chain_into(plan, &shape, out, cells) {
+        return Some(result);
     }
 
     for step in &plan.steps {

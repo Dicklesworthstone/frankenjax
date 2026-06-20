@@ -2395,3 +2395,35 @@ ends are not rediscovered without new evidence.
   still blocked by pre-existing `fj-trace`/`fj-lax` lints.
 - Retry predicate: target dense elementwise-chain fusion / tensor output reuse next, specifically the
   remaining `tensor64/n=32` JAX loss.
+
+## WildForge / cod-a - Small dense f64 linear chain runner converts tensor64/n=32 loss to narrow JAX win
+
+- Bead: `frankenjax-mcqr.111`.
+- Lever kept: in `fj-interpreters`, the small dense-f64 tensor arena now recognizes a one-output
+  linear tensor-state chain with scalar/literal broadcast operands, moves the loaded input tensor
+  buffer out of the arena, and mutates that buffer in place through the chain. All non-linear,
+  multi-tensor, broadcast-vector, non-f64, multi-output, and large-tensor cases fall back to the
+  existing arena/generic paths.
+- Same-worker Rust evidence (`vmi1152480`, `compiled_dispatch_speed`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a`):
+
+  | workload | baseline compiled_runner | candidate compiled_runner | speedup |
+  | --- | ---: | ---: | ---: |
+  | tensor64/n=8 | 2.2213 us | 1.1623 us | 1.91x |
+  | tensor64/n=32 | 8.3991 us | 4.4519 us | 1.89x |
+
+- JAX head-to-head (`jax.jit` CPU 0.10.1, x64, comparator script mean):
+
+  | workload | Rust candidate | JAX mean | Rust/JAX | verdict |
+  | --- | ---: | ---: | ---: | --- |
+  | scalar/n=8 | 28.642 ns | 5406.2266 ns | 0.0053 | Rust wins |
+  | scalar/n=32 | 77.747 ns | 4724.7143 ns | 0.0165 | Rust wins |
+  | scalar/n=128 | 264.19 ns | 4755.5858 ns | 0.0556 | Rust wins |
+  | tensor64/n=8 | 1.1623 us | 4.6034999 us | 0.2525 | Rust wins |
+  | tensor64/n=32 | 4.4519 us | 4.7659261 us | 0.9341 | Rust wins narrowly |
+
+- Decision: KEEP. Current compiled-runner scorecard is 5 wins / 0 losses / 0 neutral vs JAX. The
+  prior real loss (`tensor64/n=32`) moved from JAX 1.76x faster to Rust 1.07x faster by mean.
+- Negative evidence / retry predicate: the tensor64/n=32 margin is small, so do not treat this as a
+  broad XLA-fusion domination. The remaining frontier is deeper small-tensor codegen/algebra only if
+  it preserves per-step floating-point order, or if a future bead explicitly defines a relaxed-FP
+  contract.

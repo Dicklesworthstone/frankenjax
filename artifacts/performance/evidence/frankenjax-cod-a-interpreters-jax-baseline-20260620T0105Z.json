@@ -1,0 +1,57 @@
+{
+  "generated_at": "2026-06-20T01:05:26.652488+00:00",
+  "engine": "jax_jit_cpu",
+  "jax_version": "0.10.1",
+  "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.42",
+  "workloads": {
+    "scalar": "x -> x + 1 repeated n times, dtype=int64",
+    "tensor64": "x[64] -> x + 1.0 repeated n times, dtype=float64"
+  },
+  "results": [
+    {
+      "name": "compiled_dispatch_jax_scalar_n=8",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 5629.129999999999,
+      "p95_ns": 6867.289250000001,
+      "p99_ns": 7589.308449999989,
+      "mean_ns": 5406.226625,
+      "cv_pct": 15.56198793641392
+    },
+    {
+      "name": "compiled_dispatch_jax_scalar_n=32",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 4594.525,
+      "p95_ns": 5259.147,
+      "p99_ns": 6357.193099999994,
+      "mean_ns": 4724.71425,
+      "cv_pct": 7.835096489867458
+    },
+    {
+      "name": "compiled_dispatch_jax_scalar_n=128",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 4553.17,
+      "p95_ns": 5962.6445,
+      "p99_ns": 6997.331149999998,
+      "mean_ns": 4755.58575,
+      "cv_pct": 10.72390353618638
+    },
+    {
+      "name": "compiled_dispatch_jax_tensor64_n=8",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 4538.49,
+      "p95_ns": 4981.259249999999,
+      "p99_ns": 5463.192649999998,
+      "mean_ns": 4603.4998749999995,
+      "cv_pct": 4.392375888213195
+    },
+    {
+      "name": "compiled_dispatch_jax_tensor64_n=32",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 4584.48,
+      "p95_ns": 5725.568,
+      "p99_ns": 5774.37845,
+      "mean_ns": 4765.926125,
+      "cv_pct": 8.515322358840601
+    }
+  ]
+}
