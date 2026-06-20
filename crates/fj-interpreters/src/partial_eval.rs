@@ -753,10 +753,7 @@ fn infer_broadcasted_iota_aval(eqn: &Equation) -> Result<AbstractValue, PartialE
     })
 }
 
-fn parse_required_u32_list_param(
-    eqn: &Equation,
-    key: &str,
-) -> Result<Vec<u32>, PartialEvalError> {
+fn parse_required_u32_list_param(eqn: &Equation, key: &str) -> Result<Vec<u32>, PartialEvalError> {
     let raw = eqn
         .params
         .get(key)
@@ -961,10 +958,13 @@ fn infer_squeeze_shape(eqn: &Equation, input: &AbstractValue) -> Result<Shape, P
         Some(s) if !s.trim().is_empty() => {
             let mut out = Vec::new();
             for tok in s.split(',') {
-                let raw: i64 = tok.trim().parse().map_err(|_| PartialEvalError::ShapeInference {
-                    primitive: eqn.primitive,
-                    detail: format!("invalid squeeze dimension token: '{}'", tok.trim()),
-                })?;
+                let raw: i64 =
+                    tok.trim()
+                        .parse()
+                        .map_err(|_| PartialEvalError::ShapeInference {
+                            primitive: eqn.primitive,
+                            detail: format!("invalid squeeze dimension token: '{}'", tok.trim()),
+                        })?;
                 let norm = if raw < 0 { raw + rank as i64 } else { raw };
                 if norm < 0 || norm >= rank as i64 {
                     return Err(PartialEvalError::ShapeInference {
@@ -994,7 +994,10 @@ fn infer_squeeze_shape(eqn: &Equation, input: &AbstractValue) -> Result<Shape, P
         if dims_in[d] != 1 {
             return Err(PartialEvalError::ShapeInference {
                 primitive: eqn.primitive,
-                detail: format!("cannot squeeze dimension {d} with size {} (must be 1)", dims_in[d]),
+                detail: format!(
+                    "cannot squeeze dimension {d} with size {} (must be 1)",
+                    dims_in[d]
+                ),
             });
         }
     }
@@ -1689,13 +1692,13 @@ fn infer_equation_output_aval(
             // fj-trace requires 'reps' and strict-parses it; the previous filter_map
             // silently dropped malformed tokens (e.g. "2,bad,3" -> [2,3]) and defaulted a
             // missing param to no tiling, staging a wrong residual shape. Fail closed.
-            let raw_reps = eqn
-                .params
-                .get("reps")
-                .ok_or_else(|| PartialEvalError::ShapeInference {
-                    primitive: eqn.primitive,
-                    detail: "tile requires 'reps' param".to_owned(),
-                })?;
+            let raw_reps =
+                eqn.params
+                    .get("reps")
+                    .ok_or_else(|| PartialEvalError::ShapeInference {
+                        primitive: eqn.primitive,
+                        detail: "tile requires 'reps' param".to_owned(),
+                    })?;
             let reps: Vec<u32> = raw_reps
                 .split(',')
                 .map(|r| {
@@ -5396,10 +5399,14 @@ mod tests {
                 "not unique",
             ),
         ] {
-            match infer_equation_output_aval(&eqn(Primitive::Squeeze, params), &input).unwrap_err() {
+            match infer_equation_output_aval(&eqn(Primitive::Squeeze, params), &input).unwrap_err()
+            {
                 PartialEvalError::ShapeInference { primitive, detail } => {
                     assert_eq!(primitive, Primitive::Squeeze, "{label}");
-                    assert!(detail.contains(expected), "{label}: unexpected detail: {detail}");
+                    assert!(
+                        detail.contains(expected),
+                        "{label}: unexpected detail: {detail}"
+                    );
                 }
                 other => panic!("{label}: unexpected error: {other}"),
             }
@@ -5578,8 +5585,8 @@ mod tests {
                 "invalid slice bounds axis 0",
             ),
         ] {
-            let err = infer_equation_output_aval(&eqn(Primitive::Slice, params), &input)
-                .unwrap_err();
+            let err =
+                infer_equation_output_aval(&eqn(Primitive::Slice, params), &input).unwrap_err();
             match err {
                 PartialEvalError::ShapeInference { primitive, detail } => {
                     assert_eq!(primitive, Primitive::Slice, "{label}");
@@ -5592,9 +5599,11 @@ mod tests {
             }
         }
 
-        let out =
-            infer_equation_output_aval(&eqn(Primitive::Transpose, &[]), &av(&[2, 3, 4], DType::F64))
-                .unwrap();
+        let out = infer_equation_output_aval(
+            &eqn(Primitive::Transpose, &[]),
+            &av(&[2, 3, 4], DType::F64),
+        )
+        .unwrap();
         assert_eq!(out.shape.dims, vec![4, 3, 2]);
 
         for (label, permutation, input, expected_detail) in [
@@ -5716,8 +5725,7 @@ mod tests {
                 "padded dimension overflow on axis 0",
             ),
         ] {
-            let err = infer_equation_output_aval(&eqn(Primitive::Pad, params), &input)
-                .unwrap_err();
+            let err = infer_equation_output_aval(&eqn(Primitive::Pad, params), &input).unwrap_err();
             match err {
                 PartialEvalError::ShapeInference { primitive, detail } => {
                     assert_eq!(primitive, Primitive::Pad, "{label}");
@@ -5855,7 +5863,10 @@ mod tests {
             match infer_equation_output_aval(&eqn(prim, params), &input).unwrap_err() {
                 PartialEvalError::ShapeInference { primitive, detail } => {
                     assert_eq!(primitive, prim, "{label}");
-                    assert!(detail.contains(expected), "{label}: unexpected detail: {detail}");
+                    assert!(
+                        detail.contains(expected),
+                        "{label}: unexpected detail: {detail}"
+                    );
                 }
                 other => panic!("{label}: unexpected error: {other}"),
             }
@@ -5901,11 +5912,8 @@ mod tests {
                 "strictly increasing",
             ),
         ] {
-            let err = infer_equation_output_aval(
-                &eqn(Primitive::BroadcastInDim, params),
-                &input,
-            )
-            .unwrap_err();
+            let err = infer_equation_output_aval(&eqn(Primitive::BroadcastInDim, params), &input)
+                .unwrap_err();
             match err {
                 PartialEvalError::ShapeInference { primitive, detail } => {
                     assert_eq!(primitive, Primitive::BroadcastInDim, "{label}");
@@ -5964,11 +5972,9 @@ mod tests {
                 "broadcasted_iota does not accept bool dtype",
             ),
         ] {
-            let err = infer_equation_output_avals(
-                &eqn_n(Primitive::BroadcastedIota, 1, params),
-                &[],
-            )
-            .unwrap_err();
+            let err =
+                infer_equation_output_avals(&eqn_n(Primitive::BroadcastedIota, 1, params), &[])
+                    .unwrap_err();
             match err {
                 PartialEvalError::ShapeInference { primitive, detail } => {
                     assert_eq!(primitive, Primitive::BroadcastedIota, "{label}");
@@ -6058,7 +6064,10 @@ mod tests {
             match infer_equation_output_aval(&eqn(Primitive::Split, params), &input).unwrap_err() {
                 PartialEvalError::ShapeInference { primitive, detail } => {
                     assert_eq!(primitive, Primitive::Split, "{label}");
-                    assert!(detail.contains(expected), "{label}: unexpected detail: {detail}");
+                    assert!(
+                        detail.contains(expected),
+                        "{label}: unexpected detail: {detail}"
+                    );
                 }
                 other => panic!("{label}: unexpected error: {other}"),
             }
