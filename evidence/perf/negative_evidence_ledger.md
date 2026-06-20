@@ -3690,3 +3690,32 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   -D warnings` clean. NOTE: a FRESH vs-JAX head-to-head is not runnable from the agent shell (no jax
   in PATH/venv here); the ledger's vs-JAX ratios were captured on a host-specific jax 0.10.1 venv.
   Pass delta: 0 wins / 0 losses / 0 neutral (verification + DO-NOT documentation).
+
+## AzureLynx - MEASURED: FFT is a 7-43x JAX LOSS (new gap; corrects my pass-5 assumption) [bead murmw]
+
+- Stood up a reusable jax venv (`/data/projects/.scratch/jaxvenv`, jax 0.10.2 x64 CpuDevice) and ran
+  the FIRST head-to-head vs-JAX FFT measurement. This CORRECTS my own pass-5 note ("FFT not a JAX-loss
+  candidate") — that was an UNMEASURED assumption from reading the code (O(n log n) + row-threaded).
+  Measured, it is a large loss. Lesson: audit-only is not measurement.
+- Method: JAX `jax.jit(jnp.fft.fft)` x64 complex128, best-of-7x200 + block_until_ready, vs fj-lax
+  `eval_primitive(Fft, complex128)` criterion median (rch hz1 release). Same sizes as lax_baseline:
+
+  | case (complex128)          | Rust (eval) | JAX (jit) | Rust/JAX |
+  | fft_256 (pow2)             | 6.58 us     | 5.90 us   | 1.12x LOSS |
+  | ifft_256                   | 7.08 us     | 5.72 us   | 1.24x LOSS |
+  | fft_1000 (Bluestein)       | 46.4 us     | 6.07 us   | **7.6x LOSS** |
+  | fft_batch_128x1000         | 3741 us     | 159 us    | **23.5x LOSS** |
+  | fft_batch_2048x256 (pow2)  | 10078 us    | 236 us    | **42.7x LOSS** |
+  | fft_batch_2048x256 dense   | 4949 us     | 236 us    | **21.0x LOSS** |
+
+- Read: small single pow2 FFT is ~par (1.12x — methodologies share a framework-overhead floor, which
+  VALIDATES that the big-case gaps are real, not measurement artifact). The loss explodes for BATCHED
+  (21-43x) and COMPOSITE non-pow2 (7.6x). Root cause is the KERNEL, not storage: dense complex storage
+  already halves the batched cost (dense 21x vs boxed 42.7x) but the floor is radix-2 SCALAR butterflies
+  vs pocketfft's SIMD higher-radix (radix-4/8) + native radix-3/5/7 (so JAX never Bluesteins 1000=2^3*5^3).
+- Scorecard impact: FFT was an UNCHARACTERIZED family; it is now a documented 7-43x loss. Filed
+  frankenjax-murmw (P1) with the lever menu: mixed-radix Cooley-Tukey (radix-4/8 pow2 + native
+  composite radixes, kills Bluestein on composite lengths) + std::simd complex butterflies + cache-
+  blocked batched transform. LEGAL (FFT parity is TOLERANCE 1e-9, reassociation OK) but must refresh
+  the pow2 golden digests. MULTI-SESSION (dedicated FFT-kernel pass), parity-risk — NOT shipped here.
+  Pass delta: 0 wins / 4 losses / 2 narrow-losses MEASURED (real new negative evidence).
