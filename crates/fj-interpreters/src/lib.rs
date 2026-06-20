@@ -1370,6 +1370,15 @@ const FUSION_THREAD_MIN_ELEMS: usize = 1 << 19; // 512 Ki
 /// amortize the spawn while still using every core on big tensors.
 const FUSION_ELEMS_PER_THREAD: usize = 1 << 18; // 256 Ki / worker
 
+/// Benchmark-only A/B knob (default 0 = use the production gate). When set to a
+/// nonzero `k`, `fusion_thread_count` caps the worker count at `k` — so a bench
+/// can run the fusion SERIAL (`k == 1`) and THREADED over identical data in the
+/// SAME process, the only worker-variance-immune signal on the contended rch
+/// host. Mirrors the `vectorize` flag convention in `run_dense_plan_into_core`.
+/// Never set in production; the read is one relaxed load.
+pub static FUSION_THREAD_CAP_OVERRIDE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 #[inline]
 fn fusion_thread_count(n: usize) -> usize {
     if n < FUSION_THREAD_MIN_ELEMS {
@@ -1378,7 +1387,9 @@ fn fusion_thread_count(n: usize) -> usize {
     let hw = std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(1);
-    (n / FUSION_ELEMS_PER_THREAD).clamp(1, hw)
+    let want = (n / FUSION_ELEMS_PER_THREAD).clamp(1, hw);
+    let cap = FUSION_THREAD_CAP_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+    if cap == 0 { want } else { want.min(cap) }
 }
 
 /// Drive a per-chunk fused `apply` over `values` in `FUSION_CHUNK`-sized chunks.
