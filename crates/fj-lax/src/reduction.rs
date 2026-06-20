@@ -3294,9 +3294,11 @@ fn scan_leading_axis_to_vec<S: Copy, T: Copy>(
         let base = k * cols;
         let srow = &src[base..base + cols];
         let orow = &mut out[base..base + cols];
-        for c in 0..cols {
-            acc[c] = op(acc[c], widen(srow[c]));
-            orow[c] = narrow(acc[c]);
+        // Iterator zip elides per-element bounds checks (the non-aliasing acc / srow /
+        // orow update across the independent columns is the hot inner loop).
+        for ((a, &s), o) in acc.iter_mut().zip(srow.iter()).zip(orow.iter_mut()) {
+            *a = op(*a, widen(s));
+            *o = narrow(*a);
         }
     };
     if reverse {
@@ -3367,7 +3369,7 @@ fn eval_cumulative_dense(
             scan_contiguous_lines_in_place(&mut out, axis_dim, reverse, float_init, float_op);
             out
         } else if axis == 0 && outer_count > 1 {
-            // Leading-axis (cumsum/cumprod/... DOWN the columns): the serial branch
+            // Leading-axis (cumsum/cumprod/cummax/cummin DOWN the columns): the serial branch
             // below re-reads each column at stride `axis_stride == outer_count`
             // (cache-hostile). Stream k-outer/column-inner instead (contiguous
             // reads+writes, per-column f64 acc in L1) — bit-identical.

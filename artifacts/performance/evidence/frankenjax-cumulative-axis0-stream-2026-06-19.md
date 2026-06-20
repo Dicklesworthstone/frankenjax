@@ -77,8 +77,28 @@ new `leading_axis_cumulative_matches_serial_reference` (512×384 F64 + F32, all 
 ops × forward/reverse, special values −0.0/NaN/±inf, vs an independent per-column
 serial reference with NaN canonicalized).
 
+## Negative evidence — attempts to push parity → a clear win (all REJECTED)
+
+After landing the streaming-serial path at ~79 ms (parity), four follow-ups were
+measured on the same bench to try to dominate JAX. All failed — cumsum-axis0 is
+**parity-bound**:
+
+| Attempt | Result | Verdict |
+| --- | ---: | --- |
+| Iterator-zip inner loop (elide bounds checks) | 74.69 ms | kept (6% + cleaner; only real gain) |
+| Direct `+=` specialization for Cumsum (no `op` closure) | 80.59 ms | no vectorization win — REVERTED |
+| `Vec::push` forward (skip the `vec![fill;total]` memset) | 87.35 ms | push capacity-checks cost MORE than the memset — REVERTED |
+| Threaded over columns | not attempted to ship | output is column-strided/full-size → needs a column-major scratch + strided scatter-back; the scatter risks eating the gain |
+
+Conclusion: the bottleneck is neither closure indirection (direct `+` didn't help) nor
+the output zero-fill (push was slower); at ~3.6 GB/s the op is bound by the
+strided/dependent write+accumulate pattern that does not vectorize. The iterator-zip
+form is the safe optimum; do NOT re-attempt direct-op specialization or push-based
+output for leading-axis cumulative.
+
 ## Ledger
 
-NEUTRAL/gap-closer vs JAX (1.03x parity) but a clear **3.47x internal** win that
-removes a 3.37x JAX loss; Confidence 0.97 (bit-exact finite/inf, gated `axis==0`);
-Effort low. Companion to the same-day argmax/cumulative line-threading wins.
+NEUTRAL/gap-closer vs JAX (1.07x at the kept 74.7 ms) but a clear **3.7x internal**
+win that removes a 3.37x JAX loss; Confidence 0.97 (bit-exact finite/inf, gated
+`axis==0`); Effort low. Companion to the same-day argmax/cumulative line-threading
+wins.
