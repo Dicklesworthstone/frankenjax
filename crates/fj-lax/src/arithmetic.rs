@@ -20563,7 +20563,7 @@ mod tests {
             .collect();
         let wfb: Vec<u32> = xf
             .iter()
-            .map(|&xv| ref_clamp(lo as f64, f64::from(xv), hi as f64) as f32)
+            .map(|&xv| ref_clamp(lo, f64::from(xv), hi) as f32)
             .map(|v| v.to_bits())
             .collect();
         assert!(gfb == wfb, "threaded f32 clamp != serial");

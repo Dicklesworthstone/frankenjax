@@ -1212,7 +1212,7 @@ mod tests {
         for &x in &xs {
             // relu6(x) = min(max(x,0), 6)
             assert!(
-                approx_eq(relu6(&[x])[0], x.max(0.0).min(6.0), 1e-12),
+                approx_eq(relu6(&[x])[0], x.clamp(0.0, 6.0), 1e-12),
                 "relu6({x})"
             );
             // leaky_relu(x, s) = x if x>=0 else s*x
@@ -1228,7 +1228,7 @@ mod tests {
             assert!(approx_eq(elu(&[x], a)[0], elu_ref, 1e-12), "elu({x})");
             // hard_tanh(x) = clamp(x, -1, 1)
             assert!(
-                approx_eq(hard_tanh(&[x])[0], x.max(-1.0).min(1.0), 1e-12),
+                approx_eq(hard_tanh(&[x])[0], x.clamp(-1.0, 1.0), 1e-12),
                 "hard_tanh({x})"
             );
             // softsign(x) = x / (1 + |x|)

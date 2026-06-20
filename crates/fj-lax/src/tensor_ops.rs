@@ -14078,7 +14078,8 @@ mod tests {
     fn broadcast_replicate_into_bit_identical_to_serial() {
         // Each case: (in_dims, target_dims, out_to_in). Output >= gate so the threaded
         // path engages; compare the threaded `_into` fill to the serial generic replicate.
-        let cases: [(Vec<u32>, Vec<u32>, Vec<Option<usize>>); 3] = [
+        type ReplicateCase = (Vec<u32>, Vec<u32>, Vec<Option<usize>>);
+        let cases: [ReplicateCase; 3] = [
             // [C] -> [rows, C], broadcast_dimensions=[1]
             (vec![1024], vec![16_384, 1024], vec![None, Some(0)]),
             // [A, C] -> [A, B, C], broadcast_dimensions=[0,2]
@@ -21571,10 +21572,10 @@ mod tests {
             );
 
             let dense_args = extract_i64_vec(
-                &eval_argsort(Primitive::Argsort, &[dense_u32.clone()], &p).unwrap(),
+                &eval_argsort(Primitive::Argsort, std::slice::from_ref(&dense_u32), &p).unwrap(),
             );
             let literal_args = extract_i64_vec(
-                &eval_argsort(Primitive::Argsort, &[literal_u32.clone()], &p).unwrap(),
+                &eval_argsort(Primitive::Argsort, std::slice::from_ref(&literal_u32), &p).unwrap(),
             );
             assert_eq!(
                 dense_args, literal_args,
@@ -21663,10 +21664,10 @@ mod tests {
             );
 
             let dense_args = extract_i64_vec(
-                &eval_argsort(Primitive::Argsort, &[dense_u64.clone()], &p).unwrap(),
+                &eval_argsort(Primitive::Argsort, std::slice::from_ref(&dense_u64), &p).unwrap(),
             );
             let literal_args = extract_i64_vec(
-                &eval_argsort(Primitive::Argsort, &[literal_u64.clone()], &p).unwrap(),
+                &eval_argsort(Primitive::Argsort, std::slice::from_ref(&literal_u64), &p).unwrap(),
             );
             assert_eq!(
                 dense_args, literal_args,
