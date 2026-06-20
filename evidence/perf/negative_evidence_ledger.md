@@ -2682,3 +2682,29 @@ ends are not rediscovered without new evidence.
 
   Within-invocation A/B (both in-place now): vectorized 1701ns vs in-place-non-vectorized 15552ns =
   9.1x from the vectorization. The documented gap is CLOSED — broadcast bias-add now dominates JAX.
+
+## WildForge - VERIFIED off-limits: float ReduceSum/Prod order (the 3-4x JAX loss) — not a safe unilateral lever
+
+- Investigated whether the documented 3-4x float-reduce JAX loss is bit-exact-pinned (off-limits) or
+  tolerance-parity (a faster pairwise/blocked SIMD reduction would then be LEGAL, like linalg). The
+  `reduce_sum_oracle.rs` conformance tests are MOSTLY tolerance (`assert_close(.., 1e-14, ..)`) or
+  exact-INTEGER cases (order-independent) — which alone would have permitted a reorder. BUT it is
+  pinned bit-exact by THREE other mechanisms, so a reorder is NOT a safe unilateral commit:
+  1. Golden sha256 digests exist for the actual output bits:
+     `artifacts/performance/evidence/fj_lax_dense_f64_reduce_sum_pass{59,60}_2026-06-03.golden.sha256`
+     and `fj_lax_reduce_sum_64k_bench_pass58_*.golden.sha256` (64k-element array). A pairwise/SIMD
+     fold changes these bits -> goldens must be regenerated (and re-justified as still JAX-tolerance).
+  2. `reduction.rs::dense_f64_reduce_sum_full_fast_path_bit_identical_to_literal_path` asserts the
+     dense fast path is BIT-IDENTICAL to the literal path (both ascending `|a,b| a+b`); any reorder
+     must keep BOTH paths consistent.
+  3. `reduction.rs` is referenced by 3 e2e gates (e2e_adversarial_fixtures / e2e_mixed_dtype /
+     e2e_security_gate) whose committed_gate_logs hash the file (hash-drift on any edit), AND it is
+     in the ACTIVE cod-a/cod-b fj-lax campaign (inbox-confirmed) — editing it risks clobbering their
+     concurrent WIP.
+- CONCLUSION: confirms the standing DO-NOT (project_axis_reduce_odometer_lever). A real attempt is a
+  MULTI-SESSION, maintainer-coordinated swing: either (a) match XLA's EXACT CPU reduction tree to get
+  bit-parity AND ILP, or (b) a deliberate move to tolerance-parity with golden regeneration + a proof
+  the new order stays within 1e-14 of JAX + cod-campaign coordination. Not a tail-of-session commit.
+- Net for the BOLD-VERIFY phase: the fj-interpreters dense-arena vectorization vein is fully mined and
+  JAX-dominant; the remaining gaps are this off-limits reduce-order swing, the +fma policy gate, or the
+  active cod fj-lax lane. No safe in-lane lever remains; holding rather than risking parity/collisions.
