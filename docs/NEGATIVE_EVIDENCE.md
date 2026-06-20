@@ -2,7 +2,7 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
-## 2026-06-20 - frankenjax-murmw SoA mixed-radix (composite) batch FFT — no-ship (0.50-0.69x regression)
+## 2026-06-20 - frankenjax-murmw SoA mixed-radix (composite) batch FFT — no-ship (0.50-0.81x regression, large AND small n)
 
 After the pow2 fft/ifft/rfft/irfft SoA wins, the natural extension was to SoA-vectorize
 the **smooth-composite** path (`mixed_radix_into`, e.g. `fft_batch_128x1000` ~30x). Built
@@ -23,12 +23,19 @@ path's L1-resident 2×16 KiB. Smaller tiles only lose SIMD width while staying m
 (hence tile=2 is *worse*). The recursion's strided sub-DFT access and the general-p combine
 also vectorize worse than flat radix-2 stages. Source reverted before commit; no source kept.
 
-Retry predicate: do NOT retry a straight SoA transpose of the recursive mixed-radix — it is
-memory-bound for the composite sizes that matter. A real win needs a different structure:
-an iterative (non-recursive) mixed-radix with in-place stages over a single buffer pair
-(so only 2 SoA buffers, L1-resident), or native batched radix kernels that never materialize
-the full per-row scratch. The pow2 SoA family (fft/ifft/rfft/irfft) stays the only shipped
-SoA FFT win.
+UPDATE (second no-ship, same pass): the small-`n` L1-resident hypothesis was also tested and
+REJECTED. Re-added the kernel gated to `n <= 160` (where the 3 SoA buffer-pairs fit a 32 KiB
+L1) and benched n=120: still **0.81x** (2.026ms → 2.508ms, interleaved min-of-9). So the
+regression is NOT just cache spill — the recursive structure's strided per-lane sub-DFT
+access plus the transpose round-trip simply don't autovectorize like the flat iterative
+radix-2 path, at any size. Reverted again. Both the large-`n` and small-`n` recursive-SoA
+gates are dead.
+
+Retry predicate: do NOT retry ANY straight SoA transpose of the RECURSIVE mixed-radix (large
+or small n). A real win needs a different structure: an iterative (non-recursive) mixed-radix
+with in-place stages over a single buffer pair (2 SoA buffers, L1-resident, flat stage loops
+that vectorize), or native batched radix kernels that never materialize the per-row scratch.
+The pow2 SoA family (fft/ifft/rfft/irfft) stays the only shipped SoA FFT win.
 
 ## 2026-06-20 - frankenjax-murmw SoA real-FFT (rfft/irfft) batch kernel — SHIPPED win (1.58-1.79x)
 
