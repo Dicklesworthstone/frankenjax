@@ -3891,3 +3891,25 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   Arc'd buffers. So ifou2 is a real DESIGN problem with a tradeoff, not a quick swing — recorded so
   the owner budgets for it. Pass delta: verification (ifou2 root cause MEASURED + safe-impl constraint
   identified) / 0 wins / 0 losses.
+
+## AzureLynx - SCORECARD: sort is a fj-lax WIN; the vs-JAX-CPU loss set is now narrow + characterized
+
+- Measured sort head-to-head (jax 0.10.2 x64 jit vs fj-lax eval_primitive sort_64k, rch release):
+  sort 64k **i64: fj-lax 1.30 ms vs JAX 2.04 ms = 1.57x WIN; f64: 1.42 ms vs JAX 11.18 ms = 7.9x WIN.**
+  (JAX-CPU's f64 sort at 11ms for 64k is its slow XLA comparison sort, not a real target.)
+- This crystallizes the campaign's WIN/LOSS map. JAX-CPU only genuinely BEATS fj-lax where XLA calls a
+  tuned native lib or fuses BLAS:
+  - **LOSSES (real):** matmul/conv (FMA-gate cntiy + spawn-limited mid-size threading ifou2 — matmul
+    256³ 9.3x, conv 1.8x); FFT (pocketfft SIMD mixed-radix — murmw, 7-43x). float reduce-order
+    (off-limits). softmax/attention (FMA-gate). That is the WHOLE remaining loss set, and every item is
+    gated or multi-session.
+  - **WINS / parity (fj-lax ≥ JAX-CPU):** sort (1.6-7.9x), eigh (now beats numpy eigh 6.2x after the
+    ur4h3 cache fixes), elementwise/reduction/broadcast/select/transpose/gather at scale (documented
+    threaded wins), argmax (1.36x), RNG. JAX-CPU's eigh/svd/sort/fft-mixed-radix use slow XLA-CPU
+    implementations — measuring against them is unreliable AS A LOSS (they flatter fj-lax) but reliable
+    as confirmation fj-lax is NOT losing there.
+- CONCLUSION: the contained, bit-exact, single-pass perf veins are EXHAUSTED (this campaign shipped
+  the eigh cache fixes 4.24x+47.8x and the FFT plan-cache 1.43x+1.39x). Every remaining vs-JAX loss is
+  (a) FMA-policy-gated (cntiy), (b) a multi-session kernel/algorithm rewrite (FFT murmw, SVD bidiag+QR,
+  eigh symmetric reduction), or (c) the forbid-unsafe-constrained persistent pool (ifou2). Pass delta:
+  scorecard — sort WIN confirmed + loss set fully characterized / 1 win documented / 0 losses.
