@@ -248,6 +248,45 @@ ends are not rediscovered without new evidence.
   throughput wall; only a `+fma`/SIMD-exp policy change moves it. Reproducer:
   `benchmarks/jax_comparison/softmax_gauntlet.py`.
 
+## frankenjax-cntiy - global +fma alone does NOT close the 2D softmax JAX gap; row-call devirtualization regressed
+
+- Date: 2026-06-20
+- Agent: cod-b / WildForge
+- Target: `frankenjax-cntiy` maintainer gate, focused on the current
+  `nn/softmax_2d_65536x16_fused` JAX loss.
+- Same-host JAX oracle:
+  `benchmarks/jax_comparison/.venv/bin/python benchmarks/jax_comparison/softmax_gauntlet.py`
+  reported JAX CPU x64 `jax.nn.softmax(axis=-1)` mean **1.0524 ms**, p50
+  **1.0765 ms**, CV 9.39%.
+
+| Probe | Rust mean | Rust/JAX mean | Verdict |
+| --- | ---: | ---: | --- |
+| default Rust, local `fj-lax` Criterion | 2.2163 ms | 2.106 | LOSS: JAX still 2.11x faster |
+| `RUSTFLAGS="-C target-feature=+fma"`, local | 2.2096 ms | 2.100 | LOSS vs JAX; NEUTRAL as a lever (0.997x, Criterion no-change p=0.26) |
+| generic `fill_softmax_rows_parallel<F>` row-call devirtualization patch | 2.3303 ms | 2.214 | REGRESSION: +5.34%, p=0.00; reverted before commit |
+
+- RCH evidence using requested `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b`:
+  `cargo test -p fj-lax softmax_2d --lib` passed on `ovh-a` (10 passed, 0
+  failed). The crate-scoped default-vs-`+fma` RCH probe produced one anomalous
+  first default row on `vmi1149989` (`softmax` 11.820 ms, `log_softmax` 9.0829
+  ms) followed by `+fma` rows of 2.5208 ms and 3.7028 ms. A later default RCH
+  rerun on `vmi1152480` measured `softmax` at 2.1842 ms, matching local default,
+  so the apparent 4.7x RCH `+fma` improvement is rejected as non-proof.
+- Ratio scorecard for this pass, using same-host Rust/JAX rows: **0 wins / 3
+  losses / 0 neutral vs JAX**. Lever scorecard: `+fma` alone neutral/no-ship;
+  row-call devirtualization rejected and reverted.
+- Decision: no production `+fma` build policy change and no `nn.rs` source
+  change. The current softmax path still calls scalar `f64::exp`; a global FMA
+  flag by itself does not create the missing SIMD/fast-exp kernel. The maintainer
+  decision remains narrower than "turn on +fma": approve a relaxed-FP
+  SIMD/fast-exp internal softmax/attention contract or keep the bit-exact scalar
+  path and accept the ~2.1x JAX loss.
+- Retry predicate: do not reattempt function-pointer/generic devirtualization
+  for softmax rows. Do not claim global `+fma` closes softmax unless a same-host
+  run shows the `nn/softmax_2d_65536x16_fused` Rust/JAX ratio below 1.0. The
+  next real lever is a semantics-approved SIMD/fast-exp specialization, not the
+  build flag alone.
+
 ## frankenjax-cc-unary-threading-surface-mined - Cheap Unary Threading Audit (negative)
 
 - Date: 2026-06-19

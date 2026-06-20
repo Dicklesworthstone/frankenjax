@@ -736,3 +736,21 @@ Additional cod-a fj-interpreters compiled-dispatch environment:
   remaining target is still the multi-input DRAM row family; valid next levers are output/arena reuse,
   non-temporal stores/prefetch/NUMA affinity, or specific unowned typed-path gaps with same-worker
   proof. Default allocator policy is maintainer-gated and should not be reopened by agents alone.
+
+## WildForge / cod-b - cntiy softmax FMA/devirtualization no-ship (2026-06-20)
+
+- Scope: `frankenjax-cntiy`, current `nn/softmax_2d_65536x16_fused` loss to JAX.
+- Same-host comparator: JAX CPU x64 `jax.nn.softmax(axis=-1)` mean 1.0524 ms, p50 1.0765 ms.
+  Local Rust default mean 2.2163 ms, Rust/JAX 2.106 (LOSS). Local global-flag probe
+  `RUSTFLAGS="-C target-feature=+fma"` mean 2.2096 ms, Rust/JAX 2.100, and Criterion reported
+  no change (p=0.26): neutral as a lever, still a JAX loss.
+- Rejected code probe: genericizing `fill_softmax_rows_parallel` to devirtualize the per-row function
+  pointer regressed local softmax to 2.3303 ms (+5.34%, p=0.00). Reverted before commit.
+- RCH validation: `cargo test -p fj-lax softmax_2d --lib` passed 10/0. A first RCH default row on
+  `vmi1149989` was anomalously slow (softmax 11.820 ms; log_softmax 9.0829 ms) and is not accepted as
+  proof because a later RCH default rerun on `vmi1152480` measured 2.1842 ms and the same-host default
+  was 2.2163 ms.
+- Scorecard for this pass: 0 wins / 3 losses / 0 neutral vs JAX. Production decision: no source change
+  and no build-policy change. The maintainer gate is now sharper: `+fma` alone does not close the gap;
+  the missing lever is an approved SIMD/fast-exp softmax/attention contract or continued acceptance of
+  the bit-exact scalar-exp path.

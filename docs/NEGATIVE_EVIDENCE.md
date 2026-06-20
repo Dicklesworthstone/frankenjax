@@ -2,6 +2,31 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-20 - frankenjax-cntiy softmax +fma/devirtualization no-ship
+
+`frankenjax-cntiy` remains maintainer-gated, but this pass rejects two narrower
+agent-actionable interpretations of the gate.
+
+Same-host JAX oracle: `softmax_2d_65536x16` mean 1.0524 ms, p50 1.0765 ms,
+CV 9.39%. Local Rust Criterion used
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b-local-20260620`;
+RCH validation used `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b`.
+
+| Probe | Rust mean | Rust/JAX | Verdict |
+| --- | ---: | ---: | --- |
+| default `nn/softmax_2d_65536x16_fused` | 2.2163 ms | 2.106 | Loss: JAX 2.11x faster |
+| local `RUSTFLAGS="-C target-feature=+fma"` | 2.2096 ms | 2.100 | Neutral as a lever; still JAX loss |
+| generic row-call devirtualization patch | 2.3303 ms | 2.214 | Regression; reverted |
+
+RCH `cargo test -p fj-lax softmax_2d --lib` passed 10/0. An initial RCH
+default-vs-`+fma` row on `vmi1149989` looked like a 4.7x `+fma` win, but a
+rerun default row on `vmi1152480` and the same-host run both measured ~2.2 ms,
+so that first default row is recorded only as an anomaly.
+
+Decision: no source or build-policy win shipped. Global `+fma` alone does not
+create the missing SIMD/fast-exp softmax kernel. Ratio scorecard: 0 wins / 3
+losses / 0 neutral vs JAX.
+
 ## 2026-06-20 - frankenjax-xljoh compiled-dispatch f64 mid-cache keep
 
 `frankenjax-xljoh` shipped only the measured narrow fallback: reusable
