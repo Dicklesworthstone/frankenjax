@@ -2,6 +2,47 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-20 - frankenjax-murmw SoA gate-disable no-ship
+
+The BOLD-VERIFY pass retested the current power-of-two batched FFT dispatcher
+after an ignored same-binary microbench suggested the threaded per-row Radix2
+path might beat the vectorized SoA path. The radical lever was deliberately
+simple: temporarily disable the SoA dispatcher by changing
+`POW2_VECTORIZED_MIN_BATCH` to `usize::MAX`, measure the full `eval_primitive`
+rows, then keep only if the same-worker release gate improved. It did not; the
+source change was reverted before commit.
+
+Rust timings used RCH worker `vmi1152480` for both baseline and candidate with
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a` and:
+
+```bash
+rch exec -- cargo bench -p fj-lax --bench lax_baseline fft_batch_2048x256_complex128 -- --warm-up-time 1 --measurement-time 3
+```
+
+JAX ratios use fresh local CPU JAX/JAXLIB 0.10.1 x64 measurements. The complex
+FFT batch comparator mean was 314.5745 us; the inline IRFFT comparator mean was
+506.1776 us.
+
+| Row | Production Rust | Gate-off candidate | Internal delta | JAX mean | Production/JAX | Candidate/JAX | Verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `fft_batch_2048x256_complex128` | 9.5281 ms | 16.346 ms | +71.553% regression | 314.5745 us | 30.29 | 51.96 | Reverted |
+| `fft_batch_2048x256_complex128_dense_input` | 8.2082 ms | 15.177 ms | +84.904% regression | 314.5745 us | 26.09 | 48.25 | Reverted |
+| `irfft_batch_2048x256_complex128` | 4.8442 ms | 14.645 ms | +202.33% regression | 506.1776 us | 9.57 | 28.93 | Reverted |
+
+The ignored `bench_vectorized_soa_batch_vs_per_row_plan` test-profile probe was
+therefore directionally misleading for the release path: its threaded per-row
+timing looked faster in debug/test context, but full release Criterion showed
+the current production SoA gate is still the less-bad path. This is not a win:
+the production batched FFT rows remain severe JAX losses.
+
+Validation after reverting the source experiment: `cargo test -p fj-lax fft
+--lib` passed 44/44 with 3 ignored microbenches on RCH `vmi1167313`; `cargo
+test -p fj-conformance --test fft_oracle` passed 27/27 on RCH `hz2`; `cargo
+test -p fj-conformance --test linalg_fft_oracle_parity` passed 1/1. Retry only
+with a real kernel-family change: iterative in-place radix-4/8 SoA/SIMD,
+cache-blocked row groups, generated length-specialized kernels, or a backend
+plan cache that eliminates the full eval/output-build tax.
+
 ## 2026-06-20 - frankenjax-murmw FFT batch direct-output and thread-pool rejects
 
 The BOLD-VERIFY pass targeted the documented FFT batch gap after the pow2 plan-cache

@@ -280,6 +280,25 @@ Additional cod-a FFT batch no-ship environment:
   candidates regressed target rows and were reverted, so the scorecard records
   evidence only plus an `.rchignore` transfer-hygiene fix.
 
+Additional cod-a FFT SoA gate recheck environment:
+
+- Agent: cod-a / CrimsonOtter
+- Cargo target dir: `/data/projects/.rch-targets/frankenjax-cod-a`
+- Rust bench command: `rch exec -- cargo bench -p fj-lax --bench
+  lax_baseline fft_batch_2048x256_complex128 -- --warm-up-time 1
+  --measurement-time 3`.
+- Same-worker timing proof for `frankenjax-murmw`: RCH worker `vmi1152480`.
+  Baseline kept the production SoA gate; candidate temporarily disabled it by
+  setting `POW2_VECTORIZED_MIN_BATCH` to `usize::MAX`.
+- JAX oracle: `benchmarks/jax_comparison/.venv/bin/python` local CPU inline
+  comparators, JAX/JAXLIB 0.10.1 / 0.10.1, `jax_enable_x64=true`.
+  Complex FFT batch mean was 314.5745 us; IRFFT batch mean was 506.1776 us.
+- Gates after reverting the candidate: `cargo test -p fj-lax fft --lib` passed
+  44/44 with 3 ignored microbenches on RCH `vmi1167313`; `cargo test -p
+  fj-conformance --test fft_oracle` passed 27/27 on RCH `hz2`; `cargo test -p
+  fj-conformance --test linalg_fft_oracle_parity` passed 1/1. Source decision:
+  no production change.
+
 ## Measured Workloads
 
 | Bead | Workload | Rust timing | JAX timing | Rust/JAX | Outcome |
@@ -290,6 +309,12 @@ Additional cod-a FFT batch no-ship environment:
 | frankenjax-murmw | `fft_batch_2048x256_complex128_dense_input` current baseline | 1.8895 ms midpoint | 236 us | 8.01 | Active JAX loss; kernel gap remains |
 | frankenjax-murmw | direct final output-slice `fft_batch_2048x256_complex128_dense_input` | 2.2349 ms midpoint | 236 us | 9.47 | REJECTED/REVERTED: +12.542% same-worker regression |
 | frankenjax-murmw | persistent row-pool `fft_batch_2048x256_complex128_dense_input` | 2.8739 ms midpoint | 236 us | 12.18 | REJECTED/REVERTED: +48.632% same-worker regression |
+| frankenjax-murmw | `fft_batch_2048x256_complex128` SoA gate baseline | 9.5281 ms midpoint | 314.5745 us mean | 30.29 | Active JAX loss on `vmi1152480`; production gate kept |
+| frankenjax-murmw | `fft_batch_2048x256_complex128_dense_input` SoA gate baseline | 8.2082 ms midpoint | 314.5745 us mean | 26.09 | Active JAX loss on `vmi1152480`; production gate kept |
+| frankenjax-murmw | `irfft_batch_2048x256_complex128` SoA gate baseline | 4.8442 ms midpoint | 506.1776 us mean | 9.57 | Active JAX loss on `vmi1152480`; production gate kept |
+| frankenjax-murmw | `fft_batch_2048x256_complex128` gate-off probe | 16.346 ms midpoint | 314.5745 us mean | 51.96 | REJECTED/REVERTED: +71.553% same-worker regression |
+| frankenjax-murmw | `fft_batch_2048x256_complex128_dense_input` gate-off probe | 15.177 ms midpoint | 314.5745 us mean | 48.25 | REJECTED/REVERTED: +84.904% same-worker regression |
+| frankenjax-murmw | `irfft_batch_2048x256_complex128` gate-off probe | 14.645 ms midpoint | 506.1776 us mean | 28.93 | REJECTED/REVERTED: +202.33% same-worker regression |
 | frankenjax-xjbvr | `floor_f64_1m_add_unary_chain/n=4` | 2.5597 ms midpoint | 199.892 us mean | 12.805 | Same-worker Rust 8.29x faster than baseline; still JAX loss |
 | frankenjax-xjbvr | `round_f64_1m_add_unary_chain/n=4` | 1.8803 ms midpoint | 186.162 us mean | 10.100 | Same-worker Rust 10.91x faster than baseline; still JAX loss |
 | frankenjax-xjbvr | `sign_f64_1m_add_unary_chain/n=4` | 2.7290 ms midpoint | 342.029 us mean | 7.979 | Same-worker Rust 4.01x faster than baseline; still JAX loss |
@@ -402,6 +427,14 @@ Additional cod-a FFT batch no-ship environment:
   33.199 ms. Source was reverted. Current FFT scorecard remains 0 wins / 7
   losses / 0 neutral vs JAX; next valid route is an iterative in-place radix-4/8,
   SoA/SIMD, or cache-blocked batched FFT proven end-to-end.
+- murmw SoA gate disable is also a measured no-ship. On the same RCH worker
+  `vmi1152480`, disabling the production SoA batch path regressed boxed batched
+  FFT 9.5281 ms -> 16.346 ms, dense-input FFT 8.2082 ms -> 15.177 ms, and IRFFT
+  4.8442 ms -> 14.645 ms. Against fresh JAX 0.10.1 CPU rows, production remains
+  30.29x / 26.09x / 9.57x slower and the rejected candidate would be
+  51.96x / 48.25x / 28.93x slower. Source was reverted. This pass score is
+  0 wins / 3 losses / 0 neutral vs JAX for production rows and 0 wins / 3
+  losses / 0 neutral for rejected candidates.
 - cod-b width-changing bitcast presized-fill flips two active release losses to
   wins. Same-worker RCH `vmi1227854` improved `bitcast_f32_bf16_1m` from
   978.58 us to 125.40 us (7.80x) and `bitcast_bf16_f32_1m` from 533.82 us to
