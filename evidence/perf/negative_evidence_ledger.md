@@ -3934,3 +3934,23 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   A/B + scaling-class normalization are contention-robust; the host-sensitive part is absolute spawn
   cost, not the bit-exact kernel ratios). Pass delta: methodology caveat (matmul/ifou2 host-confounded)
   / 0 wins / 0 losses.
+
+## AzureLynx - GAUNTLET: full fj-conformance parity suite GREEN at HEAD (certifies the campaign wins)
+
+- The shared-target toolchain drift that blocked fj-conformance all campaign has SETTLED (swarm idle).
+  Ran the FULL fj-conformance suite (rch hz1 release): **every oracle test file 0 failed** — ~40 test
+  binaries, ~1200+ parity tests vs the JAX oracle, all GREEN. Notable for my changes: linalg_oracle
+  64/0 (certifies the eigh cache fixes 4.24x+47.8x preserve eigendecomposition parity), fft_oracle
+  27/0 + linalg_fft_oracle_parity 1/0 (certify the FFT/IFFT/RFFT/IRFFT plan-cache 1.43x+1.39x preserve
+  FFT parity).
+- This is the directive's "conformance GREEN" + "running-the-gauntlet" certification, done
+  comprehensively for the first time this campaign: the ENTIRE JAX parity surface is correct at HEAD —
+  my four shipped perf wins AND the swarm's accumulated churn. The eigh + FFT wins were designed
+  bit-exact (golden digests unchanged) and the oracle suite confirms the eval-vs-JAX behavior is
+  unchanged.
+- Investigated one more eigh-style cache-cliff candidate: nonsymmetric eig (eval_eig) `francis_sweep`
+  has a column-strided bulge-chase H update, BUT it is a TWO-SIDED update (rows AND columns of the
+  same H), so it is entangled like the cyclic-Jacobi A-matrix — cannot be cleanly de-strided in one
+  layout, and eval_eig's LAPACK-CPU baseline is unmeasurable (slow XLA-CPU eig). No clean win. The
+  clean bit-exact cache-cliff lever was a one-time find (eigh's QL, which was a ONE-SIDED column
+  rotation). Pass delta: GAUNTLET certification (full conformance GREEN) / 0 new wins / 0 losses.
