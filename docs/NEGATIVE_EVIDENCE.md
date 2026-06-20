@@ -2,6 +2,34 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-20 - frankenjax-murmw threaded SoA FFT A/B is contention-fragile (corroboration, no new code)
+
+An independent BOLD-VERIFY pass (CrimsonOtter) reconstructed the vectorized SoA
+power-of-two batched FFT kernel from scratch and converged on the design already
+shipped in `73645de8` (`transform_batches_pow2_vectorized` /
+`POW2_VECTORIZED_MIN_BATCH` / cache-blocked `vectorized_pow2_tiled` / the
+`bench_vectorized_soa_batch_vs_per_row_plan` probe). The working-tree
+reimplementation was discarded as redundant — **no source change kept**.
+
+Verification value: the reconstruction's same-binary A/B independently
+corroborates keeping the SoA path. The SINGLE-THREAD ratio (per-row → SoA) is
+stable and a clear win across runs — FWD/INV 1.60x/1.42x, 1.35x/1.35x,
+1.49x/1.33x.
+
+Measurement caveat (new, the reason this is logged): the **threaded** same-binary
+A/B of the *identical* shipped code is contention-fragile on the shared RCH
+swarm. Three back-to-back runs of `bench_vectorized_soa_batch_vs_per_row_plan`
+gave FWD/INV threaded ratios of 1.45x/0.99x, then 0.84x/0.46x, then 1.68x/1.18x.
+The 0.46x–1.68x spread is pure cross-run contention (other agents' threads
+competing for memory bandwidth), not a kernel property — it agrees with the
+gate-disable no-ship below, which showed disabling SoA regresses the full eval
+path +71%. Retry predicate: do NOT revert the threaded SoA gate
+(`POW2_VECTORIZED_MIN_BATCH`) on the basis of a single threaded A/B that looks
+like a regression; trust only the stable single-thread A/B, or a many-sample
+interleaved measurement on a quiet worker. A naive serial-only gate (skip SoA
+once the batch threads) was prototyped and rejected for exactly this reason — it
+would forfeit the measured threaded win.
+
 ## 2026-06-20 - frankenjax-murmw SoA gate-disable no-ship
 
 The BOLD-VERIFY pass retested the current power-of-two batched FFT dispatcher
