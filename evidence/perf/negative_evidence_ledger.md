@@ -3590,3 +3590,22 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
 - Consistent with the standing rule: only COMPUTE-bound ops thread-win (transcendentals 11x); pure
   memory-bound multi-pass restructurings regress. Recorded here (was only in agent-private notes) so
   the swarm stops re-deriving it. Pass delta: 0 wins / 0 losses / 0 neutral (DO-NOT confirmation).
+
+## AzureLynx - FFT confirmed mined + fj-dispatch green attestation (2026-06-20)
+
+- FFT (fft.rs) code-audited: NOT naive. Radix-2 Cooley-Tukey for pow2 + Bluestein (radix-2-backed)
+  for non-pow2 → O(n log n) for ALL lengths, with precomputed roots/plans and per-row scratch reuse.
+  Batched/multi-row FFT is ALREADY threaded across rows (forward fft.rs:1083, inverse :1302, RFFT
+  :1409; gate `batch_size > 1 && transform_work >= PARALLEL_MIN_ELEMS`). Not a JAX-loss candidate to
+  chase — the common batched case is parallel + algorithmically optimal.
+- Only theoretical FFT gap left: a SINGLE large 1-D FFT (batch_size==1) falls serial (stage-internal
+  butterfly threading is the lever). FLAGGED LOW-EV / DO-NOT-rush: (a) niche — ML FFTs are batched
+  (already threaded); (b) reordering the radix-2 butterflies risks the pow2 golden digests
+  (FFT-parity-standard note); (c) memory-bound past L3. Not attempted; documented so it isn't
+  re-investigated.
+- Verification this pass (rch hz1 release): `fj-dispatch --lib` = **304 passed / 0 failed / 14
+  ignored** (batched-linalg thread fan-out + vmap paths intact). Combined workspace-green snapshot at
+  HEAD: fj-lax 1567/0, fj-interpreters 212/0, fj-dispatch 304/0, `clippy --workspace --all-targets
+  -D warnings` clean. NOTE: a FRESH vs-JAX head-to-head is not runnable from the agent shell (no jax
+  in PATH/venv here); the ledger's vs-JAX ratios were captured on a host-specific jax 0.10.1 venv.
+  Pass delta: 0 wins / 0 losses / 0 neutral (verification + DO-NOT documentation).
