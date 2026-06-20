@@ -1011,7 +1011,7 @@ fn mixed_radix_into(
 /// use mixed-radix (caching the roots table), and everything else uses a cached
 /// Bluestein plan.
 enum BatchFftPlan {
-    Pow2,
+    Pow2(Radix2Plan),
     Mixed(Vec<(f64, f64)>),
     Bluestein(BluesteinPlan),
 }
@@ -1019,7 +1019,13 @@ enum BatchFftPlan {
 impl BatchFftPlan {
     fn new(n: usize, inverse: bool) -> Self {
         if n <= 1 || n.is_power_of_two() {
-            BatchFftPlan::Pow2
+            // Cache the radix-2 plan (bit-reversal + per-stage twiddles) ONCE for the
+            // whole batch. The dataless marker previously delegated to `fft_1d_into`,
+            // which rebuilt the twiddle table — including per-stage `sin_cos` — and the
+            // bit-reversal on EVERY row (e.g. ~16K redundant `sin_cos` over a 2048x256
+            // batch). `Radix2Plan` derives twiddles from the IDENTICAL first-order
+            // recurrence, so `apply_into` is bit-for-bit equal to the per-row rebuild.
+            BatchFftPlan::Pow2(Radix2Plan::new(n.max(1), inverse))
         } else if is_mixed_radix_smooth(n) {
             BatchFftPlan::Mixed(precompute_twiddles(n, inverse))
         } else {
@@ -1029,7 +1035,7 @@ impl BatchFftPlan {
 
     fn work_len(&self, n: usize) -> usize {
         match self {
-            BatchFftPlan::Pow2 | BatchFftPlan::Mixed(_) => n,
+            BatchFftPlan::Pow2(_) | BatchFftPlan::Mixed(_) => n,
             BatchFftPlan::Bluestein(plan) => plan.m,
         }
     }
@@ -1043,12 +1049,11 @@ impl BatchFftPlan {
         output: &mut Vec<(f64, f64)>,
     ) {
         match self {
-            BatchFftPlan::Pow2 => {
-                if inverse {
-                    ifft_1d_into(input, output);
-                } else {
-                    fft_1d_into(input, output);
-                }
+            BatchFftPlan::Pow2(plan) => {
+                // The radix-2 direction is baked into the cached plan at build time;
+                // the batch engine always builds and applies with the same `inverse`.
+                debug_assert_eq!(plan.inverse, inverse);
+                plan.apply_into(input, output);
             }
             BatchFftPlan::Mixed(roots) => {
                 mixed_radix_into(input, roots, inverse, output, mixed_scratch)
@@ -1743,6 +1748,70 @@ mod tests {
             }
             len *= 2;
         }
+    }
+
+    /// Same-binary A/B for the batched-pow2 plan-caching win (frankenjax-murmw): the OLD
+    /// path rebuilt the bit-reversal + twiddle table (incl. per-stage `sin_cos`) on EVERY
+    /// row via `fft_1d_into`; the NEW path builds one `Radix2Plan` and reuses it. Output is
+    /// bit-identical (asserted); run with `--ignored --nocapture` for the ratio.
+    #[test]
+    #[ignore = "informational micro-bench; run with --ignored --nocapture"]
+    fn bench_batched_pow2_plan_cache_vs_per_row_rebuild() {
+        let n = 256usize;
+        let rows = 2048usize;
+        let row: Vec<(f64, f64)> = (0..n)
+            .map(|i| ((i as f64 * 0.013).sin(), (i as f64 * 0.027).cos()))
+            .collect();
+
+        let best = |f: &dyn Fn() -> u64| {
+            let mut b = u64::MAX;
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                let acc = f();
+                let dt = t0.elapsed().as_nanos() as u64;
+                std::hint::black_box(acc);
+                b = b.min(dt);
+            }
+            b
+        };
+
+        // OLD: per-row rebuild (twiddles + bit-reversal recomputed each row).
+        let old = best(&|| {
+            let mut buf = Vec::with_capacity(n);
+            let mut checksum = 0u64;
+            for _ in 0..rows {
+                fft_1d_into(&row, &mut buf);
+                checksum ^= buf[0].0.to_bits() ^ buf[n / 2].1.to_bits();
+            }
+            checksum
+        });
+        // NEW: one shared plan, reused across rows.
+        let plan = Radix2Plan::new(n, false);
+        let new = best(&|| {
+            let mut buf = Vec::with_capacity(n);
+            let mut checksum = 0u64;
+            for _ in 0..rows {
+                plan.apply_into(&row, &mut buf);
+                checksum ^= buf[0].0.to_bits() ^ buf[n / 2].1.to_bits();
+            }
+            checksum
+        });
+
+        // Bit-identity guard (the whole win rests on this).
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        fft_1d_into(&row, &mut a);
+        plan.apply_into(&row, &mut b);
+        let abits: Vec<(u64, u64)> = a.iter().map(|&(r, i)| (r.to_bits(), i.to_bits())).collect();
+        let bbits: Vec<(u64, u64)> = b.iter().map(|&(r, i)| (r.to_bits(), i.to_bits())).collect();
+        assert_eq!(abits, bbits, "cached-plan FFT must be bit-identical to per-row rebuild");
+
+        eprintln!(
+            "[batched pow2 {rows}x{n}] per-row-rebuild={:.3}ms shared-plan={:.3}ms ratio={:.2}x",
+            old as f64 / 1e6,
+            new as f64 / 1e6,
+            old as f64 / new as f64
+        );
     }
 
     #[test]

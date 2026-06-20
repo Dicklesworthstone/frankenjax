@@ -3719,3 +3719,24 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   blocked batched transform. LEGAL (FFT parity is TOLERANCE 1e-9, reassociation OK) but must refresh
   the pow2 golden digests. MULTI-SESSION (dedicated FFT-kernel pass), parity-risk — NOT shipped here.
   Pass delta: 0 wins / 4 losses / 2 narrow-losses MEASURED (real new negative evidence).
+
+## AzureLynx - WIN: cache Radix2Plan across batched pow2 FFT rows — 1.43x bit-exact [murmw step 1]
+
+- First shipped step on the murmw FFT frontier. Root cause profiled: `BatchFftPlan::Pow2` was a
+  DATALESS marker that delegated to `fft_1d_into` → `radix2_fft_1d_into`, which REBUILT the
+  bit-reversal + per-stage twiddle table (incl. a `sin_cos` per stage) and allocated a `tw` Vec on
+  EVERY row. The `Mixed` and `Bluestein` batch variants already cache their tables; only `Pow2`
+  didn't. Over a 2048x256 batch that is ~16K redundant `sin_cos` + 2048 allocations.
+- Fix: `BatchFftPlan::Pow2(Radix2Plan)` — build ONE plan per batch (bit-reversal + all twiddles via
+  the IDENTICAL first-order recurrence) and reuse `plan.apply_into` per row. Strictly removes work.
+- BIT-EXACT (not tolerance): the pow2 golden digest `fft_golden_output_digest` PASSES UNCHANGED — no
+  digest refresh needed. New guard `bench_batched_pow2_plan_cache_vs_per_row_rebuild` asserts the
+  cached-plan output is bit-for-bit equal to the per-row rebuild.
+- MEASURED same-binary A/B (the trustworthy kind — same invocation, bit-identical refs side by side,
+  rch hz1 release, best-of-5): batched pow2 2048x256 transform loop **per-row-rebuild 6.497 ms ->
+  shared-plan 4.554 ms = 1.43x**. (Cross-invocation full-eval criterion also dropped ~4.95->3.72 ms
+  on the dense path, directionally consistent but NOT the headline — variance is 20-60% across
+  invocations.) fj-lax --lib 1567/0, clippy --all-targets clean.
+- This NARROWS the murmw batched-pow2 loss (~42x -> ~30x) but does NOT flip it. The remaining gap is
+  the radix-2 scalar butterfly vs pocketfft SIMD higher-radix — still the multi-session kernel lever.
+  Pass delta: 1 win (1.43x bit-exact) / 0 losses / 0 neutral.
