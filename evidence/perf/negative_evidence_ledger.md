@@ -3806,3 +3806,24 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   general-eig (nonsymmetric Schur) path (reduction-heavy). The cross-invocation harness eigh numbers
   (3249->2285) are CONFOUNDED (untouched svd drifted 288->422 same run = host ~1.4x slower); trust the
   same-binary 4.24x, not the cross-run delta. Pass delta: 1 win (4.24x bit-exact, reduction) / 0 / 0.
+
+## AzureLynx - BIG WIN: column-major QL eigenvector accumulation — 47.8x, eigh 512 3.2s->172ms [ur4h3 step 2]
+
+- The DOMINANT eigh cost (step 1 showed the reduction was only ~5-15%): `symmetric_tridiagonal_ql`'s
+  plane-rotation eigenvector accumulation read `z[k*n + i]` / `z[k*n + (i+1)]` for k in 0..n —
+  COLUMN-STRIDED (stride n) over the n×n eigenvector matrix, a catastrophic cache cliff. Fix: store
+  `z` COLUMN-MAJOR during QL so each column is a contiguous n-run; the rotation now streams two
+  contiguous slices (cache-friendly + autovectorizable). `tridiag_ql_eigendecomposition` transposes
+  Q in and the result back (both O(n²) vs QL's O(n³)).
+- BIT-EXACT: identical rotation arithmetic, same s,c, same k order — only the storage layout changes.
+  eigh tests 13/0, fj-lax --lib 1567/0, clippy --all-targets clean (golden/reconstruction unchanged).
+- MEASURED same-binary A/B (`bench_ql_eigvec_accumulation_layout_ab`, 512 reduction's tridiagonal+Q,
+  old row-major-strided vs new column-major-contiguous QL in ONE binary, eigenvalues+eigenvectors
+  asserted bit-identical, rch release): **row-major 2548.6 ms -> column-major 53.3 ms = 47.8x.**
+- END-TO-END eigh (harness, same run so internally consistent): n=512 **3249 ms (orig) -> 172 ms** ≈
+  19x; scaling normalized from SUPER-CUBIC (15x/doubling) to CUBIC (3.0->21.5->172 = ~7-8x/doubling),
+  which is contention-robust structural evidence, not host noise. eigh is now only ~6-17x off LAPACK
+  dsyevd (was ~100-300x). The two ur4h3 cache fixes (reduction 4.24x + QL 47.8x) together largely
+  close the eigh gap. REMAINING: exploit symmetry in the reduction (dsytrd vs general hessenberg) for
+  the last ~2x, and SVD (one_sided_jacobi, still untouched, ~15x). Pass delta: 1 BIG win (47.8x
+  same-binary; eigh ~19x end-to-end, bit-exact) / 0 / 0.

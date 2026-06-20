@@ -2346,15 +2346,33 @@ fn tridiag_ql_eigendecomposition(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         d[i] = h[i * n + i];
         e[i] = if i + 1 < n { h[(i + 1) * n + i] } else { 0.0 };
     }
-    let mut z = q;
+    // `symmetric_tridiagonal_ql` accumulates the eigenvectors COLUMN-MAJOR so its hot
+    // plane-rotation loop streams contiguous columns instead of striding by `n` per row
+    // (the dominant eigh cache cliff, ur4h3). Transpose Q in, run QL, transpose back —
+    // both O(n²) vs the QL's O(n³), and bit-identical (the rotation arithmetic and order
+    // are unchanged; only the storage layout differs).
+    let q_row_major = q;
+    let mut z = vec![0.0_f64; n * n];
+    for row in 0..n {
+        for col in 0..n {
+            z[col * n + row] = q_row_major[row * n + col];
+        }
+    }
     symmetric_tridiagonal_ql(&mut d, &mut e, &mut z, n);
-    (d, z)
+    let mut z_row_major = q_row_major;
+    for row in 0..n {
+        for col in 0..n {
+            z_row_major[row * n + col] = z[col * n + row];
+        }
+    }
+    (d, z_row_major)
 }
 
 /// Implicit-shift symmetric tridiagonal QL with eigenvector accumulation (EISPACK
 /// `tql2`). `d` = diagonal, `e[i]` = subdiagonal coupling `d[i]`/`d[i+1]`
-/// (`e[n-1]` unused), `z` = the accumulated transform (eigenvectors of `A` on
-/// output, columns). Each implicit-shift sweep deflates one eigenvalue with a
+/// (`e[n-1]` unused), `z` = the accumulated transform in COLUMN-MAJOR layout
+/// (`z[col*n + row]`; eigenvectors of `A` are its columns on output — the caller
+/// transposes to/from row-major). Each implicit-shift sweep deflates one eigenvalue with a
 /// Wilkinson shift; plane rotations chase the bulge up the tridiagonal. O(n²) per
 /// sweep, O(n) sweeps. Bit-equivalent in spirit to LAPACK `dsteqr`.
 fn symmetric_tridiagonal_ql(d: &mut [f64], e: &mut [f64], z: &mut [f64], n: usize) {
@@ -2410,11 +2428,18 @@ fn symmetric_tridiagonal_ql(d: &mut [f64], e: &mut [f64], z: &mut [f64], n: usiz
                 p = s * r;
                 d[i + 1] = g + p;
                 g = c * r - b;
-                // Accumulate the plane rotation into eigenvector columns i, i+1.
+                // Accumulate the plane rotation into eigenvector columns i, i+1. `z` is
+                // COLUMN-MAJOR (z[col*n + row]), so columns i and i+1 are two CONTIGUOUS
+                // n-runs — the rotation streams them instead of striding by `n` per row
+                // (the QL cache cliff). Values are identical to the row-major form (same
+                // s,c, same per-row formulas, same k order); the caller transposes in/out.
+                let (lo, hi) = z.split_at_mut((i + 1) * n);
+                let col_i = &mut lo[i * n..i * n + n];
+                let col_i1 = &mut hi[..n];
                 for k in 0..n {
-                    f = z[k * n + (i + 1)];
-                    z[k * n + (i + 1)] = s * z[k * n + i] + c * f;
-                    z[k * n + i] = c * z[k * n + i] - s * f;
+                    f = col_i1[k];
+                    col_i1[k] = s * col_i[k] + c * f;
+                    col_i[k] = c * col_i[k] - s * f;
                 }
             }
             if zeroed {
@@ -7829,6 +7854,145 @@ mod tests {
         eprintln!(
             "[hessenberg {n}x{n}] strided-left={old:.1}ms contiguous-left={new:.1}ms ratio={:.2}x",
             old / new
+        );
+    }
+
+    /// Same-binary A/B for the QL eigenvector-accumulation cache fix (ur4h3 step 2): the
+    /// OLD row-major (column-strided) rotation vs the NEW column-major (contiguous) one,
+    /// on the tridiagonal+vectors of a real 512×512 reduction. Asserts eigenvalues AND
+    /// eigenvectors are bit-identical. Run `--ignored --nocapture`.
+    #[test]
+    #[ignore = "informational same-binary A/B; run with --ignored --nocapture"]
+    fn bench_ql_eigvec_accumulation_layout_ab() {
+        // Pre-fix row-major QL (column-strided eigenvector rotation), A/B baseline only.
+        fn ql_rowmajor(d: &mut [f64], e: &mut [f64], z: &mut [f64], n: usize) {
+            if n <= 1 {
+                return;
+            }
+            let eps = f64::EPSILON;
+            for l in 0..n {
+                let mut iter = 0usize;
+                loop {
+                    let mut m = l;
+                    while m + 1 < n {
+                        let dd = d[m].abs() + d[m + 1].abs();
+                        if e[m].abs() <= eps * dd {
+                            break;
+                        }
+                        m += 1;
+                    }
+                    if m == l {
+                        break;
+                    }
+                    iter += 1;
+                    if iter > 50 {
+                        break;
+                    }
+                    let mut g = (d[l + 1] - d[l]) / (2.0 * e[l]);
+                    let mut r = g.hypot(1.0);
+                    let sgn = if g >= 0.0 { r.abs() } else { -r.abs() };
+                    g = d[m] - d[l] + e[l] / (g + sgn);
+                    let mut s = 1.0_f64;
+                    let mut c = 1.0_f64;
+                    let mut p = 0.0_f64;
+                    let mut zeroed = false;
+                    let mut i = m;
+                    while i > l {
+                        i -= 1;
+                        let mut f = s * e[i];
+                        let b = c * e[i];
+                        r = f.hypot(g);
+                        e[i + 1] = r;
+                        if r == 0.0 {
+                            d[i + 1] -= p;
+                            e[m] = 0.0;
+                            zeroed = true;
+                            break;
+                        }
+                        s = f / r;
+                        c = g / r;
+                        g = d[i + 1] - p;
+                        r = (d[i] - g) * s + 2.0 * c * b;
+                        p = s * r;
+                        d[i + 1] = g + p;
+                        g = c * r - b;
+                        for k in 0..n {
+                            f = z[k * n + (i + 1)];
+                            z[k * n + (i + 1)] = s * z[k * n + i] + c * f;
+                            z[k * n + i] = c * z[k * n + i] - s * f;
+                        }
+                    }
+                    if zeroed {
+                        continue;
+                    }
+                    d[l] -= p;
+                    e[l] = g;
+                    e[m] = 0.0;
+                }
+            }
+        }
+        let n = 512usize;
+        let a: Vec<f64> = (0..n * n)
+            .map(|i| (i as f64 * 0.137).sin() + (i as f64 * 0.0411).cos())
+            .collect();
+        let mut sym = vec![0.0; n * n];
+        for r in 0..n {
+            for c in 0..n {
+                sym[r * n + c] = a[r * n + c] + a[c * n + r];
+            }
+        }
+        let (h, q) = hessenberg_reduction(&sym, n);
+        let mut d0 = vec![0.0; n];
+        let mut e0 = vec![0.0; n];
+        for i in 0..n {
+            d0[i] = h[i * n + i];
+            e0[i] = if i + 1 < n { h[(i + 1) * n + i] } else { 0.0 };
+        }
+        // OLD: row-major QL directly on q.
+        let best = |run: &dyn Fn() -> (Vec<f64>, Vec<f64>)| -> (f64, (Vec<f64>, Vec<f64>)) {
+            let mut b = f64::MAX;
+            let mut last = (vec![], vec![]);
+            for _ in 0..3 {
+                let t0 = std::time::Instant::now();
+                last = run();
+                b = b.min(t0.elapsed().as_secs_f64() * 1e3);
+            }
+            (b, last)
+        };
+        let (old_ms, (do_, zo)) = best(&|| {
+            let (mut d, mut e, mut z) = (d0.clone(), e0.clone(), q.clone());
+            ql_rowmajor(&mut d, &mut e, &mut z, n);
+            (d, z)
+        });
+        // NEW: column-major QL (transpose in/out), matching production.
+        let (new_ms, (dn, zn)) = best(&|| {
+            let (mut d, mut e) = (d0.clone(), e0.clone());
+            let mut zc = vec![0.0; n * n];
+            for row in 0..n {
+                for col in 0..n {
+                    zc[col * n + row] = q[row * n + col];
+                }
+            }
+            symmetric_tridiagonal_ql(&mut d, &mut e, &mut zc, n);
+            let mut z = vec![0.0; n * n];
+            for row in 0..n {
+                for col in 0..n {
+                    z[row * n + col] = zc[col * n + row];
+                }
+            }
+            (d, z)
+        });
+        assert!(
+            do_.iter().zip(&dn).all(|(a, b)| a.to_bits() == b.to_bits()),
+            "QL eigenvalues must be bit-identical (row-major vs column-major)"
+        );
+        assert!(
+            zo.iter().zip(&zn).all(|(a, b)| a.to_bits() == b.to_bits()),
+            "QL eigenvectors must be bit-identical (row-major vs column-major)"
+        );
+        eprintln!(
+            "[QL eigvec-accum {n}x{n}] row-major-strided={old_ms:.1}ms column-major-contig={new_ms:.1}ms ratio={:.2}x",
+            old_ms / new_ms
         );
     }
 
