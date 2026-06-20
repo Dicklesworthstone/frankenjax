@@ -2636,5 +2636,11 @@ ends are not rediscovered without new evidence.
   | f32E256/n=8  | 546 ns | 5234 ns | 9.6x |
   | f32E256/n=32 | 2252 ns | 21857 ns | 9.7x |
 
-  i64 likely also wins (integer SIMD) — not yet done. Half (bf16/f16) needs decode and won't vectorize
-  cleanly. NEXT: i64 cheap-op hoist; hunt other interpreter inner loops calling per-element dispatch.
+- FOLLOW-UP SHIPPED — i64: same hoist (`fill_dense_i64_nobcast`) for the wrapping ops Add/Sub/Mul,
+  which vectorize to `vpaddq`/`vpsubq`/`vpmullq` (4-wide i64 under `+avx2`). Bit-exact (native
+  `wrapping_*` IS the per-element op); confirmed by `dense_i64_tensor_arena_bit_identical_to_generic`.
+  Same-invocation A/B: i64E256/n=8 = 935ns vs 3610ns (3.9x); i64E256/n=32 = 3217ns vs 13637ns (4.2x).
+  (Lower than f32's 9.6x: 4-wide i64 SIMD vs 8-wide f32, and Div/Max/Min stay generic.)
+- DTYPE FAMILY COMPLETE for the cheap-op vectorization lever: f64 (10.5x vs JAX), f32 (9.6x), i64
+  (4.2x). Half (bf16/f16) needs decode and won't vectorize cleanly — DO NOT. NEXT: hunt OTHER
+  interpreter inner loops calling per-element `apply_scalar_*`/`eval_primitive` dispatch.

@@ -6935,12 +6935,42 @@ fn resolve_dense_i64_operand<'a>(
     }
 }
 
+/// i64 sibling of [`fill_dense_f64_nobcast`]. The op closure is monomorphized and the
+/// operand kind matched ONCE, so the wrapping integer ops Add/Sub/Mul become a native
+/// `o[i] = a[i] OP b[i]` loop that auto-vectorizes to `vpaddq`/`vpsubq`/`vpmullq` under
+/// `+avx2`. Bit-exact: `wrapping_add/sub/mul` ARE the per-element op the generic path
+/// applies. (Div/Max/Min/Neg/Abs keep the generic loop — integer div has no SIMD form.)
+#[inline]
+fn fill_dense_i64_nobcast<F: Fn(i64, i64) -> i64>(a: DenseI64Ref, b: DenseI64Ref, o: &mut [i64], f: F) {
+    match (a, b) {
+        (DenseI64Ref::Tensor(ta), DenseI64Ref::Scalar(sb)) => {
+            for (o, &x) in o.iter_mut().zip(ta) {
+                *o = f(x, sb);
+            }
+        }
+        (DenseI64Ref::Scalar(sa), DenseI64Ref::Tensor(tb)) => {
+            for (o, &y) in o.iter_mut().zip(tb) {
+                *o = f(sa, y);
+            }
+        }
+        (DenseI64Ref::Tensor(ta), DenseI64Ref::Tensor(tb)) => {
+            for ((o, &x), &y) in o.iter_mut().zip(ta).zip(tb) {
+                *o = f(x, y);
+            }
+        }
+        (DenseI64Ref::Scalar(sa), DenseI64Ref::Scalar(sb)) => {
+            o.iter_mut().for_each(|o| *o = f(sa, sb))
+        }
+    }
+}
+
 fn run_scalar_i64_plan_as_tensor_into(
     plan: &ScalarI64Plan,
     const_values: &[Value],
     args: &[Value],
     out: &mut Vec<Value>,
     cells: &mut Vec<DenseI64Cell>,
+    vectorize: bool,
 ) -> Option<Result<(), InterpreterError>> {
     if const_values.len() != plan.const_slots.len() {
         return Some(Err(InterpreterError::ConstArity {
@@ -7004,16 +7034,32 @@ fn run_scalar_i64_plan_as_tensor_into(
             }
             _ => {
                 let mut o = vec![0_i64; n];
-                for (i, slot) in o.iter_mut().enumerate() {
-                    let av = match a {
-                        DenseI64Ref::Scalar(v) => v,
-                        DenseI64Ref::Tensor(t) => t[i],
-                    };
-                    let bv = match b {
-                        DenseI64Ref::Scalar(v) => v,
-                        DenseI64Ref::Tensor(t) => t[i],
-                    };
-                    *slot = apply_scalar_i64_binary(step.op, av, bv);
+                // Hoist the op match so the wrapping integer ops vectorize (native ==
+                // generic per-element). `vectorize` is the benchmark A/B control; other
+                // ops (Div/Max/Min/Neg/Abs) keep the generic per-element loop.
+                match step.op {
+                    ScalarF64BinaryOp::Add if vectorize => {
+                        fill_dense_i64_nobcast(a, b, &mut o, i64::wrapping_add)
+                    }
+                    ScalarF64BinaryOp::Sub if vectorize => {
+                        fill_dense_i64_nobcast(a, b, &mut o, i64::wrapping_sub)
+                    }
+                    ScalarF64BinaryOp::Mul if vectorize => {
+                        fill_dense_i64_nobcast(a, b, &mut o, i64::wrapping_mul)
+                    }
+                    _ => {
+                        for (i, slot) in o.iter_mut().enumerate() {
+                            let av = match a {
+                                DenseI64Ref::Scalar(v) => v,
+                                DenseI64Ref::Tensor(t) => t[i],
+                            };
+                            let bv = match b {
+                                DenseI64Ref::Scalar(v) => v,
+                                DenseI64Ref::Tensor(t) => t[i],
+                            };
+                            *slot = apply_scalar_i64_binary(step.op, av, bv);
+                        }
+                    }
                 }
                 DenseI64Cell::Tensor(o)
             }
@@ -8402,6 +8448,7 @@ fn run_dense_plan_into_core(
             args,
             out,
             &mut scalar_buffers.dense_i64,
+            vectorize,
         )
     {
         return result;
@@ -11467,7 +11514,7 @@ mod tests {
             let mut tout: Vec<Value> = Vec::new();
             let mut cells: Vec<super::DenseI64Cell> = Vec::new();
             let handled =
-                super::run_scalar_i64_plan_as_tensor_into(p, &[], args, &mut tout, &mut cells)
+                super::run_scalar_i64_plan_as_tensor_into(p, &[], args, &mut tout, &mut cells, true)
                     .unwrap_or_else(|| panic!("{name}: i64 tensor arena bailed (None)"));
             handled.expect("i64 tensor arena ok");
             assert_eq!(
@@ -11501,7 +11548,7 @@ mod tests {
         let mut tout: Vec<Value> = Vec::new();
         let mut cells: Vec<super::DenseI64Cell> = Vec::new();
         assert!(
-            super::run_scalar_i64_plan_as_tensor_into(p, &[], &[i32_tensor], &mut tout, &mut cells)
+            super::run_scalar_i64_plan_as_tensor_into(p, &[], &[i32_tensor], &mut tout, &mut cells, true)
                 .is_none(),
             "I32 tensor must bail (generic narrows i32 results)"
         );
@@ -11518,7 +11565,8 @@ mod tests {
                 &[],
                 &[tensor(&big)],
                 &mut tout,
-                &mut cells
+                &mut cells,
+                true
             )
             .is_none(),
             "large i64 tensor must bail"
@@ -12974,7 +13022,7 @@ mod tests {
             let mut cells: Vec<super::DenseI64Cell> = Vec::new();
             let mut acc = 0i64;
             for _ in 0..n {
-                super::run_scalar_i64_plan_as_tensor_into(p, &[], &args, &mut o, &mut cells)
+                super::run_scalar_i64_plan_as_tensor_into(p, &[], &args, &mut o, &mut cells, true)
                     .expect("handled")
                     .expect("ok");
                 if let Value::Tensor(t) = &o[0] {

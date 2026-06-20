@@ -111,6 +111,12 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
         let jaxpr = build_chain_jaxpr(n, Literal::from_f32(1.0));
         bench_one(&mut group, &format!("f32E256/n={n}"), &jaxpr, &f32_args);
     }
+    // i64 (index/counter buffers): wrapping Add/Sub/Mul vectorize to vpaddq etc.
+    let i64_args = [Value::vector_i64(&[1_i64; 256]).expect("vector_i64")];
+    for &n in &[8usize, 32] {
+        let jaxpr = build_chain_jaxpr(n, Literal::I64(1));
+        bench_one(&mut group, &format!("i64E256/n={n}"), &jaxpr, &i64_args);
+    }
     group.finish();
 }
 
