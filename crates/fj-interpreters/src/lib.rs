@@ -1367,9 +1367,9 @@ const INPLACE_CHAIN_MAX_ELEMS: usize = 1 << 20;
 /// BANDWIDTH-bound and its same-invocation A/B is NOT contention-immune — on an
 /// idle worker f64 1M measured 1.22-1.28x, but on a CONTENDED shared rch worker the
 /// SAME code measured 0.42x (threaded threads oversubscribe and thrash while the
-/// serial arm is robust). Only PAST the L3->DRAM transition (>= 8.4M, working set
-/// > L3, so threads use independent memory channels) is the win robust across idle
-/// AND contended workers: f64 16M 1.21-1.32x, f32 16M 1.33x, i64 16M 1.07x. So the
+/// serial arm is robust). Only PAST the L3->DRAM transition (>= 8.4M, where the
+/// working set exceeds L3 so threads use independent memory channels) is the win
+/// robust across idle AND contended: f64 16M 1.21-1.32x, f32 16M 1.33x, i64 1.07x. So the
 /// gate matches the established single-op cheap-elementwise threshold (1<<23). 4M
 /// and below stay serial. (See `run_{f64,f32,i64}_thread_ab` in eval_fusion_speed.)
 const FUSION_THREAD_MIN_ELEMS: usize = 1 << 23; // 8.4 Mi (robust past L3->DRAM)
