@@ -2738,3 +2738,25 @@ ends are not rediscovered without new evidence.
   and the lever is opt-in behind the production `vectorize=true`).
 - Net: the two named "remaining JAX losses" are now (1) reduce-order = verified off-limits, (2)
   L3-resident chain buffer-reuse = SHIPPED for the cache-resident regime.
+
+## WildForge - f32 in-place linear chain (L3-resident, JAX's default dtype) — KEPT (narrower win than f64)
+
+- Mirror of the f64 L3-resident in-place chain for f32 (`run_linear_scalar_f32_tensor_chain_into` +
+  `apply_dense_f32_chain_step`, native f32 ops = bit-exact vs widen->f64->narrow by Figueroa; f32 cells
+  have no broadcast variants so it is scalar-operand only). Same gate (`< INPLACE_CHAIN_MAX_ELEMS`).
+- Same-invocation A/B (in-place vs generic per-op control):
+
+  | elems | in-place | generic | verdict |
+  | --- | ---: | ---: | --- |
+  | 4096 (16 KB)   | 2.10 us | 3.02 us | 1.44x WIN |
+  | 65536 (256 KB) | 46.1 us | 48.6 us | 1.05x (marginal, near noise) |
+
+  Real win at small-large (1.44x@4K), decaying faster than f64 to ~neutral by 64K; no regression.
+  Bit-exact (guarded by `dense_f32_tensor_arena_bit_identical_to_generic` extended to the large-chain
+  contract). KEPT because f32 is JAX's default dtype, so even the small-size win lands on common bodies.
+- HONEST CAVEAT / NEW OPPORTUNITY: at f32big65536 the `eager` arm (eval_jaxpr's fusion path) is 34 us
+  — FASTER than both the compiled in-place chain (46 us) and the generic control (48 us). So the
+  COMPILED path (CompiledJaxpr, used for jit/scan repeated eval) is leaving f32 large-chain perf on the
+  table vs eval_jaxpr's fusion; my change strictly improves the compiled path but does not reach the
+  fusion path's speed. NEXT: route the compiled dense-plan through (or port) the eval_jaxpr CheapOp
+  fusion for large f32/f64 chains — a separate, larger lever (bead-worthy).

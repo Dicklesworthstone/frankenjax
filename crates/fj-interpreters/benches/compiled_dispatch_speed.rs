@@ -143,6 +143,20 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
         let jaxpr = build_chain_jaxpr(n, Literal::from_f32(1.0));
         bench_one(&mut group, &format!("f32E256/n={n}"), &jaxpr, &f32_args);
     }
+    // L3-resident f32 chains (JAX's default dtype): in-place chain vs generic per-op.
+    for &elems in &[4096usize, 65536] {
+        let t = Value::Tensor(
+            fj_core::TensorValue::new(
+                fj_core::DType::F32,
+                fj_core::Shape { dims: vec![elems as u32] },
+                (0..elems).map(|_| Literal::from_f32(1.0)).collect(),
+            )
+            .expect("f32 big tensor"),
+        );
+        let args = [t];
+        let jaxpr = build_chain_jaxpr(8, Literal::from_f32(1.0));
+        bench_one(&mut group, &format!("f32big{elems}/n=8"), &jaxpr, &args);
+    }
     // i64 (index/counter buffers): wrapping Add/Sub/Mul vectorize to vpaddq etc.
     let i64_args = [Value::vector_i64(&[1_i64; 256]).expect("vector_i64")];
     for &n in &[8usize, 32] {

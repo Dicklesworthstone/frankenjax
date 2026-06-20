@@ -6963,6 +6963,159 @@ fn fill_dense_f32_nobcast<F: Fn(f32, f32) -> f32>(a: DenseF32Ref, b: DenseF32Ref
     }
 }
 
+#[inline]
+fn operand_is_slot_f32(operand: ScalarF32Operand, slot: usize) -> bool {
+    matches!(operand, ScalarF32Operand::Slot(s) if s == slot)
+}
+
+fn scalar_dense_f32_operand(cells: &[DenseF32Cell], operand: ScalarF32Operand) -> Option<f32> {
+    match operand {
+        ScalarF32Operand::Literal(v) => Some(v),
+        ScalarF32Operand::Slot(s) => match cells.get(s)? {
+            DenseF32Cell::Scalar(v) => Some(*v),
+            _ => None,
+        },
+    }
+}
+
+/// In-place f32 linear-chain step: `v[i] = v[i] OP scalar` (or `scalar OP v[i]`). Native
+/// f32 +/-/*/÷ vectorize (`vaddps`) and are BIT-EXACT vs eager's widen->f64-op->narrow for
+/// a single op (Figueroa). Other ops keep the generic per-element widen path.
+#[inline]
+fn apply_dense_f32_chain_step(
+    values: &mut [f32],
+    op: ScalarF64BinaryOp,
+    scalar: f32,
+    scalar_on_left: bool,
+    vectorize: bool,
+) {
+    match (op, scalar_on_left) {
+        (ScalarF64BinaryOp::Add, _) if vectorize => values.iter_mut().for_each(|v| *v += scalar),
+        (ScalarF64BinaryOp::Mul, _) if vectorize => values.iter_mut().for_each(|v| *v *= scalar),
+        (ScalarF64BinaryOp::Sub, false) if vectorize => {
+            values.iter_mut().for_each(|v| *v -= scalar)
+        }
+        (ScalarF64BinaryOp::Sub, true) if vectorize => {
+            values.iter_mut().for_each(|v| *v = scalar - *v)
+        }
+        (ScalarF64BinaryOp::Div, false) if vectorize => {
+            values.iter_mut().for_each(|v| *v /= scalar)
+        }
+        (ScalarF64BinaryOp::Div, true) if vectorize => {
+            values.iter_mut().for_each(|v| *v = scalar / *v)
+        }
+        (op, false) => values
+            .iter_mut()
+            .for_each(|v| *v = apply_scalar_f32_binary(op, *v, scalar)),
+        (op, true) => values
+            .iter_mut()
+            .for_each(|v| *v = apply_scalar_f32_binary(op, scalar, *v)),
+    }
+}
+
+/// f32 sibling of [`run_linear_scalar_f64_tensor_chain_into`] (the L3-resident buffer-reuse
+/// lever for JAX's DEFAULT dtype). f32 cells carry no broadcast variants, so the chain's
+/// other operand is always scalar/literal. Mutates one buffer in place through the chain;
+/// bit-identical to the generic per-op path.
+fn run_linear_scalar_f32_tensor_chain_into(
+    plan: &ScalarF32Plan,
+    shape: &Shape,
+    out: &mut Vec<Value>,
+    cells: &mut [DenseF32Cell],
+    vectorize: bool,
+) -> Option<Result<(), InterpreterError>> {
+    if plan.out_slots.len() != 1 || plan.steps.is_empty() {
+        return None;
+    }
+    let mut tensor_slot = None;
+    for (slot, cell) in cells.iter().enumerate() {
+        if matches!(cell, DenseF32Cell::Tensor(_)) {
+            if tensor_slot.is_some() {
+                return None;
+            }
+            tensor_slot = Some(slot);
+        }
+    }
+    let tensor_slot = tensor_slot?;
+    let mut current_slot = tensor_slot;
+    for step in &plan.steps {
+        let lhs_is_current = operand_is_slot_f32(step.lhs, current_slot);
+        match step.rhs {
+            Some(rhs) => {
+                let rhs_is_current = operand_is_slot_f32(rhs, current_slot);
+                match (lhs_is_current, rhs_is_current) {
+                    (true, true) => {}
+                    (true, false) => {
+                        scalar_dense_f32_operand(cells, rhs)?;
+                    }
+                    (false, true) => {
+                        scalar_dense_f32_operand(cells, step.lhs)?;
+                    }
+                    (false, false) => return None,
+                }
+            }
+            None => {
+                if !lhs_is_current {
+                    return None;
+                }
+            }
+        }
+        current_slot = step.out_slot;
+    }
+    if plan.out_slots[0] != current_slot {
+        return None;
+    }
+
+    let DenseF32Cell::Tensor(mut values) =
+        std::mem::replace(&mut cells[tensor_slot], DenseF32Cell::Missing)
+    else {
+        unreachable!("validated single dense-f32 tensor slot")
+    };
+
+    let mut current_slot = tensor_slot;
+    for step in &plan.steps {
+        let lhs_is_current = operand_is_slot_f32(step.lhs, current_slot);
+        match step.rhs {
+            Some(rhs) => {
+                let rhs_is_current = operand_is_slot_f32(rhs, current_slot);
+                match (lhs_is_current, rhs_is_current) {
+                    (true, true) => {
+                        for v in &mut values {
+                            *v = apply_scalar_f32_binary(step.op, *v, *v);
+                        }
+                    }
+                    (true, false) => {
+                        let s = scalar_dense_f32_operand(cells, rhs)?;
+                        apply_dense_f32_chain_step(&mut values, step.op, s, false, vectorize);
+                    }
+                    (false, true) => {
+                        let s = scalar_dense_f32_operand(cells, step.lhs)?;
+                        apply_dense_f32_chain_step(&mut values, step.op, s, true, vectorize);
+                    }
+                    (false, false) => unreachable!("validated linear tensor chain"),
+                }
+            }
+            None => {
+                debug_assert!(lhs_is_current);
+                for v in &mut values {
+                    *v = apply_scalar_f32_binary(step.op, *v, *v);
+                }
+            }
+        }
+        current_slot = step.out_slot;
+    }
+
+    let tensor = match TensorValue::new_f32_values(shape.clone(), values) {
+        Ok(t) => t,
+        Err(e) => {
+            return Some(Err(InterpreterError::Primitive(EvalError::InvalidTensor(e))));
+        }
+    };
+    out.clear();
+    out.push(Value::Tensor(tensor));
+    Some(Ok(()))
+}
+
 fn run_scalar_f32_plan_as_tensor_into(
     plan: &ScalarF32Plan,
     const_values: &[Value],
@@ -7016,6 +7169,15 @@ fn run_scalar_f32_plan_as_tensor_into(
     }
 
     let shape = shape?;
+    // In-place f32 linear chain (L3-resident buffer-reuse lever for JAX's default dtype).
+    // Same gate/A/B structure as f64: handles any size up to the L3 ceiling when vectorize
+    // is on; large non-linear bodies bail to the chunked/threaded fusion.
+    if (n < FUSION_MIN_ELEMS || (vectorize && n < INPLACE_CHAIN_MAX_ELEMS))
+        && let Some(result) =
+            run_linear_scalar_f32_tensor_chain_into(plan, &shape, out, cells, vectorize)
+    {
+        return Some(result);
+    }
     if n >= FUSION_MIN_ELEMS {
         return None;
     }
@@ -11899,7 +12061,8 @@ mod tests {
             );
         }
 
-        // Large body (>= FUSION_MIN_ELEMS) must BAIL so the fusion owns it.
+        // Large LINEAR chain (>= FUSION_MIN_ELEMS, below the in-place ceiling) is now
+        // HANDLED in place and must stay bit-identical to the generic per-op path.
         let big = vec![1.0f32; super::FUSION_MIN_ELEMS];
         let (xb, mb, ob) = (VarId(0), VarId(1), VarId(2));
         let big_body = Jaxpr::new(
@@ -11913,19 +12076,42 @@ mod tests {
         );
         let plan = super::build_dense_plan(&big_body).expect("plan");
         let p = plan.scalar_f32_plan.as_ref().unwrap();
+
+        let mut genv: Vec<Option<Value>> = vec![None; plan.slots];
+        let mut gscr: Vec<Value> = Vec::new();
+        let mut gout: Vec<Value> = Vec::new();
+        super::run_dense_env_into(
+            &big_body,
+            &[],
+            &[tensor(&big)],
+            &mut genv,
+            &plan.last_use,
+            &mut gscr,
+            &mut gout,
+        )
+        .expect("generic large f32");
+
         let mut tout: Vec<Value> = Vec::new();
         let mut cells: Vec<super::DenseF32Cell> = Vec::new();
+        super::run_scalar_f32_plan_as_tensor_into(p, &[], &[tensor(&big)], &mut tout, &mut cells, true)
+            .expect("large f32 linear chain handled in place")
+            .expect("ok");
+        assert_eq!(bits(&tout[0]), bits(&gout[0]), "large f32 in-place chain vs generic");
+
+        // The non-vectorized control still BAILS so the fusion owns it.
+        let mut tout2: Vec<Value> = Vec::new();
+        let mut cells2: Vec<super::DenseF32Cell> = Vec::new();
         assert!(
             super::run_scalar_f32_plan_as_tensor_into(
                 p,
                 &[],
                 &[tensor(&big)],
-                &mut tout,
-                &mut cells,
-                true
+                &mut tout2,
+                &mut cells2,
+                false,
             )
             .is_none(),
-            "large f32 tensor must bail to the fusion"
+            "large f32 chain bails when in-place lever is disabled"
         );
     }
 
