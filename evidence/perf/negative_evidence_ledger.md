@@ -2471,3 +2471,31 @@ ends are not rediscovered without new evidence.
   same-host harness showing a bandwidth reason it should beat the shipped policy.
 - Next retry predicate: different primitive family only - NUMA/affinity pinning, non-temporal stores,
   explicit prefetch, or compiled-jaxpr output reuse. Thread-count shrink alone is negative evidence.
+
+## WildForge - N-D transpose outer-block threading rejected (same-worker regression)
+
+- Bead: `frankenjax-f62hx` follow-on, after the already-shipped trailing-block memcpy path.
+- Candidate lever rejected: `transpose_general_into<T>` for large dense N-D transposes, splitting
+  the existing trailing-block copies across scoped threads and lowering the N-D gate to `1 << 20`
+  so the attention transpose `[8,512,8,64] -> [8,8,512,64]` would engage. The bit-identity guard
+  passed (`cargo test -p fj-lax --lib transpose_general_into_bit_identical_to_serial`, RCH `ovh-a`),
+  but performance failed the same-worker gate.
+- Baseline Rust (`vmi1149989`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec
+  -- cargo bench -p fj-lax --bench transpose_gauntlet -- --noplot`): current block-copy path
+  `blockcopy_eval_primitive` mean 438.76 us, interval [417.39, 461.72] us; pre-f62hx odometer
+  mean 5.5460 ms.
+- JAX comparator (local repo venv, `jax 0.10.1`, CPU x64):
+  `transpose_attn_BSHD_to_BHSD_f32` mean 113.409 us, p50 94.667 us, CV 35.78%. This keeps the
+  current materialized Rust path at about 3.87x slower than JAX by mean (routing evidence; not
+  same-worker because the RCH worker lacks JAX).
+- Candidate Rust on the same worker (`RCH_WORKER=vmi1149989`, same Criterion command):
+  `blockcopy_eval_primitive` mean 1.5913 ms, interval [1.4795, 1.6911] ms, Criterion change
+  +239.55% with p < 0.05. That is 3.63x slower than baseline and about 14.0x slower than the
+  JAX comparator mean.
+- Decision: REVERT / NO-SHIP. The source edit was removed before commit. Outer-block threading makes
+  the N-D transpose much worse, likely by adding thread overhead and worsening the already-strided
+  source-read pattern at this problem size.
+- Retry predicate: do not retry lower-gated N-D transpose threading. Closing the remaining JAX gap
+  needs a different class of lever: layout-aware transpose elision/fusion, a source-contiguous
+  cache-oblivious schedule with measured proof, or avoiding the materialized transpose in consumers
+  such as attention/einsum.

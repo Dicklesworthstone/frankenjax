@@ -625,3 +625,15 @@ Additional cod-a repeat validation environment:
   target lane, but the "fewer std::thread workers" lever is now negative evidence.
 - Coverage added: `elementwise_gauntlet` now carries 16M dense add/mul rows plus a same-binary thread
   policy A/B harness; the JAX comparator emits matching 16M rows.
+
+## WildForge - N-D transpose threading no-ship; materialized transpose remains a JAX loss (2026-06-20)
+
+- Target: `frankenjax-f62hx` attention transpose `[8,512,8,64] -> [8,8,512,64]`, after the
+  existing trailing-block memcpy keep.
+- Same-worker RCH `vmi1149989`: current block-copy mean 438.76 us; attempted threaded
+  `transpose_general_into` mean 1.5913 ms (`+239.55%`, p < 0.05). Reverted before commit.
+- JAX comparator (`jax 0.10.1`, CPU x64, local venv): mean 113.409 us, p50 94.667 us. Current
+  Rust/JAX mean ratio remains about 3.87x slower; the rejected threaded path would be about 14.0x
+  slower.
+- Scorecard: keep current f62hx block-copy internal win; record threaded N-D copy as LOSS and route
+  remaining gap to layout-aware transpose elision/fusion or a different cache-oblivious schedule.
