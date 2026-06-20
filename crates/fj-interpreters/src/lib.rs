@@ -1361,13 +1361,18 @@ const INPLACE_CHAIN_MAX_ELEMS: usize = 1 << 20;
 /// thread-spawn break-even at far smaller `n` than the single-op cheap-elementwise
 /// gate (which lives at ~8.4M because one cheap binop is pure bandwidth and the
 /// `thread::scope` spawn dwarfs it below that). Measured: a single f64 8-op chain
-/// over 1M elems runs at ~6 GB/s on ONE core (well under DRAM saturation), so it
-/// scales with cores; XLA already uses all of them. Gated at the lowest size with
-/// a MEASURED same-invocation win (1M: 1.22x, 4M: 1.27x, 16M: 1.32x; serial vs
-/// threaded in one process — see `run_f64_thread_ab` in eval_fusion_speed). Below
-/// this the serial loop owns it; sizes between this and the single-op 8.4M gate
-/// are unmeasured for single ops but proven for the arithmetic-dense fused chain.
-const FUSION_THREAD_MIN_ELEMS: usize = 1 << 20; // 1 Mi (lowest measured-win size)
+/// over 1M elems runs at ~6 GB/s on ONE core, so it scales with cores; XLA already
+/// uses all of them. CRITICAL contention finding: at L3-RESIDENT sizes (1M-4M, the
+/// chain's ~3-buffer working set still fits this host's 128MB L3) threading is
+/// BANDWIDTH-bound and its same-invocation A/B is NOT contention-immune — on an
+/// idle worker f64 1M measured 1.22-1.28x, but on a CONTENDED shared rch worker the
+/// SAME code measured 0.42x (threaded threads oversubscribe and thrash while the
+/// serial arm is robust). Only PAST the L3->DRAM transition (>= 8.4M, working set
+/// > L3, so threads use independent memory channels) is the win robust across idle
+/// AND contended workers: f64 16M 1.21-1.32x, f32 16M 1.33x, i64 16M 1.07x. So the
+/// gate matches the established single-op cheap-elementwise threshold (1<<23). 4M
+/// and below stay serial. (See `run_{f64,f32,i64}_thread_ab` in eval_fusion_speed.)
+const FUSION_THREAD_MIN_ELEMS: usize = 1 << 23; // 8.4 Mi (robust past L3->DRAM)
 /// Work-scaled worker count: roughly one worker per this many elements, clamped to
 /// the hardware thread count. Keeps each worker's contiguous run large enough to
 /// amortize the spawn while still using every core on big tensors.
@@ -9365,7 +9370,7 @@ mod tests {
         // non-chunk-aligned tail, so segment partitioning and the per-worker
         // global-base offsets must reproduce the serial walk exactly. Same 6-op
         // chain as `fusion_chain_matches_reference_bit_for_bit`, just larger.
-        let n = (1usize << 20) + 1234; // > FUSION_THREAD_MIN_ELEMS, unaligned tail
+        let n = (1usize << 23) + 1234; // > FUSION_THREAD_MIN_ELEMS, unaligned tail
         let xv: Vec<f64> = (0..n).map(|i| i as f64 * 0.013 - 9.0).collect();
         let yv: Vec<f64> = (0..n).map(|i| (i as f64 * 0.007).sin() + 1.5).collect();
         let x = VarId(0);
@@ -9424,8 +9429,8 @@ mod tests {
         // nor the per-worker segment, so chunk AND thread boundaries fall mid-row.
         // Element (r, c) must still map to bias[c] from the absolute base offset.
         let cols = 257usize;
-        let rows = 4096usize;
-        let n = rows * cols; // 1_052_672 > FUSION_THREAD_MIN_ELEMS
+        let rows = 32768usize;
+        let n = rows * cols; // 8_421_376 > FUSION_THREAD_MIN_ELEMS
         let x: Vec<f64> = (0..n).map(|i| i as f64 * 0.003 - 7.0).collect();
         let y: Vec<f64> = (0..n).map(|i| (i as f64 * 0.011).cos() + 1.25).collect();
         let bias: Vec<f64> = (0..cols).map(|i| i as f64 * 0.02 - 0.7).collect();
