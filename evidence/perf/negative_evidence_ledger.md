@@ -3549,3 +3549,25 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   ratios are trustworthy here; with no source change there is no A/B to claim — absolute fresh
   win/loss numbers withheld as unreliable. Scorecard delta this pass: 0 wins / 0 losses / 0 neutral
   (verification-only).
+
+## AzureLynx - post-merge workspace-green attestation + parity-audit closure (2026-06-20, HEAD c48f7f54)
+
+- Post-merge regression check after WildForge's `c48f7f54` (fuse unary cheap-op chains, the xjbvr
+  CheapOp Floor/Ceil/Trunc/Round/Sign WIP) LANDED. At that HEAD, on rch hz1 release:
+  `fj-interpreters --lib` = **212 passed / 0 failed / 27 ignored**; `fj-lax --lib` = 1567/0 (prior
+  pass); `cargo clippy --workspace --all-targets -- -D warnings` = **GREEN** (1m41s, zero warnings —
+  the whole-workspace all-target gate, not just --lib). 98eoz (fj-lax all-target test lint debt)
+  cleared by me in `aa45ca91`.
+- Parity-audit thread from wzg91 CLOSED: "audit other float-only binary ops for too-permissive
+  complex dispatch." All float-only binary/special ops now reject complex (and int) — atan2
+  (eval_binary, 'complex operands'), nextafter (`ensure_float_operands`, arithmetic.rs:13049,
+  "Closes liqzs"), igamma/igammac/zeta (same guard). No too-permissive float-only op remains. This
+  was the last loose correctness thread in the wzg91 family.
+- Standing conclusion (3-pass convergent): the contained lever space is exhausted at the code level,
+  not just per-memory. Verified by reading the kernels: transpose rank-2 cache-blocked+threaded
+  (tensor_ops.rs:1019), rank-N identity-suffix memcpy (tensor_ops.rs:839); fj-api dispatch-meta
+  cache shipped (mcqr.62); float-reduce-order off-limits; DRAM-NT-store / softmax-FMA maintainer-
+  gated. Only OPEN ready perf beads are mcqr (umbrella) and cntiy (+fma maintainer decision). The
+  remaining real wins are multi-session/owned (WildForge n75xr per-chain JIT codegen, the measured
+  2.4-4x static-element-major ceiling) or maintainer-gated — none unilaterally shippable in a single
+  autonomous pass. No fabricated levers; no DO-NOT veins re-mined; no collisions.
