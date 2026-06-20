@@ -3251,10 +3251,18 @@ fn try_fuse_elementwise_chain_half(
     }
     let out_var = run_out?;
 
+    // Half stays SERIAL: same-invocation A/B measured bf16 threading at 1.01x (1M)
+    // and 0.99x (4M) — neutral/marginal, NOT a win (run_bf16_thread_ab in
+    // eval_fusion_speed). bf16's cost is dominated by per-call half construction +
+    // per-op decode/encode rather than the chunk apply, so fanning the apply out
+    // buys nothing. f64/f32/i64 are bandwidth-bound in the apply and DO win.
     let mut values = vec![0_u16; n];
-    drive_fusion_chunks(&mut values, |chunk, base| {
-        apply_half_fusion_chunk(dt, chunk, &tape, &ext, base)
-    });
+    let mut s = 0;
+    while s < n {
+        let e = (s + FUSION_CHUNK).min(n);
+        apply_half_fusion_chunk(dt, &mut values[s..e], &tape, &ext, s);
+        s = e;
+    }
     Some(FusedRun {
         out_var,
         values: FusedValues::Half { dtype: dt, values },
