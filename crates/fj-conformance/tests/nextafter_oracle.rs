@@ -601,7 +601,7 @@ fn oracle_nextafter_rejects_integer_scalars() {
         .expect_err("JAX nextafter is float-only and must reject integer scalars");
 
     assert!(
-        err.to_string().contains("floating nextafter lhs"),
+        err.to_string().contains("expected floating operands"),
         "unexpected integer nextafter error: {err}"
     );
 }
@@ -614,7 +614,7 @@ fn oracle_nextafter_rejects_integer_tensors() {
         .expect_err("JAX nextafter is float-only and must reject integer tensors");
 
     assert!(
-        err.to_string().contains("floating nextafter lhs"),
+        err.to_string().contains("expected floating operands"),
         "unexpected integer tensor nextafter error: {err}"
     );
 }

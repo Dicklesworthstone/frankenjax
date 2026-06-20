@@ -39,12 +39,49 @@ fn build_chain_jaxpr(n: usize, lit: Literal) -> Jaxpr {
     )
 }
 
+/// Alternating chain `x = unary(x + lit)` repeated `n` times. These unary ops
+/// currently break the large-tensor cheap-op fusion path, so the rows below
+/// measure the exact xjbvr target before and after adding dense unary CheapOps.
+fn build_add_unary_chain_jaxpr(n: usize, unary: Primitive, lit: Literal) -> Jaxpr {
+    let mut equations = Vec::with_capacity(n * 2);
+    let mut current = VarId(1);
+    let mut next = 2_u32;
+    for _ in 0..n {
+        let added = VarId(next);
+        next += 1;
+        equations.push(Equation {
+            primitive: Primitive::Add,
+            inputs: smallvec::smallvec![Atom::Var(current), Atom::Lit(lit)],
+            outputs: smallvec::smallvec![added],
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        });
+        let rounded = VarId(next);
+        next += 1;
+        equations.push(Equation {
+            primitive: unary,
+            inputs: smallvec::smallvec![Atom::Var(added)],
+            outputs: smallvec::smallvec![rounded],
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        });
+        current = rounded;
+    }
+    Jaxpr::new(vec![VarId(1)], vec![], vec![current], equations)
+}
+
 /// A rank-2 broadcast chain: `m -> m+v -> (m+v)+v -> ...` where `m` is [R,C] and `v` is
 /// a [C] row-broadcast vector (the bias-add pattern). Exercises the arena's broadcast path.
 fn build_bcast_chain_jaxpr(n: usize) -> Jaxpr {
     let mut equations = Vec::with_capacity(n);
     for i in 0..n {
-        let lhs = if i == 0 { VarId(1) } else { VarId((i + 2) as u32) };
+        let lhs = if i == 0 {
+            VarId(1)
+        } else {
+            VarId((i + 2) as u32)
+        };
         equations.push(Equation {
             primitive: Primitive::Add,
             inputs: smallvec::smallvec![Atom::Var(lhs), Atom::Var(VarId(2))],
@@ -128,6 +165,26 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
         let jaxpr = build_chain_jaxpr(8, Literal::from_f64(1.0));
         bench_one(&mut group, &format!("bigchain{elems}/n=8"), &jaxpr, &args);
     }
+    // xjbvr target: large dense unary chains that break cheap-op fusion before
+    // floor/round/sign are admitted. Values are non-integral so floor/round do
+    // real work; JAX jit fuses the full chain into one compiled kernel.
+    let unary_f64_arg: Vec<f64> = (0..1_048_576)
+        .map(|idx| idx as f64 * 0.000_001 - 0.5)
+        .collect();
+    let unary_f64_args = [Value::vector_f64(&unary_f64_arg).expect("vector_f64")];
+    for &(name, primitive) in &[
+        ("floor", Primitive::Floor),
+        ("round", Primitive::Round),
+        ("sign", Primitive::Sign),
+    ] {
+        let jaxpr = build_add_unary_chain_jaxpr(4, primitive, Literal::from_f64(0.125));
+        bench_one(
+            &mut group,
+            &format!("{name}_f64_1m_add_unary_chain/n=4"),
+            &jaxpr,
+            &unary_f64_args,
+        );
+    }
     // f32 (JAX's DEFAULT tensor dtype): native-f32 vectorization (vaddps, 8-wide), bit-
     // exact vs eager's widen→f64→narrow for +/-/*/÷ (Figueroa). 256-lane chains.
     let f32_tensor = Value::Tensor(
@@ -148,7 +205,9 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
         let t = Value::Tensor(
             fj_core::TensorValue::new(
                 fj_core::DType::F32,
-                fj_core::Shape { dims: vec![elems as u32] },
+                fj_core::Shape {
+                    dims: vec![elems as u32],
+                },
                 (0..elems).map(|_| Literal::from_f32(1.0)).collect(),
             )
             .expect("f32 big tensor"),
@@ -156,6 +215,32 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
         let args = [t];
         let jaxpr = build_chain_jaxpr(8, Literal::from_f32(1.0));
         bench_one(&mut group, &format!("f32big{elems}/n=8"), &jaxpr, &args);
+    }
+    let unary_f32_tensor = Value::Tensor(
+        fj_core::TensorValue::new(
+            fj_core::DType::F32,
+            fj_core::Shape {
+                dims: vec![1_048_576],
+            },
+            (0..1_048_576)
+                .map(|idx| Literal::from_f32(idx as f32 * 0.000_001 - 0.5))
+                .collect(),
+        )
+        .expect("f32 unary tensor"),
+    );
+    let unary_f32_args = [unary_f32_tensor];
+    for &(name, primitive) in &[
+        ("floor", Primitive::Floor),
+        ("round", Primitive::Round),
+        ("sign", Primitive::Sign),
+    ] {
+        let jaxpr = build_add_unary_chain_jaxpr(4, primitive, Literal::from_f32(0.125));
+        bench_one(
+            &mut group,
+            &format!("{name}_f32_1m_add_unary_chain/n=4"),
+            &jaxpr,
+            &unary_f32_args,
+        );
     }
     // i64 (index/counter buffers): wrapping Add/Sub/Mul vectorize to vpaddq etc.
     let i64_args = [Value::vector_i64(&[1_i64; 256]).expect("vector_i64")];
@@ -178,7 +263,12 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     ];
     for &n in &[8usize, 32] {
         let jaxpr = build_bcast_chain_jaxpr(n);
-        bench_one(&mut group, &format!("bcast16x16/n={n}"), &jaxpr, &bcast_args);
+        bench_one(
+            &mut group,
+            &format!("bcast16x16/n={n}"),
+            &jaxpr,
+            &bcast_args,
+        );
     }
     group.finish();
 }

@@ -2,6 +2,40 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-20 - frankenjax-xjbvr unary-chain fusion keep, JAX gap remains
+
+The BOLD-VERIFY pass targeted `fj-interpreters` compiled-dispatch chains where
+`Floor`, `Round`, and `Sign` broke dense cheap-op fusion. The kept lever extends
+`CheapOp` to strict unary float ops and `i64 sign`, so `add -> unary -> add`
+chains stay in the dense fused runner instead of falling back to per-equation
+evaluation. `Ceil` and `Trunc` were included in the same semantic family and
+covered by the focused parity test.
+
+Same-worker internal rerun on RCH worker `hz1` with
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a`:
+
+| Row | Baseline Rust | Candidate Rust | Internal delta | JAX mean | Candidate/JAX | Verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `floor_f64_1m_add_unary_chain/n=4` | 21.229 ms | 2.5597 ms | 8.29x faster | 199.892 us | 12.805 | Keep internally; still JAX loss |
+| `round_f64_1m_add_unary_chain/n=4` | 20.516 ms | 1.8803 ms | 10.91x faster | 186.162 us | 10.100 | Keep internally; still JAX loss |
+| `sign_f64_1m_add_unary_chain/n=4` | 10.955 ms | 2.7290 ms | 4.01x faster | 342.029 us | 7.979 | Keep internally; still JAX loss |
+| `floor_f32_1m_add_unary_chain/n=4` | 8.8956 ms | 8.0347 ms | 1.11x faster | 103.966 us | 77.282 | Marginal internal win; still severe JAX loss |
+| `round_f32_1m_add_unary_chain/n=4` | 16.423 ms | 4.6730 ms | 3.51x faster | 123.124 us | 37.954 | Keep internally; still severe JAX loss |
+| `sign_f32_1m_add_unary_chain/n=4` | 11.639 ms | 5.5279 ms | 2.11x faster | 128.710 us | 42.948 | Keep internally; still severe JAX loss |
+
+The JAX comparator artifact is
+`artifacts/performance/evidence/frankenjax-xjbvr-jax-unary-chain-20260620T1358Z.json`
+using local CPU JAX 0.10.1. JAX CV was 10-16%, so the Rust/JAX rows are routing
+evidence, but the same-worker Rust deltas are large enough to keep the fusion
+change. Ratio scorecard for this pass: 0 wins / 6 losses / 0 neutral vs JAX.
+
+Validation: focused `fj-interpreters` parity test passed; `cargo check -p
+fj-interpreters --benches`, `cargo clippy -p fj-interpreters --benches -- -D
+warnings`, targeted `nextafter_oracle` and `polygamma_oracle`, and full `cargo
+test -p fj-conformance` all passed through RCH. Retry only with a deeper
+codegen/output-reuse route for f32 unary widening and XLA-style fused kernels;
+do not reattempt scalar per-equation dispatch shaving for these rows.
+
 ## 2026-06-20 - cod-b width-changing bitcast presized-fill keep
 
 The BOLD-VERIFY pass targeted current scorecard losses rather than another

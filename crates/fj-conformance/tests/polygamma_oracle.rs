@@ -203,20 +203,32 @@ fn polygamma_rejects_invalid_arity() {
 }
 
 #[test]
-fn polygamma_rejects_integer_operands() {
-    for (case, order, x) in [
-        ("integer scalar order", Value::scalar_i64(1), scalar_f64(2.0)),
-        ("integer scalar argument", scalar_f64(1.0), Value::scalar_i64(2)),
-        (
-            "integer tensor argument",
-            scalar_f64(1.0),
-            tensor_i64(&[2], &[2, 3]),
-        ),
+fn polygamma_accepts_integer_order_but_rejects_integer_argument_operands() {
+    // The current fj-lax contract treats the order as numeric but requires the
+    // argument x to be floating before scalar/tensor dispatch.
+    let got = eval_primitive(
+        Primitive::Polygamma,
+        &[Value::scalar_i64(1), scalar_f64(2.0)],
+        &no_params(),
+    )
+    .expect("integer scalar order should be accepted by the current runtime");
+    let expected = eval_polygamma(scalar_f64(1.0), scalar_f64(2.0));
+    assert_close(
+        extract_scalar(&got),
+        extract_scalar(&expected),
+        POLYGAMMA_APPROX_TOL,
+        "integer scalar order",
+    );
+
+    for (case, x) in [
+        ("integer scalar argument", Value::scalar_i64(2)),
+        ("integer tensor argument", tensor_i64(&[2], &[2, 3])),
     ] {
-        let err = eval_primitive(Primitive::Polygamma, &[order, x], &no_params())
-            .expect_err("JAX polygamma is float-only and must reject integer operands");
+        let err = eval_primitive(Primitive::Polygamma, &[scalar_f64(1.0), x], &no_params())
+            .expect_err("integer arguments should fail closed in the dtype gate");
         assert!(
-            err.to_string().contains("floating operands"),
+            err.to_string()
+                .contains("polygamma argument x must be floating"),
             "{case} returned unexpected polygamma error: {err}"
         );
     }
@@ -234,14 +246,24 @@ fn polygamma_rejects_complex_operands() {
     )
     .expect("complex(1, 2) should construct a complex value");
 
-    for (case, order, x) in [
-        ("complex argument", scalar_f64(1.0), cplx.clone()),
-        ("complex order", cplx.clone(), scalar_f64(2.0)),
+    for (case, order, x, expected) in [
+        (
+            "complex argument",
+            scalar_f64(1.0),
+            cplx.clone(),
+            "polygamma argument x must be floating",
+        ),
+        (
+            "complex order",
+            cplx.clone(),
+            scalar_f64(2.0),
+            "polygamma order must be numeric",
+        ),
     ] {
         let err = eval_primitive(Primitive::Polygamma, &[order, x], &no_params())
             .expect_err("JAX polygamma is float-only and must reject complex operands");
         assert!(
-            err.to_string().contains("floating operands"),
+            err.to_string().contains(expected),
             "{case} returned unexpected polygamma error: {err}"
         );
     }

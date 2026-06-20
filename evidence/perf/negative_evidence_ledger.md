@@ -3,6 +3,83 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-xjbvr - Floor/Round/Sign unary-chain fusion keep; JAX still dominates
+
+- Date: 2026-06-20
+- Agent: cod-a / WildForge
+- Target gap: `fj-interpreters` compiled-dispatch dense add/unary chains where
+  `Floor`, `Round`, and `Sign` forced the runner out of cheap-op fusion and left
+  Rust far behind JAX's `jit` fused CPU kernel.
+- Lever kept: extend `CheapOp` with `Floor`, `Ceil`, `Trunc`, `RoundAway`,
+  `RoundNearest`, and `Sign`; admit those primitives in the f64/f32/half
+  dense-chain scanners; admit `Sign` in the i64 scanner; apply unary cheap ops
+  inside the existing dense fused chunks. The f32 and half routes preserve the
+  existing widen/round-back behavior rather than changing semantics for speed.
+- Alien-graveyard route used: local partial-evaluation/codegen specialization,
+  not a new data structure. The win comes from treating monadic rounding/sign
+  ops as fusible SSA nodes so the runner avoids per-equation dispatch and
+  intermediate tensor materialization.
+- Harness kept: `compiled_dispatch_speed` now records 1,048,576-element
+  `floor`, `round`, and `sign` add/unary chain rows for f64 and f32.
+- Conformance repairs kept: `nextafter_oracle` expected the stale
+  `floating nextafter lhs` substring; current `fj-lax` reports
+  `expected floating operands`. `polygamma_oracle` expected all integer operands
+  rejected, but current `fj-lax` intentionally accepts numeric integer order and
+  rejects integer `x`. Both tests were updated to match the current runtime
+  contract after verifying the failures were unrelated to the interpreter
+  fusion.
+
+Baseline command:
+
+```text
+AGENT_NAME=cod-a RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+  rch exec -- cargo bench -p fj-interpreters --bench compiled_dispatch_speed -- \
+  1m_add_unary_chain --sample-size 15 --measurement-time 2 --warm-up-time 1 --noplot
+```
+
+Baseline worker was `hz1`. A first post-change run on `vmi1227854` was faster
+in absolute time, but the accepted internal delta below uses a same-worker
+post-change rerun on `hz1`.
+
+Same-worker Rust timing on `hz1`:
+
+| workload | baseline compiled_runner | candidate compiled_runner | internal speedup | JAX mean | candidate/JAX | verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `floor_f64_1m_add_unary_chain/n=4` | 21.229 ms | 2.5597 ms | 8.29x | 199.892 us | 12.805 | KEEP internally; still JAX loss |
+| `round_f64_1m_add_unary_chain/n=4` | 20.516 ms | 1.8803 ms | 10.91x | 186.162 us | 10.100 | KEEP internally; still JAX loss |
+| `sign_f64_1m_add_unary_chain/n=4` | 10.955 ms | 2.7290 ms | 4.01x | 342.029 us | 7.979 | KEEP internally; still JAX loss |
+| `floor_f32_1m_add_unary_chain/n=4` | 8.8956 ms | 8.0347 ms | 1.11x | 103.966 us | 77.282 | KEEP as marginal internal win; still severe JAX loss |
+| `round_f32_1m_add_unary_chain/n=4` | 16.423 ms | 4.6730 ms | 3.51x | 123.124 us | 37.954 | KEEP internally; still severe JAX loss |
+| `sign_f32_1m_add_unary_chain/n=4` | 11.639 ms | 5.5279 ms | 2.11x | 128.710 us | 42.948 | KEEP internally; still severe JAX loss |
+
+- Faster post-change routing rows on RCH worker `vmi1227854` were also recorded:
+  f64 floor 1.2723 ms, f64 round 1.2006 ms, f64 sign 1.7201 ms, f32 floor
+  3.7928 ms, f32 round 3.6287 ms, f32 sign 5.0230 ms. These are not used for
+  the internal keep proof because their baseline was on `hz1`.
+- JAX comparator artifact:
+  `artifacts/performance/evidence/frankenjax-xjbvr-jax-unary-chain-20260620T1358Z.json`;
+  local CPU JAX 0.10.1 / jaxlib 0.10.1, x64 enabled, warmed
+  `jax.jit` add/unary chains. JAX means had 10-16% CV, so the exact external
+  multipliers are routing evidence rather than release-certification ratios.
+- Ratio scorecard for this pass: **0 wins / 6 losses / 0 neutral vs JAX**.
+  The keep is justified by same-worker internal gap reduction, not by JAX
+  domination.
+- Validation: focused
+  `fusion_floor_ceil_trunc_round_sign_chains_match_unfused_reference` passed;
+  `cargo check -p fj-interpreters --benches` passed on RCH `vmi1149989`;
+  `cargo clippy -p fj-interpreters --benches -- -D warnings` passed on RCH
+  `vmi1149989`; `cargo test -p fj-conformance --test nextafter_oracle` passed
+  33/33; `cargo test -p fj-conformance --test polygamma_oracle` passed 26/26
+  on RCH `hz2`; full `cargo test -p fj-conformance` passed on RCH `hz2`.
+- Retry predicate: do not retry per-equation dispatch shaving for this exact
+  unary-chain family. Future attempts need a deeper XLA-class lever: generated
+  vector kernels, f32-native rounding/sign semantics behind an explicit
+  contract, output/arena reuse across fused kernels, or backend specialization
+  that eliminates the remaining memory traffic. For f32 specifically, the
+  current widen-to-f64 semantics are the main reason the Rust/JAX ratio remains
+  severe.
+
 ## cod-b - width-changing bitcast presized-fill keep; local same-target bench invalid (2026-06-20)
 
 - Date: 2026-06-20

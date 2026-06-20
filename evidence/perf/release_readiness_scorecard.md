@@ -201,10 +201,59 @@ Additional cod-b width-changing bitcast presized-fill environment:
   `vmi1149989`. `fj-lax --all-targets` clippy is blocked by unrelated test
   lint debt filed as `frankenjax-98eoz`.
 
+Additional cod-a fj-dispatch vmap gather environment:
+
+- Agent: cod-a / WildForge
+- Cargo target dir: `/data/projects/.rch-targets/frankenjax-cod-a`
+- Rust bench command: `rch exec -- cargo bench -p fj-dispatch --bench
+  dispatch_baseline -- vmap_gather/batched_operand_batched_indices --sample-size
+  20 --measurement-time 3 --warm-up-time 1 --noplot`.
+- Same-worker timing proof for `frankenjax-ligu5`: RCH worker `vmi1152480`.
+- JAX oracle: `benchmarks/jax_comparison/.venv/bin/python` inline CPU
+  comparator, artifact
+  `artifacts/performance/evidence/frankenjax-ligu5-jax-vmap-gather-20260620T1325Z.json`.
+- JAX/JAXLIB: JAX 0.10.1 / not reported by the comparator payload,
+  `jax_enable_x64=true`, CPU backend.
+- Ratio caveat: JAX CV was high (17-25%), so these rows close the suspected
+  dense batched-operand gather gap but should not be used as absolute release
+  certification for nearby shapes.
+
+Additional cod-a fj-interpreters unary-chain environment:
+
+- Agent: cod-a / WildForge
+- Cargo target dir: `/data/projects/.rch-targets/frankenjax-cod-a`
+- Rust bench command: `rch exec -- cargo bench -p fj-interpreters --bench
+  compiled_dispatch_speed -- 1m_add_unary_chain --sample-size 15
+  --measurement-time 2 --warm-up-time 1 --noplot`.
+- Same-worker internal timing proof for `frankenjax-xjbvr`: RCH worker `hz1`
+  for both baseline and the final post-change rerun.
+- Faster post-change routing run: RCH worker `vmi1227854`; not used for the
+  same-worker internal keep proof.
+- JAX oracle: `benchmarks/jax_comparison/.venv/bin/python` inline CPU
+  comparator, artifact
+  `artifacts/performance/evidence/frankenjax-xjbvr-jax-unary-chain-20260620T1358Z.json`.
+- JAX/JAXLIB: 0.10.1 / 0.10.1, `jax_enable_x64=true`, CPU backend.
+- Ratio caveat: JAX CV was 10-16%, and the Rust/JAX rows compare remote RCH
+  Rust with local JAX. Use these rows to route the remaining JAX gap; the keep
+  proof is the same-worker Rust delta.
+- Gates: focused `fj-interpreters` unary-fusion parity test passed; `cargo
+  check -p fj-interpreters --benches` and `cargo clippy -p fj-interpreters
+  --benches -- -D warnings` passed through RCH; full `cargo test -p
+  fj-conformance` passed on RCH `hz2`.
+
 ## Measured Workloads
 
 | Bead | Workload | Rust timing | JAX timing | Rust/JAX | Outcome |
 | --- | --- | ---: | ---: | ---: | --- |
+| frankenjax-xjbvr | `floor_f64_1m_add_unary_chain/n=4` | 2.5597 ms midpoint | 199.892 us mean | 12.805 | Same-worker Rust 8.29x faster than baseline; still JAX loss |
+| frankenjax-xjbvr | `round_f64_1m_add_unary_chain/n=4` | 1.8803 ms midpoint | 186.162 us mean | 10.100 | Same-worker Rust 10.91x faster than baseline; still JAX loss |
+| frankenjax-xjbvr | `sign_f64_1m_add_unary_chain/n=4` | 2.7290 ms midpoint | 342.029 us mean | 7.979 | Same-worker Rust 4.01x faster than baseline; still JAX loss |
+| frankenjax-xjbvr | `floor_f32_1m_add_unary_chain/n=4` | 8.0347 ms midpoint | 103.966 us mean | 77.282 | Marginal same-worker Rust win; severe JAX loss |
+| frankenjax-xjbvr | `round_f32_1m_add_unary_chain/n=4` | 4.6730 ms midpoint | 123.124 us mean | 37.954 | Same-worker Rust 3.51x faster than baseline; severe JAX loss |
+| frankenjax-xjbvr | `sign_f32_1m_add_unary_chain/n=4` | 5.5279 ms midpoint | 128.710 us mean | 42.948 | Same-worker Rust 2.11x faster than baseline; severe JAX loss |
+| frankenjax-ligu5 | `vmap_gather_i64_batched_operand_batched_indices` | 8.6722 us midpoint | 31.266 us mean | 0.277 | Rust 3.61x faster; no production change |
+| frankenjax-ligu5 | `vmap_gather_f64_batched_operand_batched_indices` | 25.251 us midpoint | 33.224 us mean | 0.760 | Rust 1.32x faster; no production change; JAX CV high |
+| frankenjax-ligu5 | `vmap_gather_f32_batched_operand_batched_indices` | 27.257 us midpoint | 31.369 us mean | 0.869 | Rust 1.15x faster; no production change; JAX CV high |
 | frankenjax-xljoh | `compiled_dispatch_f64_chain_4k_x8` | 3.319 us mean | 6.136 us mean | 0.541 | Rust 1.85x faster; guard off |
 | frankenjax-xljoh | `compiled_dispatch_f64_chain_65k_x8` | 51.601 us mean | 34.033 us mean | 1.516 | JAX 1.52x faster; kept mid-cache internal fallback |
 | frankenjax-xljoh | `compiled_dispatch_f64_chain_262k_x8` | 245.474 us mean | 76.827 us mean | 3.195 | JAX 3.19x faster; remaining codegen/backend gap |
@@ -293,6 +342,12 @@ Additional cod-b width-changing bitcast presized-fill environment:
   0.892 and 0.816. The local same-target Rust bench attempt is invalid due to
   mixed-nightly RCH artifacts, so these rows use conservative remote-Rust/local-
   JAX ratios.
+- xjbvr unary-chain fusion is a measured `fj-interpreters` internal keep, not a
+  JAX domination row. Same-worker RCH `hz1` improved f64 floor/round/sign
+  add-unary chains by 8.29x/10.91x/4.01x and f32 floor/round/sign by
+  1.11x/3.51x/2.11x, but every current Rust/JAX ratio remains a loss:
+  7.98x-12.81x slower for f64 and 37.95x-77.28x slower for f32. The release
+  score stays constrained by the XLA-class fused-kernel/output-reuse gap.
 - cntiy FMA primitive coverage is now measured directly. The dense FMA rows are
   strong internal de-box wins (8-9x over boxed controls), and `+fma` improves the
   primitive itself by 2.82x for f64 and 13.28x for f32, but same-host Rust/JAX

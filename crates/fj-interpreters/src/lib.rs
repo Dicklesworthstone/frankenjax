@@ -1245,13 +1245,29 @@ enum CheapOp {
     Max,
     Min,
     Abs,
+    Floor,
+    Ceil,
+    Trunc,
+    RoundAway,
+    RoundNearest,
+    Sign,
 }
 
 impl CheapOp {
     /// Unary ops read a single operand (the chain value); their `b` slot is unused.
     #[inline]
     fn is_unary(self) -> bool {
-        matches!(self, CheapOp::Neg | CheapOp::Abs)
+        matches!(
+            self,
+            CheapOp::Neg
+                | CheapOp::Abs
+                | CheapOp::Floor
+                | CheapOp::Ceil
+                | CheapOp::Trunc
+                | CheapOp::RoundAway
+                | CheapOp::RoundNearest
+                | CheapOp::Sign
+        )
     }
 }
 
@@ -1275,6 +1291,23 @@ fn fused_jax_min(left: f64, right: f64) -> f64 {
     }
 }
 
+#[inline]
+fn f64_fused_unary(op: CheapOp, value: f64) -> f64 {
+    match op {
+        CheapOp::Neg => -value,
+        CheapOp::Abs => value.abs(),
+        CheapOp::Floor => value.floor(),
+        CheapOp::Ceil => value.ceil(),
+        CheapOp::Trunc => value.trunc(),
+        CheapOp::RoundAway => value.round(),
+        CheapOp::RoundNearest => value.round_ties_even(),
+        CheapOp::Sign => scalar_f64_sign(value),
+        CheapOp::Add | CheapOp::Sub | CheapOp::Mul | CheapOp::Div | CheapOp::Max | CheapOp::Min => {
+            value
+        }
+    }
+}
+
 fn cheap_op(p: Primitive) -> Option<CheapOp> {
     match p {
         Primitive::Add => Some(CheapOp::Add),
@@ -1289,6 +1322,50 @@ fn cheap_op(p: Primitive) -> Option<CheapOp> {
     }
 }
 
+fn cheap_round_op(params: &std::collections::BTreeMap<String, String>) -> Option<CheapOp> {
+    match params.get("rounding_method").map(|raw| raw.trim()) {
+        None | Some("") | Some("0") | Some("AWAY_FROM_ZERO") | Some("away_from_zero") => {
+            Some(CheapOp::RoundAway)
+        }
+        Some("1") | Some("TO_NEAREST_EVEN") | Some("to_nearest_even") | Some("nearest_even") => {
+            Some(CheapOp::RoundNearest)
+        }
+        Some(_) => None,
+    }
+}
+
+fn cheap_float_op(
+    primitive: Primitive,
+    params: &std::collections::BTreeMap<String, String>,
+) -> Option<CheapOp> {
+    if primitive == Primitive::Round {
+        return cheap_round_op(params);
+    }
+    if !params.is_empty() {
+        return None;
+    }
+    match primitive {
+        Primitive::Floor => Some(CheapOp::Floor),
+        Primitive::Ceil => Some(CheapOp::Ceil),
+        Primitive::Trunc => Some(CheapOp::Trunc),
+        Primitive::Sign => Some(CheapOp::Sign),
+        _ => cheap_op(primitive),
+    }
+}
+
+fn cheap_i64_op(
+    primitive: Primitive,
+    params: &std::collections::BTreeMap<String, String>,
+) -> Option<CheapOp> {
+    if !params.is_empty() {
+        return None;
+    }
+    match primitive {
+        Primitive::Sign => Some(CheapOp::Sign),
+        _ => cheap_op(primitive),
+    }
+}
+
 /// `integer_pow[2]` (the lowering of `x**2`, the common square form) equals
 /// `Mul(x, x)` bit-identically for every dtype: eval_integer_pow computes
 /// `v.powi(2)` (== v*v) for floats and `v.wrapping_pow(2)` (== v.wrapping_mul(v))
@@ -1296,10 +1373,16 @@ fn cheap_op(p: Primitive) -> Option<CheapOp> {
 /// (one operand duplicated into a Mul step). It carries an `exponent` param, so the
 /// builders must let it past the params-empty gate; this matches ONLY exponent==2 so
 /// no other param-carrying op slips through.
-fn is_integer_pow_2(primitive: Primitive, params: &std::collections::BTreeMap<String, String>) -> bool {
+fn is_integer_pow_2(
+    primitive: Primitive,
+    params: &std::collections::BTreeMap<String, String>,
+) -> bool {
     primitive == Primitive::IntegerPow
         && params.len() == 1
-        && params.get("exponent").map(|s| s.trim() == "2").unwrap_or(false)
+        && params
+            .get("exponent")
+            .map(|s| s.trim() == "2")
+            .unwrap_or(false)
 }
 
 /// An operand of a fused step: the running chain value, an external dense-f64
@@ -1516,7 +1599,14 @@ fn f64_fused_binary(op: CheapOp, left: f64, right: f64) -> f64 {
         CheapOp::Max => fused_jax_max(left, right),
         CheapOp::Min => fused_jax_min(left, right),
         // Unary ops (handled by the chunk driver's unary arms); never a binary step.
-        CheapOp::Neg | CheapOp::Abs => left,
+        CheapOp::Neg
+        | CheapOp::Abs
+        | CheapOp::Floor
+        | CheapOp::Ceil
+        | CheapOp::Trunc
+        | CheapOp::RoundAway
+        | CheapOp::RoundNearest
+        | CheapOp::Sign => left,
     }
 }
 
@@ -1640,7 +1730,17 @@ fn apply_fusion_other(
             // does not affect the value.
             (CheapOp::Max, _) => out.iter_mut().for_each(|o| *o = fused_jax_max(*o, s)),
             (CheapOp::Min, _) => out.iter_mut().for_each(|o| *o = fused_jax_min(*o, s)),
-            (CheapOp::Neg | CheapOp::Abs, _) => {}
+            (
+                CheapOp::Neg
+                | CheapOp::Abs
+                | CheapOp::Floor
+                | CheapOp::Ceil
+                | CheapOp::Trunc
+                | CheapOp::RoundAway
+                | CheapOp::RoundNearest
+                | CheapOp::Sign,
+                _,
+            ) => {}
         },
         FOperand::Ext(i) => {
             let sl = &ext[i][base..base + out.len()];
@@ -1659,7 +1759,17 @@ fn apply_fusion_other(
                     .iter_mut()
                     .zip(sl)
                     .for_each(|(o, e)| *o = fused_jax_min(*o, *e)),
-                (CheapOp::Neg | CheapOp::Abs, _) => {}
+                (
+                    CheapOp::Neg
+                    | CheapOp::Abs
+                    | CheapOp::Floor
+                    | CheapOp::Ceil
+                    | CheapOp::Trunc
+                    | CheapOp::RoundAway
+                    | CheapOp::RoundNearest
+                    | CheapOp::Sign,
+                    _,
+                ) => {}
             }
         }
         FOperand::RowBroadcast(i) => {
@@ -1685,18 +1795,13 @@ fn apply_fusion_chunk(out: &mut [f64], tape: &[FStep], ext: &[&[f64]], base: usi
         FOperand::Chain => {}
     }
     match s0.op {
-        CheapOp::Neg => out.iter_mut().for_each(|o| *o = -*o),
-        CheapOp::Abs => out.iter_mut().for_each(|o| *o = o.abs()),
+        op if op.is_unary() => out.iter_mut().for_each(|o| *o = f64_fused_unary(op, *o)),
         _ => apply_fusion_other(out, s0.op, true, s0.b, ext, base),
     }
     for step in &tape[1..] {
         match step.op {
-            CheapOp::Neg => {
-                out.iter_mut().for_each(|o| *o = -*o);
-                continue;
-            }
-            CheapOp::Abs => {
-                out.iter_mut().for_each(|o| *o = o.abs());
+            op if op.is_unary() => {
+                out.iter_mut().for_each(|o| *o = f64_fused_unary(op, *o));
                 continue;
             }
             _ => {}
@@ -1709,7 +1814,14 @@ fn apply_fusion_chunk(out: &mut [f64], tape: &[FStep], ext: &[&[f64]], base: usi
                 CheapOp::Div => out.iter_mut().for_each(|o| *o = *o / *o),
                 // max(x,x)==x and min(x,x)==x (incl. NaN: x is already NaN).
                 CheapOp::Max | CheapOp::Min => {}
-                CheapOp::Neg | CheapOp::Abs => {}
+                CheapOp::Neg
+                | CheapOp::Abs
+                | CheapOp::Floor
+                | CheapOp::Ceil
+                | CheapOp::Trunc
+                | CheapOp::RoundAway
+                | CheapOp::RoundNearest
+                | CheapOp::Sign => {}
             },
             (FOperand::Chain, other) => apply_fusion_other(out, step.op, true, other, ext, base),
             (other, FOperand::Chain) => apply_fusion_other(out, step.op, false, other, ext, base),
@@ -1791,10 +1903,7 @@ fn try_fuse_elementwise_chain_f64(
     let mut k = start;
     loop {
         let Some(eqn) = eqns.get(k) else { break };
-        if (!eqn.params.is_empty() && !is_integer_pow_2(eqn.primitive, &eqn.params))
-            || !eqn.sub_jaxprs.is_empty()
-            || eqn.outputs.len() != 1
-        {
+        if !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
             break;
         }
         let ext_mark = ext.len();
@@ -1804,7 +1913,7 @@ fn try_fuse_elementwise_chain_f64(
         // operand into a Mul step is bit-identical and reuses the proven Mul machinery
         // (no new CheapOp / apply arm). Lets variance/L2/MSE chains (mean((x-mu)^2))
         // fuse instead of breaking the run on the Square primitive.
-        let (op, a, b) = if eqn.primitive == Primitive::Square
+        let (op, a, b) = if eqn.primitive == Primitive::Square && eqn.params.is_empty()
             || is_integer_pow_2(eqn.primitive, &eqn.params)
         {
             if eqn.inputs.len() != 1 {
@@ -1823,7 +1932,7 @@ fn try_fuse_elementwise_chain_f64(
                 break;
             };
             (CheapOp::Mul, a, a)
-        } else if eqn.primitive == Primitive::Reciprocal {
+        } else if eqn.primitive == Primitive::Reciprocal && eqn.params.is_empty() {
             // Reciprocal(x) == Div(1, x): eval_reciprocal is eval_unary_elementwise(|x| 1.0/x),
             // and the f64 fused Div computes 1.0/x identically — so emit Div(Scalar(1.0), x),
             // reusing the proven Div machinery. The classify guard requires a dense-f64 input,
@@ -1845,7 +1954,7 @@ fn try_fuse_elementwise_chain_f64(
             };
             (CheapOp::Div, FOperand::Scalar(1.0), b)
         } else {
-            let Some(op) = cheap_op(eqn.primitive) else {
+            let Some(op) = cheap_float_op(eqn.primitive, &eqn.params) else {
                 break;
             };
             let needed = if op.is_unary() { 1 } else { 2 };
@@ -2045,14 +2154,10 @@ fn col_broadcast_cols(full: &Shape, candidate: &Shape) -> Option<usize> {
 }
 
 #[inline]
-fn f32_fused_neg(value: f32) -> f32 {
-    (-f64::from(value)) as f32
-}
-
-#[inline]
-fn f32_fused_abs(value: f32) -> f32 {
-    // Mirrors fj-lax dense f32 abs: widen, f64::abs, round to f32 (exact).
-    f64::from(value).abs() as f32
+fn f32_fused_unary(op: CheapOp, value: f32) -> f32 {
+    // Mirrors fj-lax dense f32 unary arithmetic: widen to f64, apply the op,
+    // then round back to f32 at every step.
+    f64_fused_unary(op, f64::from(value)) as f32
 }
 
 #[inline]
@@ -2122,7 +2227,17 @@ fn apply_f32_row_broadcast_other(
                 .iter_mut()
                 .zip(row_part)
                 .for_each(|(o, e)| *o = fused_jax_min(f64::from(*o), f64::from(*e)) as f32),
-            (CheapOp::Neg | CheapOp::Abs, _) => {}
+            (
+                CheapOp::Neg
+                | CheapOp::Abs
+                | CheapOp::Floor
+                | CheapOp::Ceil
+                | CheapOp::Trunc
+                | CheapOp::RoundAway
+                | CheapOp::RoundNearest
+                | CheapOp::Sign,
+                _,
+            ) => {}
         }
         done += take;
         col = 0;
@@ -2186,7 +2301,17 @@ fn apply_f32_col_broadcast_other(
             (CheapOp::Min, _) => out_part
                 .iter_mut()
                 .for_each(|o| *o = fused_jax_min(f64::from(*o), scalar) as f32),
-            (CheapOp::Neg | CheapOp::Abs, _) => {}
+            (
+                CheapOp::Neg
+                | CheapOp::Abs
+                | CheapOp::Floor
+                | CheapOp::Ceil
+                | CheapOp::Trunc
+                | CheapOp::RoundAway
+                | CheapOp::RoundNearest
+                | CheapOp::Sign,
+                _,
+            ) => {}
         }
         done += take;
         linear += take;
@@ -2228,7 +2353,17 @@ fn apply_f32_fusion_other(
                 (CheapOp::Min, _) => out
                     .iter_mut()
                     .for_each(|o| *o = fused_jax_min(f64::from(*o), s) as f32),
-                (CheapOp::Neg | CheapOp::Abs, _) => {}
+                (
+                    CheapOp::Neg
+                    | CheapOp::Abs
+                    | CheapOp::Floor
+                    | CheapOp::Ceil
+                    | CheapOp::Trunc
+                    | CheapOp::RoundAway
+                    | CheapOp::RoundNearest
+                    | CheapOp::Sign,
+                    _,
+                ) => {}
             }
         }
         F32Operand::Ext(i) => {
@@ -2266,7 +2401,17 @@ fn apply_f32_fusion_other(
                     .iter_mut()
                     .zip(sl)
                     .for_each(|(o, e)| *o = fused_jax_min(f64::from(*o), f64::from(*e)) as f32),
-                (CheapOp::Neg | CheapOp::Abs, _) => {}
+                (
+                    CheapOp::Neg
+                    | CheapOp::Abs
+                    | CheapOp::Floor
+                    | CheapOp::Ceil
+                    | CheapOp::Trunc
+                    | CheapOp::RoundAway
+                    | CheapOp::RoundNearest
+                    | CheapOp::Sign,
+                    _,
+                ) => {}
             }
         }
         F32Operand::RowBroadcast(i) => {
@@ -2300,18 +2445,13 @@ fn apply_f32_fusion_chunk(out: &mut [f32], tape: &[F32Step], ext: &[&[f32]], bas
         F32Operand::Chain => {}
     }
     match s0.op {
-        CheapOp::Neg => out.iter_mut().for_each(|o| *o = f32_fused_neg(*o)),
-        CheapOp::Abs => out.iter_mut().for_each(|o| *o = f32_fused_abs(*o)),
+        op if op.is_unary() => out.iter_mut().for_each(|o| *o = f32_fused_unary(op, *o)),
         _ => apply_f32_fusion_other(out, s0.op, true, s0.b, ext, base),
     }
     for step in &tape[1..] {
         match step.op {
-            CheapOp::Neg => {
-                out.iter_mut().for_each(|o| *o = f32_fused_neg(*o));
-                continue;
-            }
-            CheapOp::Abs => {
-                out.iter_mut().for_each(|o| *o = f32_fused_abs(*o));
+            op if op.is_unary() => {
+                out.iter_mut().for_each(|o| *o = f32_fused_unary(op, *o));
                 continue;
             }
             _ => {}
@@ -2331,7 +2471,14 @@ fn apply_f32_fusion_chunk(out: &mut [f32], tape: &[F32Step], ext: &[&[f32]], bas
                     .iter_mut()
                     .for_each(|o| *o = (f64::from(*o) / f64::from(*o)) as f32),
                 CheapOp::Max | CheapOp::Min => {}
-                CheapOp::Neg | CheapOp::Abs => {}
+                CheapOp::Neg
+                | CheapOp::Abs
+                | CheapOp::Floor
+                | CheapOp::Ceil
+                | CheapOp::Trunc
+                | CheapOp::RoundAway
+                | CheapOp::RoundNearest
+                | CheapOp::Sign => {}
             },
             (F32Operand::Chain, other) => {
                 apply_f32_fusion_other(out, step.op, true, other, ext, base);
@@ -2363,16 +2510,13 @@ fn try_fuse_elementwise_chain_f32(
     let mut k = start;
     loop {
         let Some(eqn) = eqns.get(k) else { break };
-        if (!eqn.params.is_empty() && !is_integer_pow_2(eqn.primitive, &eqn.params))
-            || !eqn.sub_jaxprs.is_empty()
-            || eqn.outputs.len() != 1
-        {
+        if !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
             break;
         }
         let ext_mark = ext.len();
         let vars_mark = ext_vars.len();
         // Square(x) fused as Mul(x, x) — see the f64 builder for the bit-identity proof.
-        let (op, a, b) = if eqn.primitive == Primitive::Square
+        let (op, a, b) = if eqn.primitive == Primitive::Square && eqn.params.is_empty()
             || is_integer_pow_2(eqn.primitive, &eqn.params)
         {
             if eqn.inputs.len() != 1 {
@@ -2391,7 +2535,7 @@ fn try_fuse_elementwise_chain_f32(
                 break;
             };
             (CheapOp::Mul, a, a)
-        } else if eqn.primitive == Primitive::Reciprocal {
+        } else if eqn.primitive == Primitive::Reciprocal && eqn.params.is_empty() {
             // Reciprocal(x) == Div(1, x); the f32 fused Div uses the f32->f64->f32
             // contract matching eval_reciprocal (eval_unary_elementwise f64-widen). See
             // the f64 builder. Dense-f32 input required (else bails to generic).
@@ -2412,7 +2556,7 @@ fn try_fuse_elementwise_chain_f32(
             };
             (CheapOp::Div, F32Operand::Scalar(1.0), b)
         } else {
-            let Some(op) = cheap_op(eqn.primitive) else {
+            let Some(op) = cheap_float_op(eqn.primitive, &eqn.params) else {
                 break;
             };
             let needed = if op.is_unary() { 1 } else { 2 };
@@ -2523,7 +2667,34 @@ fn i64_fused_binary(op: CheapOp, left: i64, right: i64) -> i64 {
         CheapOp::Max => left.max(right),
         CheapOp::Min => left.min(right),
         // Unary ops are handled by the chunk driver; never a binary step.
-        CheapOp::Neg | CheapOp::Abs => left,
+        CheapOp::Neg
+        | CheapOp::Abs
+        | CheapOp::Floor
+        | CheapOp::Ceil
+        | CheapOp::Trunc
+        | CheapOp::RoundAway
+        | CheapOp::RoundNearest
+        | CheapOp::Sign => left,
+    }
+}
+
+#[inline]
+fn i64_fused_unary(op: CheapOp, value: i64) -> i64 {
+    match op {
+        CheapOp::Neg => value.wrapping_neg(),
+        CheapOp::Abs => value.wrapping_abs(),
+        CheapOp::Sign => value.signum(),
+        CheapOp::Floor
+        | CheapOp::Ceil
+        | CheapOp::Trunc
+        | CheapOp::RoundAway
+        | CheapOp::RoundNearest
+        | CheapOp::Add
+        | CheapOp::Sub
+        | CheapOp::Mul
+        | CheapOp::Div
+        | CheapOp::Max
+        | CheapOp::Min => value,
     }
 }
 
@@ -2712,7 +2883,17 @@ fn apply_i64_fusion_other(
             // Integer max/min are commutative and total (no NaN).
             (CheapOp::Max, _) => out.iter_mut().for_each(|o| *o = (*o).max(s)),
             (CheapOp::Min, _) => out.iter_mut().for_each(|o| *o = (*o).min(s)),
-            (CheapOp::Neg | CheapOp::Abs, _) => {}
+            (
+                CheapOp::Neg
+                | CheapOp::Abs
+                | CheapOp::Floor
+                | CheapOp::Ceil
+                | CheapOp::Trunc
+                | CheapOp::RoundAway
+                | CheapOp::RoundNearest
+                | CheapOp::Sign,
+                _,
+            ) => {}
         },
         I64Operand::Ext(i) => {
             let sl = &ext[i][base..base + out.len()];
@@ -2743,7 +2924,17 @@ fn apply_i64_fusion_other(
                     .for_each(|(o, e)| *o = e.checked_div(*o).unwrap_or(0)),
                 (CheapOp::Max, _) => out.iter_mut().zip(sl).for_each(|(o, e)| *o = (*o).max(*e)),
                 (CheapOp::Min, _) => out.iter_mut().zip(sl).for_each(|(o, e)| *o = (*o).min(*e)),
-                (CheapOp::Neg | CheapOp::Abs, _) => {}
+                (
+                    CheapOp::Neg
+                    | CheapOp::Abs
+                    | CheapOp::Floor
+                    | CheapOp::Ceil
+                    | CheapOp::Trunc
+                    | CheapOp::RoundAway
+                    | CheapOp::RoundNearest
+                    | CheapOp::Sign,
+                    _,
+                ) => {}
             }
         }
         I64Operand::RowBroadcast(i) => {
@@ -2769,18 +2960,13 @@ fn apply_i64_fusion_chunk(out: &mut [i64], tape: &[I64Step], ext: &[&[i64]], bas
         I64Operand::Chain => {}
     }
     match s0.op {
-        CheapOp::Neg => out.iter_mut().for_each(|o| *o = o.wrapping_neg()),
-        CheapOp::Abs => out.iter_mut().for_each(|o| *o = o.wrapping_abs()),
+        op if op.is_unary() => out.iter_mut().for_each(|o| *o = i64_fused_unary(op, *o)),
         _ => apply_i64_fusion_other(out, s0.op, true, s0.b, ext, base),
     }
     for step in &tape[1..] {
         match step.op {
-            CheapOp::Neg => {
-                out.iter_mut().for_each(|o| *o = o.wrapping_neg());
-                continue;
-            }
-            CheapOp::Abs => {
-                out.iter_mut().for_each(|o| *o = o.wrapping_abs());
+            op if op.is_unary() => {
+                out.iter_mut().for_each(|o| *o = i64_fused_unary(op, *o));
                 continue;
             }
             _ => {}
@@ -2795,7 +2981,14 @@ fn apply_i64_fusion_chunk(out: &mut [i64], tape: &[I64Step], ext: &[&[i64]], bas
                     .for_each(|o| *o = o.checked_div(*o).unwrap_or(0)),
                 // max(x,x)==x, min(x,x)==x.
                 CheapOp::Max | CheapOp::Min => {}
-                CheapOp::Neg | CheapOp::Abs => {}
+                CheapOp::Neg
+                | CheapOp::Abs
+                | CheapOp::Floor
+                | CheapOp::Ceil
+                | CheapOp::Trunc
+                | CheapOp::RoundAway
+                | CheapOp::RoundNearest
+                | CheapOp::Sign => {}
             },
             (I64Operand::Chain, other) => {
                 apply_i64_fusion_other(out, step.op, true, other, ext, base)
@@ -2827,10 +3020,7 @@ fn try_fuse_elementwise_chain_i64(
     let mut k = start;
     loop {
         let Some(eqn) = eqns.get(k) else { break };
-        if (!eqn.params.is_empty() && !is_integer_pow_2(eqn.primitive, &eqn.params))
-            || !eqn.sub_jaxprs.is_empty()
-            || eqn.outputs.len() != 1
-        {
+        if !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
             break;
         }
         let ext_mark = ext.len();
@@ -2838,7 +3028,7 @@ fn try_fuse_elementwise_chain_i64(
         // Square(x) fused as Mul(x, x): eval_square's i64 int_op is `wrapping_mul(x, x)`
         // and the i64 fusion Mul uses wrapping_mul, so this is bit-identical (see the
         // f64 builder for the general proof).
-        let (op, a, b) = if eqn.primitive == Primitive::Square
+        let (op, a, b) = if eqn.primitive == Primitive::Square && eqn.params.is_empty()
             || is_integer_pow_2(eqn.primitive, &eqn.params)
         {
             if eqn.inputs.len() != 1 {
@@ -2858,7 +3048,7 @@ fn try_fuse_elementwise_chain_i64(
             };
             (CheapOp::Mul, a, a)
         } else {
-            let Some(op) = cheap_op(eqn.primitive) else {
+            let Some(op) = cheap_i64_op(eqn.primitive, &eqn.params) else {
                 break;
             };
             let needed = if op.is_unary() { 1 } else { 2 };
@@ -3010,7 +3200,14 @@ fn half_fused_binary(dt: DType, op: CheapOp, left: f64, right: f64) -> u16 {
         CheapOp::Max => fused_jax_max(left, right),
         CheapOp::Min => fused_jax_min(left, right),
         // Unary ops are handled by the chunk driver; never a binary step.
-        CheapOp::Neg | CheapOp::Abs => left,
+        CheapOp::Neg
+        | CheapOp::Abs
+        | CheapOp::Floor
+        | CheapOp::Ceil
+        | CheapOp::Trunc
+        | CheapOp::RoundAway
+        | CheapOp::RoundNearest
+        | CheapOp::Sign => left,
     };
     half_fusion_round(dt, result)
 }
@@ -3145,12 +3342,9 @@ fn apply_half_fusion_other(
 #[inline]
 fn apply_half_fusion_unary(dt: DType, out: &mut [u16], op: CheapOp) {
     match op {
-        CheapOp::Neg => out
-            .iter_mut()
-            .for_each(|o| *o = half_fusion_round(dt, -half_fusion_widen(dt, *o))),
-        CheapOp::Abs => out
-            .iter_mut()
-            .for_each(|o| *o = half_fusion_round(dt, half_fusion_widen(dt, *o).abs())),
+        op if op.is_unary() => out.iter_mut().for_each(|o| {
+            *o = half_fusion_round(dt, f64_fused_unary(op, half_fusion_widen(dt, *o)))
+        }),
         _ => {}
     }
 }
@@ -3173,11 +3367,11 @@ fn apply_half_fusion_chunk(
         HalfOperand::Chain => {}
     }
     match s0.op {
-        CheapOp::Neg | CheapOp::Abs => apply_half_fusion_unary(dt, out, s0.op),
+        op if op.is_unary() => apply_half_fusion_unary(dt, out, op),
         _ => apply_half_fusion_other(dt, out, s0.op, true, s0.b, ext, base),
     }
     for step in &tape[1..] {
-        if matches!(step.op, CheapOp::Neg | CheapOp::Abs) {
+        if step.op.is_unary() {
             apply_half_fusion_unary(dt, out, step.op);
             continue;
         }
@@ -3217,10 +3411,7 @@ fn try_fuse_elementwise_chain_half(
     let mut k = start;
     loop {
         let Some(eqn) = eqns.get(k) else { break };
-        if (!eqn.params.is_empty() && !is_integer_pow_2(eqn.primitive, &eqn.params))
-            || !eqn.sub_jaxprs.is_empty()
-            || eqn.outputs.len() != 1
-        {
+        if !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
             break;
         }
         let ext_mark = ext.len();
@@ -3229,7 +3420,7 @@ fn try_fuse_elementwise_chain_half(
         // Square(x) fused as Mul(x, x): eval_square's half arm decodes to f64, computes
         // x*x, and re-encodes — identical to eval_mul's half arm — so duplicating the
         // operand into a Mul step is bit-identical (see the f64 builder for the proof).
-        let (op, a, b) = if eqn.primitive == Primitive::Square
+        let (op, a, b) = if eqn.primitive == Primitive::Square && eqn.params.is_empty()
             || is_integer_pow_2(eqn.primitive, &eqn.params)
         {
             if eqn.inputs.len() != 1 {
@@ -3251,7 +3442,7 @@ fn try_fuse_elementwise_chain_half(
             };
             (CheapOp::Mul, a, a)
         } else {
-            let Some(op) = cheap_op(eqn.primitive) else {
+            let Some(op) = cheap_float_op(eqn.primitive, &eqn.params) else {
                 break;
             };
             let needed = if op.is_unary() { 1 } else { 2 };
@@ -6637,7 +6828,10 @@ enum ChainOperand<'a> {
     Col(&'a [f64]),
 }
 
-fn dense_f64_chain_operand(cells: &[DenseF64Cell], operand: ScalarF64Operand) -> Option<ChainOperand<'_>> {
+fn dense_f64_chain_operand(
+    cells: &[DenseF64Cell],
+    operand: ScalarF64Operand,
+) -> Option<ChainOperand<'_>> {
     match operand {
         ScalarF64Operand::Literal(v) => Some(ChainOperand::Scalar(v)),
         ScalarF64Operand::Slot(s) => match cells.get(s)? {
@@ -6710,11 +6904,9 @@ fn apply_dense_f64_chain_step_row(
         (ScalarF64BinaryOp::Div, true) if vectorize => {
             apply_inplace_row_bcast_f64(values, vec, cols, |x, s| s / x)
         }
-        (op, false) => {
-            apply_inplace_row_bcast_f64(values, vec, cols, move |x, s| {
-                apply_scalar_f64_binary(op, x, s)
-            })
-        }
+        (op, false) => apply_inplace_row_bcast_f64(values, vec, cols, move |x, s| {
+            apply_scalar_f64_binary(op, x, s)
+        }),
         (op, true) => apply_inplace_row_bcast_f64(values, vec, cols, move |x, s| {
             apply_scalar_f64_binary(op, s, x)
         }),
@@ -7160,7 +7352,12 @@ fn resolve_dense_f32_operand<'a>(
 /// widen→f64-op→narrow: for a single +/-/*/÷, f64 (53-bit mantissa) carries ≥ 2·24+2 bits
 /// so `(f64(a) OP f64(b)) as f32 == a OP b` in native f32 (Figueroa: no double rounding).
 #[inline]
-fn fill_dense_f32_nobcast<F: Fn(f32, f32) -> f32>(a: DenseF32Ref, b: DenseF32Ref, o: &mut [f32], f: F) {
+fn fill_dense_f32_nobcast<F: Fn(f32, f32) -> f32>(
+    a: DenseF32Ref,
+    b: DenseF32Ref,
+    o: &mut [f32],
+    f: F,
+) {
     match (a, b) {
         (DenseF32Ref::Tensor(ta), DenseF32Ref::Scalar(sb)) => {
             for (o, &x) in o.iter_mut().zip(ta) {
@@ -7178,7 +7375,9 @@ fn fill_dense_f32_nobcast<F: Fn(f32, f32) -> f32>(a: DenseF32Ref, b: DenseF32Ref
             }
         }
         // (Scalar,Scalar) is handled by the caller before this is reached.
-        (DenseF32Ref::Scalar(sa), DenseF32Ref::Scalar(sb)) => o.iter_mut().for_each(|o| *o = f(sa, sb)),
+        (DenseF32Ref::Scalar(sa), DenseF32Ref::Scalar(sb)) => {
+            o.iter_mut().for_each(|o| *o = f(sa, sb))
+        }
     }
 }
 
@@ -7327,7 +7526,9 @@ fn run_linear_scalar_f32_tensor_chain_into(
     let tensor = match TensorValue::new_f32_values(shape.clone(), values) {
         Ok(t) => t,
         Err(e) => {
-            return Some(Err(InterpreterError::Primitive(EvalError::InvalidTensor(e))));
+            return Some(Err(InterpreterError::Primitive(EvalError::InvalidTensor(
+                e,
+            ))));
         }
     };
     out.clear();
@@ -7514,7 +7715,12 @@ fn resolve_dense_i64_operand<'a>(
 /// `+avx2`. Bit-exact: `wrapping_add/sub/mul` ARE the per-element op the generic path
 /// applies. (Div/Max/Min/Neg/Abs keep the generic loop — integer div has no SIMD form.)
 #[inline]
-fn fill_dense_i64_nobcast<F: Fn(i64, i64) -> i64>(a: DenseI64Ref, b: DenseI64Ref, o: &mut [i64], f: F) {
+fn fill_dense_i64_nobcast<F: Fn(i64, i64) -> i64>(
+    a: DenseI64Ref,
+    b: DenseI64Ref,
+    o: &mut [i64],
+    f: F,
+) {
     match (a, b) {
         (DenseI64Ref::Tensor(ta), DenseI64Ref::Scalar(sb)) => {
             for (o, &x) in o.iter_mut().zip(ta) {
@@ -7775,8 +7981,7 @@ impl<'a> CompiledJaxprRunner<'a> {
 
         if let Some(plan) = &self.compiled.plan.scalar_f64_plan
             && let Some(elems) = scalar_f64_plan_single_tensor_linear_chain_elems(plan, args)
-            && (RUNNER_F64_OWNED_EVAL_MIN_ELEMS..=RUNNER_F64_OWNED_EVAL_MAX_ELEMS)
-                .contains(&elems)
+            && (RUNNER_F64_OWNED_EVAL_MIN_ELEMS..=RUNNER_F64_OWNED_EVAL_MAX_ELEMS).contains(&elems)
         {
             self.out = self.compiled.eval(args)?;
             return Ok(&self.out);
@@ -9936,6 +10141,148 @@ mod tests {
         assert_eq!(
             digest,
             "50bd04003ca23bfb110a239a785969d8f4f5da9d3c9ab96f6a79a332d41a149c"
+        );
+    }
+
+    #[test]
+    fn fusion_floor_ceil_trunc_round_sign_chains_match_unfused_reference() {
+        fn f16_bits_of(x: f64) -> u16 {
+            match Literal::from_f16_f64(x) {
+                Literal::F16Bits(b) => b,
+                other => panic!("expected f16 literal, got {other:?}"),
+            }
+        }
+
+        fn mk_eqn(p: Primitive, ins: smallvec::SmallVec<[Atom; 4]>, out: VarId) -> Equation {
+            Equation {
+                primitive: p,
+                inputs: ins,
+                outputs: smallvec![out],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }
+        }
+
+        let make_float_chain = |lit_add: Atom, lit_sub: Atom, lit_round: Atom| {
+            let x = VarId(0);
+            let v: Vec<VarId> = (1..=9).map(VarId).collect();
+            let eqns = vec![
+                mk_eqn(
+                    Primitive::Add,
+                    smallvec![Atom::Var(x), lit_add.clone()],
+                    v[0],
+                ),
+                mk_eqn(Primitive::Floor, smallvec![Atom::Var(v[0])], v[1]),
+                mk_eqn(
+                    Primitive::Sub,
+                    smallvec![Atom::Var(v[1]), lit_sub.clone()],
+                    v[2],
+                ),
+                mk_eqn(Primitive::Ceil, smallvec![Atom::Var(v[2])], v[3]),
+                mk_eqn(
+                    Primitive::Add,
+                    smallvec![Atom::Var(v[3]), lit_round.clone()],
+                    v[4],
+                ),
+                mk_eqn(Primitive::Trunc, smallvec![Atom::Var(v[4])], v[5]),
+                mk_eqn(Primitive::Add, smallvec![Atom::Var(v[5]), lit_round], v[6]),
+                mk_eqn(Primitive::Round, smallvec![Atom::Var(v[6])], v[7]),
+                mk_eqn(Primitive::Sign, smallvec![Atom::Var(v[7])], v[8]),
+            ];
+            Jaxpr::new(vec![x], vec![], vec![v[8]], eqns)
+        };
+
+        let n = 4096usize;
+        let mut f64_values: Vec<f64> = (0..n).map(|i| i as f64 * 0.007 - 12.0).collect();
+        f64_values[0] = -0.0;
+        f64_values[1] = 0.0;
+        f64_values[2] = f64::INFINITY;
+        f64_values[3] = f64::NEG_INFINITY;
+        f64_values[4] = f64::from_bits(0x7ff8_0000_0000_0123);
+        let f64_jaxpr = make_float_chain(lit(0.625), lit(1.25), lit(0.5));
+        let f64_args = [f64_tensor_values(vec![n as u32], f64_values)];
+        let f64_fused = eval_jaxpr(&f64_jaxpr, &f64_args).unwrap();
+        let f64_unfused =
+            eval_jaxpr_hashed_env(&f64_jaxpr, &[], &f64_args).expect("unfused f64 reference");
+        assert_eq!(
+            f64_bits(&f64_fused[0]),
+            f64_bits(&f64_unfused[0]),
+            "fused f64 floor/ceil/trunc/round/sign chain must match unfused reference"
+        );
+
+        let mut f32_values: Vec<f32> = (0..n).map(|i| i as f32 * 0.007 - 12.0).collect();
+        f32_values[0] = -0.0;
+        f32_values[1] = 0.0;
+        f32_values[2] = f32::INFINITY;
+        f32_values[3] = f32::NEG_INFINITY;
+        f32_values[4] = f32::from_bits(0x7fc0_0123);
+        let f32_jaxpr = make_float_chain(lit32(0.625), lit32(1.25), lit32(0.5));
+        let f32_args = [f32_tensor_values(vec![n as u32], f32_values)];
+        let f32_fused = eval_jaxpr(&f32_jaxpr, &f32_args).unwrap();
+        let f32_unfused =
+            eval_jaxpr_hashed_env(&f32_jaxpr, &[], &f32_args).expect("unfused f32 reference");
+        assert_eq!(
+            canon_f32_nan_bits(&f32_bits(&f32_fused[0])),
+            canon_f32_nan_bits(&f32_bits(&f32_unfused[0])),
+            "fused f32 floor/ceil/trunc/round/sign chain must match unfused reference"
+        );
+
+        let mut f16_values: Vec<u16> = (0..n)
+            .map(|i| f16_bits_of(i as f64 * 0.007 - 12.0))
+            .collect();
+        f16_values[0] = f16_bits_of(-0.0);
+        f16_values[1] = f16_bits_of(0.0);
+        f16_values[2] = f16_bits_of(f64::INFINITY);
+        f16_values[3] = f16_bits_of(f64::NEG_INFINITY);
+        f16_values[4] = 0x7e01;
+        let f16_jaxpr = make_float_chain(
+            Atom::Lit(Literal::from_f16_f64(0.625)),
+            Atom::Lit(Literal::from_f16_f64(1.25)),
+            Atom::Lit(Literal::from_f16_f64(0.5)),
+        );
+        let f16_args = [Value::Tensor(
+            TensorValue::new_half_float_values(
+                DType::F16,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                f16_values,
+            )
+            .unwrap(),
+        )];
+        let f16_fused = eval_jaxpr(&f16_jaxpr, &f16_args).unwrap();
+        let f16_unfused =
+            eval_jaxpr_hashed_env(&f16_jaxpr, &[], &f16_args).expect("unfused f16 reference");
+        assert_eq!(
+            half_bits(&f16_fused[0]),
+            half_bits(&f16_unfused[0]),
+            "fused f16 floor/ceil/trunc/round/sign chain must match unfused reference"
+        );
+
+        let i64_values: Vec<i64> = vec![i64::MIN, -17, -1, 0, 1, 23, i64::MAX]
+            .into_iter()
+            .cycle()
+            .take(n)
+            .collect();
+        let x = VarId(0);
+        let v: Vec<VarId> = (1..=5).map(VarId).collect();
+        let i64_eqns = vec![
+            mk_eqn(Primitive::Sign, smallvec![Atom::Var(x)], v[0]),
+            mk_eqn(Primitive::Mul, smallvec![Atom::Var(v[0]), liti(-3)], v[1]),
+            mk_eqn(Primitive::Sign, smallvec![Atom::Var(v[1])], v[2]),
+            mk_eqn(Primitive::Sub, smallvec![liti(5), Atom::Var(v[2])], v[3]),
+            mk_eqn(Primitive::Abs, smallvec![Atom::Var(v[3])], v[4]),
+        ];
+        let i64_jaxpr = Jaxpr::new(vec![x], vec![], vec![v[4]], i64_eqns);
+        let i64_args = [i64_tensor_values(vec![n as u32], i64_values)];
+        let i64_fused = eval_jaxpr(&i64_jaxpr, &i64_args).unwrap();
+        let i64_unfused =
+            eval_jaxpr_hashed_env(&i64_jaxpr, &[], &i64_args).expect("unfused i64 reference");
+        assert_eq!(
+            i64_vals(&i64_fused[0]),
+            i64_vals(&i64_unfused[0]),
+            "fused i64 sign chain must match unfused reference"
         );
     }
 
@@ -12301,9 +12648,15 @@ mod tests {
 
             let mut tout: Vec<Value> = Vec::new();
             let mut cells: Vec<super::DenseI64Cell> = Vec::new();
-            let handled =
-                super::run_scalar_i64_plan_as_tensor_into(p, &[], args, &mut tout, &mut cells, true)
-                    .unwrap_or_else(|| panic!("{name}: i64 tensor arena bailed (None)"));
+            let handled = super::run_scalar_i64_plan_as_tensor_into(
+                p,
+                &[],
+                args,
+                &mut tout,
+                &mut cells,
+                true,
+            )
+            .unwrap_or_else(|| panic!("{name}: i64 tensor arena bailed (None)"));
             handled.expect("i64 tensor arena ok");
             assert_eq!(
                 vals(&tout[0]),
@@ -12336,8 +12689,15 @@ mod tests {
         let mut tout: Vec<Value> = Vec::new();
         let mut cells: Vec<super::DenseI64Cell> = Vec::new();
         assert!(
-            super::run_scalar_i64_plan_as_tensor_into(p, &[], &[i32_tensor], &mut tout, &mut cells, true)
-                .is_none(),
+            super::run_scalar_i64_plan_as_tensor_into(
+                p,
+                &[],
+                &[i32_tensor],
+                &mut tout,
+                &mut cells,
+                true
+            )
+            .is_none(),
             "I32 tensor must bail (generic narrows i32 results)"
         );
 
@@ -12484,9 +12844,15 @@ mod tests {
 
             let mut tout: Vec<Value> = Vec::new();
             let mut cells: Vec<super::DenseF32Cell> = Vec::new();
-            let handled =
-                super::run_scalar_f32_plan_as_tensor_into(p, &[], args, &mut tout, &mut cells, true)
-                    .unwrap_or_else(|| panic!("{name}: f32 tensor arena bailed (None)"));
+            let handled = super::run_scalar_f32_plan_as_tensor_into(
+                p,
+                &[],
+                args,
+                &mut tout,
+                &mut cells,
+                true,
+            )
+            .unwrap_or_else(|| panic!("{name}: f32 tensor arena bailed (None)"));
             handled.expect("f32 tensor arena ok");
             assert_eq!(
                 bits(&tout[0]),
@@ -12527,10 +12893,21 @@ mod tests {
 
         let mut tout: Vec<Value> = Vec::new();
         let mut cells: Vec<super::DenseF32Cell> = Vec::new();
-        super::run_scalar_f32_plan_as_tensor_into(p, &[], &[tensor(&big)], &mut tout, &mut cells, true)
-            .expect("large f32 linear chain handled in place")
-            .expect("ok");
-        assert_eq!(bits(&tout[0]), bits(&gout[0]), "large f32 in-place chain vs generic");
+        super::run_scalar_f32_plan_as_tensor_into(
+            p,
+            &[],
+            &[tensor(&big)],
+            &mut tout,
+            &mut cells,
+            true,
+        )
+        .expect("large f32 linear chain handled in place")
+        .expect("ok");
+        assert_eq!(
+            bits(&tout[0]),
+            bits(&gout[0]),
+            "large f32 in-place chain vs generic"
+        );
 
         // The non-vectorized control still BAILS so the fusion owns it.
         let mut tout2: Vec<Value> = Vec::new();
@@ -12640,9 +13017,15 @@ mod tests {
 
             let mut tout: Vec<Value> = Vec::new();
             let mut cells: Vec<super::DenseF64Cell> = Vec::new();
-            let handled =
-                super::run_scalar_f64_plan_as_tensor_into(p, &[], args, &mut tout, &mut cells, true)
-                    .unwrap_or_else(|| panic!("{name}: broadcast body bailed (None)"));
+            let handled = super::run_scalar_f64_plan_as_tensor_into(
+                p,
+                &[],
+                args,
+                &mut tout,
+                &mut cells,
+                true,
+            )
+            .unwrap_or_else(|| panic!("{name}: broadcast body bailed (None)"));
             handled.expect("ok");
             assert_eq!(
                 bits(&tout[0]),
@@ -12778,11 +13161,15 @@ mod tests {
             // Tensor arena — must HANDLE it (Some(Ok)), proving non-vacuous.
             let mut tout: Vec<Value> = Vec::new();
             let mut cells: Vec<super::DenseF64Cell> = Vec::new();
-            let handled =
-                super::run_scalar_f64_plan_as_tensor_into(p, &[], args, &mut tout, &mut cells, true)
-                    .unwrap_or_else(|| {
-                        panic!("{name}: tensor arena bailed (None) — should handle it")
-                    });
+            let handled = super::run_scalar_f64_plan_as_tensor_into(
+                p,
+                &[],
+                args,
+                &mut tout,
+                &mut cells,
+                true,
+            )
+            .unwrap_or_else(|| panic!("{name}: tensor arena bailed (None) — should handle it"));
             handled.expect("tensor arena ok");
             assert_eq!(
                 bits(&tout[0]),
@@ -12834,7 +13221,11 @@ mod tests {
         )
         .expect("large linear chain handled in place")
         .expect("ok");
-        assert_eq!(bits(&tout[0]), bits(&gout[0]), "large in-place chain vs generic");
+        assert_eq!(
+            bits(&tout[0]),
+            bits(&gout[0]),
+            "large in-place chain vs generic"
+        );
 
         // The non-vectorized control path (and any non-linear large body) still BAILS so
         // the chunked/threaded fusion owns it.
@@ -17869,7 +18260,10 @@ mod tests {
             // per-element loop it replaces — assert directly, not only via eager.
             let mut r = compiled_jaxpr.runner();
             let vectorized = r.eval(args).expect("vectorized eval").to_vec();
-            let scalar_inner = r.eval_scalar_inner(args).expect("scalar-inner eval").to_vec();
+            let scalar_inner = r
+                .eval_scalar_inner(args)
+                .expect("scalar-inner eval")
+                .to_vec();
             assert_eq!(
                 vectorized, scalar_inner,
                 "{label}: vectorized != scalar-inner dense-f64 loop"
