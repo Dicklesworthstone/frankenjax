@@ -1588,10 +1588,13 @@ pub(crate) fn eval_irfft(
     let output_count = checked_output_element_count(primitive, batch_size, fft_length)?;
 
     let copy_len = fft_length.min(input_last);
-    // Non-power-of-two transform length: build the inverse per-row plan once
-    // (mixed-radix for smooth lengths, Bluestein for large-prime lengths).
-    let plan = (fft_length > 1 && !fft_length.is_power_of_two())
-        .then(|| BatchFftPlan::new(fft_length, true));
+    // Build the inverse per-row plan ONCE for the whole batch and reuse it across
+    // rows. Pow2 lengths get the cached `Radix2Plan` (bit-reversal + twiddles) instead
+    // of `ifft_1d_into` rebuilding them every row (the same per-row-rebuild fix already
+    // applied to forward FFT); mixed-radix for smooth lengths and Bluestein for
+    // large-prime lengths. Bit-identical: the cached plan uses the identical recurrence
+    // and 1/n scaling as the per-row `ifft_1d_into`.
+    let plan = (fft_length > 1).then(|| BatchFftPlan::new(fft_length, true));
 
     // Dense + threaded fast path for F64 (Complex128 input) AND F32 (Complex64
     // input — JAX's default-precision inverse real FFT, previously stuck on the
@@ -1797,7 +1800,29 @@ mod tests {
             checksum
         });
 
-        // Bit-identity guard (the whole win rests on this).
+        // INVERSE direction (irfft pow2 plan-cache, murmw step 2): same mechanism with
+        // inverse=true (ifft_1d_into per row vs cached Radix2Plan).
+        let old_inv = best(&|| {
+            let mut buf = Vec::with_capacity(n);
+            let mut checksum = 0u64;
+            for _ in 0..rows {
+                ifft_1d_into(&row, &mut buf);
+                checksum ^= buf[0].0.to_bits() ^ buf[n / 2].1.to_bits();
+            }
+            checksum
+        });
+        let inv_plan = Radix2Plan::new(n, true);
+        let new_inv = best(&|| {
+            let mut buf = Vec::with_capacity(n);
+            let mut checksum = 0u64;
+            for _ in 0..rows {
+                inv_plan.apply_into(&row, &mut buf);
+                checksum ^= buf[0].0.to_bits() ^ buf[n / 2].1.to_bits();
+            }
+            checksum
+        });
+
+        // Bit-identity guards (the whole win rests on these) — forward AND inverse.
         let mut a = Vec::new();
         let mut b = Vec::new();
         fft_1d_into(&row, &mut a);
@@ -1805,12 +1830,22 @@ mod tests {
         let abits: Vec<(u64, u64)> = a.iter().map(|&(r, i)| (r.to_bits(), i.to_bits())).collect();
         let bbits: Vec<(u64, u64)> = b.iter().map(|&(r, i)| (r.to_bits(), i.to_bits())).collect();
         assert_eq!(abits, bbits, "cached-plan FFT must be bit-identical to per-row rebuild");
+        let mut ai = Vec::new();
+        let mut bi = Vec::new();
+        ifft_1d_into(&row, &mut ai);
+        inv_plan.apply_into(&row, &mut bi);
+        let aibits: Vec<(u64, u64)> = ai.iter().map(|&(r, i)| (r.to_bits(), i.to_bits())).collect();
+        let bibits: Vec<(u64, u64)> = bi.iter().map(|&(r, i)| (r.to_bits(), i.to_bits())).collect();
+        assert_eq!(aibits, bibits, "cached-plan IFFT must be bit-identical to per-row rebuild");
 
         eprintln!(
-            "[batched pow2 {rows}x{n}] per-row-rebuild={:.3}ms shared-plan={:.3}ms ratio={:.2}x",
+            "[batched pow2 {rows}x{n}] FWD per-row-rebuild={:.3}ms shared-plan={:.3}ms ratio={:.2}x | INV {:.3}ms->{:.3}ms ratio={:.2}x",
             old as f64 / 1e6,
             new as f64 / 1e6,
-            old as f64 / new as f64
+            old as f64 / new as f64,
+            old_inv as f64 / 1e6,
+            new_inv as f64 / 1e6,
+            old_inv as f64 / new_inv as f64,
         );
     }
 

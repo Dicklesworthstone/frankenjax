@@ -3740,3 +3740,22 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
 - This NARROWS the murmw batched-pow2 loss (~42x -> ~30x) but does NOT flip it. The remaining gap is
   the radix-2 scalar butterfly vs pocketfft SIMD higher-radix — still the multi-session kernel lever.
   Pass delta: 1 win (1.43x bit-exact) / 0 losses / 0 neutral.
+
+## AzureLynx - WIN: cache Radix2Plan for pow2 IRFFT rows — 1.39x bit-exact [murmw step 2]
+
+- Same per-row-rebuild gap as step 1, in the INVERSE real FFT: `eval_irfft` built the cached plan
+  only for NON-pow2 (`(fft_length > 1 && !is_power_of_two()).then(...)`), so POW2 irfft fell to the
+  `None => ifft_1d_into` arm in `irfft_rows_f64_into`, rebuilding bit-reversal + twiddles (incl.
+  `sin_cos`) + a Vec on EVERY row. (rfft was already fine — pow2 uses the cached `RealRfftPower2Plan`,
+  non-pow2 builds `Some(BatchFftPlan)` once; its `None` arm is dead defensive code.)
+- Fix: build the plan for ALL lengths `(fft_length > 1).then(|| BatchFftPlan::new(fft_length, true))`
+  — pow2 now gets the cached `Pow2(Radix2Plan)` from step 1. One-line change.
+- BIT-EXACT (same recurrence + identical 1/n scaling): irfft golden + `irfft_basic` +
+  `threaded_batch_irfft_matches_per_row_serial` all PASS unchanged. A/B test extended with an
+  inverse bit-identity guard (`ifft_1d_into` per row == cached `Radix2Plan(inverse).apply_into`).
+- MEASURED same-binary A/B (same run, rch release, best-of-5): batched pow2 2048x256 inverse loop
+  **per-row-rebuild 6.605 ms -> shared-plan 4.745 ms = 1.39x**. (Forward measured 1.08x THIS run vs
+  1.43x last run — pure cross-invocation variance; the inverse number is the in-run measurement for
+  this change.) fj-lax --lib 1567/0, clippy --all-targets clean.
+- FFT/IFFT/RFFT/IRFFT batched pow2 paths are now ALL plan-cached. Remaining murmw lever stays the
+  multi-session SIMD mixed-radix kernel. Pass delta: 1 win (1.39x bit-exact) / 0 losses / 0 neutral.
