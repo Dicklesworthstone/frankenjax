@@ -3992,6 +3992,74 @@ mod tests {
         assert_eq!(deep, super::matmul_thread_count(1024 * 1024 * 1024, 1024));
     }
 
+    /// Same-binary A/B isolating THREADING (not register-tiling): forced-serial vs the
+    /// production thread count, SAME pack/block plan so only `threads` differs. Quantifies
+    /// the spawn-overhead-limited mid-size GEMM scaling (validates ifou2 — the persistent
+    /// thread pool lever). Bit-identical asserted. Run `--ignored --nocapture`.
+    #[test]
+    #[ignore = "informational same-binary A/B; run with --ignored --nocapture"]
+    fn bench_matmul_2d_threading_scaling() {
+        fn run(n: usize) {
+            let (m, k, nn) = (n, n, n);
+            let a: Vec<f64> = (0..m * k).map(|i| (i as f64 * 0.0007).sin()).collect();
+            let b: Vec<f64> = (0..k * nn).map(|i| (i as f64 * 0.0009).cos()).collect();
+            let b_elems = k * nn;
+            let pack = b_elems >= super::PACK_B_MIN_KN;
+            let block = b_elems >= super::BLOCKED_B_MIN_KN;
+            let auto = super::matmul_2d_thread_count(m, k, nn);
+            let serial_plan = super::MatmulPlan {
+                threads: 1,
+                pack_b: pack,
+                block_k: block,
+            };
+            let threaded_plan = super::MatmulPlan {
+                threads: auto,
+                pack_b: pack,
+                block_k: block,
+            };
+            let best = |plan: super::MatmulPlan| -> (f64, Vec<f64>) {
+                let mut bt = f64::MAX;
+                let mut out = Vec::new();
+                for _ in 0..5 {
+                    let t0 = std::time::Instant::now();
+                    out = super::matmul_2d_with_threads(&a, m, k, &b, nn, plan);
+                    bt = bt.min(t0.elapsed().as_secs_f64() * 1e3);
+                }
+                (bt, out)
+            };
+            let (s_ms, s_out) = best(serial_plan);
+            let (t_ms, t_out) = best(threaded_plan);
+            assert!(
+                s_out
+                    .iter()
+                    .zip(&t_out)
+                    .all(|(x, y)| x.to_bits() == y.to_bits()),
+                "threaded matmul_2d must be bit-identical to serial"
+            );
+            // Sweep explicit thread counts to see whether the current `auto` fanout is
+            // mistuned (a contained retune) or whether spawn overhead caps it regardless
+            // (only a persistent pool helps — ifou2).
+            let mut sweep = String::new();
+            for &th in &[1usize, 2, 4, 6, 8, 12, 16] {
+                let plan = super::MatmulPlan {
+                    threads: th,
+                    pack_b: pack,
+                    block_k: block,
+                };
+                let (ms, _) = best(plan);
+                sweep.push_str(&format!(" {th}t={:.2}x", s_ms / ms));
+            }
+            eprintln!(
+                "[matmul {n}^3 f64] serial={s_ms:.3}ms auto({auto}t)={t_ms:.3}ms speedup={:.2}x ({:.0} GFLOP/s) | sweep:{sweep}",
+                s_ms / t_ms,
+                (2.0 * (n as f64).powi(3)) / (t_ms * 1e6)
+            );
+        }
+        run(256);
+        run(512);
+        run(1024);
+    }
+
     #[test]
     fn matmul_2d_large_bit_identical_to_ijk() {
         // Large, non-power-of-two dims (m=130, k=300, n=290) — guards the

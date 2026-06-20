@@ -3868,3 +3868,26 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   single highest-EV remaining non-gated perf swing (it cascades to matmul/conv/linalg-trailing-updates
   across the whole mid-size regime) — worth a dedicated owner. Pass delta: 2 MEASURED losses
   (conv 1.8x, matmul-256 9.3x) characterized / 0 wins.
+
+## AzureLynx - VERIFY ifou2 root cause: mid-size GEMM threading is overhead-capped (same-binary A/B)
+
+- Traced the 256³ matmul loss to the kernel-vs-threading split, then measured it directly. eval_dot
+  256³ routes eval_dot → rank2_f64_matmul → matmul_2d (threaded), so the 1.7ms IS threaded. New
+  same-binary A/B `bench_matmul_2d_threading_scaling` (tensor_contraction.rs, forced-serial vs the
+  production thread count, SAME pack/block plan so ONLY threads differ, bit-identical asserted):
+  - 256³: threading speedup **only ~1.1-1.9x** (8 threads); best in a sweep ~2.86x at 6 threads.
+  - 512³: ~2.3-3.0x; 1024³: ~3.7-4.1x. All FAR from the ~8-10x ideal for the thread count.
+- So mid-size GEMM parallelism is overhead-capped (per-call OS-thread spawn + scoped setup), worst at
+  small sizes (256³ barely beats serial). The kernel itself is FINE — serial 256³ = ~29 GFLOP/s
+  (register-tile peak). The gap to JAX (180 GFLOP/s) is parallel scaling + FMA, not the microkernel.
+- A thread-count RETUNE is NOT the fix: the sweep on the (loaded) shared host is too noisy to act on
+  (1-thread rows read 0.91-1.21x when they must be exactly 1.0x = ±20% noise; serial drifted
+  1.3→2.2ms between runs), and 6t≈8t — the cap is per-thread overhead, not the count. No contained win.
+- SHARPENED ifou2 CONSTRAINT (important): a persistent pool is NOT just "add a pool" under
+  `#![forbid(unsafe_code)]`. A borrowing work-pool that writes DISJOINT output ranges from `&a,&b`
+  needs rayon/crossbeam-style UNSAFE lifetime handling (the reason std only offers `thread::scope`,
+  which re-spawns each call). Safe alternatives all add overhead: (a) Arc-clone inputs + each worker
+  returns a local output Vec that the caller concatenates (O(mn) copy/call); (b) a 'static pool fed
+  Arc'd buffers. So ifou2 is a real DESIGN problem with a tradeoff, not a quick swing — recorded so
+  the owner budgets for it. Pass delta: verification (ifou2 root cause MEASURED + safe-impl constraint
+  identified) / 0 wins / 0 losses.
