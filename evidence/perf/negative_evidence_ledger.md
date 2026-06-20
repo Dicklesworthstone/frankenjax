@@ -2533,3 +2533,53 @@ ends are not rediscovered without new evidence.
   same-worker before/after proof. Do not re-open default mimalloc adoption unless a maintainer first
   chooses workspace allocator policy and the proof includes the allocator-conflict resolution plus
   head-to-head production rows with the existing threading gate kept.
+## WildForge - dense small-tensor single-pass fusion + buffer pool (REJECTED, dtype-fragile)
+
+- Follow-up to the retry predicate directly above (mcqr.110): "target dense elementwise-chain fusion /
+  tensor output reuse next." Two levers attacked the per-step dense small-tensor arena
+  (`run_scalar_{f64,f32,i64}_plan_as_tensor_into`), which steps each equation as a full pass that
+  materializes an intermediate `Vec` (an N-step chain = N passes + N buffers), where XLA fuses to one
+  pass.
+- METHOD: ALL measurements are same-binary same-invocation A/B (added `CompiledJaxprRunner::
+  eval_no_fusion` + a `compiled_runner_nofuse` bench arm), the ONLY worker-variance-immune signal on
+  this contended host. Cross-invocation criterion medians were USELESS here — between two runs every
+  arm (eager/compiled/runner) moved ~20-27% purely from worker speed, swamping the effect. Bit-exact:
+  fused == per-step == eager asserted across all dtype/op cases in
+  `compiled_jaxpr_eval_matches_eager_eval_jaxpr` (elements are independent and each undergoes the
+  identical scalar-op sequence, so element-outer/step-inner is bit-identical to step-outer).
+
+- LEVER 1 — buffer pool (recycle per-step `vec![..;n]` across calls): NEUTRAL. Within-invocation
+  `runner/compiled` ratio barely moved (n=32: 0.884 -> 0.868). A 512-byte malloc/free hits the
+  allocator's thread-local cache (~5-15ns); 32 of them is ~4% of a 7us eval, below noise. The cost is
+  the 2048 scalar ops + Value/TensorValue boxing, not allocation.
+
+- LEVER 2 — single-pass element-outer fusion (no intermediates, XLA-style): DTYPE-FRAGILE, net
+  REJECTED. Same-invocation fused/per-step ratios:
+
+  | dtype | workload | fused | per-step | fused/per-step | verdict |
+  | --- | --- | ---: | ---: | ---: | --- |
+  | f64 | tensor64/n=8  | 1.359 us | 1.577 us | 0.86 | win (modest) |
+  | f64 | tensor64/n=32 | 5.871 us | 5.862 us | 1.00 | neutral |
+  | f64 | E16/n=4 | 289.9 ns | 331.4 ns | 0.875 | win |
+  | f64 | E64/n=4 | 858 ns | 850 ns | 1.01 | neutral |
+  | f64 | E256/n=4 | 2.779 us | 2.905 us | 0.957 | win |
+  | f64 | E1023/n=4 | 10.59 us | 11.02 us | 0.961 | win |
+  | f32 | ftensor64/n=8 | 2.096 us | 1.203 us | **1.74** | REGRESS |
+  | i64 | itensor64/n=8 | 1.330 us | 0.992 us | **1.34** | REGRESS |
+
+- ROOT CAUSE / KEY INSIGHT: the f64 "win" is an ARTIFACT, not fusion's merit. Tell: f32 per-step
+  (1.20us) is FASTER than f64 per-step (1.58us) despite f32 widening every element to f64 — only
+  possible because the **f64 per-step inner loop carries broadcast-branch overhead** (`is_bcast()` +
+  a 4-way `DenseRef::at` match for Scalar/Tensor/Row/Col-bcast) that the lean 2-way f32/i64 per-step
+  loops lack. Fusion beats f64-per-step by sidestepping that overhead; against the already-lean
+  f32/i64 per-step loops, fusion's per-element operand-match cost makes it strictly slower. A 64-elem
+  tensor (512 B) is L1-resident, so the multi-pass cost fusion removes is nearly free — it only wins
+  when per-step is burdened (f64 broadcast branches) or the chain is short.
+- DECISION: REVERT all (pooling + f64/f32/i64 fusion + flag plumbing). Shipping f64-only fusion would
+  add ~250 lines of fragile, dtype-gated surface for a modest gain that masks the real problem, and
+  leave f32/i64 a regression trap behind the `fuse` flag.
+- REAL LEVERS this surfaces (not yet attempted): (a) split the f64 per-step inner loop into a
+  no-broadcast fast path with hoisted op + operand-kind matches so it AUTO-VECTORIZES (`o[i]=a[i]+s`
+  -> vaddpd) — attacks the f64 overhead directly without fusion; (b) the `tensor64/n=32` JAX loss
+  (5.87us vs JAX 4.52us) is SIMD-throughput + Value-boxing bound, NOT allocation/pass bound — needs
+  vectorized per-step kernels for the cheap ops (Add/Sub/Mul/Div) + less boxing, not chain fusion.
