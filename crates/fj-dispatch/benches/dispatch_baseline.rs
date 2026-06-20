@@ -589,6 +589,56 @@ fn bench_vmap_gather(c: &mut Criterion) {
         });
     });
 
+    let batched_operand_f64 = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![128, 4096],
+            },
+            (0..(128 * 4096))
+                .map(|idx| f64::from((idx % 4096) as u32) * 0.125 - 17.0)
+                .collect(),
+        )
+        .expect("batched f64 operand should build"),
+    );
+    group.bench_function("batched_operand_batched_indices_f64", |b| {
+        b.iter(|| {
+            let mut request = dispatch_request(
+                ProgramSpec::LaxGather1d,
+                &[Transform::Vmap],
+                vec![batched_operand_f64.clone(), batched_operand_indices.clone()],
+            );
+            request
+                .compile_options
+                .insert("vmap_in_axes".to_owned(), "0,0".to_owned());
+            dispatch(request).expect("vmap gather f64 should succeed");
+        });
+    });
+
+    let batched_operand_f32 = Value::Tensor(
+        TensorValue::new_f32_values(
+            Shape {
+                dims: vec![128, 4096],
+            },
+            (0..(128 * 4096))
+                .map(|idx| (idx % 4096) as f32 * 0.125 - 17.0)
+                .collect(),
+        )
+        .expect("batched f32 operand should build"),
+    );
+    group.bench_function("batched_operand_batched_indices_f32", |b| {
+        b.iter(|| {
+            let mut request = dispatch_request(
+                ProgramSpec::LaxGather1d,
+                &[Transform::Vmap],
+                vec![batched_operand_f32.clone(), batched_operand_indices.clone()],
+            );
+            request
+                .compile_options
+                .insert("vmap_in_axes".to_owned(), "0,0".to_owned());
+            dispatch(request).expect("vmap gather f32 should succeed");
+        });
+    });
+
     group.finish();
 }
 

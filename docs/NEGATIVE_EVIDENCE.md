@@ -2,6 +2,30 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-20 - frankenjax-ligu5 vmap gather dense-float no-ship
+
+`frankenjax-ligu5` was reopened against the dispatch-layer batched gather/scatter
+de-box vein. Prior passes had already shipped direct I64 batched-operand gather
+and lazy rank-1 overwrite scatter, so this pass added f64/f32 batched-operand
+gather benchmark rows and measured them before touching production code.
+
+RCH Rust timing used `fj-dispatch` on worker `vmi1152480` with
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a`. JAX timing used
+the local CPU `jax.jit(vmap(take))` comparator in
+`artifacts/performance/evidence/frankenjax-ligu5-jax-vmap-gather-20260620T1325Z.json`.
+
+| Row | Rust midpoint | JAX mean | Rust/JAX | Verdict |
+| --- | ---: | ---: | ---: | --- |
+| I64 batched operand + batched indices | 8.6722 us | 31.266 us | 0.277 | Rust 3.61x faster |
+| F64 batched operand + batched indices | 25.251 us | 33.224 us | 0.760 | Rust 1.32x faster |
+| F32 batched operand + batched indices | 27.257 us | 31.369 us | 0.869 | Rust 1.15x faster |
+
+Decision: keep the new benchmark coverage, but ship no production gather/scatter
+change. JAX CV was high (17-25%), so these are routing rows rather than
+certification-grade ratios; they are still enough to reject the suspected
+dense-float batched gather JAX loss. Retry only with a fresh profile showing a
+non-dense, higher-rank, partial-slice, or different dtype subcase.
+
 ## 2026-06-20 - frankenjax-n75xr f64 scalar-add SIMD medium-band keep
 
 `frankenjax-n75xr` kept a narrow exact-pattern `std::simd` specialization for

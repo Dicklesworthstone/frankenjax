@@ -3,6 +3,53 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-ligu5 - dense f64/f32 batched-operand gather is not a JAX loss
+
+- Date: 2026-06-20
+- Agent: cod-a / WildForge
+- Target gap: verify whether the open `fj-dispatch` batched gather/scatter
+  de-box bead still had an unmined dense-float batched-operand gather loss after
+  prior direct I64 gather and lazy scatter keeps.
+- Harness change kept: `crates/fj-dispatch/benches/dispatch_baseline.rs` now
+  records `vmap_gather/batched_operand_batched_indices_f64` and
+  `vmap_gather/batched_operand_batched_indices_f32` next to the existing I64 row.
+- Production code changed: none.
+- Prior negative evidence considered: do not retry the rejected flatten-index
+  single-call gather path or the rejected `PreparedGatherIndices` ownership/view
+  tweak without a fresh profile; both were previously slower.
+
+Current Rust benchmark:
+
+```text
+AGENT_NAME=cod-a RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+  rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- \
+  vmap_gather/batched_operand_batched_indices \
+  --sample-size 20 --measurement-time 3 --warm-up-time 1 --noplot
+```
+
+Worker `vmi1152480` results:
+
+| workload | Rust low | Rust midpoint | Rust high | JAX mean | Rust/JAX | verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| I64 batched operand + batched indices | 8.0403 us | 8.6722 us | 9.4162 us | 31.266 us | 0.277 | Rust 3.61x faster; no gap |
+| F64 batched operand + batched indices | 24.523 us | 25.251 us | 26.261 us | 33.224 us | 0.760 | Rust 1.32x faster; no gap |
+| F32 batched operand + batched indices | 25.437 us | 27.257 us | 29.104 us | 31.369 us | 0.869 | Rust 1.15x faster; no gap |
+
+- JAX comparator artifact:
+  `artifacts/performance/evidence/frankenjax-ligu5-jax-vmap-gather-20260620T1325Z.json`;
+  it used JAX 0.10.1, x64 enabled, local CPU, warmed
+  `jax.jit(lambda x, i: jax.vmap(lambda row, idx: jnp.take(row, idx))(x, i))`.
+- Caveat: JAX CV was high (17-25%), so these rows are routing evidence rather
+  than a certification-grade release claim. The direction is still sufficient
+  to reject a production dense-float batched gather patch for this exact shape.
+- Ratio scorecard for this subcase: 3 wins / 0 losses / 0 neutral vs JAX.
+- Retry predicate: do not retry dense rank-2 batched-operand gather de-boxing
+  for I64/f64/f32 without a fresh profile showing a concrete loss on a
+  non-dense, higher-rank, partial-slice, or different dtype subcase. Future
+  `ligu5`-family work should start from a new `dispatch_baseline` profile and
+  avoid the rejected flatten/index-view family.
+
 ## frankenjax-n75xr - f64 scalar-add chain generated SIMD medium-band keep; upper-band no-ship
 
 - Date: 2026-06-20
