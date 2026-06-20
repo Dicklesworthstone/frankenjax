@@ -2427,3 +2427,47 @@ ends are not rediscovered without new evidence.
   broad XLA-fusion domination. The remaining frontier is deeper small-tensor codegen/algebra only if
   it preserves per-step floating-point order, or if a future bead explicitly defines a relaxed-FP
   contract.
+
+## WildForge / cod-a - Dense 16M elementwise thread-count cap8 rejected (2026-06-20)
+
+- Frontier targeted: same-shape multi-input dense elementwise compute rows, specifically the remaining
+  Rust/JAX add/mul loss family called out by the same-load correction. This was the "thread-count
+  tuning" retry predicate: maybe fewer, larger chunks would improve DRAM read bandwidth by reducing
+  scheduler/cache pressure.
+- Candidate tried and reverted before commit: replace the shipped `work_scaled_threads(n)` all-core
+  policy for cheap same-shape f64/f32 Add/Sub/Mul/Div/Max/Min with a 1M-elements-per-thread policy
+  capped at 8 threads. No production code from this candidate remains.
+- Same-binary A/B reject proof, final committed harness, RCH `vmi1152480`, command:
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo bench -p fj-lax --bench elementwise_gauntlet -- 'thread_policy_f64_add_16m' --sample-size 10 --warm-up-time 1 --measurement-time 2 --save-baseline cod-a-thread-policy-cap8-ab-final`
+
+  | policy | threads | mean | verdict |
+  | --- | ---: | ---: | --- |
+  | shipped `work_scaled_threads` / all-core 64K chunks | 10 | 17.344 ms | baseline |
+  | cap8 / 1M chunks | 8 | 20.199 ms | 1.16x slower |
+
+- Current production 16M Rust rows after revert, RCH `ovh-a`, command:
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo bench -p fj-lax --bench elementwise_gauntlet -- 'add_f64_16m|add_f32_16m|mul_f64_16m' --sample-size 10 --warm-up-time 1 --measurement-time 2 --save-baseline cod-a-thread-policy-current`
+
+  | row | Rust mean |
+  | --- | ---: |
+  | add_f64_16m/dense | 29.214 ms |
+  | add_f32_16m/dense | 13.845 ms |
+  | mul_f64_16m/dense | 28.999 ms |
+
+- Fresh JAX comparator, local `uv run --no-project --with 'jax[cpu]'`, JAX 0.10.2, command:
+  `uv run --no-project --with 'jax[cpu]' python benchmarks/jax_comparison/elementwise_gauntlet.py --runs 10 --warmup 3 --inner-loops 5 --output artifacts/performance/evidence/frankenjax-cod-a-thread-policy-jax-20260620T0205Z.json`
+
+  | row | JAX mean | Rust/JAX | verdict |
+  | --- | ---: | ---: | --- |
+  | add_f64_16m | 27.798 ms | 1.051 | JAX wins narrowly |
+  | add_f32_16m | 13.668 ms | 1.013 | neutral |
+  | mul_f64_16m | 27.673 ms | 1.048 | neutral |
+
+- Ratio scorecard for this row set: 0 wins / 1 loss / 2 neutral vs JAX using a 5% neutral band.
+  This Rust/JAX comparison is cross-host (`ovh-a` Rust, local JAX), so it is routing evidence; the
+  cap8 rejection itself is same-binary and decisive.
+- Decision: REJECT cap8 thread-count cap and restore the shipped all-core policy. Do not retry
+  "fewer chunked std::thread workers" for large dense multi-input elementwise without a stricter
+  same-host harness showing a bandwidth reason it should beat the shipped policy.
+- Next retry predicate: different primitive family only - NUMA/affinity pinning, non-temporal stores,
+  explicit prefetch, or compiled-jaxpr output reuse. Thread-count shrink alone is negative evidence.

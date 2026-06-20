@@ -1,0 +1,50 @@
+{
+  "generated_at": "2026-06-20T02:04:33.562218+00:00",
+  "engine": "jax_jit_cpu",
+  "jax_version": "0.10.2",
+  "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.42",
+  "results": [
+    {
+      "name": "add_f64_1m",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 156822.9,
+      "mean_ns": 176396.76,
+      "cv_pct": 21.30230604860005
+    },
+    {
+      "name": "add_f32_1m",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 76737.2,
+      "mean_ns": 76334.28,
+      "cv_pct": 3.6603896837207404
+    },
+    {
+      "name": "mul_f64_1m",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 139771.7,
+      "mean_ns": 142277.13999999998,
+      "cv_pct": 6.467694605622343
+    },
+    {
+      "name": "add_f64_16m",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 27713914.5,
+      "mean_ns": 27798459.26,
+      "cv_pct": 3.377813816407227
+    },
+    {
+      "name": "add_f32_16m",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 13762823.100000001,
+      "mean_ns": 13667782.1,
+      "cv_pct": 4.108969411356287
+    },
+    {
+      "name": "mul_f64_16m",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 27915788.8,
+      "mean_ns": 27672943.24,
+      "cv_pct": 3.0999329460790026
+    }
+  ]
+}

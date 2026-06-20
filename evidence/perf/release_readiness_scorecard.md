@@ -609,3 +609,19 @@ Additional cod-a repeat validation environment:
   workload; the remaining n=32 loss is per-element work or JAX algebra/codegen.
   Folding float `x+1+...` into `x+n` would alter FP rounding, so it is not a
   valid bit-preserving FrankenJAX lever without an explicit relaxed-FP contract.
+
+## WildForge / cod-a - Dense 16M elementwise cap8 thread policy rejected (2026-06-20)
+
+- Scope: `fj-lax` large dense same-shape f64/f32 cheap binary elementwise.
+- Production decision: no code change kept. The temporary cap8/1M-chunk thread policy was measured
+  and reverted.
+- Same-binary reject proof: `thread_policy_f64_add_16m` on RCH `vmi1152480` measured shipped
+  all-core policy at 17.344 ms mean and cap8 at 20.199 ms mean, so cap8 was 1.16x slower.
+- Current 16M Rust/JAX cross-host routing rows:
+  - add_f64_16m: Rust 29.214 ms vs JAX 27.798 ms, Rust/JAX 1.051 (loss).
+  - add_f32_16m: Rust 13.845 ms vs JAX 13.668 ms, Rust/JAX 1.013 (neutral).
+  - mul_f64_16m: Rust 28.999 ms vs JAX 27.673 ms, Rust/JAX 1.048 (neutral).
+- Ratio scorecard: 0 wins / 1 loss / 2 neutral vs JAX using a 5% neutral band. This remains a
+  target lane, but the "fewer std::thread workers" lever is now negative evidence.
+- Coverage added: `elementwise_gauntlet` now carries 16M dense add/mul rows plus a same-binary thread
+  policy A/B harness; the JAX comparator emits matching 16M rows.
