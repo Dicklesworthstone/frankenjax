@@ -3,6 +3,57 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-cntiy - FMA primitive dense path and `+fma` policy no-ship
+
+- Date: 2026-06-20
+- Agent: cod-b / WildForge
+- Target gap: isolate the direct ternary FMA primitive after the earlier softmax
+  probe showed global `+fma` was neutral for `softmax_2d_65536x16`.
+- Rust harness change kept: `crates/fj-lax/benches/elementwise_gauntlet.rs`
+  now has dense-vs-boxed `fma_f64_1m` and `fma_f32_1m` rows. The JAX comparator
+  has matching rows in `benchmarks/jax_comparison/elementwise_gauntlet.py`.
+- JAX comparator caveat: installed JAX 0.10.1 does not expose public
+  `jax.lax.fma`, so the oracle row is warmed
+  `jax.jit(lambda a, b, c: a * b + c)`.
+- RCH build guard:
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec --
+  cargo build --release -p fj-lax --benches`, worker `vmi1227854`, passed.
+- RCH timing guard:
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec --
+  cargo bench -p fj-lax --bench elementwise_gauntlet fma_ -- --quiet`, worker
+  `hz1`, passed.
+
+Remote RCH internal dense-vs-boxed rows:
+
+| workload | dense | boxed | dense/boxed | verdict |
+| --- | ---: | ---: | ---: | --- |
+| `fma_f64_1m` | 3.5198 ms | 29.267 ms | 0.120 | Keep coverage: dense is 8.31x faster internally |
+| `fma_f32_1m` | 3.7757 ms | 30.825 ms | 0.123 | Keep coverage: dense is 8.16x faster internally |
+
+Local same-host Rust/JAX rows, default codegen:
+
+| workload | Rust dense | boxed control | JAX | Rust/JAX | verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `fma_f64_1m` | 2.6124 ms | 24.592 ms | 273.448 us | 9.553 | Loss: JAX 9.55x faster |
+| `fma_f32_1m` | 2.7622 ms | 26.151 ms | 111.281 us | 24.822 | Loss: JAX 24.82x faster |
+
+Local same-host `RUSTFLAGS="-C target-feature=+fma"` policy probe:
+
+| workload | `+fma` Rust dense | JAX | Rust/JAX | vs default | verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `fma_f64_1m` | 925.02 us | 273.448 us | 3.383 | 2.82x faster | No-ship: still a JAX loss |
+| `fma_f32_1m` | 207.98 us | 111.281 us | 1.869 | 13.28x faster | No-ship: still a JAX loss |
+
+- Decision: keep the benchmark rows and dense FMA coverage, but do not ship a
+  global `+fma` build policy. It is a large primitive-specific internal win but
+  not a JAX-dominating lever by itself, and the global flag still has bit-exact
+  accumulation risk outside this row.
+- Ratio scorecard: 0 wins / 4 losses / 0 neutral vs JAX.
+- Retry predicate: revisit only with semantics-approved per-kernel target
+  feature/codegen, generated vector kernels, or output/arena reuse that can be
+  measured directly against the new FMA rows. Do not rerun global `+fma` as a
+  standalone fix for `frankenjax-cntiy`.
+
 ## frankenjax-xljoh.1 - f64 large-chain register pass and larger fusion tile no-ships
 
 - Date: 2026-06-20

@@ -27,6 +27,7 @@ def bench(name, fn, args, runs, warmup, inner):
 
 def add(a,b): return a+b
 def mul(a,b): return a*b
+def fma(a,b,c): return a*b+c
 
 def main():
     ap=argparse.ArgumentParser()
@@ -34,12 +35,16 @@ def main():
     ap.add_argument("--inner-loops",type=int,default=50); ap.add_argument("--output",type=str,default="")
     a=ap.parse_args()
     a64=jnp.arange(N,dtype=jnp.float64)*1e-6-0.5; b64=jnp.arange(N,dtype=jnp.float64)*2e-6+0.25
+    c64=jnp.arange(N,dtype=jnp.float64)*3e-6-0.125
     a32=(jnp.arange(N,dtype=jnp.float32)*1e-6-0.5); b32=(jnp.arange(N,dtype=jnp.float32)*2e-6+0.25)
+    c32=(jnp.arange(N,dtype=jnp.float32)*3e-6-0.125)
     da64=jnp.arange(DRAM_N,dtype=jnp.float64)*1e-9-0.5; db64=jnp.arange(DRAM_N,dtype=jnp.float64)*2e-9+0.25
     da32=(jnp.arange(DRAM_N,dtype=jnp.float32)*1e-9-0.5); db32=(jnp.arange(DRAM_N,dtype=jnp.float32)*2e-9+0.25)
     res=[bench("add_f64_1m",add,(a64,b64),a.runs,a.warmup,a.inner_loops),
          bench("add_f32_1m",add,(a32,b32),a.runs,a.warmup,a.inner_loops),
          bench("mul_f64_1m",mul,(a64,b64),a.runs,a.warmup,a.inner_loops),
+         bench("fma_f64_1m",fma,(a64,b64,c64),a.runs,a.warmup,a.inner_loops),
+         bench("fma_f32_1m",fma,(a32,b32,c32),a.runs,a.warmup,a.inner_loops),
          bench("add_f64_16m",add,(da64,db64),a.runs,a.warmup,a.inner_loops),
          bench("add_f32_16m",add,(da32,db32),a.runs,a.warmup,a.inner_loops),
          bench("mul_f64_16m",mul,(da64,db64),a.runs,a.warmup,a.inner_loops)]

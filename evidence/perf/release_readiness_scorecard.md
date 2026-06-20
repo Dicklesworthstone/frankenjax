@@ -140,6 +140,26 @@ Additional cod-a fj-interpreters compiled-dispatch environment:
 - Ratio caveat: rows below use candidate remote Rust means versus local JAX means;
   use them for routing the JAX gap, not for absolute release certification.
 
+Additional cod-b FMA primitive policy probe environment:
+
+- Agent: cod-b / WildForge
+- Cargo target dirs:
+  `/data/projects/.rch-targets/frankenjax-cod-b` for RCH build/timing guards,
+  `/data/projects/.rch-targets/frankenjax-cod-b-local-fma-20260620` for local
+  same-host default Rust/JAX ratios, and
+  `/data/projects/.rch-targets/frankenjax-cod-b-local-fma-plus-20260620` for the
+  local `RUSTFLAGS="-C target-feature=+fma"` policy probe.
+- Rust commands: `rch exec -- cargo build --release -p fj-lax --benches`,
+  `rch exec -- cargo bench -p fj-lax --bench elementwise_gauntlet fma_ --
+  --quiet`, and local `cargo bench -p fj-lax --bench elementwise_gauntlet fma_
+  -- --quiet`.
+- JAX oracle: `benchmarks/jax_comparison/.venv/bin/python
+  benchmarks/jax_comparison/elementwise_gauntlet.py --runs 20 --warmup 5
+  --inner-loops 50`
+- JAX/JAXLIB: 0.10.1 / 0.10.1, `jax_enable_x64=true`, CPU backend.
+- JAX caveat: this environment exposes no public `jax.lax.fma`, so the JAX row
+  is warmed `jax.jit(lambda a, b, c: a * b + c)`.
+
 ## Measured Workloads
 
 | Bead | Workload | Rust timing | JAX timing | Rust/JAX | Outcome |
@@ -203,6 +223,10 @@ Additional cod-a fj-interpreters compiled-dispatch environment:
 | (dense contiguous gather) | `gather_embed_16384x768_take4096_f32` | 1.145 ms | 271.3 us mean | 4.220 | Rust 4.22x slower (random-read-bound; 4.05x vs naive) |
 | frankenjax-7eqrs | `complex_ctor_re_im_to_c128_1m` (de-box) | 775.72 us | 497.34 us mean | 1.561 | Rust 1.56x slower (near-parity; 25.2x vs boxed) [rch] |
 | frankenjax-dxqfj | `split_multi_1024x1024_f32_axis1` (lazy sections) | 96.651 us mean | 149.082 us bare / 136.983 us materialized mean | 0.648 / 0.706 | Rust 1.42-1.54x faster (noisy CV; keep) |
+| frankenjax-cntiy | `fma_f64_1m` default dense | 2.6124 ms mean | 273.448 us mean | 9.553 | JAX 9.55x faster; dense path is still 9.41x faster than boxed control |
+| frankenjax-cntiy | `fma_f64_1m` local `+fma` probe | 925.02 us mean | 273.448 us mean | 3.383 | NO-SHIP policy probe: 2.82x faster than default, still JAX loss |
+| frankenjax-cntiy | `fma_f32_1m` default dense | 2.7622 ms mean | 111.281 us mean | 24.822 | JAX 24.82x faster; dense path is still 9.47x faster than boxed control |
+| frankenjax-cntiy | `fma_f32_1m` local `+fma` probe | 207.98 us mean | 111.281 us mean | 1.869 | NO-SHIP policy probe: 13.28x faster than default, still JAX loss |
 | elementwise | `add_f64_1m` (LOCAL same-host) | 415.00 us | 192.0 us mean | 2.162 | Rust 2.16x slower (alloc+AVX2) |
 | elementwise | `add_f32_1m` (LOCAL same-host) | 135.98 us | 80.4 us mean | 1.691 | Rust 1.69x slower |
 | elementwise | `mul_f64_1m` (LOCAL same-host) | 422.96 us | 161.7 us mean | 2.615 | Rust 2.61x slower |
@@ -221,6 +245,12 @@ Additional cod-a fj-interpreters compiled-dispatch environment:
   same-host estimates FLIP several to wins/ties: slice ~0.72x (Rust FASTER),
   integer_pow2 f32 ~0.97x (~tie/win), broadcast ~1.10x, complex_ctor ~1.08x. Future
   vs-JAX rows MUST run the Rust bench LOCALLY (cargo bench, not rch).
+- cntiy FMA primitive coverage is now measured directly. The dense FMA rows are
+  strong internal de-box wins (8-9x over boxed controls), and `+fma` improves the
+  primitive itself by 2.82x for f64 and 13.28x for f32, but same-host Rust/JAX
+  ratios remain 3.38x and 1.87x slower even with the flag. No global `+fma`
+  build policy ships; the next credible route is per-kernel target-feature
+  specialization/codegen or output reuse with explicit semantic approval.
 - oneqh allocator preload verification closes as no-ship. Jemalloc produced one
   stable win/tie-class row (`mul_f64_16m`, Rust/JAX 0.974) but regressed
   `add_f64_16m` badly (33.095 ms vs 24.502 ms glibc; Rust/JAX 1.174) and did

@@ -79,6 +79,37 @@ fn bench_op(
     group.finish();
 }
 
+fn bench_op3(
+    label: &str,
+    len: usize,
+    prim: Primitive,
+    dense: [Value; 3],
+    boxed: [Value; 3],
+    c: &mut Criterion,
+) {
+    let params = BTreeMap::new();
+    let d = eval_primitive(prim, &dense, &params).unwrap();
+    let b = eval_primitive(prim, &boxed, &params).unwrap();
+    if let (Value::Tensor(dt), Value::Tensor(bt)) = (&d, &b) {
+        for i in [0usize, len / 2, len - 1] {
+            assert_eq!(
+                dt.elements.get(i),
+                bt.elements.get(i),
+                "dense != boxed elementwise ternary"
+            );
+        }
+    }
+    let mut group = c.benchmark_group(label);
+    group.throughput(Throughput::Elements(len as u64));
+    group.bench_function("dense", |bn| {
+        bn.iter(|| black_box(eval_primitive(prim, black_box(&dense), black_box(&params)).unwrap()));
+    });
+    group.bench_function("boxed", |bn| {
+        bn.iter(|| black_box(eval_primitive(prim, black_box(&boxed), black_box(&params)).unwrap()));
+    });
+    group.finish();
+}
+
 fn bench_dense_dram_op(label: &str, prim: Primitive, inputs: [Value; 2], c: &mut Criterion) {
     let params = BTreeMap::new();
     let result = eval_primitive(prim, &inputs, &params).unwrap();
@@ -207,8 +238,10 @@ fn bench_f32_add_impl_ab(c: &mut Criterion) {
 fn bench_elementwise(c: &mut Criterion) {
     let a64: Vec<f64> = (0..N).map(|i| (i as f64) * 1e-6 - 0.5).collect();
     let b64: Vec<f64> = (0..N).map(|i| (i as f64) * 2e-6 + 0.25).collect();
+    let c64: Vec<f64> = (0..N).map(|i| (i as f64) * 3e-6 - 0.125).collect();
     let a32: Vec<f32> = (0..N).map(|i| (i as f32) * 1e-6 - 0.5).collect();
     let b32: Vec<f32> = (0..N).map(|i| (i as f32) * 2e-6 + 0.25).collect();
+    let c32: Vec<f32> = (0..N).map(|i| (i as f32) * 3e-6 - 0.125).collect();
     bench_op(
         "add_f64_1m",
         N,
@@ -231,6 +264,22 @@ fn bench_elementwise(c: &mut Criterion) {
         Primitive::Mul,
         [f64_dense(&a64), f64_dense(&b64)],
         [f64_boxed(&a64), f64_boxed(&b64)],
+        c,
+    );
+    bench_op3(
+        "fma_f64_1m",
+        N,
+        Primitive::Fma,
+        [f64_dense(&a64), f64_dense(&b64), f64_dense(&c64)],
+        [f64_boxed(&a64), f64_boxed(&b64), f64_boxed(&c64)],
+        c,
+    );
+    bench_op3(
+        "fma_f32_1m",
+        N,
+        Primitive::Fma,
+        [f32_dense(&a32), f32_dense(&b32), f32_dense(&c32)],
+        [f32_boxed(&a32), f32_boxed(&b32), f32_boxed(&c32)],
         c,
     );
 
