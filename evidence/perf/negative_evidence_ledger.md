@@ -3571,3 +3571,22 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   remaining real wins are multi-session/owned (WildForge n75xr per-chain JIT codegen, the measured
   2.4-4x static-element-major ceiling) or maintainer-gated — none unilaterally shippable in a single
   autonomous pass. No fabricated levers; no DO-NOT veins re-mined; no collisions.
+
+## AzureLynx - within-line parallel-prefix cumulative scan: confirmed DO-NOT (memory-bound)
+
+- Investigated a fresh-looking lever: `scan_contiguous_lines_to_vec` (reduction.rs:3129) threads ONLY
+  across lines (`outer > 1`, gate 1<<18); a large SINGLE-LINE 1-D cumulative scan (cumsum/cummax/
+  cummin/cumprod with outer_count==1) falls to the SERIAL branch (reduction.rs:3150) where XLA would
+  parallelize. The gap is real in the code.
+- BUT this exact lever was already MEASURED and REJECTED (cc, 2026-06-16): a bit-exact two-pass
+  parallel-prefix i64 single-line cumsum (integer ops associative with identity init) ran **0.22x —
+  a ~4.5x REGRESSION**. Reason: cumulative scan is MEMORY-BANDWIDTH-bound (the per-step add/compare is
+  trivial), and parallel-prefix does ~3-4x the memory passes (alloc + local-scan pass + chunk-offset
+  apply pass) vs the serial 1 read + 1 write. The extra traffic swamps any core scaling.
+- GENERALIZES to the whole associative cumulative family for the single-line case: cummax/cummin
+  (associative for int AND float) and int cumsum/cumprod are all equally memory-bound, so within-line
+  parallel-prefix LOSES for all of them — NOT just i64 cumsum. float cumsum/cumprod stay separately
+  off-limits (non-associative, bit-exact-pinned). DO-NOT-RESHIP any within-line parallel scan.
+- Consistent with the standing rule: only COMPUTE-bound ops thread-win (transcendentals 11x); pure
+  memory-bound multi-pass restructurings regress. Recorded here (was only in agent-private notes) so
+  the swarm stops re-deriving it. Pass delta: 0 wins / 0 losses / 0 neutral (DO-NOT confirmation).
