@@ -3,6 +3,63 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-xljoh.1 - f64 large-chain register pass and larger fusion tile no-ships
+
+- Date: 2026-06-20
+- Agent: cod-a / WildForge
+- Target gap: the remaining `compiled_dispatch` f64 large-chain JAX losses after
+  `frankenjax-xljoh` (65K 1.52x slower than JAX, 262K 3.19x, 1M 20.36x,
+  16M 4.55x in the remote-Rust/local-JAX comparator).
+- Baseline command:
+  `AGENT_NAME=WildForge CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a
+  rch exec -- cargo bench -p fj-interpreters --bench compiled_dispatch_speed --
+  'compiled_dispatch/(compiled_runner|compiled_runner_scalar)/(bigchain65536|bigchain262144|bigchain1048576|bigchain16777216)'
+  --warm-up-time 1 --measurement-time 5`.
+- Fresh unchanged baseline, RCH worker `vmi1227854`:
+
+| workload | compiled_runner | scalar control | note |
+| --- | ---: | ---: | --- |
+| f64 65K x8 | 46.896 us | 59.727 us | existing mid-cache fallback remains fastest |
+| f64 262K x8 | 214.91 us | 244.78 us | existing mid-cache fallback remains fastest |
+| f64 1M x8 | 1.3315 ms | 2.8176 ms | chunked fusion is much faster than scalar control |
+| f64 16M x8 | 116.11 ms | 127.36 ms | still a JAX loss, but best current Rust path |
+
+- Probe 1, REVERTED before commit: ordered per-element register pass for the
+  exact `x + 1.0` repeated-8 scalar-add chain. The idea was to preserve strict
+  operation order (`((((x+1)+1)+...)`) while doing one memory pass. Candidate
+  worker `vmi1153651` (RCH did not keep the baseline worker):
+
+| workload | candidate | scalar control | candidate/JAX | verdict |
+| --- | ---: | ---: | ---: | --- |
+| f64 65K x8 | 52.746 us | 181.80 us | 1.55 | Reject: worse than unchanged 46.896 us and still JAX loss |
+| f64 262K x8 | 351.51 us | 1.4586 ms | 4.58 | Reject: severe regression vs unchanged 214.91 us |
+| f64 1M x8 | 3.5382 ms | 6.2466 ms | 42.48 | Reject: 2.66x slower than unchanged 1.3315 ms |
+| f64 16M x8 | 142.56 ms | 279.87 ms | 5.16 | Reject: slower than unchanged 116.11 ms |
+
+  Root cause: the runtime step slice did not become the desired SIMD loop. It
+  beat the same-run scalar control but lost to the existing chunked/in-place
+  vectorized runner. No source kept.
+
+- Probe 2, REVERTED before commit: `FUSION_CHUNK` 8,192 -> 65,536 elements to
+  reduce chunk-loop overhead. Candidate worker `vmi1149989`; Criterion had saved
+  comparable history for the same benchmark family and reported regressions:
+
+| workload | candidate | Criterion delta | candidate/JAX | verdict |
+| --- | ---: | ---: | ---: | --- |
+| f64 65K x8 | 52.828 us | +7.33%, p=0.00 | 1.55 | Reject: regression |
+| f64 262K x8 | 256.43 us | +2.78%, p=0.08 | 3.34 | Reject/neutral: no win |
+| f64 1M x8 | 1.9764 ms | +21.35%, p=0.00 | 23.73 | Reject: regression |
+| f64 16M x8 | 128.78 ms | +4.66%, p=0.00 | 4.66 | Reject: regression |
+
+- Decision: NO-SHIP for both levers. Code was returned to byte-for-byte clean
+  relative to HEAD before evidence docs were updated.
+- Retry predicate: do not retry per-element register scalar-add fusion or larger
+  fusion tiles without disassembly/profile evidence that the candidate emits SIMD
+  and a same-worker before/after win. The f64 chain gap is now routed to deeper
+  specialization/codegen questions: legal algebraic simplification policy,
+  generated straight-line SIMD kernels, or a backend that can match XLA's folded
+  `x + 8` behavior where semantics allow it.
+
 ## frankenjax-xljoh - compiled-dispatch f64 mid-cache owned-eval fallback
 
 - Date: 2026-06-20
@@ -2949,3 +3006,37 @@ ends are not rediscovered without new evidence.
   table vs eval_jaxpr's fusion; my change strictly improves the compiled path but does not reach the
   fusion path's speed. NEXT: route the compiled dense-plan through (or port) the eval_jaxpr CheapOp
   fusion for large f32/f64 chains — a separate, larger lever (bead-worthy).
+
+## CrimsonForge - threaded eager-eval_jaxpr elementwise fusion chunk driver — KEPT (1.22-1.32x, bit-exact)
+
+- Date: 2026-06-20. Crate `fj-interpreters`. Commits c5ce4988 / fe0985bc / 755e6b9c.
+- Gap: the eager `eval_jaxpr` fusion path (`try_fuse_elementwise_chain_*`) ran its
+  `FUSION_CHUNK` chunks single-threaded (~6.3 GB/s on a 1M f64 8-op chain, far below
+  DRAM saturation; JAX/XLA uses all cores).
+- Lever: `drive_fusion_chunks` fans disjoint, chunk-aligned segments across
+  `thread::scope`; global `base` preserved for broadcast indexing. BIT-IDENTICAL
+  (same per-element op order; no reassociation/reduction). Gate `FUSION_THREAD_MIN_ELEMS
+  = 1Mi`, work-scaled count `FUSION_ELEMS_PER_THREAD = 256Ki`.
+- Same-invocation A/B (`run_f64_thread_ab`; serial cap=1 vs threaded, one process —
+  the only worker-variance-immune signal: absolute ms drifts 4-10x across rch runs):
+
+  | n | serial | threaded | speedup |
+  | --- | ---: | ---: | ---: |
+  | 1M  | 12.157 ms | 9.937 ms  | 1.22x |
+  | 4M  | 75.841 ms | 59.493 ms | 1.27x |
+  | 16M | 305.924 ms | 231.395 ms | 1.32x |
+
+  3 wins / 0 losses / 0 neutral; win grows with n; no regression at any size.
+- NEGATIVE EVIDENCE inside this win: the first cross-invocation measurement showed
+  the threaded f64 1M at 39.4 ms vs a 3.8 ms serial baseline — an APPARENT 10x
+  regression that was pure worker contention (the untouched unfused control jumped
+  18.8 -> 71.3 ms in the same run). Retry predicate: NEVER judge fusion threading by
+  cross-invocation absolute ms; only the in-process serial/threaded ratio is valid.
+- Honest framing: narrows but does NOT flip the large-fused-chain JAX loss. Scaling is
+  Amdahl-capped by `eval_jaxpr`'s serial per-call overhead (arg clone / TensorValue
+  build / liveness) and the per-core no-SIMD-single-pass inner loop. NEXT (larger,
+  separate lever): SIMD single-pass register-resident chunk evaluation + cutting the
+  per-call output/construction overhead toward XLA parity.
+- Conformance: bit-exact (serial==threaded==reference guards). The 8 `fj-interpreters`
+  golden-hash failures are pre-existing serialization drift (identical on baseline
+  aff2ee5d), not from this change.
