@@ -3147,3 +3147,24 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   4th consecutive session reaching that conclusion) AND already shipped. Action this session:
   refreshed the fo1zg golden hashes (benign densify-serialization drift) to restore the
   fj-interpreters --lib gate; reconciling the stale done beads.
+
+- FOLLOW-UP (same day, 2nd pass): re-checked the NEXT batch of `br ready` beads — same
+  result, EVERY category is done-but-open:
+  * e07uw (add Square to eval_jaxpr cheap-op fusion): Square already fused as Mul(x,x) in
+    all four try_fuse_elementwise_chain_{f64,f32,i64,half} builders (lib.rs:1755/2309/2775/
+    3166) + IntegerPow[2] via is_integer_pow_2. (Floor/Ceil/Trunc/Sign/Round remainder is
+    the separate bead xjbvr.)
+  * o1ouv (gather/scatter negative-index parity): already FIXED — resolve_axis0_index
+    (tensor_ops.rs:2894) maps negatives per IndexMode (Clip->0, FillOrDrop->fill); guarded
+    by oracle_gather_negative_index_clips_by_default / _fill_or_drop. The bead's stale
+    `lit_to_usize` no longer exists.
+  * cntiy.1/.2/.3 (reject untiled / output-overflow f32-accum & FMA evidence shapes):
+    already FIXED — assert_tiled_matmul_inputs enforces length + m%MR + n%nr + checked_mul
+    output-overflow; guarded by fma_evidence_kernels_reject_output_shape_overflow.
+- SYSTEMIC FINDING: the open-bead tracker is comprehensively stale across perf, correctness,
+  evidence-helper, and test-task categories (~36 done-but-open beads reconciled across the two
+  passes). This is an implementation-far-ahead-of-tracker situation, NOT a backlog of real
+  gaps. RECOMMENDATION: run a dedicated beads-compliance/completion-verification sweep over the
+  remaining ~40 open beads rather than treating `br ready` as an inventory of open work; most
+  are already shipped + guarded. The only genuine open frontier is the multi-session per-chain
+  JIT-codegen lever (the interpreter-vs-compiler ceiling; see the element-major REJECT entry).
