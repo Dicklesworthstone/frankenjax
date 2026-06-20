@@ -3219,3 +3219,17 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   remaining ~40 open beads rather than treating `br ready` as an inventory of open work; most
   are already shipped + guarded. The only genuine open frontier is the multi-session per-chain
   JIT-codegen lever (the interpreter-vs-compiler ceiling; see the element-major REJECT entry).
+
+- 3rd-pass FINDING (2026-06-20): a batch audit of the 27 open `bug` beads found 25 done-but-open
+  AND **2 GENUINELY OPEN parity bugs** — the first real OPEN work surfaced in ~45 bead checks:
+  * rsxjp (Floor/Ceil/Round reject int): actually already DONE (guarded via is_jax_float_only_unary
+    + eval_unary_elementwise); audit over-reported it OPEN (conservative error). Now also tested.
+  * hwm1v (Cbrt/Erf/Erfc/ErfInv/Lgamma/Digamma/BesselI0e/BesselI1e reject int): GENUINELY OPEN +
+    FIXED (commit 238d49d2). These 8 float-only special fns dispatch DIRECTLY to the raw
+    `eval_unary_elementwise_parallel`, which (unlike `eval_unary_elementwise`) lacked the
+    standard_unop(_float) guard — so they silently accepted integer operands lax rejects (a gap
+    the my0yj transcendental sweep missed). Added the same `is_jax_float_only_unary` guard there;
+    fj-lax --lib GREEN 1566/0. LESSON: when auditing for a guard, check BOTH the guarded helper
+    AND the raw parallel sibling — a primitive can be in the float-only SET yet route around the
+    guard. ENV NOTE: shared CARGO_TARGET_DIR ppv-lite86 artifact was poisoned (E0433
+    `u32x4x2_avx2` / E0514) on some rch workers; `cargo clean -p ppv-lite86` cleared it.
