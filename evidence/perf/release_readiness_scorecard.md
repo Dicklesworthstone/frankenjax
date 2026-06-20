@@ -109,6 +109,21 @@ Additional cod-b allocator preload verification environment:
   preload was jemalloc. The result is a no-ship allocator-policy check, not a
   production code change.
 
+Additional cod-b LiteralBuffer internal closeout environment:
+
+- Agent: cod-b / WildForge
+- Cargo target dir: `/data/projects/.rch-targets/frankenjax-cod-b`
+- Rust bench command: `rch exec -- cargo bench -p fj-core --bench core_baseline`
+  with the `core/literal_buffer_(serialize|index_mut)_(dense|literal)_f64_64k`
+  filter, sample size 20, 1s warm-up, 3s measurement, on RCH worker
+  `vmi1149989`.
+- JAX oracle: N/A. These are host-internal `LiteralBuffer` mutation and
+  conformance/fixture serialization paths with no direct JAX API-equivalent
+  workload; scorecard rows report dense-vs-literal Rust control ratios only.
+- Conformance guard: `rch exec -- cargo test -p fj-core` for the two named
+  LiteralBuffer tests passed on `vmi1149989`; `rch exec -- cargo test -p
+  fj-conformance --lib` passed 45 tests, 0 failed on `hz2`.
+
 ## Measured Workloads
 
 | Bead | Workload | Rust timing | JAX timing | Rust/JAX | Outcome |
@@ -130,6 +145,8 @@ Additional cod-b allocator preload verification environment:
 | frankenjax-mcqr.97 | `tensor_value_new_f64_1k` | 1.4152 us construct / 1.4131 us +extract | 48.5634 us ready / 55.9286 us host copy mean | 0.0291 / 0.0253 | External Rust win, internal mixed: 3.27x slower construction-only vs forced literal, 1.68x faster +extract |
 | frankenjax-mcqr.99 | `literal_buffer_to_vec_f64_64k` | 26.644 us dense / 33.306 us literal | 19.5312 us identity / 32.9368 us host copy mean | 1.364 / 0.809 | Rust 1.25x faster internally; 1.36x slower than JAX identity lower-bound, 1.24x faster than JAX host copy; directional JAX CV 8.7-9.1% |
 | frankenjax-mcqr.102 | `literal_buffer_eq_f64_64k` | 27.484 us equal / 27.570 us mismatch / 53.559 us literal equal | 58.2421 us equal ready / 66.6275 us equal host bool / 56.2721 us mismatch ready / 68.9387 us mismatch host bool | 0.472 / 0.413 / 0.490 / 0.400 | Rust 1.95x faster internally; 2.04-2.50x faster than noisy JAX equality comparators |
+| frankenjax-q59j4 | `literal_buffer_index_mut_f64_64k` | 24.003 us dense / 33.278 us literal control | N/A | N/A | Internal keep: dense is 0.721x literal control, 1.39x faster; no JAX API comparator |
+| frankenjax-co009 | `literal_buffer_serialize_f64_64k` | 1.3443 ms dense / 1.6493 ms literal control | N/A | N/A | Internal keep: dense is 0.815x literal control, 1.23x faster; no JAX API comparator |
 | frankenjax-mcqr.105 | `f32_mixed_scalar_tensor_1m` | 159.383 us mean | 115.540 us mean | 1.379 | Rust 1.38x slower |
 | frankenjax-mcqr.105 | `f64_mixed_scalar_tensor_1m` | 996.940 us mean | 213.651 us mean | 4.666 | Rust 4.67x slower |
 | frankenjax-mcqr.108 | `bf16_mixed_scalar_tensor_1m` | 3.616 ms mean | 122.705 us mean | 29.466 | Rust 29.47x slower (8.60x RCH same-worker speedup; 12.47x vs boxed ref) |
@@ -185,6 +202,12 @@ Additional cod-b allocator preload verification environment:
   adoption and no cheap-binop gate removal; the next real lever is output/arena
   reuse, non-temporal stores/prefetch/NUMA, or a specific typed-path gap with
   same-host proof.
+- q59j4/co009 close the last cod-b fj-core LiteralBuffer batch-test-pending
+  rows as internal keeps: dense COW mutation is 1.39x faster than the
+  literal-backed control, and streamed dense serialization is 1.23x faster than
+  materialized literal serialization. These rows reduce conformance/fixture host
+  overhead but do not move the JAX domination score because there is no direct
+  JAX workload comparator.
 - JAX domination score (same-host corrected/measured estimate): ~43/100 — scalar
   stack_axis0 (0.0055x), scalar repeat_axis0 (0.0143x), tensor stack_axis0
   (0.083x), tensor repeat_axis0 (0.276x), dense to_i64_vec host extraction

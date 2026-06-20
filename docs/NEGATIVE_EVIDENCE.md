@@ -2,6 +2,27 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-20 - frankenjax-q59j4/co009 LiteralBuffer internal keeps
+
+`frankenjax-q59j4` and `frankenjax-co009` were closed as measured internal
+keeps after RCH validation. These rows do not claim a JAX-vs-Rust win because
+they cover host-internal `LiteralBuffer` mutation and conformance/fixture
+serialization paths with no direct JAX API-equivalent comparator.
+
+Validation used `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b`.
+The Criterion pass ran on RCH worker `vmi1149989`; `fj-conformance` ran on
+`hz2` and passed 45 tests, 0 failed.
+
+| Row | Dense Rust | Literal control | Ratio | Verdict |
+| --- | ---: | ---: | ---: | --- |
+| `literal_buffer_index_mut_f64_64k` | 24.003 us | 33.278 us | 0.721 | Keep: 1.39x faster internally; JAX N/A |
+| `literal_buffer_serialize_f64_64k` | 1.3443 ms | 1.6493 ms | 0.815 | Keep: 1.23x faster internally; JAX N/A |
+
+Decision: keep both committed direct paths. They reduce internal ledger,
+fixture, and mutation overhead; the next JAX-facing work remains output/arena
+reuse, non-temporal stores/prefetch/NUMA, or a specific typed-path external
+loss with same-host proof.
+
 ## 2026-06-20 - frankenjax-oneqh allocator default no-ship
 
 `frankenjax-oneqh` was closed as an evidence-only no-ship. The proposed default

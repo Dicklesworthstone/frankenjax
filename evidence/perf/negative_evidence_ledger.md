@@ -657,13 +657,26 @@ ends are not rediscovered without new evidence.
 - Lever: make `LiteralBuffer::make_mut()` materialize dense/lazy storage through
   the direct storage-aware `to_vec()` path instead of forcing `as_slice()` to
   build/cache an intermediate full literal vector before mutation.
-- Status: batch-test pending.
+- Status: measured keep internally; no direct JAX API comparator.
 - Benchmark guard: `core/literal_buffer_index_mut_dense_f64_64k`,
   `core/literal_buffer_index_mut_literal_f64_64k`.
+- Measured evidence (2026-06-20, RCH remote worker `vmi1149989`):
+  - Command: `AGENT_NAME=cod-b CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec -- cargo bench -p fj-core --bench core_baseline -- 'core/literal_buffer_(serialize|index_mut)_(dense|literal)_f64_64k' --sample-size 20 --warm-up-time 1 --measurement-time 3`.
+  - `core/literal_buffer_index_mut_dense_f64_64k`: 24.003 us mean
+    (23.591-24.411 us).
+  - `core/literal_buffer_index_mut_literal_f64_64k`: 33.278 us mean
+    (32.714-33.793 us).
+  - Dense/literal control ratio: 0.721x, or 1.39x faster than the literal
+    control. JAX ratio: N/A, because this is a host-internal mutable
+    `LiteralBuffer` storage path rather than a JAX API-equivalent workload.
+  - Decision: keep, not revert.
 - Conformance guard: dense and lazy COW mutation preserves the original cloned
   sequence and mutates to the same materialized literal sequence as a literal
   buffer for F64/F64OnePlusX/F32/I64/U32/U64/Bool/BoolWords/Half/Complex,
   repeated-patches, concat, plus a dense-sort materialization path.
+  `AGENT_NAME=cod-b CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec -- cargo test -p fj-core literal_buffer_make_mut_direct_paths_preserve_cow_sequences --lib`
+  passed 1 test, 0 failed on `vmi1149989`; `AGENT_NAME=cod-b CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec -- cargo test -p fj-conformance --lib`
+  passed 45 tests, 0 failed on `hz2`.
 - Retry predicate: do not retry the already committed stack/repeat/slice/to_i64,
   `TensorValue::new`, or `LiteralBuffer::to_vec` dense-storage families under
   this bead. Reopen the dense COW mutation family only with focused criterion
@@ -853,12 +866,25 @@ ends are not rediscovered without new evidence.
 - Lever: make `Serialize for LiteralBuffer` stream storage-direct elements
   through `SerializeSeq` instead of forcing `as_slice()` to cache a full
   materialized literal vector for dense packed buffers.
-- Status: batch-test pending.
+- Status: measured keep internally; no direct JAX API comparator.
 - Benchmark guard: `core/literal_buffer_serialize_dense_f64_64k`,
   `core/literal_buffer_serialize_literal_f64_64k`.
+- Measured evidence (2026-06-20, RCH remote worker `vmi1149989`):
+  - Command: `AGENT_NAME=cod-b CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec -- cargo bench -p fj-core --bench core_baseline -- 'core/literal_buffer_(serialize|index_mut)_(dense|literal)_f64_64k' --sample-size 20 --warm-up-time 1 --measurement-time 3`.
+  - `core/literal_buffer_serialize_dense_f64_64k`: 1.3443 ms mean
+    (1.2858-1.4110 ms).
+  - `core/literal_buffer_serialize_literal_f64_64k`: 1.6493 ms mean
+    (1.4622-1.8378 ms).
+  - Dense/literal control ratio: 0.815x, or 1.23x faster than the literal
+    control. JAX ratio: N/A, because this is a conformance/fixture host
+    serialization path rather than a JAX API-equivalent workload.
+  - Decision: keep, not revert.
 - Conformance guard: streamed JSON matches materialized `Vec<Literal>` JSON
   across F64/F64OnePlusX/F32/I64/U32/U64/Bool/BoolWords/Half/Complex,
   repeated-patches, concat, and mixed dense/literal concat paths.
+  `AGENT_NAME=cod-b CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec -- cargo test -p fj-core literal_buffer_streamed_serialization_matches_materialized_json --lib`
+  passed 1 test, 0 failed on `vmi1149989`; `AGENT_NAME=cod-b CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec -- cargo test -p fj-conformance --lib`
+  passed 45 tests, 0 failed on `hz2`.
 - Retry predicate: do not retry the already committed stack/repeat/slice/to_i64,
   `TensorValue::new`, `LiteralBuffer::to_vec`, dense COW mutation, or this
   serialization streaming family without fresh focused criterion evidence
