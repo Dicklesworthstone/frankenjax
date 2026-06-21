@@ -1040,11 +1040,16 @@ fn mixed_radix_factors(n: usize) -> Vec<usize> {
     factors
 }
 
-/// Largest smooth-composite length routed through the code-only flat iterative
-/// SoA mixed-radix candidate. This targets the measured `128x1000` gap while
-/// leaving larger/threaded production batches on the proven recursive path until
-/// next-turn RCH evidence exists.
-const MIXED_RADIX_ITERATIVE_SOA_MAX_N: usize = 1024;
+/// Largest smooth-composite length routed through the flat iterative SoA mixed-radix
+/// candidate. DISABLED (= 0): the RCH A/B (`bench_mixed_radix_iterative_soa_vs_per_row`,
+/// interleaved min-of-9, 2026-06-21) measured `128x1000` at per-row=2.947ms vs
+/// iter=19.096ms = **0.15x (6.5x SLOWER)** — a no-ship like the recursive-SoA mixed-radix
+/// before it (the SoA transpose + strided per-lane access is memory-bound at n=1000; the
+/// inner butterflies don't autovectorize the way flat radix-2 / Bluestein do). Smooth
+/// composites stay on the proven recursive per-row path. The kernel + its tests are kept
+/// (correctness-validated) as a documented no-ship; flip to a positive cap only if a future
+/// rewrite beats per-row in this same A/B. See the murmw FFT ledger entry.
+const MIXED_RADIX_ITERATIVE_SOA_MAX_N: usize = 0;
 const MIXED_RADIX_ITERATIVE_SOA_MAX_ELEMS: usize = 1 << 18;
 const MIXED_RADIX_ITERATIVE_SOA_TILE_ROWS: usize = 4;
 
@@ -1427,10 +1432,10 @@ fn transform_batches_dense(
 
     // Smooth-composite batches (e.g. 1000 = 2^3*5^3) are the remaining FFT gap:
     // Bluestein is avoided, but the current recursive mixed-radix path is row-wise
-    // and hard to vectorize. Route only the measured 128x1000-class footprint to
-    // the flat iterative SoA candidate during this disk-low code-only pass. Larger
-    // batches keep the proven threaded per-row path until RCH benchmarks validate
-    // the candidate.
+    // and hard to vectorize. The flat iterative SoA candidate below was MEASURED (RCH
+    // A/B 2026-06-21) at 0.15x (6.5x SLOWER) and is DISABLED via MAX_N=0 — this gate
+    // is now inert; smooth composites keep the proven recursive per-row path. The block
+    // is retained (with its kernel + correctness tests) as a documented no-ship.
     const MIXED_RADIX_ITERATIVE_SOA_MIN_BATCH: usize = 8;
     if n > 1
         && batch_size >= MIXED_RADIX_ITERATIVE_SOA_MIN_BATCH
@@ -2932,7 +2937,9 @@ mod tests {
             6usize, 10, 12, 14, 15, 21, 27, 30, 35, 49, 77, 81, 121, 125, 143, 169, 343, 360, 700,
             1000,
         ] {
-            assert!(is_mixed_radix_smooth(n) && n <= MIXED_RADIX_ITERATIVE_SOA_MAX_N);
+            // Route is DISABLED in production (MAX_N=0, measured 0.15x no-ship), but the
+            // kernel stays correctness-validated here for these smooth lengths.
+            assert!(is_mixed_radix_smooth(n));
             for inverse in [false, true] {
                 let roots = precompute_twiddles(n, inverse);
                 for &batch in &[1usize, 3, 4, 8, 17] {
