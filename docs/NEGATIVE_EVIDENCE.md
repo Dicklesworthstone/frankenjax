@@ -42,6 +42,16 @@ not discovery. (Composite FFT parity is tolerance, so the validation harness is 
 tolerance-based, NOT bit-frozen — do not tighten it to bit-identity, which would break a
 later radix-2/3/5 butterfly specialization.)
 
+**DISPATCH PARTITION also inspection-confirmed clean (no-cargo):** the three stacked
+`transform_batches_dense` SoA gates partition every length exactly once: (1) pow2 →
+`transform_batches_pow2_vectorized` (and `is_mixed_radix_smooth` returns false for pow2, so
+gates 2/3 cannot double-route it); (2) non-pow2 **non-smooth** (prime/rough), `m<=16384` →
+Bluestein — its `!is_mixed_radix_smooth(n)` is mutually exclusive with (3) non-pow2
+**smooth**, `n<=1024`, `batch*n<=1<<18` → the iterative route. Everything else (smooth
+`n>1024`, oversized batch, `batch<8`, `m>16384`) falls through to the per-row
+`BatchFftPlan`. No length is double-routed and none is unrouted, so enabling the iterative
+gate cannot have stolen or dropped any case from the Bluestein/per-row paths.
+
 **PENDING-BENCH (disk-critical no-cargo pause — authored by inspection, NOT yet executed):**
 when the build pause lifts (1) run the four tests above (now covering mixed + pure
 odd-prime-power lengths, both directions, multi-tile); if any fail, the enabled gate
