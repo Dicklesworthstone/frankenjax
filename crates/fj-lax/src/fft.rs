@@ -3056,6 +3056,214 @@ mod tests {
         );
     }
 
+    /// PROTOTYPE (test-only, pending build/bench validation — disk-low pause): the
+    /// SPECIALIZED-BUTTERFLY iterative SoA mixed-radix kernel. Identical to
+    /// `mixed_radix_iterative_soa_batch` except the per-stage r-point DFT uses the
+    /// proven low-mult radix-2/3/5 butterflies (adapted op-for-op from the recursive
+    /// `mixed_radix_ping`: radix-3 trades 9 mults for 2; radix-5 trades 25 for ~4)
+    /// instead of the general O(r^2) accumulate, falling back to O(r^2) for 7/11/13.
+    /// The gathered `y[t]` are already input-twiddled (= the recursive's `u_t`), so the
+    /// butterflies apply the same length-r DFT with `W_r = roots[n/r]`/`roots[2n/r]`.
+    ///
+    /// WHY: the general O(r^2) DFT is the likely reason the enabled iterative route may
+    /// not beat per-row on radix-3/5-heavy composites (e.g. n=1000=2^3*5^3 — its three
+    /// radix-5 stages cost 25 mults/output each). This is the optimization to deploy IF
+    /// `bench_mixed_radix_iterative_soa_vs_per_row` shows the general route losing.
+    /// Tolerance-equal (NOT bit-identical) to the general DFT; validated by
+    /// `iterative_soa_specialized_matches_dft_oracle`.
+    #[cfg(test)]
+    fn mixed_radix_iterative_soa_specialized(
+        elements: &[(f64, f64)],
+        n: usize,
+        batch: usize,
+        inverse: bool,
+        roots: &[(f64, f64)],
+    ) -> Vec<(f64, f64)> {
+        let w = batch;
+        let mut out: Vec<(f64, f64)> = vec![(0.0, 0.0); batch * n];
+        if n <= 1 {
+            if n == 1 {
+                out.copy_from_slice(&elements[..batch]);
+            }
+            return out;
+        }
+        let mut factors: Vec<usize> = Vec::new();
+        let mut nn = n;
+        while nn > 1 {
+            let p = smallest_prime_factor(nn);
+            factors.push(p);
+            nn /= p;
+        }
+        let mut re = vec![0.0f64; batch * n];
+        let mut im = vec![0.0f64; batch * n];
+        for i in 0..n {
+            let mut x = i;
+            let mut rev = 0usize;
+            for &f in &factors {
+                rev = rev * f + (x % f);
+                x /= f;
+            }
+            for b in 0..batch {
+                let (vr, vi) = elements[b * n + rev];
+                re[i * w + b] = vr;
+                im[i * w + b] = vi;
+            }
+        }
+        let max_r = *factors.iter().max().unwrap();
+        let mut y_re = vec![0.0f64; max_r * w];
+        let mut y_im = vec![0.0f64; max_r * w];
+
+        let mut len = 1usize;
+        for &r in &factors {
+            let next = len * r;
+            let ts = n / next;
+            let ds = n / r;
+            let (c3, d3) = if r == 3 { roots[ds] } else { (0.0, 0.0) };
+            let (c5a, d5a) = if r == 5 { roots[ds] } else { (0.0, 0.0) };
+            let (c5b, d5b) = if r == 5 { roots[2 * ds] } else { (0.0, 0.0) };
+            let mut start = 0usize;
+            while start < n {
+                for j in 0..len {
+                    // Gather + input-twiddle (identical to the general kernel).
+                    for t in 0..r {
+                        let (twr, twi) = roots[(ts * j * t) % n];
+                        let base = (start + j + t * len) * w;
+                        let yb = t * w;
+                        for b in 0..w {
+                            let vr = re[base + b];
+                            let vi = im[base + b];
+                            y_re[yb + b] = vr * twr - vi * twi;
+                            y_im[yb + b] = vr * twi + vi * twr;
+                        }
+                    }
+                    // Specialized r-point DFT (y already twiddled).
+                    let o = |s: usize| (start + j + s * len) * w;
+                    if r == 2 {
+                        let (o0, o1) = (o(0), o(1));
+                        for b in 0..w {
+                            let (y0r, y0i) = (y_re[b], y_im[b]);
+                            let (y1r, y1i) = (y_re[w + b], y_im[w + b]);
+                            re[o0 + b] = y0r + y1r;
+                            im[o0 + b] = y0i + y1i;
+                            re[o1 + b] = y0r - y1r;
+                            im[o1 + b] = y0i - y1i;
+                        }
+                    } else if r == 3 {
+                        let (o0, o1, o2) = (o(0), o(1), o(2));
+                        for b in 0..w {
+                            let (y0r, y0i) = (y_re[b], y_im[b]);
+                            let (y1r, y1i) = (y_re[w + b], y_im[w + b]);
+                            let (y2r, y2i) = (y_re[2 * w + b], y_im[2 * w + b]);
+                            let (sr, si) = (y1r + y2r, y1i + y2i);
+                            let (dr, di) = (y1r - y2r, y1i - y2i);
+                            re[o0 + b] = y0r + sr;
+                            im[o0 + b] = y0i + si;
+                            let (cr, ci) = (y0r + c3 * sr, y0i + c3 * si);
+                            let (xr, xi) = (d3 * di, d3 * dr);
+                            re[o1 + b] = cr - xr;
+                            im[o1 + b] = ci + xi;
+                            re[o2 + b] = cr + xr;
+                            im[o2 + b] = ci - xi;
+                        }
+                    } else if r == 5 {
+                        let (o0, o1, o2, o3, o4) = (o(0), o(1), o(2), o(3), o(4));
+                        for b in 0..w {
+                            let (y0r, y0i) = (y_re[b], y_im[b]);
+                            let (y1r, y1i) = (y_re[w + b], y_im[w + b]);
+                            let (y2r, y2i) = (y_re[2 * w + b], y_im[2 * w + b]);
+                            let (y3r, y3i) = (y_re[3 * w + b], y_im[3 * w + b]);
+                            let (y4r, y4i) = (y_re[4 * w + b], y_im[4 * w + b]);
+                            let (t1r, t1i) = (y1r + y4r, y1i + y4i);
+                            let (t1dr, t1di) = (y1r - y4r, y1i - y4i);
+                            let (t2r, t2i) = (y2r + y3r, y2i + y3i);
+                            let (t2dr, t2di) = (y2r - y3r, y2i - y3i);
+                            re[o0 + b] = y0r + t1r + t2r;
+                            im[o0 + b] = y0i + t1i + t2i;
+                            let ar = y0r + c5a * t1r + c5b * t2r;
+                            let ai = y0i + c5a * t1i + c5b * t2i;
+                            let xr = d5a * t1di + d5b * t2di;
+                            let xi = d5a * t1dr + d5b * t2dr;
+                            re[o1 + b] = ar - xr;
+                            im[o1 + b] = ai + xi;
+                            re[o4 + b] = ar + xr;
+                            im[o4 + b] = ai - xi;
+                            let br = y0r + c5b * t1r + c5a * t2r;
+                            let bi = y0i + c5b * t1i + c5a * t2i;
+                            let yr = d5b * t1di - d5a * t2di;
+                            let yi = d5b * t1dr - d5a * t2dr;
+                            re[o2 + b] = br - yr;
+                            im[o2 + b] = bi + yi;
+                            re[o3 + b] = br + yr;
+                            im[o3 + b] = bi - yi;
+                        }
+                    } else {
+                        // General O(r^2) fallback (7/11/13).
+                        for s in 0..r {
+                            let obase = (start + j + s * len) * w;
+                            for b in 0..w {
+                                let mut ar = 0.0f64;
+                                let mut ai = 0.0f64;
+                                for t in 0..r {
+                                    let (wr, wi) = roots[(ds * s * t) % n];
+                                    let yr = y_re[t * w + b];
+                                    let yi = y_im[t * w + b];
+                                    ar += yr * wr - yi * wi;
+                                    ai += yr * wi + yi * wr;
+                                }
+                                re[obase + b] = ar;
+                                im[obase + b] = ai;
+                            }
+                        }
+                    }
+                }
+                start += next;
+            }
+            len = next;
+        }
+
+        let inv_n = if inverse { 1.0 / (n as f64) } else { 1.0 };
+        for b in 0..batch {
+            let dst = &mut out[b * n..b * n + n];
+            for (k, slot) in dst.iter_mut().enumerate() {
+                *slot = (re[k * w + b] * inv_n, im[k * w + b] * inv_n);
+            }
+        }
+        out
+    }
+
+    /// The specialized-butterfly iterative kernel must match the independent O(n^2)
+    /// `dft_1d`/`idft_1d` oracle to tolerance (it reorders the radix-3/5 arithmetic, so
+    /// it is NOT bit-identical to the general kernel). Covers radix-2/3/5 + general
+    /// (7/11/13) factors and pure odd-prime-powers, both directions.
+    #[test]
+    fn iterative_soa_specialized_matches_dft_oracle() {
+        for &n in &[6usize, 10, 12, 14, 15, 21, 27, 30, 35, 49, 77, 121, 125, 143] {
+            assert!(is_mixed_radix_smooth(n));
+            let input: Vec<(f64, f64)> = (0..n)
+                .map(|i| {
+                    let f = i as f64;
+                    ((f * 0.031).cos() - 0.2, (f * 0.013).sin() * 0.8)
+                })
+                .collect();
+            let fwd_roots = precompute_twiddles(n, false);
+            let got_f = mixed_radix_iterative_soa_specialized(&input, n, 1, false, &fwd_roots);
+            for (k, (a, b)) in dft_1d(&input).iter().zip(got_f.iter()).enumerate() {
+                assert!(
+                    (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9,
+                    "specialized iterative != dft_1d (n={n} k={k})"
+                );
+            }
+            let inv_roots = precompute_twiddles(n, true);
+            let got_i = mixed_radix_iterative_soa_specialized(&input, n, 1, true, &inv_roots);
+            for (k, (a, b)) in idft_1d(&input).iter().zip(got_i.iter()).enumerate() {
+                assert!(
+                    (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9,
+                    "specialized iterative != idft_1d (n={n} k={k})"
+                );
+            }
+        }
+    }
+
     /// Old inline-recurrence radix-2 (pre-frankenjax-* twiddle-hoist), kept only as the
     /// bench baseline. Bit-identical to the production `radix2_fft_1d_into`.
     #[cfg(test)]
