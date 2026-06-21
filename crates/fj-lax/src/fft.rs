@@ -2890,6 +2890,84 @@ mod tests {
         }
     }
 
+    /// VALIDATES THE WIRED PRODUCTION ROUTE `transform_batches_mixed_radix_iterative_soa`
+    /// (edd01b52, "pending-bench" — committed enabled but without a correctness test).
+    /// This is the route `transform_batches_dense` actually takes for smooth composites
+    /// `n <= MIXED_RADIX_ITERATIVE_SOA_MAX_N`, so it MUST agree with the established
+    /// per-row recursive `mixed_radix_into` (to floating tolerance — iterative is a
+    /// different op order) AND the independent `dft_1d`/`idft_1d` oracle. Mirrors the
+    /// dispatch's exact `roots = precompute_twiddles(n, inverse)` call. Covers
+    /// radix-2/3/5 + general (7/11/13) factors, both directions, single- and multi-row
+    /// tiles. (Authored under a disk-critical no-cargo pause: harden-by-inspection now;
+    /// this test executes when the build pause lifts.)
+    #[test]
+    fn production_mixed_radix_iterative_soa_matches_reference() {
+        for &n in &[6usize, 10, 12, 14, 15, 21, 30, 35, 77, 143, 360, 700, 1000] {
+            assert!(is_mixed_radix_smooth(n) && n <= MIXED_RADIX_ITERATIVE_SOA_MAX_N);
+            for inverse in [false, true] {
+                let roots = precompute_twiddles(n, inverse);
+                for &batch in &[1usize, 3, 4, 8, 17] {
+                    let elements: Vec<(f64, f64)> = (0..batch * n)
+                        .map(|i| {
+                            let f = (i % (5 * n)) as f64;
+                            ((f * 0.011).sin() - 0.4, (f * 0.019).cos() * 0.6)
+                        })
+                        .collect();
+                    // Reference: established per-row recursive path.
+                    let mut reference = vec![(0.0, 0.0); batch * n];
+                    let mut ob = Vec::new();
+                    let mut scr = Vec::new();
+                    for b in 0..batch {
+                        mixed_radix_into(
+                            &elements[b * n..b * n + n],
+                            &roots,
+                            inverse,
+                            &mut ob,
+                            &mut scr,
+                        );
+                        reference[b * n..b * n + n].copy_from_slice(&ob);
+                    }
+                    // Production route, called exactly as the dispatch does.
+                    let got = transform_batches_mixed_radix_iterative_soa(
+                        &elements, n, batch, inverse, &roots,
+                    );
+                    for (k, (a, b)) in reference.iter().zip(got.iter()).enumerate() {
+                        assert!(
+                            (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9,
+                            "production iterative SoA != recursive (n={n} batch={batch} inverse={inverse} k={k}): {a:?} vs {b:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // Independent O(n^2) DFT oracle on a single row (small n).
+        for &n in &[6usize, 12, 15, 30, 35, 77, 143] {
+            let input: Vec<(f64, f64)> = (0..n)
+                .map(|i| {
+                    let f = i as f64;
+                    ((f * 0.031).cos() - 0.2, (f * 0.013).sin() * 0.8)
+                })
+                .collect();
+            let fwd_roots = precompute_twiddles(n, false);
+            let got_f =
+                transform_batches_mixed_radix_iterative_soa(&input, n, 1, false, &fwd_roots);
+            for (k, (a, b)) in dft_1d(&input).iter().zip(got_f.iter()).enumerate() {
+                assert!(
+                    (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9,
+                    "production iterative SoA != dft_1d oracle (n={n} k={k})"
+                );
+            }
+            let inv_roots = precompute_twiddles(n, true);
+            let got_i = transform_batches_mixed_radix_iterative_soa(&input, n, 1, true, &inv_roots);
+            for (k, (a, b)) in idft_1d(&input).iter().zip(got_i.iter()).enumerate() {
+                assert!(
+                    (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9,
+                    "production iterative SoA != idft_1d oracle (n={n} k={k})"
+                );
+            }
+        }
+    }
+
     /// Old inline-recurrence radix-2 (pre-frankenjax-* twiddle-hoist), kept only as the
     /// bench baseline. Bit-identical to the production `radix2_fft_1d_into`.
     #[cfg(test)]
