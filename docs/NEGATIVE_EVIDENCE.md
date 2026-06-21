@@ -21,10 +21,10 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     bitonic sort network): measured JAX 1M f64 — argsort **284ms**, top_k(k=100) **256ms**, median
     **226ms**; JAX top_k 64k/k128 **13.29ms**. fj-lax sort 64k is 1.25ms; top_k/argsort/median are
     all sort/partial-sort based on fj-lax's ~10x-faster sort, so **fj-lax DOMINATES the whole family**.
-    MEASURED same-worker: **top_k 64k/k128 = fj-lax 0.497ms vs JAX 13.29ms = ~26.7x WIN** (fj-lax
-    partial-selects; JAX full-sorts) and **sort 64k = 1.25ms vs 12.51ms = ~10x**. This is fj-lax's
-    single biggest domination zone — JAX-CPU's worst surface (the earlier `ppv-lite86`/E0514
-    shared-target toolchain drift recovered after a clean bench rebuild; top_k now measured).
+    MEASURED same-worker (all three now measured, no inference): **top_k 64k/k128 = fj-lax 0.497ms
+    vs JAX 13.29ms = ~26.7x**, **argsort 64k = fj-lax 1.17ms vs JAX 15.07ms = ~12.9x**, **sort 64k =
+    fj-lax 1.25ms vs JAX 12.51ms = ~10x** (fj-lax partial-selects / real sort; XLA full-sorts via
+    bitonic network). This is fj-lax's single biggest domination zone — JAX-CPU's worst surface.
   - matmul 1024²: JAX 2.91ms (fj-lax loses, `cntiy` +fma-gated). exp 1M: JAX 0.437ms (fj-lax loses,
     cntiy/sweep). sum 1M: JAX 0.111ms (parity-class). Consistent with the gate table below.
   - maxpool/reduce_window 256x256 15x15 SAME: JAX 0.5498ms — **PARITY, NOT a domination zone**
