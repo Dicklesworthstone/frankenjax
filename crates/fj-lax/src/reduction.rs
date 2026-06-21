@@ -3317,6 +3317,78 @@ fn scan_leading_axis_to_vec<S: Copy, T: Copy>(
     out
 }
 
+// Below this a single-line scan stays sequential — the 2-pass blocked overhead (init pass + two
+// thread fan-outs) isn't worth it.
+const CUMSUM_BLOCKED_MIN_ELEMS: usize = 1 << 20; // 1,048,576
+
+// Blocked parallel prefix-scan for ONE long contiguous f64 line (outer_count == 1, forward).
+// The sequential single-line scan is f64 dependency-chain-bound (~30ms at 4M; JAX reassociates to
+// ~14ms). Since the cumsum/cumprod oracle is TOLERANCE (abs<1e-10, NOT bit-exact) and `init` is the
+// op identity, split into per-thread blocks: (A) each block scans locally from `init` in parallel,
+// (B) exclusive-prefix the block totals, (C) each block applies its offset via `op` in parallel.
+// Reassociation here uses SHORTER chains than the single long scan, so it is at least as accurate
+// (more JAX-faithful — JAX reassociates too); for associative max/min/int ops it is bit-exact.
+fn blocked_prefix_scan_to_vec<F>(src: &[f64], init: f64, op: F) -> Vec<f64>
+where
+    F: Fn(f64, f64) -> f64 + Sync,
+{
+    let n = src.len();
+    let cores = std::thread::available_parallelism()
+        .map(|c| c.get())
+        .unwrap_or(8);
+    let threads = (n / (1 << 18)).clamp(2, cores.min(16));
+    let block = n.div_ceil(threads);
+    let mut out = vec![init; n];
+    let op_ref = &op;
+    // Pass A: parallel local scans from `init`.
+    std::thread::scope(|scope| {
+        let mut s_rest = src;
+        let mut o_rest: &mut [f64] = out.as_mut_slice();
+        while !s_rest.is_empty() {
+            let take = block.min(s_rest.len());
+            let (s, st) = s_rest.split_at(take);
+            let (o, ot) = o_rest.split_at_mut(take);
+            s_rest = st;
+            o_rest = ot;
+            scope.spawn(move || {
+                let mut acc = init;
+                for (slot, &v) in o.iter_mut().zip(s) {
+                    acc = op_ref(acc, v);
+                    *slot = acc;
+                }
+            });
+        }
+    });
+    // Exclusive prefix of block totals (each block total = its last local-scan element).
+    let mut offsets: Vec<f64> = Vec::with_capacity(n.div_ceil(block));
+    let mut acc = init;
+    let mut idx = 0;
+    while idx < n {
+        offsets.push(acc);
+        let last = (idx + block).min(n) - 1;
+        acc = op_ref(acc, out[last]);
+        idx += block;
+    }
+    // Pass B: parallel apply each block's offset (block 0's offset == init == identity no-op).
+    std::thread::scope(|scope| {
+        let mut o_rest: &mut [f64] = out.as_mut_slice();
+        let mut b = 0;
+        while !o_rest.is_empty() {
+            let take = block.min(o_rest.len());
+            let (o, ot) = o_rest.split_at_mut(take);
+            o_rest = ot;
+            let offset = offsets[b];
+            b += 1;
+            scope.spawn(move || {
+                for slot in o.iter_mut() {
+                    *slot = op_ref(offset, *slot);
+                }
+            });
+        }
+    });
+    out
+}
+
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn eval_cumulative_dense(
@@ -3367,7 +3439,13 @@ fn eval_cumulative_dense(
             // source slices, including the one-line case where cloning the full
             // input only adds a complete extra read/write pass. Reverse one-line
             // scans keep the clone+in-place path below.
-            scan_contiguous_lines_to_vec(src, axis_dim, reverse, float_init, float_op)
+            if outer_count == 1 && !reverse && total >= CUMSUM_BLOCKED_MIN_ELEMS {
+                // Single long line: the per-line scan is single-thread + dependency-bound.
+                // Block + parallel-prefix it (tolerance-legal; see blocked_prefix_scan_to_vec).
+                blocked_prefix_scan_to_vec(src, float_init, float_op)
+            } else {
+                scan_contiguous_lines_to_vec(src, axis_dim, reverse, float_init, float_op)
+            }
         } else if axis_stride == 1 {
             let mut out = src.to_vec();
             scan_contiguous_lines_in_place(&mut out, axis_dim, reverse, float_init, float_op);
