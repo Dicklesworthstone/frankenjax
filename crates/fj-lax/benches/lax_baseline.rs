@@ -6436,6 +6436,26 @@ fn bench_scatter_128_rows_16_cols(c: &mut Criterion) {
     });
 }
 
+fn bench_scatter_add_1m_f64_1d(c: &mut Criterion) {
+    let n = 1_usize << 20;
+    let operand = Value::vector_f64(&vec![0.0; n]).unwrap();
+    let indices_data: Vec<i64> = (0..n)
+        .map(|i| ((i.wrapping_mul(1_103_515_245_usize).wrapping_add(12_345)) & (n - 1)) as i64)
+        .collect();
+    let indices = Value::vector_i64(&indices_data).unwrap();
+    let updates_data: Vec<f64> = (0..n)
+        .map(|i| ((i % 4099) as f64 - 2049.0) * 0.001)
+        .collect();
+    let updates = Value::vector_f64(&updates_data).unwrap();
+    let inputs = [operand, indices, updates];
+    let mut p = BTreeMap::new();
+    p.insert("mode".into(), "add".into());
+    p.insert("index_mode".into(), "clip".into());
+    c.bench_function("eval/scatter_add_1m_f64_1d", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Scatter, &inputs, &p))
+    });
+}
+
 // Large scatter (256x256 f64 operand, overwrite 256 rows reversed): dense fast
 // path (pass84) vs the Vec<Literal> materialize + copy. Same process.
 fn bench_scatter_256x256_f64_vec(c: &mut Criterion) {
@@ -7054,6 +7074,7 @@ criterion_group!(
     bench_gather_256x256_f64_vec,
     bench_gather_256x256_f64_literal_reference,
     bench_scatter_128_rows_16_cols,
+    bench_scatter_add_1m_f64_1d,
     bench_scatter_256x256_f64_vec,
     bench_scatter_256x256_f64_literal_reference,
     bench_slice_64_rows_16_cols,

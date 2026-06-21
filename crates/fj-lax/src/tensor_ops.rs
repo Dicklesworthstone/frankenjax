@@ -3680,6 +3680,63 @@ fn complex_lex_ge_scatter(lhs: (f64, f64), rhs: (f64, f64)) -> bool {
     lhs.0 > rhs.0 || (lhs.0 == rhs.0 && lhs.1 >= rhs.1)
 }
 
+const SCATTER_ADD_F64_RANGE_PARTITION_MIN_UPDATES: usize = 1 << 18;
+
+fn eval_scatter_add_f64_scalar_range_partitioned(
+    operand: &TensorValue,
+    op: &[f64],
+    upd: &[f64],
+    index_vals: &[i64],
+    dim0: usize,
+    index_mode: IndexMode,
+) -> Result<Option<Value>, EvalError> {
+    if index_vals.len() < SCATTER_ADD_F64_RANGE_PARTITION_MIN_UPDATES
+        || op.len() != dim0
+        || upd.len() != index_vals.len()
+    {
+        return Ok(None);
+    }
+    let threads = crate::arithmetic::work_scaled_threads(index_vals.len()).min(dim0);
+    if threads <= 1 {
+        return Ok(None);
+    }
+
+    let chunk = dim0.div_ceil(threads);
+    let mut buckets: Vec<Vec<(usize, usize)>> = (0..threads)
+        .map(|_| Vec::with_capacity(index_vals.len().div_ceil(threads)))
+        .collect();
+    for (i, &raw_idx) in index_vals.iter().enumerate() {
+        let Some(idx) = resolve_axis0_index(raw_idx, dim0, index_mode) else {
+            continue;
+        };
+        let bucket = (idx / chunk).min(threads - 1);
+        buckets[bucket].push((idx, i));
+    }
+
+    let mut out = op.to_vec();
+    std::thread::scope(|scope| {
+        let mut rest = out.as_mut_slice();
+        let mut start = 0usize;
+        for bucket in buckets {
+            let len = chunk.min(dim0 - start);
+            let (block, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let block_start = start;
+            scope.spawn(move || {
+                for (idx, i) in bucket {
+                    block[idx - block_start] += upd[i];
+                }
+            });
+            start += len;
+        }
+    });
+
+    Ok(Some(Value::Tensor(TensorValue::new_f64_values(
+        operand.shape.clone(),
+        out,
+    )?)))
+}
+
 #[allow(clippy::type_complexity)]
 fn eval_scatter_dense(
     operand: &TensorValue,
@@ -3766,6 +3823,14 @@ fn eval_scatter_dense(
             ScatterCombine::Max => crate::jax_max_f64,
             ScatterCombine::Overwrite => |_, b| b,
         };
+        if combine == ScatterCombine::Add
+            && slice_elems == 1
+            && let Some(value) = eval_scatter_add_f64_scalar_range_partitioned(
+                operand, op, upd, index_vals, dim0, index_mode,
+            )?
+        {
+            return Ok(Some(value));
+        }
         scatter_typed!(op, upd, TensorValue::new_f64_values, cf);
     }
     // Dense F32 scatter (the embedding-gradient scatter-add case). f32 is JAX's
@@ -24432,6 +24497,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn range_partitioned_f64_scatter_add_matches_literal_path() {
+        let n = super::SCATTER_ADD_F64_RANGE_PARTITION_MIN_UPDATES + 17;
+        let dims = vec![n as u32];
+        let idxs: Vec<i64> = (0..n)
+            .map(|i| match i % 257 {
+                0 => 7,
+                1 => -3,
+                2 => n as i64 + 5,
+                _ => ((i.wrapping_mul(1_103_515_245).wrapping_add(12_345)) % n) as i64,
+            })
+            .collect();
+        let idx = Value::vector_i64(&idxs).unwrap();
+        let op: Vec<f64> = (0..n).map(|i| (i % 1021) as f64 * 0.125 - 64.0).collect();
+        let upd: Vec<f64> = (0..n)
+            .map(|i| ((i % 4099) as f64 - 2049.0) * 0.001)
+            .collect();
+        let mk = |d: &[f64], dense: bool| {
+            if dense {
+                Value::Tensor(
+                    TensorValue::new_f64_values(Shape { dims: dims.clone() }, d.to_vec()).unwrap(),
+                )
+            } else {
+                Value::Tensor(
+                    TensorValue::new(
+                        DType::F64,
+                        Shape { dims: dims.clone() },
+                        d.iter().copied().map(Literal::from_f64).collect(),
+                    )
+                    .unwrap(),
+                )
+            }
+        };
+        let p = params(&[("mode", "add"), ("index_mode", "clip")]);
+        let d = super::eval_scatter(&[mk(&op, true), idx.clone(), mk(&upd, true)], &p).unwrap();
+        let l = super::eval_scatter(&[mk(&op, false), idx, mk(&upd, false)], &p).unwrap();
+        let bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect()
+        };
+        assert_eq!(bits(&d), bits(&l), "range-partitioned f64 scatter-add");
     }
 
     /// Dense f32 scatter (overwrite + scatter-ADD) must be BIT-FOR-BIT identical to

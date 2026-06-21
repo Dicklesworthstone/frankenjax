@@ -3,6 +3,101 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-mcqr - bucketed f64 scatter-add narrows but does not close JAX gap
+
+- Date: 2026-06-21
+- Agent: cod-a / CrimsonOtter
+- Status: MEASURED KEEP / STILL JAX LOSS. Production dense f64 1-D
+  `scatter_add` now routes large scalar-slice updates through a safe bucketed
+  owner-computes path; a later unique-index atomic branch was measured and
+  reverted.
+- Target gap: `eval/scatter_add_1m_f64_1d`, the remaining order-dependent
+  scatter-add row from the `frankenjax-mcqr` no-gaps scorecard.
+- Alien-graveyard/extreme-optimization route:
+  - Candidate family: owner-computes scatter partitioning. Each worker owns a
+    disjoint output range, so safe Rust can parallelize duplicate-index
+    scatter-add without locks or `unsafe`.
+  - Retained lever: resolve each index once, bucket `(target, update_index)` by
+    output range while preserving original update order inside the bucket, then
+    add updates in scoped threads over disjoint mutable output chunks.
+  - Reverted lever: a no-duplicate `AtomicU64` direct-write branch. It was
+    correctness-green but slower than the bucketed path on the same row
+    (**10.822ms** vs **9.9667ms**).
+  - EV decision: keep the bucketed path because it is a 3.07x same-worker
+    Rust-side speedup. Do not call the row closed: it still loses JAX by 2.74x.
+
+Fresh JAX comparator:
+
+- Command environment: `benchmarks/jax_comparison/.venv/bin/python`,
+  JAX/JAXLIB 0.10.1 / 0.10.1, CPU backend, `jax_enable_x64=true`.
+- Fixture: exact `eval/scatter_add_1m_f64_1d` sequence added to
+  `crates/fj-lax/benches/lax_baseline.rs`: zero f64 vector, LCG permutation
+  indices, deterministic f64 updates, `mode=add`, `index_mode=clip`.
+- JAX mean: **3.956295 ms**; p50 **3.639273 ms**; min **3.237853 ms**.
+
+Remote correctness proof:
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME,RCH_REQUIRE_REMOTE,RCH_QUEUE_WHEN_BUSY \
+  rch exec -- cargo test -p fj-lax \
+  range_partitioned_f64_scatter_add_matches_literal_path \
+  --lib --release -- --nocapture
+```
+
+- RCH worker: `hz2`; result: 1 focused `fj-lax` test passed.
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME,RCH_REQUIRE_REMOTE,RCH_QUEUE_WHEN_BUSY \
+  rch exec -- cargo test -p fj-conformance --test gather_scatter_oracle \
+  --release -- --nocapture
+```
+
+- RCH worker: `vmi1152480`; result: 59 `gather_scatter_oracle` tests passed.
+
+Remote bench proof:
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+RCH_WORKER=vmi1227854 \
+RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME,RCH_REQUIRE_REMOTE,RCH_QUEUE_WHEN_BUSY,RCH_WORKER \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline -- \
+  'eval/scatter_add_1m_f64_1d' --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot
+```
+
+- RCH worker: `vmi1227854`; `RCH_WORKER` was honored for the final baseline /
+  candidate pair after earlier ignored pins.
+- Baseline serial dense scatter-add: **30.611 ms** midpoint.
+- First all-range scan candidate: **14.146 ms** midpoint; improved but worse
+  than retained bucketed path.
+- Retained bucketed owner-computes path: **9.9667 ms** midpoint
+  (`9.5639..10.308 ms`).
+- Reverted unique atomic branch: **10.822 ms** midpoint; Criterion reported
+  +13.132% regression versus the bucketed run.
+
+Ratio-vs-JAX ledger:
+
+| workload / variant | Rust midpoint | JAX p50 | Rust/JAX p50 | verdict |
+| --- | ---: | ---: | ---: | --- |
+| baseline dense serial scatter-add | 30.611 ms | 3.639273 ms | 8.41 | JAX loss |
+| all-range scan owner-computes candidate | 14.146 ms | 3.639273 ms | 3.89 | no-ship; slower than bucketed |
+| retained bucketed owner-computes | 9.9667 ms | 3.639273 ms | 2.74 | **KEEP but still JAX loss** |
+| unique-index atomic branch | 10.822 ms | 3.639273 ms | 2.97 | REVERT; +8.6% slower than bucketed |
+
+Scorecard: **0 JAX wins / 1 JAX loss / 0 neutral** for this target, with
+**1 Rust-side keep / 1 reverted branch**. Retry predicate: do not retry
+range-scan or atomic-direct variants. The next credible scatter-add route needs
+to remove bucket construction/allocation cost or introduce a safe proof of
+parallel direct writes that beats **9.9667 ms** in a same-worker A/B and then
+beats the fresh JAX **3.639273 ms** p50.
+
 ## frankenjax-mcqr - cummax/cummin head-to-head closes one order-dependent gap
 
 - Date: 2026-06-21
