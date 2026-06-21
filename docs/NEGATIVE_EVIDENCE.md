@@ -258,6 +258,14 @@ plan setup dominates the n=1000 transform. Reverted (net 0 production change). L
 silently flipped a 0.39x no-ship into a fake 1.34x win. Only a plan-CACHED Bluestein (reuse
 across calls) could change this — out of scope for a single batched FFT.
 
+**rfft/irfft Hermitian n/2 packing = ALREADY DONE, not a lever (2026-06-21, CrimsonOtter).**
+Checked whether real-input FFT could win ~2x via the standard pack-n-real-into-n/2-complex trick.
+fj-lax ALREADY implements it for power-of-2: `RealRfftPower2Plan` (fft.rs:459) does pack -> half-size
+FFT -> unpack (`vectorized_rfft_pow2_block` fft.rs:2161), with the symmetric irfft path
+(`vectorized_irfft_pow2_block` fft.rs:2409). So rfft pow2 is NOT a free 2x — it's mined. The only
+residual is non-pow2-even rfft packing (would need a non-pow2 complex FFT under the pack, which is
+already the slower mixed-radix path → smaller, niche win). Do not re-attempt rfft pow2 packing.
+
 **THREADING smooth-composite batch = NO-SHIP under contention (2026-06-21, CrimsonOtter,
 823bba8b).** `fft_batch_128x1000` (128_000 elems) runs single-thread — below the per-row
 fallback's `PARALLEL_MIN_ELEMS = 1<<18` gate — while JAX threads it. Lowering the gate to
