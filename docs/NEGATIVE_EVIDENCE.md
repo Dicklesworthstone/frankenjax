@@ -1864,3 +1864,27 @@ is `sort` (XLA-CPU bitonic). `cumsum` dominates ONLY at large n (JAX size cliff)
 cumprod/cummax/scatter/maxpool/floor are parity-or-loss. Retry predicate: a "scan
 dominates" claim must specify the size — verify at the target n, and check JAX's
 size-scaling (its cumsum cliff means small-n cumsum is NOT a domination).
+
+## 2026-06-21 - the einsum "330x" is INTERNAL, not a JAX win — einsum routes to matmul, a 5-11x JAX LOSS (CobaltForge/cc)
+
+Completing the internal-vs-JAX overclaim case with its most extreme example, by
+derivation (zero new bench). The largest "domination" number in the ledgers/memory
+is "einsum-GEMM 330x". That 330x is RUST-INTERNAL: einsum2 single-contraction is
+routed to `matmul_2d` (einsum.rs:164, bit-identical fast path), and the 330x is
+that GEMM routing vs the prior naive per-element odometer einsum.
+
+But `matmul_2d` itself is a MEASURED JAX LOSS (existing scorecard, frankenjax-ifou2/
+4ryym): `matmul_2d_256x256x256_f64` **1.32ms vs JAX 0.265ms = ~5x loss**;
+`matmul_2d_512x512x512_f64` **6.35ms vs JAX 0.577ms = ~11x loss** (the loss GROWS
+with size — fma-bound, capped at ~XLA/2 by the deliberate no-+fma policy, see
+frankenjax-cntiy). So as actually executed, einsum is a 5-11x JAX LOSS, NOT a 330x
+domination.
+
+This is the clearest case of the pattern documented in the 2026-06-21 scatter/
+maxpool/scan entries: the big "Nx faster" numbers throughout the ledgers are
+Rust-INTERNAL (optimized vs a Rust naive/odometer/reference baseline), and several
+are JAX LOSSES when measured same-machine vs an actual JAX run. The verified
+Rust-OVER-JAX domination surface remains narrow: only `sort` (4-5.5x, robust across
+dtype/size) and large-n `cumsum` (JAX size cliff). Retry predicate / release note:
+do NOT present any "Nx faster" internal ratio as a JAX domination; the GEMM-routed
+ops (einsum, dot_general, conv-via-im2col) inherit matmul's fma-bound JAX loss.
