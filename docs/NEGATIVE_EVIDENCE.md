@@ -96,6 +96,19 @@ plan setup dominates the n=1000 transform. Reverted (net 0 production change). L
 silently flipped a 0.39x no-ship into a fake 1.34x win. Only a plan-CACHED Bluestein (reuse
 across calls) could change this — out of scope for a single batched FFT.
 
+**THREADING smooth-composite batch = NO-SHIP under contention (2026-06-21, CrimsonOtter,
+823bba8b).** `fft_batch_128x1000` (128_000 elems) runs single-thread — below the per-row
+fallback's `PARALLEL_MIN_ELEMS = 1<<18` gate — while JAX threads it. Lowering the gate to
+1<<16 so it fans across rows measured **5.82ms (32 threads) / 7.40ms (work-capped ~7
+threads) vs 2.46ms single-thread = 2.4-3x REGRESSION** on the shared rch host. The ~40us
+per-row 1000-pt FFT is too short to amortize thread overhead when the swarm saturates the
+cores. JAX's win is on IDLE cores and is UNMEASURABLE here. Reverted to the original gate
+(net-0). Retry predicate: re-measure on a quiesced host (threaded-FFT A/B is contention-
+fragile — see the threaded-FFT caveat). The smooth-composite per-row path now has NO
+measurable-on-this-host accelerator: SoA-iterative (0.15x), Bluestein (0.39x), and threading
+(0.4x) all no-ship; per-row butterflies are already specialized radix-2/3/5. The only open
+FFT route is generated length-specialized `1000=2^3*5^3` kernels.
+
 ## PENDING-BENCH RESUME INDEX (open as of 2026-06-21, disk-critical no-cargo pause)
 
 The disk-low/critical pause accumulated production perf routes that shipped
