@@ -46,6 +46,44 @@ variants are recorded no-ships, the EV gate rejects a new production code
 attempt for this bead. Reopen only with fresh large-n evidence showing an actual
 upstream/JAX gap.
 
+## 2026-06-21 - frankenjax-murmw smooth-composite Bluestein detour rejected
+
+BOLD-VERIFY retargeted the remaining smooth-composite FFT loss in
+`eval/fft_batch_128x1000_complex128`. The fresh Rust row was run remotely via
+RCH with the cod-a target request:
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+  rch exec -- cargo bench -j 1 --profile release -p fj-lax \
+  --bench lax_baseline 'eval/fft_batch_128x1000_complex128' -- \
+  --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot
+```
+
+RCH selected `hz1`; no local cargo build and no new `.scratch` worktree were
+created. Current Rust midpoint: **3.6581 ms** (`3.5478..3.7359 ms`). Fresh local
+JAX/JAXLIB 0.10.1 CPU x64 comparator using the exact `complex_matrix(128,1000)`
+fixture measured mean **0.245442 ms** and p50 **0.250693 ms**. Scorecard:
+**0 wins / 1 loss / 0 neutral**, Rust/JAX **14.90x** by mean.
+
+Radical lever attempted: route the smooth `n=1000` batch through the existing
+vectorized Bluestein SoA kernel, reusing the communication-avoiding flat radix-2
+convolution machinery that wins on prime/rough lengths. Same-worker/same-binary
+A/B on RCH `hz1` rejected it:
+
+```text
+mixed=1.975ms, bluestein=2.690ms, ratio=0.73x
+```
+
+The Bluestein detour is **36% slower** than the recursive mixed-radix path for
+the exact fixture, so the source gate was reverted and no production code was
+kept. Retry predicate: do not route smooth composites through Bluestein SoA
+without new evidence. The next credible `murmw` route must change the kernel
+family, e.g. generated length-specialized `1000 = 2^3 * 5^3` kernels or
+production-specialized radix-3/5 butterflies that first beat per-row mixed-radix
+in a same-binary A/B.
+
 ## PENDING-BENCH RESUME INDEX (open as of 2026-06-21, disk-critical no-cargo pause)
 
 The disk-low/critical pause accumulated production perf routes that shipped

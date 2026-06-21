@@ -55,6 +55,64 @@ micro-levers or force a constants-heavy blocked/panel eigensolver into a
 48x48 row that is already winning. Reopen only with fresh evidence of a real
 large-n JAX/upstream loss.
 
+## frankenjax-murmw - smooth-composite Bluestein detour no-ship
+
+- Date: 2026-06-21
+- Agent: cod-a
+- Status: MEASURED NO-SHIP / REVERTED. No production source change remains.
+- Target gap: `eval/fft_batch_128x1000_complex128`, the current smooth-
+  composite batched FFT loss.
+- Alien-graveyard/extreme-optimization route:
+  - Candidate family: communication-avoiding/vectorized batch FFT. Reuse the
+    existing Bluestein SoA path whose two internal convolution FFTs are the flat
+    radix-2 kernel that vectorizes across row tiles.
+  - EV decision: rejected by same-worker same-binary evidence. The constants
+    warning dominates here: Bluestein's extra convolution work beats neither
+    recursive mixed-radix nor JAX for smooth `n=1000`.
+
+Fresh target scorecard:
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+  rch exec -- cargo bench -j 1 --profile release -p fj-lax \
+  --bench lax_baseline 'eval/fft_batch_128x1000_complex128' -- \
+  --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot
+```
+
+- RCH worker: `hz1`; remote/per-crate, no local build and no new `.scratch`.
+- Rust Criterion midpoint: **3.6581 ms** (`3.5478..3.7359 ms`).
+- Fresh local JAX/JAXLIB 0.10.1 CPU x64 comparator, exact
+  `complex_matrix(128,1000)` fixture: mean **0.245442 ms**, p50
+  **0.250693 ms**.
+- Retained production scorecard for this row: **0 wins / 1 loss / 0 neutral**;
+  Rust/JAX **14.90x** by JAX mean.
+
+Rejected lever proof:
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+  rch exec -- cargo test -j 1 --release -p fj-lax \
+  bench_smooth_bluestein_soa_vs_mixed_per_row -- --ignored --nocapture
+```
+
+- RCH worker: `hz1`.
+- Same-binary A/B: **mixed=1.975ms**, **bluestein=2.690ms**,
+  **ratio=0.73x**. The smooth-composite Bluestein detour is **36% slower** than
+  recursive mixed-radix for the exact fixture.
+- Decision: revert the smooth-Bluestein production gate and the temporary
+  ignored A/B harness. Do not retry smooth-composite Bluestein routing without
+  new evidence.
+
+Retry predicate: the next `murmw` attempt must change the kernel family and
+beat per-row mixed-radix in a same-binary A/B before production dispatch is
+allowed to change. Credible routes are generated length-specialized
+`1000 = 2^3 * 5^3` kernels, production-specialized radix-3/5 butterflies, or a
+different SIMD/cache-blocked design.
+
 ## frankenjax-ur4h3 - eigh allocator/copy-reduction stack KEEP
 
 - Date: 2026-06-21

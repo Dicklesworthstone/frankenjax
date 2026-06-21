@@ -6,22 +6,24 @@ Scope: verify recent code-first `fj-lax`/`fj-core` perf backlog against original
 realistic warmed CPU workloads. This scorecard records measured readiness only;
 unmeasured `code-first batch-test pending` entries remain outside the score.
 
-## Pending Code-Only Entries
+## Current BOLD-VERIFY Notes
 
-### CrimsonOtter / cod-a - murmw flat iterative SoA mixed-radix FFT (2026-06-21)
+### cod-a - murmw smooth-composite FFT (2026-06-21)
 
-- Status: code committed under disk-low no-build/no-bench instruction; outside
-  release-readiness score until next-turn RCH validation.
-- Target row: `eval/fft_batch_128x1000_complex128`, last retained measurement
-  **2.930 ms** Rust vs **0.233 ms** JAX/JAXLIB 0.10.1 x64, Rust/JAX **12.55x**.
-- Lever: dense smooth-composite batches with `batch >= 8`, `n <= 1024`, and
-  `batch*n <= 2^18` route through a flat iterative mixed-radix SoA candidate.
-  Larger batches keep the existing threaded per-row recursive mixed-radix route.
-- Required before scoring: focused production helper bit-identity-to-scalar-
-  iterative test, iterative-vs-recursive tolerance test, `fft_oracle`, then RCH
-  Criterion on `eval/fft_batch_128x1000_complex128`.
-- Keep/revert rule: keep only if direct evidence shows a real 128x1000 win with
-  green FFT parity; otherwise revert the route and move it to no-ship evidence.
+- Status: pending code-only flat iterative mixed-radix SoA route is resolved as
+  measured no-ship and disabled. Fresh BOLD-VERIFY also rejected the smooth-
+  composite Bluestein SoA detour; no production source change remains.
+- Current target row: `eval/fft_batch_128x1000_complex128`, RCH `hz1`
+  Criterion midpoint **3.6581 ms** (`3.5478..3.7359 ms`) versus fresh local
+  JAX/JAXLIB 0.10.1 x64 mean **0.245442 ms** on the exact
+  `complex_matrix(128,1000)` fixture. Rust/JAX **14.90x**.
+- Latest lever proof: same-binary RCH `hz1` A/B for recursive mixed-radix versus
+  vectorized Bluestein SoA printed **mixed=1.975ms**, **bluestein=2.690ms**,
+  **ratio=0.73x**; the candidate was reverted.
+- Scorecard for this row: **0 wins / 1 loss / 0 neutral**. Lever scorecard:
+  **0 kept / 1 rejected** in this pass. Next route must be a different kernel
+  family such as generated length-specialized `1000 = 2^3 * 5^3` kernels or
+  production-specialized radix-3/5 butterflies.
 
 ## Environment
 
