@@ -8952,16 +8952,75 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
 /// High-accuracy `erf` (agrees with JAX/scipy to ~1e-12 or better, vs the old
 /// Abramowitz & Stegun 7.1.26 form's ~1.5e-7).
 ///
-/// Two stable elementary series (no magic rational-Chebyshev constants):
-/// - `|x| < 3.5`: the Maclaurin series `erf(x) = (2/√π) Σ (-1)ⁿ x^(2n+1)/(n!(2n+1))`,
-///   excellent for the common range (`|x| ≤ 2` reaches ~1e-15; cancellation grows
-///   to ~3e-12 by 3.5).
-/// - `3.5 ≤ |x| < 6`: `erf = 1 - erfc` with `erfc` from its asymptotic series
-///   `e^{-x²}/(x√π) Σ (-1)ⁿ (2n-1)!!/(2x²)ⁿ`, summed until the terms stop
-///   shrinking (asymptotic divergence) — accurate to ~f64 there.
-/// - `|x| ≥ 6`: `erf` is `±1` to f64 precision (`erfc(6) ≈ 2e-17`).
+/// The common range uses fdlibm-derived minimax rationals instead of the
+/// convergent Maclaurin loop. The series fallback remains for the narrow
+/// 2.857..3.5 bridge so the existing tail seam stays unchanged.
+#[allow(clippy::excessive_precision)]
 pub(crate) fn erf_approx(x: f64) -> f64 {
     use std::f64::consts::FRAC_2_SQRT_PI; // 2/√π
+
+    #[inline]
+    fn horner(x: f64, coeffs: &[f64]) -> f64 {
+        let mut y = coeffs[coeffs.len() - 1];
+        for &coeff in coeffs[..coeffs.len() - 1].iter().rev() {
+            y = y * x + coeff;
+        }
+        y
+    }
+
+    const ERX: f64 = 8.45062911510467529297e-01;
+    const PP: [f64; 5] = [
+        1.28379167095512558561e-01,
+        -3.25042107247001499370e-01,
+        -2.84817495755985104766e-02,
+        -5.77027029648944159157e-03,
+        -2.37630166566501626084e-05,
+    ];
+    const QQ: [f64; 5] = [
+        3.97917223959155352819e-01,
+        6.50222499887672944485e-02,
+        5.08130628187576562776e-03,
+        1.32494738004321644526e-04,
+        -3.96022827877536812320e-06,
+    ];
+    const PA: [f64; 7] = [
+        -2.36211856075265944077e-03,
+        4.14856118683748331666e-01,
+        -3.72207876035701323847e-01,
+        3.18346619901161753674e-01,
+        -1.10894694282396677476e-01,
+        3.54783043256182359371e-02,
+        -2.16637559486879084300e-03,
+    ];
+    const QA: [f64; 6] = [
+        1.06420880400844228286e-01,
+        5.40397917702171048937e-01,
+        7.18286544141962662868e-02,
+        1.26171219808761642112e-01,
+        1.36370839120290507362e-02,
+        1.19844998467991074170e-02,
+    ];
+    const RA: [f64; 8] = [
+        -9.86494403484714822705e-03,
+        -6.93858572707181764372e-01,
+        -1.05586262253232909814e+01,
+        -6.23753324503260060396e+01,
+        -1.62396669462573470355e+02,
+        -1.84605092906711035994e+02,
+        -8.12874355063065934246e+01,
+        -9.81432934416914548592e+00,
+    ];
+    const SA: [f64; 8] = [
+        1.96512716674392571292e+01,
+        1.37657754143519042600e+02,
+        4.34565877475229228821e+02,
+        6.45387271733267880336e+02,
+        4.29008140027567833386e+02,
+        1.08635005541779435134e+02,
+        6.57024977031928170135e+00,
+        -6.04244152148580987438e-02,
+    ];
+
     if x == 0.0 {
         return x; // preserve signed zero
     }
@@ -8971,7 +9030,23 @@ pub(crate) fn erf_approx(x: f64) -> f64 {
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
     let ax = x.abs();
 
-    if ax < 3.5 {
+    if ax < 0.84375 {
+        let z = ax * ax;
+        let r = horner(z, &PP);
+        let s = 1.0 + z * horner(z, &QQ);
+        sign * (ax + ax * r / s)
+    } else if ax < 1.25 {
+        let z = ax - 1.0;
+        let p = horner(z, &PA);
+        let q = 1.0 + z * horner(z, &QA);
+        sign * (ERX + p / q)
+    } else if ax < 2.857142857142857 {
+        let z = 1.0 / (ax * ax);
+        let r = horner(z, &RA);
+        let s = 1.0 + z * horner(z, &SA);
+        let erfc = (-ax * ax - 0.5625 + r / s).exp() / ax;
+        sign * (1.0 - erfc)
+    } else if ax < 3.5 {
         let x2 = ax * ax;
         let mut term = ax; // n = 0: x^1 / (0! · 1)
         let mut sum = ax;

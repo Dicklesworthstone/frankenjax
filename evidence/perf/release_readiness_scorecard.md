@@ -8,6 +8,33 @@ unmeasured `code-first batch-test pending` entries remain outside the score.
 
 ## Current BOLD-VERIFY Notes
 
+### cod-b - cntiy erf rational fast path (2026-06-21)
+
+- Status: retained production narrowing lever, but not a JAX win. `Primitive::Erf`
+  now uses fdlibm-derived minimax rational bands in the common range instead of
+  the prior Maclaurin loop, with the old 2.857..3.5 bridge and high-tail behavior
+  left intact.
+- RCH focused correctness passed `fj-lax` `erf_high_accuracy_and_seam_continuity`
+  and `fj-conformance --test erf_oracle` (31/31) on `ovh-a`.
+- Fresh exact JAX/JAXLIB 0.10.1 CPU x64 comparator on the same 1M f64 fixture:
+  mean **1.495718 ms**.
+- Rust measurements:
+  - Old series baseline on RCH `ovh-a`: **21.110 ms** midpoint
+    (`20.977..21.255 ms`), **14.11x** JAX.
+  - Retained rational candidate on RCH `vmi1149989`: **6.8485 ms** midpoint
+    (`6.4220..7.4408 ms`), best observed current-code row, **4.58x** JAX.
+  - Extra retained rational point on RCH `hz2`: **12.515 ms** midpoint
+    (`12.083..12.807 ms`), **8.37x** JAX.
+  - Rejected Chebyshev `[0,2]` candidate on RCH `ovh-a`: **10.596 ms** midpoint
+    (`10.527..10.680 ms`), **7.08x** JAX; reverted because it was slower than
+    the rational candidate signal despite being 49.743% faster than the old
+    series on that worker.
+- Scorecard: **0 wins / 1 loss / 0 neutral** for this row. `rch exec` did not
+  expose worker pinning, so the retained rational before/after is not strict
+  same-worker certification; the next `erf` route should use a same-binary A/B
+  harness and must be true SIMD/vector polynomial or approved target-feature/FMA
+  work.
+
 ### cod-b - cntiy cbrt scalar fast path (2026-06-21)
 
 - Status: retained production narrowing lever, but not a JAX win. `Primitive::Cbrt`

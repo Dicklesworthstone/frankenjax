@@ -3,6 +3,98 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-cntiy - erf rational approximation narrows but does not close JAX gap
+
+- Date: 2026-06-21
+- Agent: cod-b / CrimsonOtter
+- Status: MEASURED KEEP / STILL JAX LOSS. Production `Primitive::Erf` now uses
+  fdlibm-derived minimax rational bands for the common `|x| < 2.857` range,
+  while retaining the prior Maclaurin bridge for `2.857..3.5` and the existing
+  high-tail behavior.
+- Claimed tracker context: `frankenjax-cntiy` remains the open maintainer-gated
+  FMA/softmax bead. This `erf` sub-gap is tolerance-only and does not resolve the
+  parent gate.
+- Alien-graveyard/extreme-optimization route:
+  - Candidate family: libm/fenv replacement with bounded approximants before
+    deeper SIMD work. This follows the tolerance-only transcendental route:
+    remove scalar series/libm tax without changing bit-pinned goldens.
+  - Implemented lever: replace the hot common-range Maclaurin loop with
+    rational bands; keep high-range behavior stable.
+  - Rejected lever: a degree-20 Chebyshev `[0,2]` approximation. It passed the
+    same focused correctness gates but measured slower than the rational
+    candidate signal, so it was reverted before commit.
+  - EV decision: keep the rational lever as a material narrowing step, then route
+    further `erf` work to true SIMD/vector polynomial or approved target-feature
+    work. Do not repeat scalar polynomial reshuffles unless they beat this path
+    in a same-binary A/B.
+
+Remote correctness proof:
+
+```text
+AGENT_NAME=CrimsonOtter \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+RCH_REQUIRE_REMOTE=1 \
+  rch exec -- cargo test -p fj-lax erf_high_accuracy_and_seam_continuity --lib --release
+```
+
+- RCH worker: `ovh-a`; result: 1 focused `fj-lax` test passed.
+
+```text
+AGENT_NAME=CrimsonOtter \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+RCH_REQUIRE_REMOTE=1 \
+  rch exec -- cargo test -p fj-conformance --test erf_oracle --release
+```
+
+- RCH worker: `ovh-a`; result: 31 `erf_oracle` tests passed.
+
+Remote bench proof:
+
+```text
+AGENT_NAME=CrimsonOtter \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+RCH_REQUIRE_REMOTE=1 \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline \
+  'eval/erf_1m_f64_vec' -- \
+  --warm-up-time 1 --measurement-time 3 --sample-size 15 --noplot
+```
+
+- Old Rust series baseline: RCH `ovh-a`, **21.110 ms** midpoint
+  (`20.977..21.255 ms`).
+- Retained rational candidate:
+  - RCH `vmi1149989`, **6.8485 ms** midpoint (`6.4220..7.4408 ms`), best
+    observed current-code row.
+  - RCH `hz2`, **12.515 ms** midpoint (`12.083..12.807 ms`), extra
+    non-comparable worker point.
+- Rejected Chebyshev candidate: RCH `ovh-a`, **10.596 ms** midpoint
+  (`10.527..10.680 ms`), **49.743%** faster than the old series on the same
+  worker but slower than the rational candidate signal; reverted.
+- Worker pinning was not available in `rch exec`, so the retained rational
+  before/after is not strict same-worker certification. The ratio-vs-JAX and
+  repeated direction are recorded honestly; future work should use a same-binary
+  A/B harness if worker placement matters.
+
+Fresh JAX comparator:
+
+- Command environment: `benchmarks/jax_comparison/.venv/bin/python`, JAX/JAXLIB
+  0.10.1 / 0.10.1, CPU backend, `jax_enable_x64=true`.
+- Fixture: exact `eval/erf_1m_f64_vec` sequence from
+  `crates/fj-lax/benches/lax_baseline.rs`, timed as 60 runs x 100 inner loops
+  with `block_until_ready()`.
+- JAX mean: **1.495718 ms**; p50 **1.497700 ms**.
+
+| workload | Rust midpoint | JAX mean | Rust/JAX | verdict |
+| --- | ---: | ---: | ---: | --- |
+| old `erf` Maclaurin series | 21.110 ms | 1.495718 ms | 14.11 | large JAX loss |
+| retained rational `erf` candidate, best observed | 6.8485 ms | 1.495718 ms | 4.58 | kept narrowing lever; still a JAX loss |
+| retained rational `erf` candidate, extra `hz2` point | 12.515 ms | 1.495718 ms | 8.37 | still a JAX loss |
+| rejected Chebyshev candidate | 10.596 ms | 1.495718 ms | 7.08 | reverted |
+
+Retry predicate: the next `erf` route must be a true SIMD/vectorized polynomial
+or target-feature/FMA specialization that preserves `erf_oracle` and beats the
+current rational path in a same-binary A/B. The broader `cntiy` FMA/softmax
+decision is not resolved by this keep.
+
 ## frankenjax-murmw - specialized iterative SoA mixed-radix FFT no-ship
 
 - Date: 2026-06-21
