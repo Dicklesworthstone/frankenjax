@@ -5065,6 +5065,7 @@ fn hessenberg_reduction(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     // active prefix before use, so this preserves the Householder arithmetic
     // while avoiding one heap allocation per reduction step.
     let mut householder = vec![0.0_f64; n - 1];
+    let mut left_scaled = vec![0.0_f64; n];
     for k in 0..n - 2 {
         let start = k + 1;
         let len = n - start;
@@ -5097,7 +5098,7 @@ fn hessenberg_reduction(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         }
         let beta = 2.0 / v_norm_sq;
 
-        apply_householder_left(&mut h, n, start, k, v, beta);
+        apply_householder_left_with_scratch(&mut h, n, start, k, v, beta, &mut left_scaled);
         apply_householder_right(&mut h, n, 0, start, v, beta);
         apply_householder_right(&mut q, n, 0, start, v, beta);
 
@@ -5130,6 +5131,24 @@ fn apply_householder_left(
         return;
     }
     let mut scaled = vec![0.0_f64; width]; // dot products, then β·dot
+    apply_householder_left_with_scratch(matrix, n, row_start, col_start, v, beta, &mut scaled);
+}
+
+fn apply_householder_left_with_scratch(
+    matrix: &mut [f64],
+    n: usize,
+    row_start: usize,
+    col_start: usize,
+    v: &[f64],
+    beta: f64,
+    scaled_scratch: &mut [f64],
+) {
+    let width = n - col_start;
+    if width == 0 {
+        return;
+    }
+    let scaled = &mut scaled_scratch[..width];
+    scaled.fill(0.0);
     for (offset, &v_i) in v.iter().enumerate() {
         let base = (row_start + offset) * n + col_start;
         for (s, &m) in scaled.iter_mut().zip(&matrix[base..base + width]) {

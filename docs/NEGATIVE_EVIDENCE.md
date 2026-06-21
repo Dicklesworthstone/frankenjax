@@ -2,6 +2,20 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-21 - frankenjax-ur4h3 Householder left-update scratch reuse pending-bench
+
+DISK-LOW code-only pass: `hessenberg_reduction` now reuses the dot-product
+scratch buffer for the left Householder update instead of allocating it inside
+each `apply_householder_left` call. The existing helper API remains available;
+the production reduction path uses a scratch-backed helper that clears the
+active prefix before reuse, preserving accumulation and update order.
+
+No new `cargo bench` or `cargo build` was started in this turn by instruction.
+Pending bench: re-run `linalg/eigh_48x48_f64` via RCH once disk pressure is
+handled, measuring this together with the prior pending reflector-buffer reuse.
+Keep only with same-worker/directly comparable improvement; otherwise revert the
+allocator-pressure pair and record as negative evidence.
+
 ## 2026-06-20 - frankenjax-ur4h3 Householder reflector scratch reuse pending-bench
 
 DISK-LOW code-only pass: `hessenberg_reduction` now reuses one Householder

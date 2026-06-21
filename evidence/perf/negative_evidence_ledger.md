@@ -3,6 +3,35 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-ur4h3 - Householder left-update scratch reuse pending-bench
+
+- Date: 2026-06-21
+- Agent: cod-b / CrimsonOtter
+- Status: CODE-ONLY COMMITTED, PENDING BENCH. Disk-low instruction explicitly
+  prohibited starting a new `cargo bench` or `cargo build` this turn.
+- Lever: `hessenberg_reduction` now reuses the left Householder update's
+  dot-product buffer across panels. The existing `apply_householder_left` API
+  remains intact for other call sites, while the production reduction path calls
+  a scratch-backed helper. The helper zeroes the active scratch prefix before
+  use, preserving the same dot accumulation order and matrix update order.
+- Target row for next turn: `linalg/eigh_48x48_f64` first. This should be
+  measured together with the prior pending reflector-buffer reuse from commit
+  `815ad85a`, then reverted as a pair if the combined allocator-pressure
+  reduction is neutral or regresses.
+- Required next-turn bench command, only after disk pressure is handled:
+
+```text
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline \
+  'linalg/eigh_48x48_f64' -- \
+  --warm-up-time 1 --measurement-time 3 --sample-size 15 --noplot
+```
+
+- Keep/revert rule: keep only if same-worker or directly comparable evidence
+  shows a real `eigh_48x48_f64` improvement without correctness fallout. If the
+  delta is neutral or regresses, revert this helper and the previous reflector
+  scratch commit, then record the failed allocator-pressure pair here.
+
 ## frankenjax-ur4h3 - Householder reflector scratch reuse pending-bench
 
 - Date: 2026-06-20
