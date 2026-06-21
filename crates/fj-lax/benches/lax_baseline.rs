@@ -2908,6 +2908,21 @@ fn bench_sort_64k_f64(c: &mut Criterion) {
     });
 }
 
+// Head-to-head vs JAX argsort (XLA CPU full bitonic sort): completes the order-statistics
+// domination map alongside sort + top_k. CrimsonOtter 2026-06-21.
+fn bench_argsort_64k_f64(c: &mut Criterion) {
+    let data: Vec<f64> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| ((i as f64) * 1.000_173).sin() * 1e6 - (i as f64))
+        .collect();
+    let input = Value::vector_f64(&data).unwrap();
+    let mut p = BTreeMap::new();
+    p.insert("dimension".to_owned(), "0".to_owned());
+    p.insert("descending".to_owned(), "false".to_owned());
+    c.bench_function("eval/argsort_64k_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Argsort, std::slice::from_ref(&input), &p))
+    });
+}
+
 // ConvertElementType over a 64k dense f64 tensor: dense fast path (pass103,
 // reads as_f64_slice) vs the generic per-element Literal-materialize + convert.
 fn bench_convert_64k_f64_to_i64(c: &mut Criterion) {
@@ -6828,6 +6843,7 @@ criterion_group!(
     bench_cumsum_64k_f64_literal_reference,
     bench_sort_64k_i64,
     bench_sort_64k_f64,
+    bench_argsort_64k_f64,
     bench_argmax_64k_f64,
     bench_sort_64k_f64_descending,
     bench_convert_64k_f64_to_i64,
