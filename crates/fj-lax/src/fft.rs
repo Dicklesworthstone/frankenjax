@@ -3343,6 +3343,77 @@ mod tests {
         }
     }
 
+    /// THREADED-PATH validation for the RFFT/IRFFT SoA routes, which thread separately in
+    /// `eval_rfft`/`eval_irfft` (splitting the batch into row-blocks, each via
+    /// `rfft_rows_into`/`irfft_rows_f64_into` with a non-zero `row_start`). Every other
+    /// rfft/irfft test uses a single block at offset 0, so the `row_start` block-offset
+    /// logic the threading relies on is otherwise untested — a bad offset would silently
+    /// corrupt large real-FFT batches. Asserts that computing all rows in one call equals
+    /// computing them in two offset blocks (which is exactly what the threads do).
+    #[test]
+    fn rfft_irfft_block_offset_matches_single_block() {
+        let bits = |v: &[(f64, f64)]| -> Vec<(u64, u64)> {
+            v.iter().map(|&(r, i)| (r.to_bits(), i.to_bits())).collect()
+        };
+        let fft_length = 256usize;
+        let batch = 20usize; // each half-block (10) >= the 8-row SoA floor
+
+        // RFFT: real input rows -> Hermitian-half complex output.
+        {
+            let real_plan = RealRfftPower2Plan::new(fft_length);
+            let (input_last, copy_len, out_last) = (fft_length, fft_length, fft_length / 2 + 1);
+            let elements: Vec<(f64, f64)> = (0..batch * input_last)
+                .map(|i| ((i as f64 * 0.017).sin() - 0.3, 0.0))
+                .collect();
+            let mut whole = vec![(0.0, 0.0); batch * out_last];
+            rfft_rows_into(
+                &elements, None, Some(&real_plan), fft_length, input_last, copy_len, out_last, 0,
+                batch, &mut whole,
+            );
+            let mut split = vec![(0.0, 0.0); batch * out_last];
+            let half = batch / 2;
+            let (s0, s1) = split.split_at_mut(half * out_last);
+            rfft_rows_into(
+                &elements, None, Some(&real_plan), fft_length, input_last, copy_len, out_last, 0,
+                half, s0,
+            );
+            rfft_rows_into(
+                &elements, None, Some(&real_plan), fft_length, input_last, copy_len, out_last,
+                half, batch - half, s1,
+            );
+            assert_eq!(bits(&whole), bits(&split), "rfft block-offset != single-block");
+        }
+
+        // IRFFT: Hermitian-half complex input -> real output.
+        {
+            let plan = BatchFftPlan::new(fft_length, true);
+            let input_last = fft_length / 2 + 1;
+            let copy_len = fft_length.min(input_last);
+            let elements: Vec<(f64, f64)> = (0..batch * input_last)
+                .map(|i| {
+                    let f = i as f64;
+                    ((f * 0.013).sin(), (f * 0.021).cos())
+                })
+                .collect();
+            let mut whole = vec![0.0f64; batch * fft_length];
+            irfft_rows_f64_into(
+                &elements, Some(&plan), fft_length, input_last, copy_len, 0, batch, &mut whole,
+            );
+            let mut split = vec![0.0f64; batch * fft_length];
+            let half = batch / 2;
+            let (s0, s1) = split.split_at_mut(half * fft_length);
+            irfft_rows_f64_into(
+                &elements, Some(&plan), fft_length, input_last, copy_len, 0, half, s0,
+            );
+            irfft_rows_f64_into(
+                &elements, Some(&plan), fft_length, input_last, copy_len, half, batch - half, s1,
+            );
+            let wb: Vec<u64> = whole.iter().map(|x| x.to_bits()).collect();
+            let sb: Vec<u64> = split.iter().map(|x| x.to_bits()).collect();
+            assert_eq!(wb, sb, "irfft block-offset != single-block");
+        }
+    }
+
     /// Old inline-recurrence radix-2 (pre-frankenjax-* twiddle-hoist), kept only as the
     /// bench baseline. Bit-identical to the production `radix2_fft_1d_into`.
     #[cfg(test)]
