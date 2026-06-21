@@ -77,9 +77,17 @@ when the build pause lifts (1) run the four tests above (now covering mixed + pu
 odd-prime-power lengths, both directions, multi-tile); if any fail, the enabled gate
 must be disabled until fixed. (2) Then same-binary interleaved A/B of the route vs per-row
 `mixed_radix_into`; KEEP only on a measured win — if it regresses like the recursive SoA
-did (despite the L1 prediction), disable `MIXED_RADIX_ITERATIVE_SOA_MAX_N` (set 0). The
-general O(r^2) per-butterfly DFT may need radix-2/3/5 specialization to win; decide after
-the first A/B.
+did (despite the L1 prediction), disable `MIXED_RADIX_ITERATIVE_SOA_MAX_N` (set 0).
+
+(3) CONDITIONAL OPTIMIZATION (already staged): the enabled production kernel uses the
+general O(r^2) per-butterfly DFT, which is wasteful on radix-3/5-heavy composites (n=1000
+spends 25 mults/output on each radix-5 stage). If step (2)'s A/B shows the general route
+losing or only marginally winning, the drop-in fix is committed and validated:
+`mixed_radix_iterative_soa_specialized` (test-only) replaces that DFT step with the proven
+low-mult radix-2/3/5 butterflies (radix-3 9->2 mults, radix-5 25->~4; general fallback for
+7/11/13), guarded by `iterative_soa_specialized_matches_dft_oracle`. Deploy by porting its
+specialized DFT branch into the production `mixed_radix_iterative_soa_block`, then re-A/B.
+No further design work — the optimization math is already written and DFT-oracle-validated.
 
 ## 2026-06-21 - frankenjax-ur4h3 QL eigenvector transpose in-place pending-bench
 
