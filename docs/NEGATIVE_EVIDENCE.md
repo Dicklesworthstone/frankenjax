@@ -1786,3 +1786,28 @@ f32 shipped, f64 neutral, i64/half/sign/f32-add-chain are dead-ends with the
 root causes above. Retry predicate: do not re-attempt any row in the table; the
 only remaining fused-chain lever (amortize the runner's fused-output buffer) is
 so4wo runner-arena work, not a fusion-chunk edit.
+
+## 2026-06-21 - scatter-add is a JAX LOSS, not a domination (corrects XLA-CPU-scatter assumption) (CobaltForge/cc)
+
+Tested the assumption that XLA's CPU `Scatter` is a standing weakness (like its
+bitonic `Sort`, which the Rust radix port beats 4x). It is NOT — scatter-add is a
+JAX LOSS for fj-lax. Same-machine (local Zen3 host), 1M f64 1D scatter-add with
+COLLIDING indices (setup copied verbatim from `bench_scatter_add_1m_f64_1d`):
+
+| Side | p50 | mean | min |
+| --- | ---: | ---: | ---: |
+| Rust `eval_primitive(Scatter, mode=add, clip)` | 14.43 ms | 14.30 ms | 10.81 ms |
+| JAX 0.10.1 `op.at[idx].add(upd, mode='clip')` jit x64 | 4.51 ms | 4.80 ms | 2.47 ms |
+
+**Rust/JAX = ~3.2x LOSS** by p50 (4.3x at min), low variance both sides. XLA's CPU
+scatter-add (4.5 ms) is reasonable even under heavy index collision — it does NOT
+serialize pathologically the way its bitonic CPU sort does. So `Scatter` is NOT a
+domination target.
+
+Caveat (honesty): the Rust number is via `eval_primitive`, which boxes the 1M
+operand/output through `Vec<Literal>`; the optimized dense bucketed scatter-add
+(commit f50acd09) may run faster on a dense in/out path, so the true production
+gap could be smaller — but as-invoked through the public eval path it is a 3.2x
+JAX loss. Retry predicate: do not chase scatter as a domination; if scatter perf
+is pursued, the lever is a dense operand+updates path that skips the per-`Literal`
+boxing, measured same-machine vs JAX, not vs a Rust reference.
