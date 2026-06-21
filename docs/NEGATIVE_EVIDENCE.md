@@ -22,10 +22,27 @@ routes to one of three gates.
 | eigh / SVD | (owned: `ur4h3`, WildForge) | — |
 
 **Single highest-leverage unlock: the `cntiy` +fma maintainer decision** — it gates matmul,
-all transcendentals, softmax, and attention simultaneously. Tradeoff: +fma changes f64
-rounding, which breaks the non-fma golden digests (would need a parity-policy decision: match
-JAX's actual fma'd numerics vs keep the current non-fma goldens). Second unlock: a quiesced
-host to measure FFT/threading wins JAX gets from idle cores. Both are outside code-only reach.
+all transcendentals, softmax, and attention simultaneously.
+
+**MEASURED 2026-06-21 (CrimsonOtter) — the +fma FLAG ITSELF IS GOLDEN-SAFE, decomposing the
+decision.** Built fj-lax with `-Ctarget-feature=+avx2,+fma` (isolated target dir) and ran the
+full lib conformance: **1581 pass, 1 fail — and that 1 is the pre-existing cholesky_blocked
+golden drift (shbyh, fails WITHOUT +fma too)**. So +fma breaks ZERO additional goldens. WHY:
+Rust's `fp-contract=off` (which `.cargo/config.toml` already relies on for the +avx2
+bit-identity) prevents any `a*b+c` auto-fusion, and `f64::mul_add` is one-rounding regardless
+of +fma — so the flag only makes EXISTING `mul_add` calls (the fma primitive, arithmetic.rs)
+fast (hardware vs a ~25x libcall), changing NO results. The `.cargo/config.toml` "deliberately
+NOT +fma" comment is about not OPENING the door to kernel `mul_add` rewrites, not the flag
+breaking anything. So the cntiy decision is cleanly two steps:
+  1. **Enable +fma** — golden-safe + free; speeds the fma primitive. (Shared maintainer file.)
+  2. **Rewrite GEMM/exp kernels to `mul_add` / SIMD-poly** — THIS changes results (two->one
+     rounding for GEMM; a different poly for exp), so it needs the matmul/exp goldens updated
+     to the fma-fused values (which match JAX's actual fma'd numerics BETTER). This is the
+     real parity-policy call.
+Net: the flag is a non-issue; the decision is purely "update matmul/exp goldens to JAX-matching
+fma values?". Second unlock: a quiesced host to measure FFT/threading wins JAX gets from idle
+cores. Both still need a maintainer call, but the +fma cost is now quantified (zero flag-level
+golden breakage).
 
 ## 2026-06-21 - frankenjax-ur4h3 fresh BOLD-VERIFY closes small-eigh lane
 
