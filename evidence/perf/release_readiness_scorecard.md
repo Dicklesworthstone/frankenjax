@@ -1580,6 +1580,11 @@ Additional cod-a FFT SoA gate recheck environment:
   (0.159 -> 0.175 -> 0.192 us/elem, only mild superlinear creep). So the ~4x sort
   domination holds at every size, not a 1M cherry-pick — this is the only
   size-INDEPENDENT Rust-over-JAX domination verified.
+- ROBUST ACROSS DTYPE — and STRONGER for JAX's DEFAULT f32 (validated 2026-06-21):
+  1M **f32** sort, same-machine: Rust **p50 33.37ms** vs JAX `jnp.sort` (f32, no
+  x64) **p50 182.30ms** = **5.46x FASTER** (vs 4.06x for f64). Rust's f32 radix is
+  4 passes vs f64's 8, so the lead widens; JAX bitonic is dtype-agnostic (~182ms
+  both). So the domination is fully defensible for the dtype users actually run.
 - Positive BOLD-VERIFY data point (not a loss): a same-machine head-to-head where
   the Rust port DOMINATES JAX. Sort is compute-dominated (the single output alloc
   is negligible vs the sort), so this is a fair algorithm-vs-algorithm test.
