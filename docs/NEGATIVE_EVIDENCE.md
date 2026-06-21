@@ -22,6 +22,12 @@ TYPE inference and `-D warnings` clippy lints only — which still require cargo
 are unaffected (all in `#[cfg(test)]`), but the harness must be confirmed to build before any
 step below runs. If it fails to compile, fix the test before proceeding.
 
+WORKSPACE STRUCTURAL AUDIT (2026-06-21): brace-depth check of ALL 85 `crates/**/src/*.rs`
+files — every one balances to final depth 0 (line-comments stripped; format-string braces
+balance). So after the `fft.rs` fix, NO build-breaking structural (brace) break remains
+anywhere in the workspace, including other agents' no-cargo eigh/linalg edits. The pause's
+remaining build risk is therefore type/lint-level only (cargo-gated), not structural.
+
 The MOMENT cargo returns (after STEP 0), validate + A/B these (each links to its detailed
 entry below):
 
