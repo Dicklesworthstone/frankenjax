@@ -2,9 +2,32 @@
 
 //! FFT primitives: Fft, Ifft, Rfft, Irfft.
 //!
-//! Uses a radix-2 Cooley-Tukey fast path for power-of-two lengths and the
-//! direct O(n²) DFT fallback for other lengths. The 1D transform is applied
-//! along the last axis for each batch (all leading dimensions).
+//! The 1D transform runs along the last axis for each batch row (all leading
+//! dimensions). Per-row engine by length: radix-2 Cooley-Tukey for powers of two,
+//! native mixed-radix for smooth composites (every prime factor <= 13), and
+//! Bluestein (chirp-z) for prime / rough lengths. (The O(n²) `dft_1d`/`idft_1d` are
+//! TEST ORACLES, not a production fallback.)
+//!
+//! ## Batch SoA vectorization (frankenjax-murmw)
+//!
+//! For batches above a floor, the per-row kernels are run *vertically* over the
+//! rows: the batch is transposed to a structure-of-arrays `[index][row]` layout so
+//! each butterfly applies one shared scalar twiddle across a contiguous run of rows,
+//! which the compiler autovectorizes. This is a MEASURED WIN only for FLAT/iterative
+//! kernels, which keep one cache-resident buffer pair:
+//!   - radix-2 full-complex fft/ifft + real-FFT rfft/irfft (~1.6-1.8x),
+//!   - Bluestein via its flat radix-2 convolution FFTs (~3x, m up to 16384),
+//!   - the iterative flat-stage mixed-radix (smooth composites).
+//!
+//! It is a LOSS for the RECURSIVE mixed-radix (no-ship 0.5-0.81x): its three
+//! ping-ponging buffers spill L1 and its strided sub-DFT access does not vectorize —
+//! at any tile size. RULE: SoA-vectorize FLAT kernels, never RECURSIVE ones.
+//!
+//! `transform_batches_dense` dispatch order — pow2 -> Bluestein (non-smooth) ->
+//! iterative mixed-radix (smooth, n <= 1024) -> per-row fallback — partitions every
+//! length exactly once. NB: only same-invocation INTERLEAVED A/B ratios are
+//! trustworthy here; threaded and sequential-old-then-new timings drift badly under
+//! swarm contention.
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use std::f64::consts::PI;
