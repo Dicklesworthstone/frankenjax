@@ -1282,3 +1282,21 @@ target remains **0 wins / 1 loss / 0 neutral** versus JAX; candidate score for
 this pass is **0 kept / 0 rejected by timing / 1 validation-blocked**. Retry
 only after the cbrt WIP is landed/reverted and RCH can reuse a genuinely warm
 target dir, then require a completed same-binary A/B before any dispatch gate.
+
+## 2026-06-21 - REGRESSION CAUGHT: d74a6472 erf speedup broke random_normal RNG golden (CrimsonOtter-Claude/cod-b)
+
+Regression vigilance on HEAD found fj-lax conformance at **1581 pass / 2 fail** (was 1 — the
+pre-existing cholesky drift). NEW failure: `threefry::tests::random_normal_threaded_golden_sha256`.
+ROOT CAUSE (verified): `random_normal` draws normals via `crate::arithmetic::erf_inv_approx`
+(threefry.rs:535/559), and `erf_inv_approx` (arithmetic.rs:9430-9433) does **3 Newton iterations
+calling `erf_approx(y)`**. Commit `d74a6472` ("speed up erf common range", codex cod-b) replaced
+`erf_approx`'s common-range series with fdlibm rational bands — changing its last bits — so
+erf_inv's unconverged last bit changed → `random_normal`'s bytes changed → its bit-exact SHA256
+golden breaks. The codex validated `erf_oracle` (forward erf) + `erf_high_accuracy_and_seam_continuity`
+but NOT the RNG golden (the transitive erf_approx dependency was missed).
+FIX (owner's call, preserves the 4.58x erf win): DECOUPLE `erf_inv_approx`'s Newton from the
+production `erf_approx` — give it a dedicated, stable high-accuracy erf (or pin the old series) so
+random_normal's bits are erf-primitive-independent; OR re-baseline `random_normal_threaded_golden_sha256`
+ONLY after confirming the new erf_inv still matches JAX's `random.normal` bit-for-bit (RNG parity is
+fixed-to-JAX). Reverting d74a6472 also restores GREEN but loses the erf win. Flagged to codex cod-b;
+conformance is RED until resolved.
