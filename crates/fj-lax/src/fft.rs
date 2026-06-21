@@ -2902,7 +2902,13 @@ mod tests {
     /// this test executes when the build pause lifts.)
     #[test]
     fn production_mixed_radix_iterative_soa_matches_reference() {
-        for &n in &[6usize, 10, 12, 14, 15, 21, 30, 35, 77, 143, 360, 700, 1000] {
+        // Includes pure odd-prime-POWER lengths (27=3^3, 49=7^2, 81=3^4, 121=11^2,
+        // 125=5^3, 169=13^2, 343=7^3) — repeated-same-odd-factor digit-reversal/stages
+        // are structurally distinct from mixed-factor composites and could hide a bug.
+        for &n in &[
+            6usize, 10, 12, 14, 15, 21, 27, 30, 35, 49, 77, 81, 121, 125, 143, 169, 343, 360, 700,
+            1000,
+        ] {
             assert!(is_mixed_radix_smooth(n) && n <= MIXED_RADIX_ITERATIVE_SOA_MAX_N);
             for inverse in [false, true] {
                 let roots = precompute_twiddles(n, inverse);
@@ -2941,7 +2947,7 @@ mod tests {
             }
         }
         // Independent O(n^2) DFT oracle on a single row (small n).
-        for &n in &[6usize, 12, 15, 30, 35, 77, 143] {
+        for &n in &[6usize, 12, 15, 27, 30, 35, 49, 77, 121, 125, 143] {
             let input: Vec<(f64, f64)> = (0..n)
                 .map(|i| {
                     let f = i as f64;
