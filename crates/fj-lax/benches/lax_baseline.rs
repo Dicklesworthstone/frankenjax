@@ -387,6 +387,41 @@ fn bench_tanh_1m_f64_vec(c: &mut Criterion) {
     });
 }
 
+fn bench_tan_1m_f64_vec(c: &mut Criterion) {
+    let a: Vec<f64> = (0..1 << 20)
+        .map(|i| ((i % 3001) as f64 - 1500.0) * 0.0005)
+        .collect();
+    let input = Value::vector_f64(&a).unwrap();
+    let p = no_params();
+    c.bench_function("eval/tan_1m_f64_vec_libm_reference", |bencher| {
+        bencher.iter(|| {
+            let tensor = input.as_tensor().unwrap();
+            let src = tensor.elements.as_f64_slice().unwrap();
+            let mut out = vec![0.0; src.len()];
+            let threads = std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1)
+                .min(2);
+            let chunk = src.len().div_ceil(threads);
+            std::thread::scope(|scope| {
+                for (dst, src) in out.chunks_mut(chunk).zip(src.chunks(chunk)) {
+                    scope.spawn(move || {
+                        for (d, &v) in dst.iter_mut().zip(src.iter()) {
+                            *d = v.tan();
+                        }
+                    });
+                }
+            });
+            black_box(Value::Tensor(
+                TensorValue::new_f64_values(tensor.shape.clone(), out).unwrap(),
+            ))
+        })
+    });
+    c.bench_function("eval/tan_1m_f64_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Tan, std::slice::from_ref(&input), &p))
+    });
+}
+
 // 1M sqrt: f64::sqrt is a hardware intrinsic (vsqrtpd) — UNLIKE cbrt/exp which are libm
 // libcalls. If the dense unary fast path autovectorizes the monomorphized f64::sqrt, sqrt
 // should be MUCH faster than cbrt (same loop shape); if they're similar, sqrt is stuck
@@ -6733,6 +6768,7 @@ criterion_group!(
     bench_igamma_256k_f64,
     bench_cbrt_1m_f64_vec,
     bench_tanh_1m_f64_vec,
+    bench_tan_1m_f64_vec,
     bench_sqrt_1m_f64_vec,
     bench_atan2_scalar_1m_f64_vec,
     bench_atan2_scalar_1m_f64_literal_reference,

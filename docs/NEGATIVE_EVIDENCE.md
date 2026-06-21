@@ -37,6 +37,13 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     the user-API owner — out of the fj-lax perf-lever lane.
   - matmul 1024²: JAX 2.91ms (fj-lax loses, `cntiy` +fma-gated). exp 1M: JAX 0.437ms (fj-lax loses,
     cntiy/sweep). sum 1M: JAX 0.111ms (parity-class). Consistent with the gate table below.
+  - **tan 1M f64 small-angle: now flipped to fj-lax WIN — fresh JAX/JAXLIB 0.10.2 CPU x64 mean
+    1.412564ms vs fj-lax 1.1134ms = fj-lax 1.27x FASTER.** The retained path is intentionally
+    scoped: large dense F64 tensors with every element in `[-pi/4, pi/4]` use a Cephes/Remez-style
+    rational kernel; scalar, complex, f32/half, NaN/inf, and general-range tensors stay on the old
+    `libm` route. Same-worker RCH `ovh-a` Criterion also measured the old libm reference at
+    4.6905ms, so the retained Rust-side speedup is 4.21x. Scorecard: **1 win / 0 loss / 0 neutral**
+    for this row.
   - maxpool/reduce_window 256x256 15x15 SAME: JAX 0.5498ms — **PARITY, NOT a domination zone**
     (probed expecting a window-naive O(n·225) JAX path the fj-lax separable-deque would crush;
     XLA's CPU reduce_window is already optimized/separable, so it's fast). Negative result — do not
@@ -92,7 +99,7 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
 | batched gather/scatter (I64/F64/F32) | WIN (1.15-3.6x) | none — suspected loss disproven |
 | sort, reductions, RNG, conv, einsum, dot_general | WIN / parity | none — done |
 | **matmul / GEMM** (256-1024 f64) | **LOSS 4-15x** | **`cntiy` +fma** (already blocked-GEMM + threaded + register microkernel; microkernel is FMA-bound, capped ~XLA/2; pure-safe-Rust, no BLAS) |
-| **transcendental — tolerance-only** (cbrt/erf/tanh/tan, no bit-golden) | LOSS, being MINED non-fma | cod-b sweep (no cntiy needed): cbrt 11.9ms->3.30ms (3.60x, 64c0ded1), erf 21.1ms->6.85ms (4.58x, d74a6472), tanh 6.20ms->4.27ms (1.45x) SHIPPED; tan next. Still JAX-loss (tanh 14.58x, cbrt 1.53x) but closing without +fma |
+| **transcendental — tolerance-only** (cbrt/erf/tanh/tan, no bit-golden) | MIXED: cbrt/erf/tanh still LOSS; guarded small-angle tan now WIN | cod-b sweep (no cntiy needed): cbrt 11.9ms->3.30ms (3.60x, 64c0ded1), erf 21.1ms->6.85ms (4.58x, d74a6472), tanh 6.20ms->4.27ms (1.45x), small-angle tan 4.69ms->1.11ms (4.21x; 1.27x faster than JAX) SHIPPED. General-range tan still falls back to `libm`; remaining losses are exp/FMA-gated or need true SIMD-polynomial range reduction |
 | **transcendental — bit-pinned** (exp/sin/log/asin/acos) | **LOSS** | **`cntiy` +fma** (SIMD-poly = 2.20x WITH / 0.79x WITHOUT — cz0g0) + re-baseline the 5 bit-goldens |
 | softmax / attention (fused) | LOSS (exp-bound, ~1.2x ceiling) | **`cntiy`** — option (b) audited per-fn `target_feature(fma)` SIMD-exp in tolerance sites preserves goldens; or (a) global +fma + golden re-baseline |
 | **FFT pow2 / real** | WIN (1.7-3x SoA) | none — shipped, near safe-Rust ceiling |

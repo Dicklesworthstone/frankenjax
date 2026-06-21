@@ -5448,3 +5448,44 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   credible route needs a generated straight-line/vector kernel, a parity-proofed
   algebraic contraction, or disassembly/perf-counter proof that the current loop
   is leaving real instruction-level parallelism on the table.
+
+## CrimsonOtter / cod-b - guarded small-angle tan rational kernel keep (2026-06-21)
+
+- Scope: `frankenjax-cntiy` tolerance-only transcendental sweep, following the
+  documented `tan next` route. This does **not** close the parent +fma policy
+  bead; it mines a contained non-FMA sub-gap.
+- Alien-graveyard/artifact lever: R11 libm/fenv -> Remez/minimax, compiled
+  offline artifact -> online deterministic polynomial/rational kernel. The
+  production path uses a Cephes-style rational approximation only for large
+  dense F64 tensors whose elements are all finite and inside `[-pi/4, pi/4]`.
+  Scalar, complex, f32/half, NaN/inf, and general-range tensors keep the old
+  `libm` route.
+- Correctness gates:
+  - RCH `hz2` `cargo test -p fj-lax
+    fast_small_tan_large_dense_f64_matches_libm_tolerance --release --
+    --nocapture` passed 1/1; max absolute error vs `f64::tan` was
+    **1.110e-16** against the tan oracle's **1e-10** tolerance class.
+  - RCH `vmi1149989` `cargo test -p fj-conformance --test tan_oracle
+    --release -- --nocapture` passed **36/36**.
+  - RCH `vmi1152480` `cargo test -p fj-conformance --release` passed the full
+    crate test suite and doc-tests, exit 0 in **334780 ms**.
+- Same-worker RCH `ovh-a` Criterion, per-crate filter
+  `tan_1m_f64_vec`, exact fixture `((i % 3001) - 1500) * 0.0005` over 1M f64:
+
+  | row | midpoint | interval |
+  | --- | ---: | ---: |
+  | `eval/tan_1m_f64_vec_libm_reference` | **4.6905 ms** | 4.6740..4.7027 ms |
+  | `eval/tan_1m_f64_vec` | **1.1134 ms** | 1.0941..1.1352 ms |
+
+- Rust-side decision: KEEP. The retained production row is **4.21x** faster
+  than the same-binary libm reference for the guarded row.
+- Fresh JAX comparator: local `uv run --no-project --with 'jax[cpu]'`, JAX
+  **0.10.2**, JAXLIB **0.10.2**, CPU x64, same fixture, 20 warmups + 200 timed
+  `jax.jit(jnp.tan)` calls: mean **1.412564 ms**, p50 **1.383380 ms**, p95
+  **1.727568 ms**.
+- Scorecard: **1 win / 0 loss / 0 neutral** vs JAX for this row. Rust/JAX by
+  mean is **0.788x** (fj-lax **1.27x faster**). This is a scoped small-angle
+  domination, not evidence that general-range tan beats JAX.
+- Retry predicate: do not widen the guard without a real SIMD/range-reduction
+  proof. The remaining transcendental route is true vector polynomial range
+  reduction or the still-open `cntiy` target-feature/FMA policy decision.

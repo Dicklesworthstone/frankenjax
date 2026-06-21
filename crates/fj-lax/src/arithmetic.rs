@@ -66,6 +66,7 @@ fn dense_unary_threads(elems: usize) -> usize {
 }
 
 const SIMD_POLY_TANH_F64_MIN: usize = 1 << 20;
+const FAST_SMALL_TAN_F64_MIN: usize = 1 << 20;
 
 #[inline]
 fn is_float_dtype(dtype: DType) -> bool {
@@ -5726,8 +5727,72 @@ pub(crate) fn eval_tan(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             }
         })
     } else {
+        if let [Value::Tensor(tensor)] = inputs
+            && let Some(value) = fast_small_tan_f64_tensor(tensor)
+        {
+            return Ok(value);
+        }
         eval_unary_elementwise_parallel(primitive, inputs, f64::tan)
     }
+}
+
+fn fast_small_tan_f64_tensor(tensor: &TensorValue) -> Option<Value> {
+    if tensor.dtype != DType::F64 {
+        return None;
+    }
+    let src = tensor.elements.as_f64_slice()?;
+    if src.len() < FAST_SMALL_TAN_F64_MIN
+        || src
+            .iter()
+            .any(|&x| !x.is_finite() || x.abs() > std::f64::consts::FRAC_PI_4)
+    {
+        return None;
+    }
+    Some(Value::Tensor(
+        TensorValue::new_f64_values(tensor.shape.clone(), fast_small_tan_f64_values(src)).ok()?,
+    ))
+}
+
+fn fast_small_tan_f64_values(src: &[f64]) -> Vec<f64> {
+    let mut out = vec![0.0; src.len()];
+    let threads = dense_unary_threads(src.len());
+    if threads > 1 {
+        let chunk = src.len().div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut rest = out.as_mut_slice();
+            let mut start = 0usize;
+            while start < src.len() {
+                let len = chunk.min(src.len() - start);
+                let (blk, tail) = rest.split_at_mut(len);
+                rest = tail;
+                let s = start;
+                scope.spawn(move || {
+                    for (i, dst) in blk.iter_mut().enumerate() {
+                        *dst = fast_small_tan_f64(src[s + i]);
+                    }
+                });
+                start += len;
+            }
+        });
+    } else {
+        for (dst, &x) in out.iter_mut().zip(src) {
+            *dst = fast_small_tan_f64(x);
+        }
+    }
+    out
+}
+
+#[inline]
+fn fast_small_tan_f64(x: f64) -> f64 {
+    let z = x * x;
+    let p = (-1.309_369_391_813_837_7e4 * z + 1.153_516_648_385_874_2e6) * z
+        - 1.795_652_519_764_848_7e7;
+    let q = (((z + 1.368_129_634_706_929_5e4) * z - 1.320_892_344_402_109_7e6) * z
+        + 2.500_838_018_233_579e7)
+        * z
+        - 5.386_957_559_294_546e7;
+    let y = z * p / q;
+    x + x * y
 }
 
 pub(crate) fn eval_sinh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
@@ -23611,6 +23676,29 @@ mod tests {
         assert!(
             max_abs < 1e-10,
             "simd_poly_tanh max abs error {max_abs:.3e} exceeds the 1e-10 oracle tolerance"
+        );
+    }
+
+    #[test]
+    fn fast_small_tan_large_dense_f64_matches_libm_tolerance() {
+        let n = FAST_SMALL_TAN_F64_MIN;
+        let data: Vec<f64> = (0..n)
+            .map(|i| ((i % 3001) as f64 - 1500.0) * 0.0005)
+            .collect();
+        let input = tensor_f64(vec![n as u32], &data);
+        let got = extract_f64_vec(
+            &crate::eval_primitive(Primitive::Tan, &[input], &BTreeMap::new()).unwrap(),
+        );
+        let mut max_abs = 0.0f64;
+        for (&x, &g) in data.iter().zip(&got) {
+            let want = x.tan();
+            let abs = (g - want).abs();
+            max_abs = max_abs.max(abs);
+        }
+        eprintln!("[fast_small_tan] max_abs_err={max_abs:.3e} (oracle bar 1e-10)");
+        assert!(
+            max_abs < 1e-10,
+            "fast_small_tan max abs error {max_abs:.3e} exceeds the 1e-10 oracle tolerance"
         );
     }
 

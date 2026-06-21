@@ -1428,3 +1428,26 @@ Additional cod-a FFT SoA gate recheck environment:
 - Conformance gate after source revert: RCH `vmi1149989`
   `cargo test -p fj-conformance --lib --release -- --nocapture` passed
   **45/45**.
+
+## CrimsonOtter / cod-b - cntiy small-angle tan flips to JAX win (2026-06-21)
+
+- Kept a guarded dense-F64 small-angle tan rational kernel. Scope is deliberately
+  narrow: large dense F64 tensors with all finite elements in `[-pi/4, pi/4]`;
+  scalar, complex, f32/half, NaN/inf, and general-range tan still use the old
+  `libm` path.
+- RCH `ovh-a` per-crate Criterion filter `tan_1m_f64_vec`:
+  `eval/tan_1m_f64_vec_libm_reference` **4.6905 ms** midpoint
+  (`4.6740..4.7027 ms`) vs retained production `eval/tan_1m_f64_vec`
+  **1.1134 ms** (`1.0941..1.1352 ms`) = **4.21x** Rust-side speedup.
+- Fresh JAX/JAXLIB 0.10.2 CPU x64 comparator for the exact 1M fixture measured
+  mean **1.412564 ms**, p50 **1.383380 ms**, p95 **1.727568 ms**. Rust/JAX by
+  mean is **0.788x**, so fj-lax is **1.27x faster** on this row.
+- Correctness: RCH `hz2` focused fj-lax accuracy test passed 1/1 with max abs
+  error **1.110e-16** vs `f64::tan`; RCH `vmi1149989`
+  `fj-conformance --test tan_oracle --release` passed **36/36**; RCH
+  `vmi1152480` `cargo test -p fj-conformance --release` passed the full crate
+  test suite and doc-tests, exit 0 in **334780 ms**.
+- Scorecard delta: **1 win / 0 loss / 0 neutral** vs JAX; candidate disposition
+  **1 kept / 0 reverted**. Parent `frankenjax-cntiy` remains open because the
+  +fma/target-feature policy still gates exp, softmax/attention, GEMM, and
+  general SIMD transcendental range reduction.
