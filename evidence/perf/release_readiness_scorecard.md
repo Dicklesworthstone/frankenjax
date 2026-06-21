@@ -1531,11 +1531,18 @@ Additional cod-a FFT SoA gate recheck environment:
   (4.63x) is worker-independent. The same eager `floor_f32` chain measured
   **901.85 us** (candidate worker), then **33.9 us** on `hz2` and the `floor_f64`
   sibling **773 us** elsewhere — a ~25x cross-worker spread on identical code.
-  On a fast worker (`hz2`) the post-fix `floor_f32` chain is **33.9 us**, i.e.
-  FASTER than the recorded JAX comparator (`floor_f32_1m` **103.966 us** mean,
-  `frankenjax-xjbvr`); but worker-matched JAX timing was not captured, so the
-  keep rests on the bit-identical same-binary 4.63x, not on a JAX-domination
-  claim. Same disposition as the atan2/pow threading keeps.
+  The earlier draft inferred "33.9 us on `hz2` beats JAX 104 us" — that was a
+  fast-worker artifact and is RETRACTED. SAME-MACHINE head-to-head (local Zen3
+  host, post-fix): Rust `eval_jaxpr` floor_f32 (add+floor)x4 1M **p50 647.92 us /
+  mean 735.82 us / min 466.55 us** vs locally-measured JAX 0.10.1 f32
+  (jit, block_until_ready) **p50 145.26 us / mean 162.71 us / min 110.39 us** =
+  **~4.5x JAX loss** by p50. So post-fix is STILL a JAX loss; the 4.63x fix closed
+  it from ~21x (= 4.5 x 4.63, consistent with xljoh.1's f64-1M 20.36x) to ~4.5x.
+  The residual is the interpreter per-call tax (env build + output alloc +
+  multi-pass step-outer fusion) vs XLA's single fused pass — the contended
+  compiled-dispatch frontier (t22rd/so4wo), NOT the unary kernel. Keep stands on
+  the bit-identical same-binary 4.63x (same disposition as the atan2/pow keeps),
+  not on JAX domination.
 - Scorecard delta: **0 wins / 1 loss / 0 neutral** vs JAX (floor_f32 chain);
   candidate disposition **1 kept / 0 reverted**.
 - Gates: RCH `fj-interpreters` fusion tests **15/15** incl.
