@@ -24,25 +24,26 @@ routes to one of three gates.
 **Single highest-leverage unlock: the `cntiy` +fma maintainer decision** — it gates matmul,
 all transcendentals, softmax, and attention simultaneously.
 
-**MEASURED 2026-06-21 (CrimsonOtter) — the +fma FLAG ITSELF IS GOLDEN-SAFE, decomposing the
-decision.** Built fj-lax with `-Ctarget-feature=+avx2,+fma` (isolated target dir) and ran the
-full lib conformance: **1581 pass, 1 fail — and that 1 is the pre-existing cholesky_blocked
-golden drift (shbyh, fails WITHOUT +fma too)**. So +fma breaks ZERO additional goldens. WHY:
-Rust's `fp-contract=off` (which `.cargo/config.toml` already relies on for the +avx2
-bit-identity) prevents any `a*b+c` auto-fusion, and `f64::mul_add` is one-rounding regardless
-of +fma — so the flag only makes EXISTING `mul_add` calls (the fma primitive, arithmetic.rs)
-fast (hardware vs a ~25x libcall), changing NO results. The `.cargo/config.toml` "deliberately
-NOT +fma" comment is about not OPENING the door to kernel `mul_add` rewrites, not the flag
-breaking anything. So the cntiy decision is cleanly two steps:
-  1. **Enable +fma** — golden-safe + free; speeds the fma primitive. (Shared maintainer file.)
-  2. **Rewrite GEMM/exp kernels to `mul_add` / SIMD-poly** — THIS changes results (two->one
-     rounding for GEMM; a different poly for exp), so it needs the matmul/exp goldens updated
-     to the fma-fused values (which match JAX's actual fma'd numerics BETTER). This is the
-     real parity-policy call.
-Net: the flag is a non-issue; the decision is purely "update matmul/exp goldens to JAX-matching
-fma values?". Second unlock: a quiesced host to measure FFT/threading wins JAX gets from idle
-cores. Both still need a maintainer call, but the +fma cost is now quantified (zero flag-level
-golden breakage).
+**+fma decomposition (per the documented PARITY ANALYSIS — NOT a fresh measurement; see
+correction below).** The analysis in memory `project_fma_lever_policy_blocked` (BlackThrush/
+CoralReef) holds that the +fma FLAG itself is bit-identical: Rust's `fp-contract=off` (which
+`.cargo/config.toml` relies on for the +avx2 bit-identity) blocks `a*b+c` auto-fusion, and
+`f64::mul_add` is one-rounding regardless of +fma — so the flag only makes EXISTING `mul_add`
+calls (the fma primitive) fast, changing no results. The gated part is step 2 (kernel rewrites
+to `mul_add`/SIMD-poly), which DOES change results and needs matmul/exp goldens updated to the
+fma-fused (JAX-matching) values. So cntiy = (1) enable +fma [analysis says golden-safe, free] +
+(2) kernel rewrites + golden updates [the real parity-policy call].
+
+**CORRECTION 2026-06-21 (CrimsonOtter): I tried to MEASURE step 1's golden-safety via
+`rch exec -- env RUSTFLAGS="-Ctarget-feature=+avx2,+fma" cargo test` and it DID NOT actually
+apply +fma — RUSTFLAGS does not propagate to the rch worker (only `.cargo/config.toml` does;
+the prior note already documented this). Proof: the `cz0g0 bench_fma_vs_nonfma_matmul` in that
+same build still shows `fma=0.90x` (mul_add still a libcall, not hardware fma). So my earlier
+"1581 pass under +fma" was a NORMAL +avx2 run, NOT a +fma test — the golden-safety claim is
+ANALYSIS-backed only, still UNVERIFIED empirically. To actually test +fma you must COMMIT the
+flag to `.cargo/config.toml` (maintainer's call) and re-run conformance.**
+
+Second unlock: a quiesced host to measure FFT/threading wins JAX gets from idle cores.
 
 ## 2026-06-21 - frankenjax-ur4h3 fresh BOLD-VERIFY closes small-eigh lane
 
