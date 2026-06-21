@@ -1755,3 +1755,34 @@ same-worker Rust deltas are large. Scorecard versus JAX for this pass remains
 **0 wins / 2 losses / 0 neutral**. Retry predicate: do not repeat boxed-literal
 fan-out work; the remaining JAX gap needs true vector range-reduced pow/atan2
 or the broader `cntiy` target-feature/codegen policy lane.
+
+## 2026-06-21 - frankenjax fusion-chunk unary family: f32 hoist KEPT, 5 dead-ends (CobaltForge/cc)
+
+Context: shipped `294c836f` — hoisted the unary `CheapOp` match out of the
+per-element loop in `apply_f32_fusion_chunk`/`apply_fusion_chunk`. f32 fused
+floor/round/sign chains **+4.63x** (same-binary A/B, bit-identical, conformance
+45/45). This entry records the NEGATIVE results mapped around that win so the
+family is not re-mined. All ratios are same-binary or same-machine (rch `exec`
+has no `--worker` pin, so cross-invocation absolutes span ~25x and are untrusted).
+
+| Dead-end | A/B (same-binary unless noted) | Verdict |
+| --- | --- | --- |
+| Native-f32 `roundps` single-op kernel | widen 74.07us vs direct 76.51us = **1.03x slower** | Kernel not the bottleneck; widen already vectorizes; single-op f32 floor 74us already beats JAX ~104us |
+| f64 op-match hoist in `apply_fusion_chunk` | in-loop 1.86ms vs hoisted 1.86ms = **1.00x** | LLVM already unswitches the non-widening f64 path; f64 hoist kept only for symmetry (neutral, bit-identical) |
+| `sign` vectorization | branchless-scalar **0.99x**; std::simd masks hit nightly trait-drift | Rare op, sub-ms; fragile. Do not re-chase |
+| f32 register-resident scalar-add-chain SIMD (f64 sibling of n75xr) | per_pass 1.2345ms vs register_simd 2.8475ms = **0.43x (2.3x SLOWER)** | f32's widen-per-step contract forces vcvtps2pd/vcvtpd2ps casts per add that dominate; f64 wins only because native contract needs no cast |
+| i64/half fusion-chunk hoist | same pattern but no 1M bench; half decode-bound; i64 unary niche | Unproven scope creep; left untouched |
+
+Same-machine floor_f32 head-to-head (local Zen3 host, post-fix): Rust eager
+`eval_jaxpr` **p50 647.92us** / runner **p50 641.05us** vs JAX 0.10.1 jit f32
+**p50 145.26us** = **~4.5x JAX loss**. The fix closed the gap ~21x -> ~4.5x; the
+residual is the per-call fused-output 4MB alloc + multi-pass fusion vs XLA
+single-pass — the `CompiledJaxprRunner` does NOT amortize the fused-output alloc
+(`try_fuse_elementwise_chain_f32` allocates fresh every call). That residual lever
+is so4wo (owned) and was handed to its owner with the root cause.
+
+Decision: KEEP the f32 hoist (bit-identical 4.63x). The family is exhausted —
+f32 shipped, f64 neutral, i64/half/sign/f32-add-chain are dead-ends with the
+root causes above. Retry predicate: do not re-attempt any row in the table; the
+only remaining fused-chain lever (amortize the runner's fused-output buffer) is
+so4wo runner-arena work, not a fusion-chunk edit.
