@@ -27,6 +27,10 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     shared-target toolchain drift recovered after a clean bench rebuild; top_k now measured).
   - matmul 1024²: JAX 2.91ms (fj-lax loses, `cntiy` +fma-gated). exp 1M: JAX 0.437ms (fj-lax loses,
     cntiy/sweep). sum 1M: JAX 0.111ms (parity-class). Consistent with the gate table below.
+  - maxpool/reduce_window 256x256 15x15 SAME: JAX 0.5498ms — **PARITY, NOT a domination zone**
+    (probed expecting a window-naive O(n·225) JAX path the fj-lax separable-deque would crush;
+    XLA's CPU reduce_window is already optimized/separable, so it's fast). Negative result — do not
+    re-chase pooling as a JAX-loss lever.
   - **cumsum 4M 1D: now flipped to fj-lax WIN — fresh JAX 18.318ms vs fj-lax 7.5297ms = fj-lax 2.43x FASTER.**
     Path = `scan_contiguous_lines_to_vec` single-line `op(acc,value)` + `out.push(acc)` loop
     (reduction.rs ~3133). DIAGNOSED (A/B, bench `cumsum_4m_f64_1d_tight`): a TIGHT raw direct-add
