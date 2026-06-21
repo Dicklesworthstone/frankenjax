@@ -2,6 +2,28 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-20 - frankenjax-murmw SoA Bluestein (prime / rough length) batch FFT — SHIPPED win (2.85-3.19x)
+
+The mixed-radix SoA no-ship (below) does NOT generalize to Bluestein, because Bluestein's
+two internal convolution FFTs are the **flat radix-2** kernel (`radix2_forward`/`_inverse`),
+not the recursive mixed-radix — so they vectorize well through the already-proven
+`vectorized_pow2_block`. Added `transform_batches_bluestein_vectorized`: per row tile, the
+chirp pre-multiply, kernel pointwise multiply, and chirp post-multiply are vectorized
+vertically over rows, and the forward + inverse pow2 convolution FFTs run as SoA batches.
+Gated into `transform_batches_dense` for non-pow2 non-smooth lengths (batch≥8, conv length
+`m ≤ BLUESTEIN_SOA_MAX_M`).
+
+**Bit-identical** to per-row `BluesteinPlan::apply_into` (same chirp arithmetic, same radix-2
+plans, same kernel `fb`, same `1/m` and `1/n` scales) — proven by
+`vectorized_bluestein_bit_identical_to_per_row` (n ∈ {3,7,11,13,17,23,127,257,1009}, both
+directions, batch 1..11), `fft_oracle` 27/27, 47/47 fft tests, clippy clean.
+
+Measured single-thread same-binary A/B (interleaved min-of-9): n=127 (m=256) **3.19x / 3.10x**;
+n=1009 (m=2048) **3.07x / 2.85x**. The win is ~2x the rfft/irfft ratio because Bluestein does
+far more work per element (two FFTs + chirp + kernel), so vectorizing all of it compounds —
+and it holds at *large* m (unlike mixed-radix) precisely because the kernel is flat radix-2.
+This roughly halves the `fft_1009_prime` JAX gap (was 3.83x slower) toward parity.
+
 ## 2026-06-20 - frankenjax-murmw SoA mixed-radix (composite) batch FFT — no-ship (0.50-0.81x regression, large AND small n)
 
 After the pow2 fft/ifft/rfft/irfft SoA wins, the natural extension was to SoA-vectorize

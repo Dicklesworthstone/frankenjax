@@ -1006,6 +1006,129 @@ fn mixed_radix_into(
     }
 }
 
+/// Convolution-length ceiling for the SoA Bluestein path. The two internal pow2
+/// FFTs are the proven flat radix-2 kernel (`vectorized_pow2_block`), but the
+/// Bluestein tile needs several `tile*m` buffers; cap `m` so they stay cache-warm.
+const BLUESTEIN_SOA_MAX_M: usize = 4096;
+const BLUESTEIN_TILE_ROWS: usize = 4;
+
+/// Cache-blocked batched Bluestein FFT/IFFT via the SoA kernel: the chirp pre/post
+/// multiplies and the kernel pointwise multiply are vectorized vertically over a
+/// row tile, and the two internal pow2 convolution FFTs run through the proven
+/// `vectorized_pow2_block`. Bit-identical to per-row `BluesteinPlan::apply_into`
+/// (same chirp arithmetic, same radix-2 plans, same kernel `fb`, same `1/n` scale).
+fn transform_batches_bluestein_vectorized(
+    plan: &BluesteinPlan,
+    elements: &[(f64, f64)],
+    n: usize,
+    batch_size: usize,
+) -> Vec<(f64, f64)> {
+    let m = plan.m;
+    let inv_n = if plan.inverse { 1.0 / (n as f64) } else { 1.0 };
+    let total = batch_size * n;
+    let mut out: Vec<(f64, f64)> = vec![(0.0, 0.0); total];
+
+    const PARALLEL_MIN_ELEMS: usize = 1 << 18;
+    let threads = if batch_size.saturating_mul(m) >= PARALLEL_MIN_ELEMS && batch_size > 1 {
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            .min(batch_size)
+    } else {
+        1
+    };
+
+    let run_block = |elem: &[(f64, f64)], rows: usize, out_blk: &mut [(f64, f64)]| {
+        let cap = BLUESTEIN_TILE_ROWS * m;
+        let mut a = vec![(0.0, 0.0); cap]; // a -> prod (reused)
+        let mut fa = vec![(0.0, 0.0); cap]; // fa -> conv (reused)
+        let mut re = vec![0.0f64; cap];
+        let mut im = vec![0.0f64; cap];
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let tile = BLUESTEIN_TILE_ROWS.min(rows - row0);
+            let w = tile;
+            let span = w * m;
+            // a[b*m + j] = chirp[j] * input_row_b[j] for j<n, else 0.
+            for slot in a[..span].iter_mut() {
+                *slot = (0.0, 0.0);
+            }
+            for b in 0..tile {
+                let src = &elem[(row0 + b) * n..(row0 + b) * n + n];
+                for j in 0..n {
+                    let (cr, ci) = plan.chirp[j];
+                    let (xr, xi) = src[j];
+                    a[b * m + j] = (xr * cr - xi * ci, xr * ci + xi * cr);
+                }
+            }
+            // Forward convolution FFT (SoA): fa <- FFT(a).
+            vectorized_pow2_block(
+                &plan.radix2_forward,
+                &a[..span],
+                w,
+                m,
+                false,
+                &mut re[..span],
+                &mut im[..span],
+                &mut fa[..span],
+            );
+            // Pointwise kernel multiply: a (reused as prod) = fa * fb.
+            for b in 0..tile {
+                for p in 0..m {
+                    let (ar, ai) = fa[b * m + p];
+                    let (br, bi) = plan.fb[p];
+                    a[b * m + p] = (ar * br - ai * bi, ar * bi + ai * br);
+                }
+            }
+            // Inverse convolution FFT (SoA, scales by 1/m): fa (reused as conv) <- IFFT(prod).
+            vectorized_pow2_block(
+                &plan.radix2_inverse,
+                &a[..span],
+                w,
+                m,
+                true,
+                &mut re[..span],
+                &mut im[..span],
+                &mut fa[..span],
+            );
+            // Post-chirp + 1/n inverse scale: out[k] = chirp[k]*conv[k]*inv_n, k<n.
+            for b in 0..tile {
+                let dst = &mut out_blk[(row0 + b) * n..(row0 + b) * n + n];
+                for (k, slot) in dst.iter_mut().enumerate() {
+                    let (cr, ci) = plan.chirp[k];
+                    let (vr, vi) = fa[b * m + k];
+                    *slot = ((cr * vr - ci * vi) * inv_n, (cr * vi + ci * vr) * inv_n);
+                }
+            }
+            row0 += tile;
+        }
+    };
+
+    if threads <= 1 {
+        run_block(elements, batch_size, &mut out);
+        return out;
+    }
+
+    let rows_per = batch_size.div_ceil(threads);
+    let run_block_ref = &run_block;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [(f64, f64)] = out.as_mut_slice();
+        let mut row0 = 0usize;
+        while row0 < batch_size {
+            let rows = rows_per.min(batch_size - row0);
+            let (blk, tail) = rest.split_at_mut(rows * n);
+            rest = tail;
+            let base = row0 * n;
+            let src = &elements[base..base + rows * n];
+            scope.spawn(move || {
+                run_block_ref(src, rows, blk);
+            });
+            row0 += rows;
+        }
+    });
+    out
+}
+
 /// Per-row transform engine for a batch of equal-length rows. Built once and
 /// shared across rows: power-of-two lengths use radix-2, smooth composite lengths
 /// use mixed-radix (caching the roots table), and everything else uses a cached
@@ -1098,6 +1221,22 @@ fn transform_batches_dense(
     const POW2_VECTORIZED_MIN_BATCH: usize = 8; // A/B TOGGLE: MAX=HEAD baseline, 8=vectorized
     if n > 1 && n.is_power_of_two() && batch_size >= POW2_VECTORIZED_MIN_BATCH {
         return transform_batches_pow2_vectorized(elements, n, batch_size, inverse);
+    }
+
+    // Bluestein-eligible lengths (non-pow2, non-smooth-composite, i.e. large-prime
+    // or rough) run the SoA Bluestein path: the chirp/kernel work and the two
+    // internal pow2 convolution FFTs vectorize across rows via the proven flat
+    // radix-2 kernel. Capped at `BLUESTEIN_SOA_MAX_M` so the tile buffers stay
+    // cache-warm. Bit-identical to per-row `BluesteinPlan::apply_into`.
+    const BLUESTEIN_VECTORIZED_MIN_BATCH: usize = 8;
+    if n > 1
+        && batch_size >= BLUESTEIN_VECTORIZED_MIN_BATCH
+        && !n.is_power_of_two()
+        && !is_mixed_radix_smooth(n)
+        && (2 * n - 1).next_power_of_two() <= BLUESTEIN_SOA_MAX_M
+    {
+        let bplan = BluesteinPlan::new(n, inverse);
+        return transform_batches_bluestein_vectorized(&bplan, elements, n, batch_size);
     }
 
     // Shared, immutable per-row plan (built once): radix-2 / mixed-radix / Bluestein.
@@ -2459,6 +2598,95 @@ mod tests {
             new_min as f64 / 1e6,
             old_min as f64 / new_min as f64,
         );
+    }
+
+    /// The vectorized SoA Bluestein kernel must be bit-for-bit identical to the
+    /// per-row `BluesteinPlan::apply_into`, across prime / rough lengths, batch
+    /// counts, and both FFT and IFFT.
+    #[test]
+    fn vectorized_bluestein_bit_identical_to_per_row() {
+        let bits = |v: &[(f64, f64)]| -> Vec<(u64, u64)> {
+            v.iter().map(|&(r, i)| (r.to_bits(), i.to_bits())).collect()
+        };
+        for &n in &[3usize, 7, 11, 13, 17, 23, 127, 257, 1009] {
+            for inverse in [false, true] {
+                let plan = BluesteinPlan::new(n, inverse);
+                for &batch in &[1usize, 3, 4, 8, 11] {
+                    let elements: Vec<(f64, f64)> = (0..batch * n)
+                        .map(|i| {
+                            let f = i as f64;
+                            ((f * 0.023).sin() - 0.3, (f * 0.017).cos() * 0.7)
+                        })
+                        .collect();
+                    let mut reference = vec![(0.0, 0.0); batch * n];
+                    let mut scratch = BluesteinScratch::default();
+                    let mut ob = Vec::new();
+                    for b in 0..batch {
+                        plan.apply_into(&elements[b * n..b * n + n], &mut scratch, &mut ob);
+                        reference[b * n..b * n + n].copy_from_slice(&ob);
+                    }
+                    let got = transform_batches_bluestein_vectorized(&plan, &elements, n, batch);
+                    assert_eq!(
+                        bits(&reference),
+                        bits(&got),
+                        "bluestein SoA != per-row (n={n} batch={batch} inverse={inverse})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Same-binary A/B for the SoA Bluestein kernel (frankenjax-murmw): OLD = per-row
+    /// `BluesteinPlan::apply_into`; NEW = SoA tiled. Interleaved min-of-9
+    /// single-thread ratio at a small prime (m=256) and the benchmarked n=1009
+    /// (m=2048); run with `--ignored --nocapture`.
+    #[test]
+    #[ignore = "informational micro-bench; run with --ignored --nocapture"]
+    fn bench_vectorized_bluestein_vs_per_row() {
+        for &(n, rows) in &[(127usize, 2048usize), (1009usize, 256usize)] {
+            let plan = BluesteinPlan::new(n, false);
+            let elements: Vec<(f64, f64)> = (0..rows * n)
+                .map(|i| {
+                    let f = i as f64;
+                    ((f * 0.023).sin(), (f * 0.017).cos())
+                })
+                .collect();
+            let run_old = || -> (u64, u64) {
+                let mut out = vec![(0.0, 0.0); rows * n];
+                let mut scratch = BluesteinScratch::default();
+                let mut ob = Vec::new();
+                let t0 = std::time::Instant::now();
+                for b in 0..rows {
+                    plan.apply_into(&elements[b * n..b * n + n], &mut scratch, &mut ob);
+                    out[b * n..b * n + n].copy_from_slice(&ob);
+                }
+                let dt = t0.elapsed().as_nanos() as u64;
+                (dt, out[0].0.to_bits() ^ out[rows * n / 2].1.to_bits())
+            };
+            let run_new = || -> (u64, u64) {
+                let t0 = std::time::Instant::now();
+                let out = transform_batches_bluestein_vectorized(&plan, &elements, n, rows);
+                let dt = t0.elapsed().as_nanos() as u64;
+                (dt, out[0].0.to_bits() ^ out[rows * n / 2].1.to_bits())
+            };
+            let (mut old_min, mut new_min) = (u64::MAX, u64::MAX);
+            let mut chk = 0u64;
+            for _ in 0..9 {
+                let (o, co) = run_old();
+                let (nn, cn) = run_new();
+                chk ^= co ^ cn;
+                old_min = old_min.min(o);
+                new_min = new_min.min(nn);
+            }
+            std::hint::black_box(chk);
+            let mm = (2 * n - 1).next_power_of_two();
+            eprintln!(
+                "[bluestein SoA {rows}x{n} m={mm}] 1T per-row={:.3}ms soa={:.3}ms ratio={:.2}x (min of 9 interleaved)",
+                old_min as f64 / 1e6,
+                new_min as f64 / 1e6,
+                old_min as f64 / new_min as f64,
+            );
+        }
     }
 
     /// The vectorized SoA inverse-real-FFT kernel must be bit-for-bit identical to
