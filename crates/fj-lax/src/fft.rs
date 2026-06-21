@@ -3260,6 +3260,10 @@ mod tests {
                     (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9,
                     "specialized iterative != idft_1d (n={n} k={k})"
                 );
+            }
+        }
+    }
+
     /// END-TO-END DISPATCH integration test: drives `transform_batches_dense` (the
     /// function `eval_fft`/`eval_ifft` call) at batch >= 8 across lengths that hit EVERY
     /// routing branch, and checks each row against the independent O(n^2) `dft_1d`/`idft_1d`
@@ -3295,6 +3299,10 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
     /// THREADED-PATH validation for the shipped SoA routes. Every other SoA bit-identity
     /// test uses a small batch that stays single-threaded; this one forces batches large
     /// enough to cross the `1<<18`-element threading floor so `transform_batches_dense`
