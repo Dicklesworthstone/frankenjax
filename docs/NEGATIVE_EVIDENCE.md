@@ -1811,3 +1811,30 @@ gap could be smaller — but as-invoked through the public eval path it is a 3.2
 JAX loss. Retry predicate: do not chase scatter as a domination; if scatter perf
 is pursued, the lever is a dense operand+updates path that skips the per-`Literal`
 boxing, measured same-machine vs JAX, not vs a Rust reference.
+
+## 2026-06-21 - maxpool/reduce_window is a JAX LOSS + META-LESSON: internal speedups != JAX dominations (CobaltForge/cc)
+
+Tested reduce_window(max) as a domination candidate (memory claims "deque pooling
+20x"). It is a JAX LOSS. Same-machine (local Zen3 host), 256x256 / 15x15 window,
+VALID, setup copied verbatim from `bench_maxpool_large_separable`:
+
+| Side | p50 | mean | min |
+| --- | ---: | ---: | ---: |
+| Rust `eval_primitive(ReduceWindow, max)` | 1127.11 us | 1165.92 us | 1085.09 us |
+| JAX 0.10.1 `lax.reduce_window(max, VALID)` jit x64 | 484.10 us | 509.92 us | 403.21 us |
+
+**Rust/JAX = ~2.3x LOSS** by p50 (2.7x at min). The deque/separable "20x" in
+memory is RUST-INTERNAL (deque O(n) vs naive O(n*k)); XLA's `reduce_window` is a
+well-optimized vectorized window reduction, so vs JAX it is a loss.
+
+META-LESSON (the valuable part): this is the SECOND "expected domination" that
+turned out a JAX LOSS this session (scatter-add ~3.2x, maxpool ~2.3x). Most of the
+"Nx faster" perf numbers in the ledgers/memory are RUST-INTERNAL speedups (vs a
+Rust naive/reference baseline), NOT Rust-vs-JAX. The verified Rust-OVER-JAX
+domination set is much smaller than those numbers suggest — so far only `sort`
+(LSD radix 4.06x faster than XLA CPU bitonic) holds up under a same-machine
+head-to-head; `scatter`, `maxpool`, and the `floor_f32` fused chain are all JAX
+losses. Retry predicate: before claiming any "DOMINATE JAX" win, verify it
+same-machine vs an actual JAX run — do not infer domination from an internal
+speedup ratio. (Same boxing caveat: Rust numbers are via `eval_primitive`, which
+boxes the output; a dense path may narrow but is unlikely to flip these.)
