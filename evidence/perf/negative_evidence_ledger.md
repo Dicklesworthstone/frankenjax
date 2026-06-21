@@ -3,6 +3,58 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-ur4h3 - fresh BOLD-VERIFY closes small-eigh lane
+
+- Date: 2026-06-21
+- Agent: cod-b / CrimsonOtter
+- Status: VERIFIED WIN / CLOSE. Fresh re-authenticated BOLD-VERIFY reran the
+  cod-b per-crate Criterion gate and an exact JAX comparator. The allocator/copy
+  keep from `2859e41c` still holds; no new production code lever was attempted.
+- Alien-graveyard/extreme-optimization route:
+  - Candidate family: communication-avoiding dense linear algebra / panel
+    Householder (`alien_cs_graveyard.md` section 9.6) with the explicit
+    constants warning from the graveyard failure-mode taxonomy.
+  - EV decision: below threshold for this bead because the remaining measured
+    48x48 row is already faster than JAX, and the prior small-Jacobi and naive
+    symmetric-reduction routes are recorded no-ships. A blocked/panel reducer
+    remains a future large-n lever only if a fresh same-worker profile shows an
+    actual large-matrix gap.
+
+Remote bench proof:
+
+```text
+AGENT_NAME=CrimsonOtter \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+RCH_REQUIRE_REMOTE=1 \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline \
+  'linalg/(eigh_48x48_f64|svd_48x48_f64)' -- \
+  --warm-up-time 1 --measurement-time 3 --sample-size 15 --noplot
+```
+
+- The literal requested `cargo bench --release` form was tried first and failed
+  remotely on RCH worker `ovh-a` because Cargo rejects `--release` for `bench`.
+  The valid Criterion bench form above was then run remotely on the same worker.
+- RCH worker: `ovh-a`; no local cargo build and no new `.scratch` or worktree.
+- Rust Criterion midpoint:
+  - `linalg/eigh_48x48_f64`: **200.13 us** (`188.93..223.75 us`)
+  - `linalg/svd_48x48_f64`: **105.50 us** (`105.44..105.53 us`)
+
+Fresh exact JAX/JAXLIB comparator:
+
+- JAX/JAXLIB: 0.10.1 / 0.10.1, CPU backend, `jax_enable_x64=true`.
+- Fixture: exact `lax_baseline.rs` 48x48 inputs (`bench_eigh_48` and
+  `real_matrix(48,48)`), 60 runs x 100 inner loops.
+
+| workload | Rust midpoint | JAX mean | Rust/JAX | verdict |
+| --- | ---: | ---: | ---: | --- |
+| `linalg/eigh_48x48_f64` | 200.13 us | 293.517 us | 0.682 | Rust win; no remaining small-eigh JAX loss |
+| `linalg/svd_48x48_f64` | 105.50 us | 622.642 us | 0.169 | Existing Rust win strengthened |
+
+Conclusion: close `frankenjax-ur4h3` rather than re-open allocator/copy
+micro-levers or force a constants-heavy blocked/panel eigensolver into a
+48x48 row that is already winning. Reopen only with fresh evidence of a real
+large-n JAX/upstream loss.
+
 ## frankenjax-ur4h3 - eigh allocator/copy-reduction stack KEEP
 
 - Date: 2026-06-21

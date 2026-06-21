@@ -2,6 +2,50 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-21 - frankenjax-ur4h3 fresh BOLD-VERIFY closes small-eigh lane
+
+Fresh re-authenticated BOLD-VERIFY reran the cod-b per-crate Criterion gate and
+the exact JAX comparator for the remaining `ur4h3` 48x48 rows. The allocator/copy
+stack kept by `2859e41c` still holds; no new source lever was attempted because
+the measured target is already a Rust win.
+
+The literal requested `cargo bench --release` form was tried first and failed
+remotely on RCH `ovh-a` because Cargo rejects `--release` for `bench`. The valid
+Criterion bench command was then run remotely, still per-crate and using the
+warm cod-b target request:
+
+```text
+AGENT_NAME=CrimsonOtter \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+RCH_REQUIRE_REMOTE=1 \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline \
+  'linalg/(eigh_48x48_f64|svd_48x48_f64)' -- \
+  --warm-up-time 1 --measurement-time 3 --sample-size 15 --noplot
+```
+
+RCH selected `ovh-a`; no local cargo build and no new `.scratch` or worktree were
+created. Fresh Rust Criterion midpoints:
+
+- `linalg/eigh_48x48_f64`: **200.13 us** (`188.93..223.75 us`)
+- `linalg/svd_48x48_f64`: **105.50 us** (`105.44..105.53 us`)
+
+Fresh JAX/JAXLIB 0.10.1 x64 comparator used the exact `lax_baseline.rs` fixtures
+(`bench_eigh_48` and `real_matrix(48,48)`), 60 runs x 100 inner loops, CPU
+backend:
+
+| Row | Rust RCH midpoint | JAX mean | Rust/JAX | Verdict |
+| --- | ---: | ---: | ---: | --- |
+| `linalg/eigh_48x48_f64` | 200.13 us | 293.517 us | 0.682 | Rust win; no remaining small-eigh JAX loss |
+| `linalg/svd_48x48_f64` | 105.50 us | 622.642 us | 0.169 | Existing Rust win strengthened |
+
+Alien-graveyard/extreme-optimization decision: the relevant radical lever is
+communication-avoiding/panel Householder dense linear algebra, but the
+graveyard constants warning applies here. Since the current 48x48 target is
+already faster than JAX and prior small-Jacobi / naive symmetric-reduction
+variants are recorded no-ships, the EV gate rejects a new production code
+attempt for this bead. Reopen only with fresh large-n evidence showing an actual
+upstream/JAX gap.
+
 ## PENDING-BENCH RESUME INDEX (open as of 2026-06-21, disk-critical no-cargo pause)
 
 The disk-low/critical pause accumulated production perf routes that shipped
