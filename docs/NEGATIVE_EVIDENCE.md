@@ -25,6 +25,10 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     vs JAX 13.29ms = ~26.7x**, **argsort 64k = fj-lax 1.17ms vs JAX 15.07ms = ~12.9x**, **sort 64k =
     fj-lax 1.25ms vs JAX 12.51ms = ~10x** (fj-lax partial-selects / real sort; XLA full-sorts via
     bitonic network). This is fj-lax's single biggest domination zone — JAX-CPU's worst surface.
+    REAL-WORLD-DTYPE CHECK: the domination is NOT an x64 artifact — in JAX's DEFAULT f32, **JAX sort
+    64k f32 = 12.25ms ≈ its f64 (12.51ms)** (XLA's bitonic sort is dtype-agnostic-slow), so fj-lax
+    (sort ≤ its f64 1.25ms) still wins ≥10x in the dtype JAX users actually run. (fj-lax f32 exact
+    pending — recurring rch two-stage-grep capture flake on the bench-time line.)
   - OPPORTUNITY (feature gap, not a perf lever for fj-lax): **median/percentile/quantile** are
     sort-based and JAX-CPU-slow (median 1M = **226ms**, argsort-backed), but frankenjax has NO
     user-facing median/percentile (only internal `median_ms` timing helpers in linalg/tensor_contraction
