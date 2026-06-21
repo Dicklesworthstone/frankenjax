@@ -84,6 +84,18 @@ family, e.g. generated length-specialized `1000 = 2^3 * 5^3` kernels or
 production-specialized radix-3/5 butterflies that first beat per-row mixed-radix
 in a same-binary A/B.
 
+**RE-CONFIRMED 2026-06-21 (CrimsonOtter, abcae92c shipped then reverted 37b33dc9).**
+I re-attempted this exact lever and INITIALLY measured 1.34x (kernel only) — then caught
+that my A/B built `BluesteinPlan::new` (chirp + an m=2048 kernel FFT for n=1000) ONCE
+OUTSIDE the timed loop, while production `transform_batches_dense` builds that plan PER
+BATCH CALL (fft.rs:1436). With the plan build moved INSIDE the timed region (production-
+realistic), the corrected `bench_bluestein_soa_vs_per_row_smooth` measured **per-row
+3.061ms vs bluestein 7.793ms = 0.39x (2.5x SLOWER)** — the expensive per-call Bluestein
+plan setup dominates the n=1000 transform. Reverted (net 0 production change). LESSON
+(now in memory): a per-batch plan build MUST be inside the timed A/B region; excluding it
+silently flipped a 0.39x no-ship into a fake 1.34x win. Only a plan-CACHED Bluestein (reuse
+across calls) could change this — out of scope for a single batched FFT.
+
 ## PENDING-BENCH RESUME INDEX (open as of 2026-06-21, disk-critical no-cargo pause)
 
 The disk-low/critical pause accumulated production perf routes that shipped
