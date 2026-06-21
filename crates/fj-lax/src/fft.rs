@@ -1658,6 +1658,189 @@ fn vectorized_pow2_block(
     }
 }
 
+/// True for n = 4^k (k >= 1): a pure power of four, eligible for the radix-4 SoA kernel.
+#[cfg(test)]
+fn is_power_of_four(n: usize) -> bool {
+    n.is_power_of_two() && n.trailing_zeros() % 2 == 0
+}
+
+/// Base-4 digit-reversal permutation for n = 4^k (the radix-4 analogue of bit-reversal).
+#[cfg(test)]
+fn digit_reverse_base4(n: usize) -> Vec<usize> {
+    let digits = (n.trailing_zeros() / 2) as usize;
+    (0..n)
+        .map(|i| {
+            let mut x = i;
+            let mut rev = 0usize;
+            for _ in 0..digits {
+                rev = (rev << 2) | (x & 3);
+                x >>= 2;
+            }
+            rev
+        })
+        .collect()
+}
+
+/// Radix-4 plan for pow-of-four lengths: base-4 digit reversal + per-stage `W_len^j`
+/// twiddles (stage `len` = 4,16,...,n; `quarter` = len/4 twiddles each). `W_len^2j` and
+/// `W_len^3j` are derived inline in the butterfly (one square + one mul) to keep the table
+/// the same size as radix-2's.
+#[cfg(test)]
+struct Radix4Plan {
+    digit_reversed: Vec<usize>,
+    twiddles: Vec<(f64, f64)>,
+    inverse: bool,
+}
+
+#[cfg(test)]
+impl Radix4Plan {
+    fn new(n: usize, inverse: bool) -> Self {
+        debug_assert!(is_power_of_four(n));
+        let digit_reversed = digit_reverse_base4(n);
+        let mut twiddles = Vec::new();
+        let mut len = 4usize;
+        while len <= n {
+            let quarter = len / 4;
+            let angle = if inverse {
+                2.0 * PI / (len as f64)
+            } else {
+                -2.0 * PI / (len as f64)
+            };
+            let (sin_step, cos_step) = angle.sin_cos();
+            let (mut tr, mut ti) = (1.0, 0.0);
+            for _ in 0..quarter {
+                twiddles.push((tr, ti));
+                let nr = tr * cos_step - ti * sin_step;
+                let ni = tr * sin_step + ti * cos_step;
+                tr = nr;
+                ti = ni;
+            }
+            len *= 4;
+        }
+        Self {
+            digit_reversed,
+            twiddles,
+            inverse,
+        }
+    }
+}
+
+/// Radix-4 DIT butterfly stages applied vertically across `w` SoA lanes. Halves the stage
+/// count vs radix-2 (log4 vs log2), so it sweeps the SoA buffer fewer times — the dominant
+/// cost per the `profile_soa_pow2_phases` measurement (butterflies were 57% of the kernel).
+/// Tolerance-equal (not bit-identical) to the radix-2 path: a different, fewer-op schedule.
+#[cfg(test)]
+fn soa_radix4_butterfly_stages(plan: &Radix4Plan, w: usize, n: usize, re: &mut [f64], im: &mut [f64]) {
+    let inv = plan.inverse;
+    let mut tw_base = 0usize;
+    let mut len = 4usize;
+    while len <= n {
+        let quarter = len / 4;
+        let stage_tw = &plan.twiddles[tw_base..tw_base + quarter];
+        let mut start = 0usize;
+        while start < n {
+            for (j, &(w1r, w1i)) in stage_tw.iter().enumerate() {
+                // W_len^2j and W_len^3j from W_len^j.
+                let w2r = w1r * w1r - w1i * w1i;
+                let w2i = 2.0 * w1r * w1i;
+                let w3r = w2r * w1r - w2i * w1i;
+                let w3i = w2r * w1i + w2i * w1r;
+                let i0 = (start + j) * w;
+                let i1 = (start + j + quarter) * w;
+                let i2 = (start + j + 2 * quarter) * w;
+                let i3 = (start + j + 3 * quarter) * w;
+                for lane in 0..w {
+                    let ar = re[i0 + lane];
+                    let ai = im[i0 + lane];
+                    let (b0r, b0i) = (re[i1 + lane], im[i1 + lane]);
+                    let (c0r, c0i) = (re[i2 + lane], im[i2 + lane]);
+                    let (d0r, d0i) = (re[i3 + lane], im[i3 + lane]);
+                    // Twiddle B,C,D by W^j, W^2j, W^3j.
+                    let br = b0r * w1r - b0i * w1i;
+                    let bi = b0r * w1i + b0i * w1r;
+                    let cr = c0r * w2r - c0i * w2i;
+                    let ci = c0r * w2i + c0i * w2r;
+                    let dr = d0r * w3r - d0i * w3i;
+                    let di = d0r * w3i + d0i * w3r;
+                    // t0=A+C, u1=A-C, s2=B+D, s3=B-D.
+                    let t0r = ar + cr;
+                    let t0i = ai + ci;
+                    let u1r = ar - cr;
+                    let u1i = ai - ci;
+                    let s2r = br + dr;
+                    let s2i = bi + di;
+                    let s3r = br - dr;
+                    let s3i = bi - di;
+                    re[i0 + lane] = t0r + s2r;
+                    im[i0 + lane] = t0i + s2i;
+                    re[i2 + lane] = t0r - s2r;
+                    im[i2 + lane] = t0i - s2i;
+                    // forward: X1 = u1 - i*s3, X3 = u1 + i*s3 (i*s3 = (-s3i, s3r));
+                    // inverse swaps the two.
+                    if inv {
+                        re[i1 + lane] = u1r - s3i;
+                        im[i1 + lane] = u1i + s3r;
+                        re[i3 + lane] = u1r + s3i;
+                        im[i3 + lane] = u1i - s3r;
+                    } else {
+                        re[i1 + lane] = u1r + s3i;
+                        im[i1 + lane] = u1i - s3r;
+                        re[i3 + lane] = u1r - s3i;
+                        im[i3 + lane] = u1i + s3r;
+                    }
+                }
+            }
+            start += len;
+        }
+        tw_base += quarter;
+        len *= 4;
+    }
+}
+
+/// Radix-4 SoA FFT over a block of `batch` length-`n` (n = 4^k) rows. Same SoA framing as
+/// `vectorized_pow2_block` (one transpose in, butterflies vertical over the batch, one
+/// transpose out) but with the radix-4 stage schedule. Tolerance-equal to the radix-2 path.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn vectorized_pow4_block(
+    plan: &Radix4Plan,
+    elements: &[(f64, f64)],
+    batch: usize,
+    n: usize,
+    inverse: bool,
+    re: &mut [f64],
+    im: &mut [f64],
+    out: &mut [(f64, f64)],
+) {
+    let w = batch;
+    let digitrev = &plan.digit_reversed;
+    for b in 0..batch {
+        let row = &elements[b * n..b * n + n];
+        for (i, &src_idx) in digitrev.iter().enumerate() {
+            let (sr, si) = row[src_idx];
+            re[i * w + b] = sr;
+            im[i * w + b] = si;
+        }
+    }
+    soa_radix4_butterfly_stages(plan, w, n, re, im);
+    if inverse {
+        let inv_n = 1.0 / (n as f64);
+        for b in 0..batch {
+            let dst = &mut out[b * n..b * n + n];
+            for (k, slot) in dst.iter_mut().enumerate() {
+                *slot = (re[k * w + b] * inv_n, im[k * w + b] * inv_n);
+            }
+        }
+    } else {
+        for b in 0..batch {
+            let dst = &mut out[b * n..b * n + n];
+            for (k, slot) in dst.iter_mut().enumerate() {
+                *slot = (re[k * w + b], im[k * w + b]);
+            }
+        }
+    }
+}
+
 /// Cache-blocked tile width (rows processed together in one SoA pass). Kept small
 /// so the SoA scratch (`TILE * n` complex split into re/im) stays L1-resident:
 /// a full-batch transpose would make every butterfly stage stream the entire
@@ -3225,6 +3408,85 @@ mod tests {
             100.0 * t_bf as f64 / total as f64,
             t_out as f64 / 1e6,
             100.0 * t_out as f64 / total as f64,
+        );
+    }
+
+    /// CORRECTNESS: the radix-4 SoA kernel must match the independent O(n^2) DFT oracle
+    /// (to tolerance — radix-4 is a different, fewer-op schedule than radix-2) for every
+    /// pow-of-four length, both directions, across a multi-row SoA tile.
+    #[test]
+    fn radix4_soa_matches_dft_oracle() {
+        for &n in &[4usize, 16, 64, 256] {
+            for inverse in [false, true] {
+                let plan = Radix4Plan::new(n, inverse);
+                let w = 8usize;
+                let elements: Vec<(f64, f64)> = (0..w * n)
+                    .map(|i| ((i as f64 * 0.017).sin() - 0.2, (i as f64 * 0.029).cos() * 0.6))
+                    .collect();
+                let mut re = vec![0.0f64; w * n];
+                let mut im = vec![0.0f64; w * n];
+                let mut out = vec![(0.0f64, 0.0f64); w * n];
+                vectorized_pow4_block(&plan, &elements, w, n, inverse, &mut re, &mut im, &mut out);
+                for b in 0..w {
+                    let row = &elements[b * n..b * n + n];
+                    let want = if inverse { idft_1d(row) } else { dft_1d(row) };
+                    for k in 0..n {
+                        let (a, c) = (want[k], out[b * n + k]);
+                        assert!(
+                            (a.0 - c.0).abs() < 1e-9 && (a.1 - c.1).abs() < 1e-9,
+                            "radix4 SoA != DFT oracle (n={n} inv={inverse} b={b} k={k}): {a:?} vs {c:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A/B HARNESS for the radix-4 SoA lever (profiling green-lit it: butterflies were 57%
+    /// of the pow2 SoA kernel, and radix-4 halves the stage count). OLD = radix-2 SoA
+    /// butterfly stages; NEW = radix-4 SoA butterfly stages — same transpose framing, so the
+    /// stage cost is what differs. Interleaved min-of-9 (the only trustworthy FFT A/B). KEEP
+    /// + wire into the pow2 dispatch for pow4 lengths only if radix-4 < radix-2.
+    #[test]
+    #[ignore = "informational micro-bench; run with --ignored --nocapture"]
+    fn bench_radix4_vs_radix2_soa() {
+        let n = 256usize;
+        let w = POW2_TILE_ROWS;
+        let p2 = Radix2Plan::new(n, false);
+        let p4 = Radix4Plan::new(n, false);
+        let base: Vec<f64> = (0..w * n).map(|i| (i as f64 * 0.013).sin()).collect();
+
+        let run_old = || -> (u64, u64) {
+            let mut re: Vec<f64> = base.clone();
+            let mut im = vec![0.0f64; w * n];
+            let t0 = std::time::Instant::now();
+            soa_radix2_butterfly_stages(&p2, w, n, &mut re, &mut im);
+            let dt = t0.elapsed().as_nanos() as u64;
+            (dt, re[0].to_bits() ^ re[w * n / 2].to_bits())
+        };
+        let run_new = || -> (u64, u64) {
+            let mut re: Vec<f64> = base.clone();
+            let mut im = vec![0.0f64; w * n];
+            let t0 = std::time::Instant::now();
+            soa_radix4_butterfly_stages(&p4, w, n, &mut re, &mut im);
+            let dt = t0.elapsed().as_nanos() as u64;
+            (dt, re[0].to_bits() ^ re[w * n / 2].to_bits())
+        };
+        let (mut o, mut nn) = (u64::MAX, u64::MAX);
+        let mut chk = 0u64;
+        for _ in 0..9 {
+            let (a, ca) = run_old();
+            let (b, cb) = run_new();
+            chk ^= ca ^ cb;
+            o = o.min(a);
+            nn = nn.min(b);
+        }
+        std::hint::black_box(chk);
+        eprintln!(
+            "[radix4 vs radix2 SoA butterflies {w}x{n}] radix2={:.4}ms radix4={:.4}ms ratio={:.2}x (min of 9 interleaved)",
+            o as f64 / 1e6,
+            nn as f64 / 1e6,
+            o as f64 / nn as f64,
         );
     }
 
