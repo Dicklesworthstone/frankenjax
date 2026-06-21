@@ -30,8 +30,21 @@ gate it, a validation harness is now committed (`f3e7eb4a` + earlier `03e68e31`/
   `iterative_soa_matches_dft_oracle` — three independent algorithm-level guards on the
   prototype kernels.
 
+**INSPECTION-CONFIRMED CORRECT (2026-06-21, no-cargo code review):** `mixed_radix_iterative_soa_block`
+was reviewed op-for-op against the independently hand-verified iterative reference (the
+n=6 trace: `X[0]`=DC and `X[3]`=in0-in1+in2-in3+in4-in5 both exact). They are
+ALGORITHMICALLY IDENTICAL — same generalized digit-reversal (`rev = rev*f + x%f`), same
+stage strides (`n/next` input twiddle, `n/r` DFT twiddle), same gather-then-scatter
+butterfly (gather of all `r` lanes completes before any scatter, so no aliasing), same
+ascending-`t` DFT accumulation order, same `1/n` inverse scale (only local variable names
+differ). So the enabled route is very likely CORRECT; the pending tests are confirmation,
+not discovery. (Composite FFT parity is tolerance, so the validation harness is correctly
+tolerance-based, NOT bit-frozen — do not tighten it to bit-identity, which would break a
+later radix-2/3/5 butterfly specialization.)
+
 **PENDING-BENCH (disk-critical no-cargo pause — authored by inspection, NOT yet executed):**
-when the build pause lifts (1) run the four tests above; if any fail, the enabled gate
+when the build pause lifts (1) run the four tests above (now covering mixed + pure
+odd-prime-power lengths, both directions, multi-tile); if any fail, the enabled gate
 must be disabled until fixed. (2) Then same-binary interleaved A/B of the route vs per-row
 `mixed_radix_into`; KEEP only on a measured win — if it regresses like the recursive SoA
 did (despite the L1 prediction), disable `MIXED_RADIX_ITERATIVE_SOA_MAX_N` (set 0). The
