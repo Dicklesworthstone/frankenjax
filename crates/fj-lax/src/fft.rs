@@ -2634,6 +2634,41 @@ mod tests {
         }
     }
 
+    /// INDEPENDENT oracle check for the iterative mixed-radix prototypes: validate the
+    /// SoA kernel directly against the O(n^2) `dft_1d`/`idft_1d` reference (which shares
+    /// no code with the iterative path), so a bug common to BOTH the scalar and SoA
+    /// iterative impls — which the cross-checks against each other / the recursive form
+    /// would miss — is still caught. Small `n` only (O(n^2) reference).
+    #[test]
+    fn iterative_soa_matches_dft_oracle() {
+        let close = |a: &[(f64, f64)], b: &[(f64, f64)], tag: &str| {
+            assert_eq!(a.len(), b.len(), "len mismatch {tag}");
+            for (k, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+                assert!(
+                    (x.0 - y.0).abs() < 1e-9 && (x.1 - y.1).abs() < 1e-9,
+                    "{tag} k={k}: {x:?} vs {y:?}"
+                );
+            }
+        };
+        for &n in &[6usize, 10, 12, 14, 15, 21, 30, 35, 77, 143] {
+            assert!(is_mixed_radix_smooth(n));
+            let input: Vec<(f64, f64)> = (0..n)
+                .map(|i| {
+                    let f = i as f64;
+                    ((f * 0.031).cos() - 0.2, (f * 0.013).sin() * 0.8)
+                })
+                .collect();
+            // Forward vs dft_1d.
+            let fwd_roots = precompute_twiddles(n, false);
+            let got_fwd = mixed_radix_iterative_soa_batch(&input, n, 1, false, &fwd_roots);
+            close(&dft_1d(&input), &got_fwd, &format!("fwd n={n}"));
+            // Inverse vs idft_1d (both 1/n-scaled).
+            let inv_roots = precompute_twiddles(n, true);
+            let got_inv = mixed_radix_iterative_soa_batch(&input, n, 1, true, &inv_roots);
+            close(&idft_1d(&input), &got_inv, &format!("inv n={n}"));
+        }
+    }
+
     /// Old inline-recurrence radix-2 (pre-frankenjax-* twiddle-hoist), kept only as the
     /// bench baseline. Bit-identical to the production `radix2_fft_1d_into`.
     #[cfg(test)]
