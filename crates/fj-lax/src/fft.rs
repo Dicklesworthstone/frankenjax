@@ -3260,6 +3260,41 @@ mod tests {
                     (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9,
                     "specialized iterative != idft_1d (n={n} k={k})"
                 );
+    /// END-TO-END DISPATCH integration test: drives `transform_batches_dense` (the
+    /// function `eval_fft`/`eval_ifft` call) at batch >= 8 across lengths that hit EVERY
+    /// routing branch, and checks each row against the independent O(n^2) `dft_1d`/`idft_1d`
+    /// oracle. Per-kernel tests validate each SoA kernel in isolation; this validates that
+    /// the DISPATCH sends each length class to the right kernel AND returns correct output:
+    ///   - pow2 (16, 256)                 -> `transform_batches_pow2_vectorized`
+    ///   - smooth composite n<=1024 (12, 30, 49, 1000) -> iterative mixed-radix SoA
+    ///   - smooth composite n>1024 (1080=2^3*3^3*5)     -> per-row `BatchFftPlan::Mixed`
+    ///   - prime (13, 127)                -> Bluestein SoA
+    ///   - non-smooth composite (46=2*23, 187=11*17)    -> Bluestein SoA
+    /// Magnitude-relative tolerance (robust for the larger n's FFT-vs-O(n^2)-DFT rounding).
+    #[test]
+    fn transform_batches_dense_dispatch_matches_dft_oracle() {
+        for &n in &[16usize, 256, 12, 30, 49, 1000, 1080, 13, 127, 46, 187] {
+            for inverse in [false, true] {
+                let batch = 8usize; // >= every SoA gate's MIN_BATCH
+                let elements: Vec<(f64, f64)> = (0..batch * n)
+                    .map(|i| {
+                        let f = (i % (3 * n)) as f64;
+                        ((f * 0.017).sin() - 0.3, (f * 0.011).cos() * 0.7)
+                    })
+                    .collect();
+                let got = transform_batches_dense(&elements, n, batch, inverse);
+                for b in 0..batch {
+                    let row = &elements[b * n..b * n + n];
+                    let reference = if inverse { idft_1d(row) } else { dft_1d(row) };
+                    for (k, (a, c)) in reference.iter().zip(got[b * n..b * n + n].iter()).enumerate()
+                    {
+                        let tol = 1e-9 * a.0.abs().max(a.1.abs()).max(1.0);
+                        assert!(
+                            (a.0 - c.0).abs() <= tol && (a.1 - c.1).abs() <= tol,
+                            "dispatch != DFT oracle (n={n} inverse={inverse} row={b} k={k}): {a:?} vs {c:?}"
+                        );
+                    }
+                }
             }
         }
     }
