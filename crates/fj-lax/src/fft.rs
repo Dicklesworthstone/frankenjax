@@ -3295,6 +3295,50 @@ mod tests {
                         );
                     }
                 }
+    /// THREADED-PATH validation for the shipped SoA routes. Every other SoA bit-identity
+    /// test uses a small batch that stays single-threaded; this one forces batches large
+    /// enough to cross the `1<<18`-element threading floor so `transform_batches_dense`
+    /// fans the work across `thread::scope` chunks — exercising the chunk-boundary /
+    /// row-offset / `split_at_mut` logic that would otherwise be untested in
+    /// production-active code. Asserts bit-identity vs the per-row `BatchFftPlan` (the SoA
+    /// kernels are bit-identical per row, so threading must preserve that exactly). Covers
+    /// the full-complex pow2 SoA (n=256) and the Bluestein SoA (n=127, m=256), both dirs.
+    #[test]
+    fn threaded_soa_dispatch_bit_identical_to_per_row() {
+        let bits = |v: &[(f64, f64)]| -> Vec<(u64, u64)> {
+            v.iter().map(|&(r, i)| (r.to_bits(), i.to_bits())).collect()
+        };
+        // batch*work >= 1<<18 (262144) forces the threaded path: 1100*256 = 281600.
+        for &(n, batch) in &[(256usize, 1100usize), (127usize, 1100usize)] {
+            for inverse in [false, true] {
+                let elements: Vec<(f64, f64)> = (0..batch * n)
+                    .map(|i| {
+                        let f = (i % (7 * n)) as f64;
+                        ((f * 0.013).sin(), (f * 0.021).cos())
+                    })
+                    .collect();
+                // Per-row reference via the non-SoA engine (radix-2 / Bluestein per row).
+                let plan = BatchFftPlan::new(n, inverse);
+                let mut reference = vec![(0.0, 0.0); batch * n];
+                let mut scratch = BluesteinScratch::default();
+                let mut mixed_scratch = Vec::new();
+                let mut buf = Vec::new();
+                for b in 0..batch {
+                    plan.apply_into(
+                        &elements[b * n..b * n + n],
+                        &mut scratch,
+                        &mut mixed_scratch,
+                        inverse,
+                        &mut buf,
+                    );
+                    reference[b * n..b * n + n].copy_from_slice(&buf);
+                }
+                let got = transform_batches_dense(&elements, n, batch, inverse);
+                assert_eq!(
+                    bits(&reference),
+                    bits(&got),
+                    "threaded SoA dispatch != per-row (n={n} batch={batch} inverse={inverse})"
+                );
             }
         }
     }
