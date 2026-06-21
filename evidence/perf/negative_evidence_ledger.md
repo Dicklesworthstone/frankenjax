@@ -5754,3 +5754,12 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   exactly the fragility that has put main RED before. REJECTED: a fragile SIMD
   mask kernel for a RARE op (sign chains; xjbvr noted only quantization/bucketing
   use them) already sub-ms is poor EV. Do not re-chase sign vectorization.
+- FAMILY-AUDIT COMPLETE — `apply_i64_fusion_chunk` and `apply_half_fusion_chunk`
+  carry the identical in-loop `*_fused_unary(op,*o)` pattern, but neither is a
+  shippable lever: i64 unary cheap ops are Neg/Abs (already vectorize; floor/ceil/
+  trunc are int identities) + Sign (rare), and there is NO 1M i64-unary-chain
+  bench to prove a win — only tiny `i64E256` chains exist; half (bf16/f16) is
+  decode-bound (the widen→op→round dominates, not the dispatch). Applying the
+  hoist there would be unproven, measured-neutral scope creep, so left untouched.
+  The fusion-chunk unary-dispatch family is exhausted: f32 shipped (294c836f,
+  4.63x), f64 neutral-kept, i64/half no-action, sign dead-end.
