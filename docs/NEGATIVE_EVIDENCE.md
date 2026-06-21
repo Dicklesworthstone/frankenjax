@@ -2,6 +2,20 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-20 - frankenjax-ur4h3 Householder reflector scratch reuse pending-bench
+
+DISK-LOW code-only pass: `hessenberg_reduction` now reuses one Householder
+reflector scratch buffer across panels instead of allocating a fresh vector per
+reduction step. This is an allocation-pressure lever only; reflector entries
+are fully overwritten before use, so arithmetic/order should stay unchanged.
+
+No new `cargo bench` or `cargo build` was started in this turn by instruction.
+Pending bench: re-run `linalg/eigh_48x48_f64` via RCH once disk pressure is
+handled. Existing pre-lever baseline remains RCH `hz1` production **267.84 us**
+vs JAX/JAXLIB 0.10.1 x64 **201.429 us** (Rust/JAX **1.330**). Keep only with
+same-worker/directly comparable improvement; otherwise revert and record as
+negative evidence.
+
 ## 2026-06-20 - frankenjax-ur4h3 symmetry-specialized tridiagonal reduction no-ship
 
 The BOLD-VERIFY pass retargeted the remaining `eigh_48x48_f64` loss after the

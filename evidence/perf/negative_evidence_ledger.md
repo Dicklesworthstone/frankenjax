@@ -3,6 +3,34 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-ur4h3 - Householder reflector scratch reuse pending-bench
+
+- Date: 2026-06-20
+- Agent: cod-b / CrimsonOtter
+- Status: CODE-ONLY COMMITTED, PENDING BENCH. Disk-low instruction explicitly
+  prohibited starting a new `cargo bench` or `cargo build` this turn.
+- Lever: `hessenberg_reduction` now reuses one Householder reflector scratch
+  buffer across all panels instead of heap-allocating `Vec<f64>` once per
+  reduction step. Each panel writes the full active reflector slice before use,
+  so the reflector arithmetic, update order, and output contract are unchanged.
+- Target row for next turn: `linalg/eigh_48x48_f64` first, then larger
+  `eigh` rows if disk pressure is resolved. Existing measured baseline before
+  this code-only lever was RCH `hz1` production `eigh_48x48_f64` 267.84 us vs
+  JAX/JAXLIB 0.10.1 x64 201.429 us, Rust/JAX 1.330.
+- Required next-turn bench command, only after disk pressure is handled:
+
+```text
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline \
+  'linalg/eigh_48x48_f64' -- \
+  --warm-up-time 1 --measurement-time 3 --sample-size 15 --noplot
+```
+
+- Keep/revert rule: keep only if same-worker or directly comparable evidence
+  shows a real `eigh_48x48_f64` improvement without worsening correctness or
+  larger `eigh` rows. If the delta is neutral or regresses, revert this scratch
+  reuse and record the result here.
+
 ## frankenjax-ur4h3 - symmetric tridiagonal reduction no-ship
 
 - Date: 2026-06-20

@@ -5061,6 +5061,10 @@ fn hessenberg_reduction(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         return (h, q);
     }
 
+    // Reuse the reflector buffer across panels. Each iteration writes the full
+    // active prefix before use, so this preserves the Householder arithmetic
+    // while avoiding one heap allocation per reduction step.
+    let mut householder = vec![0.0_f64; n - 1];
     for k in 0..n - 2 {
         let start = k + 1;
         let len = n - start;
@@ -5074,7 +5078,7 @@ fn hessenberg_reduction(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
             continue;
         }
 
-        let mut v = vec![0.0; len];
+        let v = &mut householder[..len];
         for row in start..n {
             v[row - start] = h[row * n + k];
         }
@@ -5085,7 +5089,7 @@ fn hessenberg_reduction(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         }
 
         let mut v_norm_sq = 0.0;
-        for value in &v {
+        for value in v.iter() {
             v_norm_sq += value * value;
         }
         if v_norm_sq <= 1e-30 {
@@ -5093,9 +5097,9 @@ fn hessenberg_reduction(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         }
         let beta = 2.0 / v_norm_sq;
 
-        apply_householder_left(&mut h, n, start, k, &v, beta);
-        apply_householder_right(&mut h, n, 0, start, &v, beta);
-        apply_householder_right(&mut q, n, 0, start, &v, beta);
+        apply_householder_left(&mut h, n, start, k, v, beta);
+        apply_householder_right(&mut h, n, 0, start, v, beta);
+        apply_householder_right(&mut q, n, 0, start, v, beta);
 
         for row in start + 1..n {
             h[row * n + k] = 0.0;

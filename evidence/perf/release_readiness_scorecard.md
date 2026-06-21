@@ -1137,6 +1137,21 @@ Additional cod-a FFT SoA gate recheck environment:
   route to symmetry-specialized tridiagonal reduction or blocked/panel
   Householder work, not small-Jacobi routing.
 
+## CrimsonOtter / cod-b - ur4h3 Householder scratch reuse pending-bench (2026-06-20)
+
+- Scope: `frankenjax-ur4h3`, DISK-LOW code-only lever.
+- Code change: `hessenberg_reduction` reuses one Householder reflector scratch
+  buffer across panels instead of allocating a fresh `Vec<f64>` for every
+  reduction step. Expected effect is allocator-pressure reduction in the real
+  `eigh` path; arithmetic/order should be unchanged because every active
+  reflector slice is fully overwritten before use.
+- Measurement status: pending. No new `cargo bench` or `cargo build` was run in
+  this turn by instruction. No win/loss/neutral ratio is claimed for this
+  commit.
+- Pre-lever target baseline: RCH `hz1` production `linalg/eigh_48x48_f64`
+  267.84 us mean vs JAX/JAXLIB 0.10.1 x64 201.429 us mean, Rust/JAX 1.330
+  (LOSS). Resume here next turn after disk pressure is handled.
+
 ## CrimsonOtter / cod-b - ur4h3 symmetric tridiagonal reduction no-ship (2026-06-20)
 
 - Scope: `frankenjax-ur4h3`, follow-up on the remaining 48x48 real symmetric
