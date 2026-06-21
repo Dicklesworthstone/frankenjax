@@ -31,25 +31,24 @@ unmeasured `code-first batch-test pending` entries remain outside the score.
 
 - Status: pending code-only flat iterative mixed-radix SoA route is resolved as
   measured no-ship and disabled. Fresh BOLD-VERIFY also rejected the smooth-
-  composite Bluestein SoA detour; no production source change remains.
-- Current target row: `eval/fft_batch_128x1000_complex128`, RCH `hz1`
-  Criterion midpoint **3.6581 ms** (`3.5478..3.7359 ms`) versus fresh local
-  JAX/JAXLIB 0.10.1 x64 mean **0.245442 ms** on the exact
-  `complex_matrix(128,1000)` fixture. Rust/JAX **14.90x**.
-- Latest lever proof: same-binary RCH `hz1` A/B for recursive mixed-radix versus
-  vectorized Bluestein SoA printed **mixed=1.975ms**, **bluestein=2.690ms**,
-  **ratio=0.73x**; the candidate was reverted.
-- Follow-up radical route from the graveyard/artifact pass was a
-  length-specialized radix-2/5 SoA A/B for `1000 = 2^3 * 5^3`. It remains
-  validation-blocked, not rejected by timing: RCH could not complete the focused
-  ignored `fj-lax` release test after stale-progress cancellations on
-  `vmi1153651` and `vmi1149989`, with an intervening peer cbrt WIP compile
-  blocker (`fast_cbrt_f64`) on `vmi1149989`.
+  composite Bluestein SoA detour and the length-specialized radix-2/5 iterative
+  SoA proxy; no production source change remains.
+- Current target row: `eval/fft_batch_128x1000_complex128`, RCH `ovh-a`
+  Criterion midpoint **3.4978 ms** (`3.2761..3.6825 ms`) versus fresh local
+  JAX/JAXLIB 0.10.1 x64 mean **0.230078 ms** on the exact
+  `complex_matrix(128,1000)` fixture. Rust/JAX **15.20x**.
+- Latest lever proof: same-binary RCH `hz2` A/B for recursive mixed-radix versus
+  specialized iterative SoA printed **per-row=1.511ms**,
+  **specialized=2.668ms**, **ratio=0.57x**; the temporary harness was removed
+  and no source gate was kept. Earlier same-binary RCH `hz1` Bluestein detour
+  proof printed **mixed=1.975ms**, **bluestein=2.690ms**, **ratio=0.73x** and
+  was also reverted.
 - Scorecard for this row: **0 wins / 1 loss / 0 neutral**. Lever scorecard:
-  **0 kept / 1 rejected / 1 validation-blocked** in this pass. Next route must
-  retry the generated length-specialized `1000 = 2^3 * 5^3` kernel only after
-  the cbrt WIP is landed/reverted and RCH can reuse a genuinely warm target; any
-  production gate needs a completed same-binary A/B before dispatch.
+  **0 kept / 3 rejected / 0 validation-blocked** for the current smooth-
+  composite accelerator family. Next route must be a genuinely generated
+  length-specialized `1000 = 2^3 * 5^3` in-place/recursive kernel, or a
+  quiesced-host threading proof; any production gate needs a completed
+  same-binary A/B before dispatch.
 
 ## Environment
 

@@ -3,6 +3,83 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-murmw - specialized iterative SoA mixed-radix FFT no-ship
+
+- Date: 2026-06-21
+- Agent: cod-a / CrimsonOtter
+- Status: MEASURED NO-SHIP / REVERTED. No production source change remains; the
+  temporary ignored A/B harness was removed after measurement.
+- Target gap: `eval/fft_batch_128x1000_complex128`, the remaining smooth-
+  composite batched FFT loss.
+- Alien-graveyard/extreme-optimization route:
+  - Candidate family: generated/vectorized FFT butterflies with precomputed
+    twiddles, using `1000 = 2^3 * 5^3` as the concrete length-specialization
+    proxy. The lever kept the flat iterative SoA mixed-radix schedule but
+    replaced each stage's O(r^2) small DFT with the same specialized radix-2/3/5
+    butterflies proven in the recursive production kernel.
+  - EV decision: reject. The SoA schedule's transpose/digit-reversal overhead
+    still dominates even after removing the small-DFT arithmetic tax; the
+    candidate is slower than the recursive per-row mixed-radix baseline and
+    remains far behind JAX.
+
+Remote production Rust baseline:
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline -- \
+  eval/fft_batch_128x1000_complex128 \
+  --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot
+```
+
+- RCH worker: `ovh-a`; per-crate, no local cargo build, no new `.scratch`
+  worktree.
+- Rust Criterion midpoint: **3.4978 ms** (`3.2761..3.6825 ms`).
+
+Fresh JAX comparator:
+
+- Command environment: `benchmarks/jax_comparison/.venv/bin/python`, JAX/JAXLIB
+  0.10.1 / 0.10.1, CPU backend, `jax_enable_x64=true`.
+- Fixture: exact `complex_matrix(128,1000)` formula from
+  `crates/fj-lax/benches/lax_baseline.rs`, timed as 30 batches x 100 inner
+  loops with `block_until_ready()`.
+- JAX mean: **0.230078 ms**; p50 **0.233834 ms**.
+- Current production Rust/JAX: **15.20x**. Scorecard: **0 wins / 1 loss / 0
+  neutral** for this row.
+
+Remote same-binary A/B for the candidate:
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME \
+  rch exec -- cargo test -p fj-lax \
+  bench_mixed_radix_iterative_soa_specialized_vs_per_row \
+  --release -- --ignored --nocapture
+```
+
+- RCH worker: `hz2`; per-crate release test binary, no local cargo build, no new
+  `.scratch` worktree.
+- Correctness gate inside the harness: specialized iterative SoA matched the
+  recursive mixed-radix reference to FFT tolerance on sampled rows before timing.
+- Printed A/B result:
+
+```text
+[specialized mixed-radix iterative SoA 128x1000] 1T per-row=1.511ms specialized=2.668ms ratio=0.57x (min of 9 interleaved)
+```
+
+Interpretation: the specialized iterative SoA route is **43% slower** than the
+per-row recursive baseline (`0.57x` as fast). Even its microbench time would
+still be **11.60x** the fresh JAX mean, so there is no dispatch gate to keep.
+
+Retry predicate: do not retry the flat iterative SoA family for `n=1000` unless
+the new design eliminates the SoA transpose/digit-reversal cost and first beats
+per-row recursive mixed-radix in a same-binary A/B. The next credible FFT route
+is a truly generated length-specialized in-place/recursive `1000 = 2^3 * 5^3`
+kernel, or a quiesced-host threading proof; both require fresh same-worker
+evidence before any production dispatch change.
+
 ## frankenjax-cntiy - cbrt scalar Halley fast path narrows but does not close JAX gap
 
 - Date: 2026-06-21
