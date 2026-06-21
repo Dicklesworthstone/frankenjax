@@ -8,25 +8,25 @@ unmeasured `code-first batch-test pending` entries remain outside the score.
 
 ## Current BOLD-VERIFY Notes
 
-### cod-a - mcqr cumsum blocked-prefix no-ship (2026-06-21)
+### cod-b - mcqr cumsum blocked-prefix keep (2026-06-21)
 
-- Status: rejected and reverted before perf admission. The attempted single-line
-  f64 blocked prefix-scan split one 4M cumsum line into thread-local scans and
-  applied exclusive block offsets, but exceeded the large-input tolerance gate.
-- Failed RCH proof: `cargo test -p fj-lax
-  blocked_dense_f64_single_line_cumulative_matches_serial_reference --release`
-  on `ovh-a` failed with **cumsum drift 9.313225746154785e-10 > 1e-10**.
-- Revert proof: `cargo test -p fj-lax
-  large_dense_f64_cumsum_single_line_matches_literal_path --release` passed 1/1
-  on `ovh-a`; `cargo test -p fj-conformance --test cumulative_oracle --release`
-  passed **45/45** on `vmi1152480`.
-- Scorecard for this row: **0 wins / 1 loss / 0 neutral**. Current production
-  cumsum row remains **JAX 14.1 ms vs fj-lax 30.3 ms = 2.15x Rust loss**; the
-  blocked-prefix candidate has no admitted speed ratio because it failed
-  correctness.
-- Next route must be an accuracy-bounded/compensated blocked prefix or
-  JAX-like associative scan, with the large 1D f64 accuracy gate passed before
-  timing.
+- Status: retained production win. The single-line f64 blocked prefix-scan
+  splits one 4M cumsum line into thread-local scans and applies exclusive block
+  offsets, breaking the scalar dependency chain that made the previous dense
+  scan slower than JAX.
+- RCH focused correctness: `cargo test -p fj-lax
+  blocked_dense_f64_single_line_cumulative_matches_serial_reference --lib
+  --release` passed 1/1 on `hz2`. `cargo test -p fj-conformance --test
+  cumulative_oracle --release` passed **45/45** on `vmi1149989`.
+- Fresh exact JAX/JAXLIB 0.10.1 CPU x64 comparator on the same
+  `np.arange(1 << 22) * 0.001` fixture: mean **18.318300 ms**, p50
+  **18.290179 ms**.
+- RCH `fj-lax` Criterion on `ovh-a`: retained `eval/cumsum_4m_f64_1d`
+  midpoint **7.5297 ms** (`7.4698..7.6034 ms`). Same filter also measured the
+  tight sequential diagnostic at **23.805 ms** (`23.729..23.877 ms`).
+- Scorecard for this row: **1 win / 0 loss / 0 neutral**. Current Rust/JAX
+  ratio is **0.41x**; equivalently, fj-lax is **2.43x faster** than the fresh
+  JAX comparator on this fixture.
 
 ### cod-b - cntiy erf rational fast path (2026-06-21)
 
