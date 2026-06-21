@@ -1307,3 +1307,10 @@ PRIMITIVE keeps the fast fdlibm erf (4.58x win kept). VERIFIED workspace-wide: f
 distribution oracles + erf_oracle + cbrt_oracle, every binary 0-failed). The transcendental sweep
 is conformance-clean. Only remaining RED workspace-wide = the shbyh cholesky_blocked golden
 (linalg owner's domain).
+**PROACTIVE AUDIT (threefry.rs) — sweep RNG-golden hazard is BOUNDED:** the cod-b transcendental
+sweep optimizes fj-lax-INTERNAL `*_approx`/`eval_*`, NOT libm. Audited every threefry distribution:
+only `random_normal` (535/559) + `truncated_normal` (1098/1107) call `crate::arithmetic::erf_approx`/
+`erf_inv_approx` (internal) → the only vulnerable spots; random_normal fixed, truncated_normal GREEN
+(tolerance oracle). cauchy/gumbel/exponential/rayleigh/laplace/poisson/geometric all use libm
+`f64::tan/ln/exp/ln_1p` DIRECTLY → SAFE from primitive opts. So upcoming tanh/tan/ln/exp PRIMITIVE
+opts do NOT threaten the RNG distribution goldens (only fj-lax-internal-erf sites do, both handled).
