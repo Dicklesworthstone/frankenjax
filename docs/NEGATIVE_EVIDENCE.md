@@ -37,6 +37,11 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     (probed expecting a window-naive O(n·225) JAX path the fj-lax separable-deque would crush;
     XLA's CPU reduce_window is already optimized/separable, so it's fast). Negative result — do not
     re-chase pooling as a JAX-loss lever.
+  - FFT batch 2048x256-point c128: fj-lax 16.81ms vs JAX 0.866ms = **fj-lax ~19.4x LOSS** (within the
+    documented `murmw` 7-43x band). XLA uses pocketfft (intra-transform SIMD + cache-optimal mixed
+    radix); fj-lax is intra-FFT-SIMD-bound in safe Rust. Biggest non-cntiy loss, but intra-SIMD-HARD
+    (no shuffle/gather in safe std::simd) + actively convergent (swarm probing/rejecting Bluestein
+    tile/thread + scalar mixed-radix). Not a clean unowned lever — see [[project_fft_jax_loss_frontier]].
   - **cumsum 4M 1D: now flipped to fj-lax WIN — fresh JAX 18.318ms vs fj-lax 7.5297ms = fj-lax 2.43x FASTER.**
     Path = `scan_contiguous_lines_to_vec` single-line `op(acc,value)` + `out.push(acc)` loop
     (reduction.rs ~3133). DIAGNOSED (A/B, bench `cumsum_4m_f64_1d_tight`): a TIGHT raw direct-add
