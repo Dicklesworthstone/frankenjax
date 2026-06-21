@@ -2,6 +2,26 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## PENDING-BENCH RESUME INDEX (open as of 2026-06-21, disk-critical no-cargo pause)
+
+The disk-low/critical pause has accumulated several production perf routes that shipped
+ENABLED but were never validated or A/B'd (no `cargo` allowed). They are correctness-
+preserving by design; production currently carries them unvalidated. The MOMENT cargo
+returns, validate + A/B these (each links to its detailed entry below):
+
+1. **[murmw] iterative mixed-radix SoA FFT route** (smooth composites n<=1024, ENABLED) —
+   FULLY INSTRUMENTED, deterministic resume (no investigation needed):
+   `cargo test -p fj-lax --lib --release -- iterative production_mixed_radix` (correctness:
+   disable the gate if any fail), then `cargo test -p fj-lax --lib --release --ignored
+   bench_mixed_radix_iterative_soa_vs_per_row --nocapture` (A/B: KEEP only if iter < per-row,
+   else set `MIXED_RADIX_ITERATIVE_SOA_MAX_N = 0`). See the two `murmw` entries below.
+2. **[ur4h3] eigh QL eigenvector in-place transpose** — validate + same-worker
+   `linalg/eigh_48x48_f64` A/B per its entry below (owner WildForge).
+3. **[ur4h3] eigh Householder left-update scratch reuse** — validate per its entry below.
+4. **[ur4h3] eigh Householder reflector scratch reuse** — validate per its entry below.
+
+Until each is run, treat its route as unvalidated; keep-vs-revert is decided by the A/B.
+
 ## 2026-06-21 - frankenjax-murmw iterative mixed-radix SoA route ENABLED but pending-bench (validation harness in place)
 
 Status of the smooth-composite batched-FFT SoA lever (the last uncovered FFT path;
