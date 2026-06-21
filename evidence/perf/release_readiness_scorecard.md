@@ -20,10 +20,17 @@ unmeasured `code-first batch-test pending` entries remain outside the score.
 - Latest lever proof: same-binary RCH `hz1` A/B for recursive mixed-radix versus
   vectorized Bluestein SoA printed **mixed=1.975ms**, **bluestein=2.690ms**,
   **ratio=0.73x**; the candidate was reverted.
+- Follow-up radical route from the graveyard/artifact pass was a
+  length-specialized radix-2/5 SoA A/B for `1000 = 2^3 * 5^3`. It remains
+  validation-blocked, not rejected by timing: RCH could not complete the focused
+  ignored `fj-lax` release test after stale-progress cancellations on
+  `vmi1153651` and `vmi1149989`, with an intervening peer cbrt WIP compile
+  blocker (`fast_cbrt_f64`) on `vmi1149989`.
 - Scorecard for this row: **0 wins / 1 loss / 0 neutral**. Lever scorecard:
-  **0 kept / 1 rejected** in this pass. Next route must be a different kernel
-  family such as generated length-specialized `1000 = 2^3 * 5^3` kernels or
-  production-specialized radix-3/5 butterflies.
+  **0 kept / 1 rejected / 1 validation-blocked** in this pass. Next route must
+  retry the generated length-specialized `1000 = 2^3 * 5^3` kernel only after
+  the cbrt WIP is landed/reverted and RCH can reuse a genuinely warm target; any
+  production gate needs a completed same-binary A/B before dispatch.
 
 ## Environment
 

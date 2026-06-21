@@ -4795,3 +4795,25 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   layout, and eval_eig's LAPACK-CPU baseline is unmeasurable (slow XLA-CPU eig). No clean win. The
   clean bit-exact cache-cliff lever was a one-time find (eigh's QL, which was a ONE-SIDED column
   rotation). Pass delta: GAUNTLET certification (full conformance GREEN) / 0 new wins / 0 losses.
+
+## CrimsonOtter / cod-a - murmw specialized radix-2/5 SoA validation blocked (2026-06-21)
+
+- Active bead: `frankenjax-murmw`, smooth-composite FFT batch loss. Current
+  target row remains `eval/fft_batch_128x1000_complex128`: RCH `hz1` Criterion
+  midpoint **3.6581 ms** versus fresh local JAX/JAXLIB 0.10.1 x64 mean
+  **0.245442 ms**, so Rust/JAX is **14.90x**.
+- The graveyard/artifact/optimization pass points to generated
+  length-specialized radix-2/5 kernels for `1000 = 2^3 * 5^3` as the next
+  credible radical lever. The older flat iterative SoA and Bluestein SoA
+  detours remain no-ship.
+- Focused validation of the specialized SoA path did not produce a ratio. RCH
+  stale-progress blocked one ignored `fj-lax` release test on `vmi1153651`; the
+  next `vmi1149989` run hit an unrelated peer cbrt compile blocker
+  (`fast_cbrt_f64`); the following `vmi1149989` retry stalled before printing
+  the A/B row. The stale builds were canceled and the temporary test harness was
+  removed.
+- Verdict: no source keep and no timed rejection. Row score remains **0 wins /
+  1 loss / 0 neutral** versus JAX; candidate score is **0 kept / 0 rejected by
+  timing / 1 validation-blocked**. Retry predicate: wait for the cbrt WIP to be
+  landed/reverted and for RCH to reuse a warm target, then rerun the same-binary
+  A/B before any production dispatch change.

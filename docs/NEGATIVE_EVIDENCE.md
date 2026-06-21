@@ -1173,3 +1173,26 @@ with `fj-lax` `elementwise_gauntlet`. JAX used 0.10.1 CPU x64 via
 Decision: no production allocator change. The next credible levers are
 compiled-jaxpr output/arena reuse, non-temporal stores/prefetch/NUMA work, or a
 specific unowned typed-path gap with same-host proof.
+
+## 2026-06-21 - frankenjax-murmw specialized radix-2/5 FFT validation blocked
+
+The radical route from `/alien-graveyard`, `/alien-artifact-coding`, and
+`/extreme-software-optimization` for the smooth-composite FFT gap remains
+length-specialized code generation for `1000 = 2^3 * 5^3`, not another
+representation detour. The target row is still
+`eval/fft_batch_128x1000_complex128`: RCH `hz1` Criterion midpoint **3.6581 ms**
+versus fresh JAX/JAXLIB 0.10.1 x64 mean **0.245442 ms**, so current Rust/JAX is
+**14.90x**.
+
+This pass attempted to validate the existing specialized radix-2/5 SoA path with
+a focused ignored `fj-lax` release A/B, but no candidate timing ratio was
+produced. RCH stalled with stale progress on `vmi1153651`, then a peer cbrt WIP
+compile blocker (`fast_cbrt_f64`) stopped the next `vmi1149989` run, and the
+subsequent `vmi1149989` retry stalled again before emitting the A/B row. Both
+stale RCH builds were canceled. No source change was kept.
+
+Decision: validation-blocked no-ship, not a timed rejection. Scorecard for the
+target remains **0 wins / 1 loss / 0 neutral** versus JAX; candidate score for
+this pass is **0 kept / 0 rejected by timing / 1 validation-blocked**. Retry
+only after the cbrt WIP is landed/reverted and RCH can reuse a genuinely warm
+target dir, then require a completed same-binary A/B before any dispatch gate.
