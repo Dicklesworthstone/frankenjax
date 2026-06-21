@@ -1477,3 +1477,32 @@ Additional cod-a FFT SoA gate recheck environment:
 - Next route: stop scalar fan-out tuning. The credible JAX-closing lever is a
   safe portable-SIMD/range-reduced atan2 kernel with tolerance proof, or the
   broader `cntiy` target-feature/codegen policy path.
+
+## CrimsonOtter / cod-b - cntiy boxed-literal scalar pow/atan2 threads, still JAX loss (2026-06-21)
+
+- Status: retained a bit-identical Rust-side narrowing lever. Large boxed-F64
+  scalar Pow/Atan2 broadcasts now thread through the existing expensive
+  scalar-broadcast helper and emit dense F64 output. Dense-storage behavior is
+  unchanged; mixed/non-F64 literal buffers still fall back to the generic path.
+- Same-worker RCH `vmi1293453`, per-crate Criterion filter
+  `scalar_1m_f64_literal_ref`:
+  - `eval/pow_scalar_1m_f64_literal_ref`: **80.435 ms -> 15.193 ms**,
+    **5.29x** Rust-side speedup.
+  - `eval/atan2_scalar_1m_f64_literal_ref`: **38.339 ms -> 11.987 ms**,
+    **3.20x** Rust-side speedup.
+- Fresh JAX/JAXLIB **0.10.1** CPU x64 comparator via
+  `benchmarks/jax_comparison/.venv/bin/python`: pow mean **1.808211 ms**,
+  p50 **1.738733 ms**; Atan2 mean **2.214336 ms**, p50 **2.073297 ms**.
+- Scorecard delta: **0 wins / 2 losses / 0 neutral** vs JAX. Retained
+  Rust/JAX ratios are **8.40x loss** for pow and **5.41x loss** for Atan2.
+  Candidate disposition **1 kept / 0 reverted** because same-worker Rust
+  deltas are large and bit-identical, not because these rows dominate JAX.
+- Gates: RCH focused `fj-lax` bit-identity test passed **1/1**; full RCH
+  `fj-conformance --release` passed the full crate suite and doc-tests; RCH
+  `cargo check -p fj-lax --all-targets` passed. `rustfmt --check` on
+  `arithmetic.rs` passed. RCH `cargo clippy -p fj-lax --all-targets --
+  -D warnings` remains blocked by unrelated `fft.rs:1664`
+  `manual_is_multiple_of` lint.
+- Next route: stop boxed-literal fan-out work. JAX-closing work needs vector
+  range-reduced pow/atan2 or the broader `cntiy` target-feature/codegen policy
+  path.

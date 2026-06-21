@@ -5661,3 +5661,47 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   credible radical route is a safe portable-SIMD/range-reduced atan2
   approximation with an `atan2_oracle` tolerance proof, or the broader `cntiy`
   target-feature/codegen policy work.
+
+## CrimsonOtter / cod-b - cntiy boxed-literal scalar pow/atan2 threading keep, still JAX loss (2026-06-21)
+
+- Scope: `frankenjax-cntiy`, follow-up after the dense scalar Atan2 threading
+  keep. `TensorValue::new` already densifies F64; this pass targeted only the
+  direct `LiteralBuffer::Literals` scalar-broadcast control path used by the
+  `*_literal_ref` benches and any caller that bypasses the constructor.
+- Alien-graveyard/artifact/optimization hypothesis: a million independent
+  boxed-F64 Pow/Atan2 lanes are an embarrassingly parallel vector-execution
+  artifact. Thread the existing exact lane operation over boxed F64 literals,
+  return dense F64 output, and fall back to the generic path for mixed or
+  non-F64 buffers.
+- Same-worker RCH `vmi1293453`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b`,
+  per-crate Criterion filter `scalar_1m_f64_literal_ref`:
+
+  | row | baseline midpoint | kept midpoint | Rust speedup |
+  | --- | ---: | ---: | ---: |
+  | `eval/pow_scalar_1m_f64_literal_ref` | 80.435 ms | 15.193 ms | 5.29x |
+  | `eval/atan2_scalar_1m_f64_literal_ref` | 38.339 ms | 11.987 ms | 3.20x |
+
+- Fresh JAX comparator: `benchmarks/jax_comparison/.venv/bin/python`, JAX
+  **0.10.1**, JAXLIB **0.10.1**, CPU backend, `jax_enable_x64=true`, exact
+  1M fixtures. Pow mean **1.808211 ms**, p50 **1.738733 ms**; Atan2 mean
+  **2.214336 ms**, p50 **2.073297 ms**.
+- Rust/JAX scorecard: pow **8.40x loss**, Atan2 **5.41x loss** by kept
+  midpoint / JAX mean. Overall pass scorecard **0 wins / 2 losses / 0 neutral**.
+- Correctness gates:
+  - RCH `vmi1293453` `cargo test -p fj-lax
+    threaded_expensive_binary_scalar_bit_identical_to_reference --release --
+    --nocapture` passed **1/1**. The proof covers dense and boxed storage, both
+    operand orders, Pow and Atan2, and dense F64 output.
+  - `rustfmt --edition 2024 --check crates/fj-lax/src/arithmetic.rs` passed.
+  - RCH `vmi1152480` full `cargo test -p fj-conformance --release` passed the
+    full crate suite and doc-tests.
+  - RCH `hz2` `cargo check -p fj-lax --all-targets` passed, with existing
+    deprecated `criterion::black_box` warnings in the unrelated
+    `f32_rounding_ab` bench.
+  - RCH `hz2` `cargo clippy -p fj-lax --all-targets -- -D warnings` remains
+    blocked by unrelated `crates/fj-lax/src/fft.rs:1664`
+    `manual_is_multiple_of` lint.
+- Decision: KEEP. The Rust-side gains are large and bit-identical, but this is
+  still a JAX loss. Retry predicate: stop boxed-literal fan-out work; next
+  credible route needs vector range-reduced pow/atan2 or the broader `cntiy`
+  target-feature/codegen lane.

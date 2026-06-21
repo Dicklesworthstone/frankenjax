@@ -44,6 +44,15 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     `libm` route. Same-worker RCH `ovh-a` Criterion also measured the old libm reference at
     4.6905ms, so the retained Rust-side speedup is 4.21x. Scorecard: **1 win / 0 loss / 0 neutral**
     for this row.
+  - **boxed-literal scalar pow/atan2 1M: kept a real Rust-side de-box/threading win, but both still
+    lose JAX.** Same-worker RCH `vmi1293453` Criterion: `pow_scalar_1m_f64_literal_ref`
+    **80.435ms -> 15.193ms** (**5.29x** Rust speedup) and
+    `atan2_scalar_1m_f64_literal_ref` **38.339ms -> 11.987ms** (**3.20x** Rust speedup).
+    Fresh repo-venv JAX/JAXLIB 0.10.1 CPU x64 comparators on the exact fixtures: pow
+    **1.808211ms** mean, atan2 **2.214336ms** mean. Retained Rust/JAX ratios:
+    pow **8.40x loss**, atan2 **5.41x loss**. Scorecard for this pass:
+    **0 wins / 2 losses / 0 neutral**; keep only because the same-worker Rust deltas are large
+    and the proof is bit-identical.
   - maxpool/reduce_window 256x256 15x15 SAME: JAX 0.5498ms — **PARITY, NOT a domination zone**
     (probed expecting a window-naive O(n·225) JAX path the fj-lax separable-deque would crush;
     XLA's CPU reduce_window is already optimized/separable, so it's fast). Negative result — do not
@@ -107,7 +116,7 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
 | scatter-add 1M f64 1D | **LOSS 2.74x vs JAX** after 3.07x Rust-side keep | next needs lower-allocation bucket build or safe parallel direct writes; unique atomic branch regressed |
 | sort, reductions, RNG, conv, einsum, dot_general | WIN / parity | none — done |
 | **matmul / GEMM** (256-1024 f64) | **LOSS 4-15x** | **`cntiy` +fma** (already blocked-GEMM + threaded + register microkernel; microkernel is FMA-bound, capped ~XLA/2; pure-safe-Rust, no BLAS) |
-| **transcendental — tolerance-only** (cbrt/erf/tanh/tan/atan2, no bit-golden) | MIXED: cbrt/erf/tanh/atan2 still LOSS; guarded small-angle tan now WIN | cod-b sweep (no cntiy needed): cbrt 11.9ms->3.30ms (3.60x, 64c0ded1), erf 21.1ms->6.85ms (4.58x, d74a6472), tanh 6.20ms->4.27ms (1.45x), small-angle tan 4.69ms->1.11ms (4.21x; 1.27x faster than JAX), scalar atan2 30.35ms->14.00ms (2.17x internal, still 120x slower than JAX) SHIPPED. General-range tan still falls back to `libm`; remaining losses are exp/FMA-gated or need true SIMD-polynomial range reduction |
+| **transcendental — tolerance-only** (cbrt/erf/tanh/tan/atan2, no bit-golden) | MIXED: cbrt/erf/tanh/atan2 still LOSS; guarded small-angle tan now WIN | cod-b sweep (no cntiy needed): cbrt 11.9ms->3.30ms (3.60x, 64c0ded1), erf 21.1ms->6.85ms (4.58x, d74a6472), tanh 6.20ms->4.27ms (1.45x), small-angle tan 4.69ms->1.11ms (4.21x; 1.27x faster than JAX), scalar atan2 dense 30.35ms->14.00ms (2.17x internal, still JAX loss), boxed-literal scalar pow 80.44ms->15.19ms and boxed-literal atan2 38.34ms->11.99ms (5.29x/3.20x internal, still 8.40x/5.41x JAX losses) SHIPPED. General-range tan still falls back to `libm`; remaining losses are exp/FMA-gated or need true SIMD-polynomial range reduction |
 | **transcendental — bit-pinned** (exp/sin/log/asin/acos) | **LOSS** | **`cntiy` +fma** (SIMD-poly = 2.20x WITH / 0.79x WITHOUT — cz0g0) + re-baseline the 5 bit-goldens |
 | softmax / attention (fused) | LOSS (exp-bound, ~1.2x ceiling) | **`cntiy`** — option (b) audited per-fn `target_feature(fma)` SIMD-exp in tolerance sites preserves goldens; or (a) global +fma + golden re-baseline |
 | **FFT pow2 / real** | WIN (1.7-3x SoA) | none — shipped, near safe-Rust ceiling |
@@ -1698,3 +1707,51 @@ thread-count tuning for scalar Atan2; JAX is using a vectorized kernel. The next
 credible route is a safe portable-SIMD/range-reduced atan2 approximation with
 `atan2_oracle` tolerance proof, or the broader `cntiy` target-feature/codegen
 policy lane.
+
+## 2026-06-21 - frankenjax-cntiy boxed-literal scalar pow/atan2 threading keep, still JAX loss
+
+This follow-up targeted the remaining direct `LiteralBuffer::Literals` scalar
+broadcast path used by the `*_literal_ref` control benches. `TensorValue::new`
+already densifies F64, so this is not a constructor fix; the kept lever is a
+narrow fallback inside the existing expensive F64 scalar-broadcast helper. Large
+boxed-F64 buffers now thread over the literal slice and emit dense F64 output.
+Mixed or non-F64 buffers still return `None` and fall through to the generic
+authoritative path.
+
+Same-worker RCH `vmi1293453`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b`,
+Criterion filter `scalar_1m_f64_literal_ref`:
+
+| Row | Baseline midpoint | Kept midpoint | Rust speedup |
+| --- | ---: | ---: | ---: |
+| `eval/pow_scalar_1m_f64_literal_ref` | 80.435 ms | 15.193 ms | 5.29x |
+| `eval/atan2_scalar_1m_f64_literal_ref` | 38.339 ms | 11.987 ms | 3.20x |
+
+Fresh JAX comparator used `benchmarks/jax_comparison/.venv/bin/python`, JAX
+**0.10.1**, JAXLIB **0.10.1**, CPU backend with `jax_enable_x64=true`, exact
+1M fixtures:
+
+| Row | JAX mean | JAX p50 | Kept Rust/JAX |
+| --- | ---: | ---: | ---: |
+| `pow_scalar_1m_f64_literal_ref` | 1.808211 ms | 1.738733 ms | 8.40x loss |
+| `atan2_scalar_1m_f64_literal_ref` | 2.214336 ms | 2.073297 ms | 5.41x loss |
+
+Correctness/conformance:
+- RCH `vmi1293453` `cargo test -p fj-lax
+  threaded_expensive_binary_scalar_bit_identical_to_reference --release --
+  --nocapture` passed **1/1**. The proof covers dense and boxed storage, both
+  operand orders, Pow and Atan2, and dense F64 output.
+- `rustfmt --edition 2024 --check crates/fj-lax/src/arithmetic.rs` passed.
+- RCH `vmi1152480` full `cargo test -p fj-conformance --release` passed the
+  full crate suite and doc-tests.
+- RCH `hz2` `cargo check -p fj-lax --all-targets` passed. It emitted existing
+  deprecated `criterion::black_box` warnings in the unrelated
+  `f32_rounding_ab` bench.
+- RCH `hz2` `cargo clippy -p fj-lax --all-targets -- -D warnings` is still
+  blocked by unrelated `crates/fj-lax/src/fft.rs:1664` `manual_is_multiple_of`
+  lint. This pass did not edit the FFT surface.
+
+Decision: keep the bit-identical boxed-F64 threading path because both
+same-worker Rust deltas are large. Scorecard versus JAX for this pass remains
+**0 wins / 2 losses / 0 neutral**. Retry predicate: do not repeat boxed-literal
+fan-out work; the remaining JAX gap needs true vector range-reduced pow/atan2
+or the broader `cntiy` target-feature/codegen policy lane.

@@ -179,12 +179,87 @@ fn eval_f64_scalar_expensive_parallel(
     if tensor.dtype != DType::F64 {
         return None;
     }
-    let src = tensor.elements.as_f64_slice()?;
+    let scalar = f64::from_bits(scalar_bits);
+    if let Some(src) = tensor.elements.as_f64_slice() {
+        return eval_f64_scalar_expensive_parallel_f64_slice(
+            primitive,
+            scalar,
+            tensor,
+            src,
+            scalar_on_left,
+            float_op,
+        );
+    }
+
+    let literals = tensor.elements.as_ref();
+    let n = literals.len();
+    if n < EXPENSIVE_BINARY_PARALLEL_MIN {
+        return None;
+    }
+    let threads = work_scaled_threads(n);
+    if threads <= 1 {
+        return None;
+    }
+    let mut out = vec![0.0f64; n];
+    let chunk = n.div_ceil(threads);
+    let op_ref = float_op;
+    let mut all_valid = true;
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut rest: &mut [f64] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            let handle = scope.spawn(move || {
+                for (i, o) in blk.iter_mut().enumerate() {
+                    let Literal::F64Bits(bits) = literals[s + i] else {
+                        return false;
+                    };
+                    let v = f64::from_bits(bits);
+                    *o = if scalar_on_left {
+                        op_ref(scalar, v)
+                    } else {
+                        op_ref(v, scalar)
+                    };
+                }
+                true
+            });
+            handles.push(handle);
+            start += len;
+        }
+        for handle in handles {
+            match handle.join() {
+                Ok(valid) => all_valid &= valid,
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+    });
+    if !all_valid {
+        return None;
+    }
+    TensorValue::new_f64_values(tensor.shape.clone(), out)
+        .ok()
+        .map(Value::Tensor)
+}
+
+fn eval_f64_scalar_expensive_parallel_f64_slice(
+    primitive: Primitive,
+    scalar: f64,
+    tensor: &TensorValue,
+    src: &[f64],
+    scalar_on_left: bool,
+    float_op: &(impl Fn(f64, f64) -> f64 + Sync),
+) -> Option<Value> {
+    if !is_expensive_binary(primitive) {
+        return None;
+    }
     let n = src.len();
     if n < EXPENSIVE_BINARY_PARALLEL_MIN {
         return None;
     }
-    let scalar = f64::from_bits(scalar_bits);
     let threads = work_scaled_threads(n);
     if threads <= 1 {
         return None;
@@ -18205,7 +18280,29 @@ mod tests {
         // the scalar-broadcast threaded route, including Atan2.
         let n = EXPENSIVE_BINARY_PARALLEL_MIN * 2 + 17;
         let t: Vec<f64> = (0..n).map(|i| 1.0 + (i % 97) as f64 * 0.01).collect();
-        let vt = v_f64(&t);
+        let shape = Shape {
+            dims: vec![n as u32],
+        };
+        let vt = Value::Tensor(TensorValue::new_f64_values(shape.clone(), t.clone()).unwrap());
+        let vt_boxed = Value::Tensor(TensorValue {
+            dtype: DType::F64,
+            shape,
+            elements: t
+                .iter()
+                .copied()
+                .map(Literal::from_f64)
+                .collect::<Vec<_>>()
+                .into(),
+        });
+        assert!(
+            vt_boxed
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .is_none(),
+            "test fixture should exercise boxed literal storage"
+        );
         let s = 2.5f64;
         let vs = Value::scalar_f64(s);
         // tensor op scalar
@@ -18216,33 +18313,46 @@ mod tests {
             ),
             (Primitive::Atan2, (|x, y| x.atan2(y)) as fn(f64, f64) -> f64),
         ] {
-            let got =
-                crate::eval_primitive(prim, &[vt.clone(), vs.clone()], &BTreeMap::new()).unwrap();
-            let got: Vec<u64> = got
-                .as_tensor()
-                .unwrap()
-                .elements
-                .iter()
-                .map(|l| l.as_f64().unwrap().to_bits())
-                .collect();
-            let expect: Vec<u64> = t.iter().map(|&x| refop(x, s).to_bits()).collect();
-            assert_eq!(got, expect, "{prim:?} tensor⊗scalar threaded != reference");
+            for (storage, tensor) in [("dense", vt.clone()), ("boxed", vt_boxed.clone())] {
+                let got =
+                    crate::eval_primitive(prim, &[tensor.clone(), vs.clone()], &BTreeMap::new())
+                        .unwrap();
+                let got_tensor = got.as_tensor().unwrap();
+                assert!(
+                    got_tensor.elements.as_f64_slice().is_some(),
+                    "{prim:?} {storage} tensor-scalar output should be dense"
+                );
+                let got: Vec<u64> = got_tensor
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap().to_bits())
+                    .collect();
+                let expect: Vec<u64> = t.iter().map(|&x| refop(x, s).to_bits()).collect();
+                assert_eq!(
+                    got, expect,
+                    "{prim:?} {storage} tensor⊗scalar threaded != reference"
+                );
 
-            // scalar op tensor
-            let got2 =
-                crate::eval_primitive(prim, &[vs.clone(), vt.clone()], &BTreeMap::new()).unwrap();
-            let got2: Vec<u64> = got2
-                .as_tensor()
-                .unwrap()
-                .elements
-                .iter()
-                .map(|l| l.as_f64().unwrap().to_bits())
-                .collect();
-            let expect2: Vec<u64> = t.iter().map(|&x| refop(s, x).to_bits()).collect();
-            assert_eq!(
-                got2, expect2,
-                "{prim:?} scalar⊗tensor threaded != reference"
-            );
+                // scalar op tensor
+                let got2 =
+                    crate::eval_primitive(prim, &[vs.clone(), tensor.clone()], &BTreeMap::new())
+                        .unwrap();
+                let got2_tensor = got2.as_tensor().unwrap();
+                assert!(
+                    got2_tensor.elements.as_f64_slice().is_some(),
+                    "{prim:?} {storage} scalar-tensor output should be dense"
+                );
+                let got2: Vec<u64> = got2_tensor
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap().to_bits())
+                    .collect();
+                let expect2: Vec<u64> = t.iter().map(|&x| refop(s, x).to_bits()).collect();
+                assert_eq!(
+                    got2, expect2,
+                    "{prim:?} {storage} scalar⊗tensor threaded != reference"
+                );
+            }
         }
     }
 
