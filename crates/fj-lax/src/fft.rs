@@ -1427,10 +1427,19 @@ fn transform_batches_dense(
     // radix-2 kernel. Capped at `BLUESTEIN_SOA_MAX_M` so the tile buffers stay
     // cache-warm. Bit-identical to per-row `BluesteinPlan::apply_into`.
     const BLUESTEIN_VECTORIZED_MIN_BATCH: usize = 8;
+    // Smooth composites are normally avoided here (per-row recursive mixed-radix is fewer
+    // flops for a single FFT), BUT for LARGE batched smooth composites the Bluestein SoA —
+    // whose two internal convolution FFTs are the flat radix-2 kernel that vectorizes across
+    // rows — beats the scalar per-row recursive path despite ~4x the flops. MEASURED
+    // 128x1000 (interleaved min-of-9): per-row 1.751ms vs Bluestein SoA 1.306ms = 1.34x
+    // kernel (correctness verified to tolerance); end-to-end eval/fft_batch_128x1000
+    // 2.465ms -> 2.216ms. Below the threshold, small smooth composites are already near JAX
+    // parity and keep the cheaper per-row path. See `bench_bluestein_soa_vs_per_row_smooth`.
+    const BLUESTEIN_SMOOTH_MIN_N: usize = 512;
     if n > 1
         && batch_size >= BLUESTEIN_VECTORIZED_MIN_BATCH
         && !n.is_power_of_two()
-        && !is_mixed_radix_smooth(n)
+        && (!is_mixed_radix_smooth(n) || n >= BLUESTEIN_SMOOTH_MIN_N)
         && (2 * n - 1).next_power_of_two() <= BLUESTEIN_SOA_MAX_M
     {
         let bplan = BluesteinPlan::new(n, inverse);
@@ -3064,6 +3073,82 @@ mod tests {
         std::hint::black_box(chk);
         eprintln!(
             "[mixed-radix iterative SoA {rows}x{n}] 1T per-row={:.3}ms iter={:.3}ms ratio={:.2}x (min of 9 interleaved)",
+            old_min as f64 / 1e6,
+            new_min as f64 / 1e6,
+            old_min as f64 / new_min as f64,
+        );
+    }
+
+    /// A/B HARNESS for the smooth-composite lever: route batched smooth composites
+    /// (e.g. 128x1000) through the PROVEN Bluestein SoA instead of per-row recursive
+    /// `mixed_radix_into`. The iterative mixed-radix SoA no-shipped (0.15x, memory-bound),
+    /// but Bluestein's two internal convolution FFTs are the FLAT radix-2 kernel that DOES
+    /// vectorize across rows (it wins 3x on prime lengths). Result: even with Bluestein's
+    /// ~4x flop overhead (n=1000 -> m=2048 conv), vectorizing across 128 rows beats the
+    /// scalar per-row recursive path. OLD = per-row recursive; NEW =
+    /// `transform_batches_bluestein_vectorized`. Interleaved min-of-9 (the only trustworthy
+    /// single-thread FFT A/B). Drove the `BLUESTEIN_SMOOTH_MIN_N` gate in
+    /// `transform_batches_dense`.
+    #[test]
+    #[ignore = "informational micro-bench; run with --ignored --nocapture"]
+    fn bench_bluestein_soa_vs_per_row_smooth() {
+        let n = 1000usize;
+        let rows = 128usize;
+        let roots = precompute_twiddles(n, false);
+        let bplan = BluesteinPlan::new(n, false);
+        let elements: Vec<(f64, f64)> = (0..rows * n)
+            .map(|i| {
+                let f = i as f64;
+                ((f * 0.011).sin(), (f * 0.019).cos())
+            })
+            .collect();
+
+        let run_old = || -> (u64, u64) {
+            let mut out = vec![(0.0, 0.0); rows * n];
+            let mut ob = Vec::new();
+            let mut scr = Vec::new();
+            let t0 = std::time::Instant::now();
+            for b in 0..rows {
+                mixed_radix_into(&elements[b * n..b * n + n], &roots, false, &mut ob, &mut scr);
+                out[b * n..b * n + n].copy_from_slice(&ob);
+            }
+            let dt = t0.elapsed().as_nanos() as u64;
+            (dt, out[0].0.to_bits() ^ out[rows * n / 2].1.to_bits())
+        };
+        let run_new = || -> (u64, u64) {
+            let t0 = std::time::Instant::now();
+            let out = transform_batches_bluestein_vectorized(&bplan, &elements, n, rows);
+            let dt = t0.elapsed().as_nanos() as u64;
+            (dt, out[0].0.to_bits() ^ out[rows * n / 2].1.to_bits())
+        };
+        // Correctness: Bluestein must match the recursive reference to FFT tolerance.
+        {
+            let mut ob = Vec::new();
+            let mut scr = Vec::new();
+            let bl = transform_batches_bluestein_vectorized(&bplan, &elements, n, rows);
+            for b in [0usize, 1, rows / 2, rows - 1] {
+                mixed_radix_into(&elements[b * n..b * n + n], &roots, false, &mut ob, &mut scr);
+                for k in 0..n {
+                    let (a, c) = (ob[k], bl[b * n + k]);
+                    assert!(
+                        (a.0 - c.0).abs() < 1e-6 && (a.1 - c.1).abs() < 1e-6,
+                        "Bluestein SoA != recursive (b={b} k={k}): {a:?} vs {c:?}"
+                    );
+                }
+            }
+        }
+        let (mut old_min, mut new_min) = (u64::MAX, u64::MAX);
+        let mut chk = 0u64;
+        for _ in 0..9 {
+            let (o, co) = run_old();
+            let (nn, cn) = run_new();
+            chk ^= co ^ cn;
+            old_min = old_min.min(o);
+            new_min = new_min.min(nn);
+        }
+        std::hint::black_box(chk);
+        eprintln!(
+            "[bluestein SoA vs per-row {rows}x{n}] 1T per-row={:.3}ms bluestein={:.3}ms ratio={:.2}x (min of 9 interleaved)",
             old_min as f64 / 1e6,
             new_min as f64 / 1e6,
             old_min as f64 / new_min as f64,
