@@ -3,6 +3,77 @@
 This ledger records code-first performance attempts and retry predicates so dead
 ends are not rediscovered without new evidence.
 
+## frankenjax-mcqr - histogram-prefix scatter-add bucket build no-ship
+
+- Date: 2026-06-21
+- Agent: cod-a / CrimsonOtter
+- Status: MEASURED NO-SHIP / SOURCE REVERTED. The attempted single-buffer
+  histogram + prefix-sum partition for 1-D f64 `scatter_add` was correctness
+  green but slower than the retained per-bucket `Vec` owner-computes path.
+- Target gap: `eval/scatter_add_1m_f64_1d`, still a JAX loss after the retained
+  bucketed path.
+- Alien-graveyard/extreme-optimization route:
+  - Candidate family: radix-partition/hash-join style bucket construction:
+    per-bucket counts, exclusive prefix offsets, one contiguous `(target,
+    update_index)` buffer, then owner-computes disjoint output ranges.
+  - Isomorphism: each resolved target is placed into the same output-range
+    bucket as production, and the second fill pass visits `index_vals` in the
+    original order, so duplicate-index additions inside each bucket preserve the
+    retained path's update order.
+  - EV decision: revert. The extra resolve pass and cursor/prefix traffic cost
+    more than the removed `Vec<Vec<_>>` bucket allocation/push overhead on the
+    measured row.
+
+Correctness proof:
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME,RCH_REQUIRE_REMOTE,RCH_QUEUE_WHEN_BUSY \
+  rch exec -- cargo test -p fj-lax \
+  range_partitioned_f64_scatter_add_matches_literal_path \
+  --lib --release -- --nocapture
+```
+
+- RCH worker: `ovh-a`; result: 1 focused `fj-lax` test passed.
+
+Bench evidence:
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME,RCH_REQUIRE_REMOTE,RCH_QUEUE_WHEN_BUSY,RCH_WORKER \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline -- \
+  'eval/scatter_add_1m_f64_1d' --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot
+```
+
+- RCH worker selection was daemon-side; `RCH_WORKER` was not a hard pin. A direct
+  `ovh-a` production-vs-candidate pair was eventually captured.
+- Candidate run 1 on `ovh-a`: **17.162 ms** midpoint (`16.627..17.987ms`).
+- Candidate run 2 on `ovh-a`: **13.426 ms** midpoint (`12.918..13.908ms`).
+- Production baseline on `ovh-a`: **11.852 ms** midpoint (`10.765..12.552ms`).
+- Non-paired production row on `vmi1149989`: **18.581 ms** midpoint
+  (`13.627..23.846ms`), recorded only as worker-noise context.
+
+Ratio-vs-JAX ledger, using the existing fresh JAX 0.10.1 CPU x64 p50
+**3.639273 ms** for the exact fixture:
+
+| workload / variant | Rust midpoint | JAX p50 | Rust/JAX p50 | candidate/production | verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| retained production bucketed path (`ovh-a` refresh) | 11.852 ms | 3.639273 ms | 3.26 | 1.00 | JAX loss, baseline |
+| histogram-prefix candidate, best repeat | 13.426 ms | 3.639273 ms | 3.69 | 1.13 | **REVERT; +13.3% slower** |
+| histogram-prefix candidate, first run | 17.162 ms | 3.639273 ms | 4.72 | 1.45 | **REVERT; +44.8% slower** |
+
+Scorecard: **0 JAX wins / 1 JAX loss / 0 neutral** for this target, with
+**1 Rust-side keep / 2 reverted branches** across the scatter-add family. Retry
+predicate: do not retry single-buffer histogram/prefix partitioning for this
+row. The next credible scatter-add route needs a fundamentally different safe
+parallel direct-write proof or a lower-overhead duplicate-index specialization
+that beats the retained **9.9667 ms** historical same-worker row and then the
+fresh JAX **3.639273 ms** p50.
+
 ## frankenjax-mcqr - bucketed f64 scatter-add narrows but does not close JAX gap
 
 - Date: 2026-06-21

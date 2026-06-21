@@ -104,16 +104,18 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     RCH `vmi1227854`; retained bucketed owner-computes path **9.9667ms** on the same worker
     (**3.07x Rust-side speedup**); fresh JAX/JAXLIB 0.10.1 CPU x64 p50 **3.639273ms**, so the
     retained row is still a **2.74x Rust/JAX LOSS**. Rejected/reverted the unique-atomic branch
-    (**10.822ms**, +8.6% slower than bucketed). Correctness: RCH `hz2`
+    (**10.822ms**, +8.6% slower than bucketed) and the histogram/prefix single-buffer branch
+    (RCH `ovh-a` production **11.852ms** vs candidate **13.426ms** best repeat / **17.162ms**
+    first run; **+13.3% to +44.8% slower** than production). Correctness: RCH `hz2`
     `range_partitioned_f64_scatter_add_matches_literal_path` 1/1 and RCH `vmi1152480`
     `gather_scatter_oracle` 59/59. Scorecard for scatter-add: **0 JAX wins / 1 JAX loss /
-    0 neutral; 1 Rust-side keep / 1 reverted branch**.
+    0 neutral; 1 Rust-side keep / 2 reverted branches**.
 
 | Op family | vs JAX (measured) | Gate on the remaining gap |
 | --- | --- | --- |
 | cheap elementwise (add/mul/sub), broadcast, select, comparison | WIN (threaded past L3, 1.7-2x) | none — done |
 | batched gather/scatter (I64/F64/F32) | WIN (1.15-3.6x) | none — suspected batched loss disproven |
-| scatter-add 1M f64 1D | **LOSS 2.74x vs JAX** after 3.07x Rust-side keep | next needs lower-allocation bucket build or safe parallel direct writes; unique atomic branch regressed |
+| scatter-add 1M f64 1D | **LOSS 2.74x vs JAX** after 3.07x Rust-side keep | next needs a fundamentally different safe parallel direct-write proof; unique atomic and histogram/prefix bucket-build branches regressed |
 | sort, reductions, RNG, conv, einsum, dot_general | WIN / parity | none — done |
 | **matmul / GEMM** (256-1024 f64) | **LOSS 4-15x** | **`cntiy` +fma** (already blocked-GEMM + threaded + register microkernel; microkernel is FMA-bound, capped ~XLA/2; pure-safe-Rust, no BLAS) |
 | **transcendental — tolerance-only** (cbrt/erf/tanh/tan/atan2, no bit-golden) | MIXED: cbrt/erf/tanh/atan2 still LOSS; guarded small-angle tan now WIN | cod-b sweep (no cntiy needed): cbrt 11.9ms->3.30ms (3.60x, 64c0ded1), erf 21.1ms->6.85ms (4.58x, d74a6472), tanh 6.20ms->4.27ms (1.45x), small-angle tan 4.69ms->1.11ms (4.21x; 1.27x faster than JAX), scalar atan2 dense 30.35ms->14.00ms (2.17x internal, still JAX loss), boxed-literal scalar pow 80.44ms->15.19ms and boxed-literal atan2 38.34ms->11.99ms (5.29x/3.20x internal, still 8.40x/5.41x JAX losses) SHIPPED. General-range tan still falls back to `libm`; remaining losses are exp/FMA-gated or need true SIMD-polynomial range reduction |
