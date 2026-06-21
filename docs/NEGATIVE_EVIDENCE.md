@@ -703,6 +703,50 @@ low-mult radix-2/3/5 butterflies (radix-3 9->2 mults, radix-5 25->~4; general fa
 specialized DFT branch into the production `mixed_radix_iterative_soa_block`, then re-A/B.
 No further design work — the optimization math is already written and DFT-oracle-validated.
 
+## 2026-06-21 - frankenjax-murmw buffer-reuse/Bluestein retry no-ship; source reverted
+
+BOLD-VERIFY re-auth restart pass on the remaining smooth-composite FFT loss
+(`eval/fft_batch_128x1000_complex128`). No production source change remains.
+All candidate code was reverted after measurement; this entry is the ledgered
+ratio proof.
+
+Fresh production Rust baseline used the requested cod-a RCH target root and a
+single filtered `fj-lax` Criterion row:
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 RCH_WORKER=vmi1152480 \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline -- \
+  'eval/fft_batch_128x1000_complex128' \
+  --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot
+```
+
+- RCH worker: `vmi1152480`; per-crate only, no local cargo build, no new
+  `.scratch` worktree.
+- Rust Criterion interval: **3.1347..4.4919 ms**, midpoint **4.0559 ms**.
+- Fresh local JAX/JAXLIB 0.10.1 CPU x64 comparator with the exact
+  `complex_matrix(128,1000)` fixture: mean **0.177952 ms**, p50
+  **0.175767 ms**.
+- Current production Rust/JAX: **22.79x** by midpoint. Scorecard:
+  **0 wins / 1 loss / 0 neutral**.
+
+Candidate/retry outcomes:
+
+| Candidate | Same-binary or Criterion result | Decision |
+| --- | --- | --- |
+| Existing flat iterative mixed-radix SoA route | RCH `hz2`: per-row **1.550 ms** vs iter **6.532 ms**, ratio **0.24x** | Still hard no-ship; keep disabled |
+| Smooth-composite Bluestein SoA retry | RCH `ovh-a`: **1.19x** routing hint, but RCH `vmi1152480` repeat: per-row **1.904 ms** vs Bluestein **1.917 ms**, ratio **0.99x** | Not reproducible; no production gate |
+| Recursive mixed-radix row-buffer zero-fill elision | Criterion after edit: **2.6909..2.8715 ms** but `p=0.17` no-change; direct A/B: zero-fill **2.212 ms** vs reuse-len **2.211 ms**, ratio **1.00x** | Reverted as zero-gain |
+
+Alien-graveyard/extreme-optimization decision: vectorized execution / staged
+code generation remains the right family, but the tested micro-levers do not
+change the kernel floor. The next credible route is still a true generated
+in-place or recursive length-specialized `1000 = 2^3 * 5^3` kernel, or a
+quiesced-host threading proof. Do not retry buffer zero-fill elimination,
+generic iterative SoA, or smooth-composite Bluestein without a same-binary win
+that survives a repeated worker check.
+
 ## 2026-06-21 - frankenjax-ur4h3 eigh allocator/copy-reduction stack KEEP; exact JAX ratio refreshed
 
 BOLD-VERIFY resolved the disk-low pending-bench stack for `frankenjax-ur4h3`:

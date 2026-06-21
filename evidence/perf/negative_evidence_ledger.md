@@ -548,6 +548,47 @@ recursive mixed-radix in the same-binary A/B. The remaining credible routes are
 a true generated in-place/recursive `1000 = 2^3 * 5^3` kernel or a quiesced-host
 threading proof.
 
+## frankenjax-murmw - row-buffer reuse and Bluestein smooth retry no-ship
+
+- Date: 2026-06-21
+- Agent: cod-a / CrimsonOtter
+- Status: MEASURED NO-SHIP / REVERTED. No production source change remains.
+- Target gap: `eval/fft_batch_128x1000_complex128`, smooth-composite batched FFT.
+- Scorecard: **0 wins / 1 loss / 0 neutral** versus fresh JAX.
+
+Fresh production baseline:
+
+```text
+AGENT_NAME=cod-a \
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a \
+RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 RCH_WORKER=vmi1152480 \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline -- \
+  'eval/fft_batch_128x1000_complex128' \
+  --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot
+```
+
+- RCH worker: `vmi1152480`; per-crate only, no local cargo build, no new
+  `.scratch` worktree.
+- Rust Criterion interval: **3.1347..4.4919 ms**, midpoint **4.0559 ms**.
+- Fresh JAX/JAXLIB 0.10.1 CPU x64 comparator, exact
+  `complex_matrix(128,1000)` fixture, 30 samples x 100 inner loops:
+  mean **0.177952 ms**, p50 **0.175767 ms**.
+- Current retained production Rust/JAX: **22.79x** by midpoint.
+
+Candidate measurements:
+
+| candidate | evidence | result |
+| --- | --- | --- |
+| Flat iterative mixed-radix SoA route | RCH `hz2`, same-binary `bench_mixed_radix_iterative_soa_vs_per_row` | per-row **1.550 ms** vs iter **6.532 ms**, ratio **0.24x**; remains disabled |
+| Smooth-composite Bluestein SoA retry | RCH `ovh-a` hinted **1.19x**, but RCH `vmi1152480` repeat printed per-row **1.904 ms** vs Bluestein **1.917 ms** | ratio **0.99x**; no reproducible production gate |
+| Recursive mixed-radix row-buffer zero-fill elision | RCH `vmi1152480` Criterion after edit: **2.6909..2.8715 ms** but `p=0.17`; direct same-binary A/B printed zero-fill **2.212 ms** vs reuse-len **2.211 ms** | ratio **1.00x**; source hunk and temporary harness reverted |
+
+Alien-graveyard/extreme-optimization route: vectorized execution and
+length-specialized staged kernels remain the plausible family, but these three
+micro-levers do not move the measured floor. Retry only with a generated
+in-place/recursive `1000 = 2^3 * 5^3` kernel that first beats per-row recursive
+mixed-radix in the same binary, or with a quiesced-host threading proof.
+
 ## frankenjax-murmw - specialized iterative SoA mixed-radix FFT no-ship
 
 - Date: 2026-06-21
