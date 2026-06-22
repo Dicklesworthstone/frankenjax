@@ -2345,3 +2345,22 @@ Rust's full pure-Rust implementations are COMPETITIVE with LAPACK (~parity). Thi
 substantially corrects "linalg = LAPACK loss" — the hard linalg ops (svd/eig) are
 NOT losses. Big credit to the Rust linalg kernels (tridiag/QL, Francis, bidiag+QR).
 Release-relevant: pure-Rust SVD/eig hold their own vs JAX/LAPACK on CPU.
+
+## 2026-06-22 - NEW DOMINATION: QR is ~18-30x faster than JAX (XLA-CPU QR is a slow non-LAPACK path) (CobaltForge/cc)
+
+Big surprise overturning the "direct factorization -> loss" prediction. Same-machine
+qr 512x512 f64: eval_primitive_multi(Qr) = **14.54ms** (min 13.5) vs fresh local JAX
+`jnp.linalg.qr` = **429.93ms p50 / 250.91 min** = **~18-30x Rust FASTER**.
+- JAX QR is absurdly slow (430ms; LAPACK geqrf 512 is ~5ms), so XLA's CPU QR does
+  NOT route to LAPACK — it uses a slow XLA-NATIVE Householder path (the same class
+  of weakness as XLA's bitonic sort, scan cliff, and no-integer-BLAS matmul). Rust's
+  optimized blocked in-place QR (14.5ms) dominates it ~18-30x.
+- This makes XLA-CPU linalg INCONSISTENT: cholesky -> LAPACK potrf (Rust loses 6.8x),
+  but QR -> slow native (Rust WINS ~30x), while eig/svd ~parity. So linalg is NOT
+  uniformly anything — it depends on whether XLA routes that op to LAPACK or a slow
+  native path.
+- Fits the unified model perfectly: Rust dominates exactly where XLA-CPU has a weak/
+  slow path (QR native) and Rust has a specialized kernel (blocked QR). QR joins the
+  domination set: sort, cumsum, contiguous gather, i64/u32 matmul, **QR (~30x)**.
+- Release-relevant: QR is common (least-squares, orthogonalization); ~30x is a major,
+  defensible Rust-over-JAX win.
