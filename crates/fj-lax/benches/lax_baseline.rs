@@ -6389,6 +6389,30 @@ fn bench_gather_128_rows_16_cols(c: &mut Criterion) {
 // Large contiguous gather (256x256 f64 operand, gather 256 rows reversed):
 // dense fast path (pass83) vs the Vec<Literal> copy. Same process for a
 // same-worker ratio.
+// CrimsonOtter 2026-06-22: scattered single-element gather (1M indices from a 4M f64
+// operand, slice_sizes=1) — the ledger's documented ~18x JAX LOSS (Rust 34.6ms vs JAX
+// 1.91ms). Pseudo-random indices so every read is a non-contiguous random access.
+fn bench_gather_scatter_1m_f64(c: &mut Criterion) {
+    let n = 1usize << 22; // 4M operand
+    let data: Vec<f64> = (0..n).map(|i| i as f64 * 0.001).collect();
+    let operand = Value::Tensor(
+        TensorValue::new_f64_values(Shape { dims: vec![n as u32] }, data).unwrap(),
+    );
+    let k = 1usize << 20; // 1M gathers
+    let idx: Vec<i64> = (0..k)
+        .map(|i| ((i.wrapping_mul(2_654_435_761) ^ (i >> 3)) % n) as i64)
+        .collect();
+    let indices = Value::vector_i64(&idx).unwrap();
+    let mut p = BTreeMap::new();
+    p.insert("slice_sizes".into(), "1".into());
+    // Clone the 32MB operand ONCE (outside iter) so the measurement isolates the gather,
+    // not a per-iteration 40MB memcpy. eval_primitive borrows its inputs.
+    let args = [operand, indices];
+    c.bench_function("eval/gather_scatter_1m_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Gather, &args, &p))
+    });
+}
+
 fn bench_gather_256x256_f64_vec(c: &mut Criterion) {
     let n = 256usize;
     let data: Vec<f64> = (0..n * n).map(|i| i as f64 * 0.001).collect();
@@ -7104,6 +7128,7 @@ criterion_group!(
     bench_reshape,
     bench_split_multi_1024x1024_f32,
     bench_gather_128_rows_16_cols,
+    bench_gather_scatter_1m_f64,
     bench_gather_256x256_f64_vec,
     bench_gather_256x256_f64_literal_reference,
     bench_scatter_128_rows_16_cols,

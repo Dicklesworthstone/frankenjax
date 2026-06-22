@@ -2535,3 +2535,37 @@ thread local scan only; cumsum's auto-vectorized add path stays untouched (no re
 Tolerance-legal (blocked already reassociates). Prize unchanged: 21->~7.5ms flips both to
 ~2.4x JAX wins. NOT attempted inline this pass (SIMD-prefix + NaN-safe max + parity is a
 focused multi-step task, high bug-risk to rush).
+
+## 2026-06-22 - scattered gather 18-32x loss: prior "boxes output" diagnosis CORRECTED; real cost is index-extraction + single-thread resolve + random-access MLP (CrimsonOtter/cc)
+
+Added a reproducible bench `eval/gather_scatter_1m_f64` (1M pseudo-random single-element
+gathers from a 4M f64 operand, slice_sizes=1) for the documented scattered-gather loss —
+previously only ad-hoc-measured. Same-session, Zen3:
+- fj-lax `eval_primitive(Gather)` = **~30-35ms quiescent / ~51-57ms under fleet load** (clone
+  hoisted out of the timed loop).
+- JAX `jnp.take` (same shape) = **1.786ms** (best-of-8) — confirms the prior 1.91ms.
+- Ratio = **~18x (quiescent) to ~32x (loaded)** Rust LOSS. Biggest non-fma-gated loss after FFT.
+
+CORRECTS the prior entry's mechanism claim ("XLA's gather is vectorized and dense, while
+Rust's eval_primitive path BOXES the output (Vec<Literal>)"). That is WRONG for this case:
+read the code (tensor_ops.rs eval_gather ~3243) — a 1D single-element gather has
+`trailing_slice_is_contiguous == true` (vacuous), so F64 routes to the DENSE, THREADED
+`gather_contiguous_into` (no Vec<Literal> output boxing). The real cost is three things XLA
+fuses away:
+1. INDEX EXTRACTION: `inputs[1].elements.iter().map(lit_to_i64).collect()` runs per-element
+   even when the index tensor is a dense i64/i32 backing — 1M boxed conversions, serial.
+2. RESOLVE PASS: a separate serial 1M `resolve_axis0_index` building a 16MB
+   `Vec<Option<usize>>`, then a serial 1M OOB pre-validate inside gather_contiguous_into.
+3. RANDOM-ACCESS MLP: the threaded gather does scalar `copy_from_slice(len 1)` per index —
+   memory-LATENCY-bound; JAX hides the latency with vectorized gather / many outstanding
+   loads. Threading alone (already present) doesn't close it.
+
+REAL FIX (bead filed): (a) dense-index fast path — read `as_i64_slice()`/`as_i32_slice()`
+directly, skip the 1M `lit_to_i64`; (b) fuse `resolve_axis0_index` INTO the threaded gather
+loop (drop the 16MB intermediate + the separate validate pass), replicating the Clip/Promise
+OOB + fill semantics inline; (c) the actual latency lever — `std::simd::Simd::gather_or` (W=8
+f64) per thread to issue many outstanding loads (MLP), matching XLA's vectorized gather.
+(a)+(b) are safe/cheap but likely modest (~1.1-1.3x); (c) is where most of the 18-32x lives
+but carries std::simd gather/select nightly-drift risk (see [[project_simd_poly_exp_fma_finding]]).
+NOT attempted inline this pass: eval_gather index-mode/OOB/fill surgery + SIMD gather + gather
+parity verification is a focused multi-step task, high bug-risk to rush under fleet contention.
