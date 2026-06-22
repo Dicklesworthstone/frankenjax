@@ -2817,16 +2817,15 @@ fn matmul_2d(a: &TensorValue, b: &TensorValue) -> Result<Value, AdError> {
         .iter()
         .map(|l| l.as_f64().unwrap_or(0.0))
         .collect();
-    let mut c_vals = vec![0.0; m * n];
-    for i in 0..m {
-        for j in 0..n {
-            let mut sum = 0.0;
-            for p in 0..k {
-                sum += a_vals[i * k + p] * b_vals[p * n + j];
-            }
-            c_vals[i * n + j] = sum;
-        }
-    }
+    // Route through fj-lax's optimized blocked/threaded/register-microkernel GEMM
+    // instead of a naive i-j-p triple loop (whose inner `b_vals[p*n+j]` strides by n
+    // and is cache-hostile). This `matmul_2d` is the hot kernel of the QR/LU/SVD VJPs
+    // (grad through a decomposition does several n×n·n×n products); the naive loop made
+    // those O(n³)-cache-bound where JAX uses GEMM. VJP/grad parity is TOLERANCE (not
+    // bit-exact), so the blocked/reassociated accumulation is legal — same lever as the
+    // conv-backward GEMM routing already in this crate. Measured (same-binary A/B
+    // `matmul_2d_gemm_routed_vs_naive`): see ledger.
+    let c_vals = fj_lax::tensor_contraction::matmul_2d(&a_vals, m, k, &b_vals, n);
     let elements: Vec<Literal> = c_vals.into_iter().map(Literal::from_f64).collect();
     TensorValue::new(
         DType::F64,
@@ -13695,6 +13694,72 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
+
+    // BOLD-VERIFY: the linalg-VJP `matmul_2d` (QR/LU/SVD backward) was a naive cache-hostile
+    // i-j-p triple loop; routing it through fj-lax's optimized GEMM is the lever. Same-binary
+    // interleaved A/B (tolerance-equal — VJP parity is not bit-exact).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn matmul_2d_gemm_routed_vs_naive() {
+        use std::time::Instant;
+        for n in [256usize, 512, 1024] {
+            let a: Vec<f64> = (0..n * n)
+                .map(|i| ((i % 1009) as f64) * 0.001 - 0.5)
+                .collect();
+            let b: Vec<f64> = (0..n * n)
+                .map(|i| ((i % 1013) as f64) * 0.001 - 0.5)
+                .collect();
+            let naive = |a: &[f64], b: &[f64]| -> Vec<f64> {
+                let mut c = vec![0.0; n * n];
+                for i in 0..n {
+                    for j in 0..n {
+                        let mut s = 0.0;
+                        for p in 0..n {
+                            s += a[i * n + p] * b[p * n + j];
+                        }
+                        c[i * n + j] = s;
+                    }
+                }
+                c
+            };
+            let gemm = |a: &[f64], b: &[f64]| fj_lax::tensor_contraction::matmul_2d(a, n, n, b, n);
+
+            // Tolerance-equal (reassociated accumulation).
+            let cn = naive(&a, &b);
+            let cg = gemm(&a, &b);
+            let maxerr = cn
+                .iter()
+                .zip(&cg)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                maxerr < 1e-8,
+                "n={n} GEMM diverges from naive: maxerr={maxerr:e}"
+            );
+
+            let reps = if n <= 256 { 10 } else { 5 };
+            let _ = naive(&a, &b);
+            let _ = gemm(&a, &b);
+            let mut nbest = f64::MAX;
+            let mut gbest = f64::MAX;
+            for _ in 0..reps {
+                let t = Instant::now();
+                let x = naive(&a, &b);
+                nbest = nbest.min(t.elapsed().as_secs_f64());
+                std::hint::black_box(&x);
+                let t = Instant::now();
+                let y = gemm(&a, &b);
+                gbest = gbest.min(t.elapsed().as_secs_f64());
+                std::hint::black_box(&y);
+            }
+            println!(
+                "BENCH matmul_2d {n}x{n}: naive={:.4}ms gemm={:.4}ms speedup={:.2}x",
+                nbest * 1e3,
+                gbest * 1e3,
+                nbest / gbest
+            );
+        }
+    }
 
     fn custom_rule_test_guard() -> std::sync::MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();

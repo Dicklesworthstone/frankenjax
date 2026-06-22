@@ -272,6 +272,28 @@ a multi-party effort (fj-ad is codex-owned; the flag is the maintainer's call).
 
 Second unlock: a quiesced host to measure FFT/threading wins JAX gets from idle cores.
 
+## 2026-06-22 - SlateHarrier fj-ad linalg-VJP matmul_2d naive-loop → fj-lax GEMM — SHIPPED (22-119x)
+
+BOLD-VERIFY moved off the (now floor-mined) scatter lane into the fj-ad VJP audit (the
+conv-backward "naive loop → GEMM" vein). Found `fj-ad::matmul_2d` — the hot kernel of the
+**QR/LU/SVD/eigh gradient** rules (grad through a decomposition does several n×n·n×n products)
+— was a NAIVE i-j-p triple loop whose inner `b[p*n+j]` strides by `n` (a cache miss per multiply
+for large n). JAX/XLA uses optimized GEMM for these backward passes, so fj-ad paid pure internal
+waste. Routed it through the existing `fj_lax::tensor_contraction::matmul_2d` (blocked / B-packed /
+threaded / register-microkernel) — the same kernel already used by this crate's conv-backward.
+VJP/grad parity is TOLERANCE (not bit-exact), so the reassociated GEMM accumulation is legal.
+Same-binary interleaved A/B (`matmul_2d_gemm_routed_vs_naive`, worker `hz2`), maxerr vs naive
+< 1e-8 at every size:
+  - **256×256: 22.99ms → 1.00ms = 22.9x**
+  - **512×512: 392.4ms → 5.32ms = 73.8x**
+  - **1024×1024: 3365ms → 28.3ms = 118.8x**
+The resulting backward matmul now uses the SAME GEMM algorithm JAX/XLA does; its residual JAX gap
+is the documented `cntiy` +fma matmul row (~XLA/2–4), not a naive-loop loss. GREEN: `cargo test
+-p fj-ad --lib` 403/0 (all QR/LU/SVD/eigh VJP tolerance tests pass with the reassociated GEMM);
+fmt + clippy (`--lib --tests -D warnings`) clean. Scorecard: **1 large Rust-side win / 0 losses;
+kept**. NEXT in this vein: audit other fj-ad linalg/elementwise VJPs for remaining naive O(n³)
+or per-element loops where the forward op has an optimized fj-lax kernel.
+
 ## 2026-06-22 - SlateHarrier scatter-add f64 partition: pack (idx,i) into one u64 — SHIPPED (~1.06x, halves bucket memory)
 
 Refinement of the shipped f64 parallel range-partition: the per-element bucket entry was a
