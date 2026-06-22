@@ -1673,3 +1673,21 @@ Additional cod-a FFT SoA gate recheck environment:
   1-4.5x). The genuine Rust-over-JAX domination surface is the "bad-CPU-lowering"
   cluster, NOT the broad set the internal-speedup ratios imply.
 - No source change (verification). Scorecard delta: **1 win / 0 loss** vs JAX.
+
+## CobaltForge / cc - NEW domination candidate: Rust contiguous gather ~3.7x faster than XLA CPU gather (2026-06-22)
+
+Warm-target rch bench (`hz2`) of committed `eval/gather_256x256_f64_vec` (gather
+256 whole rows in reverse, slice_sizes 1,256 = contiguous memcpy case) = **15.14us**
+vs fresh local JAX `jnp.take(a, idx, axis=0)` 256x256 = **56.4us** (min 31.4) =
+**~3.7x Rust FASTER** cross-machine. Rust's contiguous-block memcpy gather (15us
+for 512KB ~ memcpy bandwidth) beats XLA's general CPU gather machinery.
+- This EXPANDS the verified Rust-over-JAX domination surface beyond sort + scan to
+  CONTIGUOUS gather. Mechanism fits the pattern: XLA-CPU is weak on data-dependent/
+  general ops (sort, scan, gather) where Rust has a specialized path (radix,
+  linear scan, memcpy); strong on vectorizable ops.
+- CAVEATS: (1) cross-machine (Rust rch `hz2` vs local JAX) — directional, the
+  worker CPU mixes in; (2) small op (15us) where per-call overhead and worker
+  speed weigh more, so the 3.7x is softer evidence than the sort/scan dominations;
+  (3) CONTIGUOUS row-gather specifically (the memcpy-favorable case) — scattered/
+  non-contiguous element gather may differ (XLA could be competitive). Same-machine
+  + a non-contiguous variant would firm it up (build-blocked now).
