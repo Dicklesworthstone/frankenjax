@@ -2162,3 +2162,23 @@ cumsum's cheap-add scan.
 - (Rust side not measured: warm target freed in disk emergency, cold rebuild
   forbidden; the reasoning follows directly from the established transcendental
   loss + the uniform-not-cliff JAX scaling.)
+
+## 2026-06-22 - LEADS: JAX median/percentile are sort-bound-slow (~159ms) -> likely Rust dominations (cod-b family) (CobaltForge/cc)
+
+Zero-build JAX-only lead-hunt for ops that inherit XLA's bitonic-sort weakness.
+JAX p50, 1M f64:
+- `jnp.median` = **159ms**, `jnp.percentile(.,90)` = **165ms** — both sort/
+  partition-based, ~= JAX sort 1M (~183ms). They inherit the XLA-CPU bitonic-sort
+  slowness.
+- `jnp.searchsorted` (1M queries into 1M sorted) = **52.8ms** — slower lead, less
+  catastrophic (binary search).
+
+INTERPRETATION: median/percentile are STRONG Rust-domination LEADS — Rust's LSD
+radix sort dominates JAX sort 4-6.5x, and any sort/select-based statistic inherits
+that win; a Rust median (radix-sort or O(n) quickselect) would likely beat JAX's
+~159ms by several x. searchsorted is a softer lead.
+- These are ORDER-STATISTICS (cod-b's domination-map family), so recorded as LEADS
+  to flag, NOT claimed as my dominations. Rust-side confirmation is build-blocked
+  (warm target freed, cold rebuild forbidden) anyway.
+- Consistent with the unifying principle: derived order-statistics ride the sort
+  domination because XLA-CPU's sort lowering is the weakness.
