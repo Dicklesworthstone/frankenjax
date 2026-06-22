@@ -3418,6 +3418,14 @@ pub(crate) fn eval_gather(
         if operand.dtype == DType::I32
             && let Some(src) = operand.elements.as_i64_slice()
         {
+            if let Some(ref sidx) = single_idx {
+                let mut out = vec![0i64; total];
+                gather_single_dense(&mut out, src, sidx);
+                return Ok(Value::Tensor(TensorValue::new_i32_values(
+                    Shape { dims: out_dims },
+                    out,
+                )?));
+            }
             dense_contiguous_gather!(src, i64::from(i32::MIN), TensorValue::new_i32_values);
         }
         // Dense u32/u64 gather (structural copy, no wrap). OOB fill = u32::MAX/u64::MAX
@@ -3425,11 +3433,27 @@ pub(crate) fn eval_gather(
         if operand.dtype == DType::U32
             && let Some(src) = operand.elements.as_u32_slice()
         {
+            if let Some(ref sidx) = single_idx {
+                let mut out = vec![0u32; total];
+                gather_single_dense(&mut out, src, sidx);
+                return Ok(Value::Tensor(TensorValue::new_u32_values(
+                    Shape { dims: out_dims },
+                    out,
+                )?));
+            }
             dense_contiguous_gather!(src, u32::MAX, TensorValue::new_u32_values);
         }
         if operand.dtype == DType::U64
             && let Some(src) = operand.elements.as_u64_slice()
         {
+            if let Some(ref sidx) = single_idx {
+                let mut out = vec![0u64; total];
+                gather_single_dense(&mut out, src, sidx);
+                return Ok(Value::Tensor(TensorValue::new_u64_values(
+                    Shape { dims: out_dims },
+                    out,
+                )?));
+            }
             dense_contiguous_gather!(src, u64::MAX, TensorValue::new_u64_values);
         }
         // Dense BF16/F16 gather (half-precision embedding lookup — bf16 is the
@@ -3444,6 +3468,15 @@ pub(crate) fn eval_gather(
                 Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
                 _ => 0,
             };
+            if let Some(ref sidx) = single_idx {
+                let mut out = vec![0u16; total];
+                gather_single_dense(&mut out, src, sidx);
+                return Ok(Value::Tensor(TensorValue::new_half_float_values(
+                    operand.dtype,
+                    Shape { dims: out_dims },
+                    out,
+                )?));
+            }
             // bf16/f16 embedding lookup (dominant training dtype): thread above the gate
             // (calloc'd u16 output + parallel row memcpy); bit-identical, serial fallback on OOB.
             if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {

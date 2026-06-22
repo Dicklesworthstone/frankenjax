@@ -6413,6 +6413,28 @@ fn bench_gather_scatter_1m_f64(c: &mut Criterion) {
     });
 }
 
+// CrimsonOtter 2026-06-22: i32 scattered single-element gather (id/index lookup). The i32
+// path previously had NO threaded/branchless fast path (serial dense_contiguous_gather only),
+// so the branchless threaded gather_single_dense adds BOTH threading and MLP here.
+fn bench_gather_scatter_1m_i32(c: &mut Criterion) {
+    let n = 1usize << 22;
+    let data: Vec<i64> = (0..n as i64).map(|i| i % 1000).collect();
+    let operand = Value::Tensor(
+        TensorValue::new_i32_values(Shape { dims: vec![n as u32] }, data).unwrap(),
+    );
+    let k = 1usize << 20;
+    let idx: Vec<i64> = (0..k)
+        .map(|i| ((i.wrapping_mul(2_654_435_761) ^ (i >> 3)) % n) as i64)
+        .collect();
+    let indices = Value::vector_i64(&idx).unwrap();
+    let mut p = BTreeMap::new();
+    p.insert("slice_sizes".into(), "1".into());
+    let args = [operand, indices];
+    c.bench_function("eval/gather_scatter_1m_i32", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Gather, &args, &p))
+    });
+}
+
 fn bench_gather_256x256_f64_vec(c: &mut Criterion) {
     let n = 256usize;
     let data: Vec<f64> = (0..n * n).map(|i| i as f64 * 0.001).collect();
@@ -7129,6 +7151,7 @@ criterion_group!(
     bench_split_multi_1024x1024_f32,
     bench_gather_128_rows_16_cols,
     bench_gather_scatter_1m_f64,
+    bench_gather_scatter_1m_i32,
     bench_gather_256x256_f64_vec,
     bench_gather_256x256_f64_literal_reference,
     bench_scatter_128_rows_16_cols,

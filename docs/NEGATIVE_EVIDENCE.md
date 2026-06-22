@@ -2593,3 +2593,27 @@ REMAINING (olm4p stage c): the last ~15x to JAX is memory-LATENCY — a per-thre
 `std::simd::Simd::gather_or` (f64x8) would issue more outstanding loads (more MLP). Deferred
 (std::simd gather nightly-drift risk; needs same-binary A/B + scalar fallback). The branchless
 scalar path already captured the cheap ~2x; SIMD gather is the next, harder increment.
+
+## 2026-06-22 - branchless MLP gather EXTENDED to i32/u32/u64/bf16/f16 — i32 measured 2.13x (CrimsonOtter/cc)
+
+Follow-up to the f64/f32/i64 branchless gather win (d551956b): wired `gather_single_dense`
+into the remaining scattered single-element gather dtypes. i32/u32/u64 previously had NO
+threaded/branchless fast path at all (only the serial `dense_contiguous_gather` macro);
+bf16/f16 were threaded but non-branchless (like f64 was).
+
+MEASURED same-binary A/B (Zen3, load ~39, eval/gather_scatter_1m_i32, 1M random from 4M):
+- **i32 serial baseline 55.19ms -> branchless 25.96ms = 2.13x** (matches the f64 ~2x).
+- Notably the i32 serial baseline (55ms) ≈ the f64 *threaded* baseline (56.8ms): the
+  per-element `match Option` + `copy_from_slice(len 1)` call was the dominant cost in BOTH,
+  so removing it (branchless `out[i]=src[idx[i]]`) is the real lever, NOT threading. Confirms
+  the win is structural and dtype-independent.
+- u32/u64 share the identical serial->branchless transition (same ~2x expected); bf16/f16
+  share the threaded->branchless transition (the f64-proven ~2x).
+- GREEN: `cargo test -p fj-lax --lib gather` = 23 passed / 0 failed (incl.
+  dense_i32_gather_matches_generic, dense_u32_u64_gather_matches_generic, half-float
+  bit-identity). Bit-identical: same src[idx], same order; FillOrDrop keeps the generic path.
+
+So the scattered single-element gather family (f64/f32/i64/i32/u32/u64/bf16/f16) is now
+uniformly ~2x faster, halving the JAX gap (~28x->~15x for f64; i32 family proportionally).
+The residual ~15x is memory-latency (olm4p stage c: std::simd Simd::gather, deferred — Zen3
+vgather is microcoded so SIMD gather may not beat the scalar-MLP path; needs measurement).
