@@ -5508,6 +5508,290 @@ fn reduce_window_simd_channel_maxmin_f32(
     out
 }
 
+/// One output range for the f64 channel-last SUM reduce_window: accumulates the window taps in
+/// ROW-MAJOR order across C channels (f64x8) into `out_chunk` (caller pre-fills 0.0). SIMD is across
+/// channels (independent) so each channel's tap-sum order is unchanged — bit-identical to the scalar
+/// `eval_reduce_window_dense_float` f64 accumulator despite float non-associativity.
+#[allow(clippy::too_many_arguments)]
+fn simd_channel_sum_block_f64(
+    src: &[f64],
+    in_strides: &[usize],
+    window_dims: &[usize],
+    strides: &[usize],
+    pad_lows: &[usize],
+    out_dims: &[usize],
+    input_dims: &[usize],
+    c: usize,
+    win_total: usize,
+    b_start: usize,
+    out_chunk: &mut [f64],
+) {
+    use std::simd::Simd;
+    type F = Simd<f64, 8>;
+    let pooled = out_dims.len() - 1;
+    let c8 = c - c % 8;
+    let n_blocks = out_chunk.len() / c;
+    let mut out_coord = vec![0usize; pooled];
+    let mut tap = vec![0usize; pooled];
+    for bi in 0..n_blocks {
+        let mut rem = b_start + bi;
+        for d in (0..pooled).rev() {
+            out_coord[d] = rem % out_dims[d];
+            rem /= out_dims[d];
+        }
+        let ob = bi * c;
+        tap.iter_mut().for_each(|t| *t = 0);
+        for _ in 0..win_total {
+            let mut in_base = 0usize;
+            let mut oob = false;
+            for d in 0..pooled {
+                let padded = out_coord[d] * strides[d] + tap[d];
+                if padded < pad_lows[d] {
+                    oob = true;
+                    break;
+                }
+                let ic = padded - pad_lows[d];
+                if ic >= input_dims[d] {
+                    oob = true;
+                    break;
+                }
+                in_base += ic * in_strides[d];
+            }
+            if !oob {
+                let mut ci = 0;
+                while ci < c8 {
+                    let a = F::from_slice(&out_chunk[ob + ci..ob + ci + 8]);
+                    let t = F::from_slice(&src[in_base + ci..in_base + ci + 8]);
+                    (a + t).copy_to_slice(&mut out_chunk[ob + ci..ob + ci + 8]);
+                    ci += 8;
+                }
+                while ci < c {
+                    out_chunk[ob + ci] += src[in_base + ci];
+                    ci += 1;
+                }
+            }
+            for d in (0..pooled).rev() {
+                tap[d] += 1;
+                if tap[d] < window_dims[d] {
+                    break;
+                }
+                tap[d] = 0;
+            }
+        }
+    }
+}
+
+/// f32 channel-last SUM: accumulates in f64 (widening f32→f64 per tap, EXACTLY as dense_float's
+/// f64-view path does), then rounds `as f32` — bit-identical to the scalar odometer. f64x8 across
+/// channels; the per-channel row-major tap order is preserved.
+#[allow(clippy::too_many_arguments)]
+fn simd_channel_sum_block_f32(
+    src: &[f32],
+    in_strides: &[usize],
+    window_dims: &[usize],
+    strides: &[usize],
+    pad_lows: &[usize],
+    out_dims: &[usize],
+    input_dims: &[usize],
+    c: usize,
+    win_total: usize,
+    b_start: usize,
+    out_chunk: &mut [f32],
+) {
+    use std::simd::Simd;
+    use std::simd::num::SimdFloat;
+    type F = Simd<f64, 8>;
+    let pooled = out_dims.len() - 1;
+    let c8 = c - c % 8;
+    let n_blocks = out_chunk.len() / c;
+    let mut out_coord = vec![0usize; pooled];
+    let mut tap = vec![0usize; pooled];
+    let mut acc = vec![0.0f64; c];
+    for bi in 0..n_blocks {
+        let mut rem = b_start + bi;
+        for d in (0..pooled).rev() {
+            out_coord[d] = rem % out_dims[d];
+            rem /= out_dims[d];
+        }
+        let ob = bi * c;
+        acc.iter_mut().for_each(|a| *a = 0.0);
+        tap.iter_mut().for_each(|t| *t = 0);
+        for _ in 0..win_total {
+            let mut in_base = 0usize;
+            let mut oob = false;
+            for d in 0..pooled {
+                let padded = out_coord[d] * strides[d] + tap[d];
+                if padded < pad_lows[d] {
+                    oob = true;
+                    break;
+                }
+                let ic = padded - pad_lows[d];
+                if ic >= input_dims[d] {
+                    oob = true;
+                    break;
+                }
+                in_base += ic * in_strides[d];
+            }
+            if !oob {
+                let mut ci = 0;
+                while ci < c8 {
+                    let a = F::from_slice(&acc[ci..ci + 8]);
+                    let t = Simd::<f32, 8>::from_slice(&src[in_base + ci..in_base + ci + 8])
+                        .cast::<f64>();
+                    (a + t).copy_to_slice(&mut acc[ci..ci + 8]);
+                    ci += 8;
+                }
+                while ci < c {
+                    acc[ci] += f64::from(src[in_base + ci]);
+                    ci += 1;
+                }
+            }
+            for d in (0..pooled).rev() {
+                tap[d] += 1;
+                if tap[d] < window_dims[d] {
+                    break;
+                }
+                tap[d] = 0;
+            }
+        }
+        for ci in 0..c {
+            out_chunk[ob + ci] = acc[ci] as f32;
+        }
+    }
+}
+
+fn reduce_window_simd_channel_sum_f64(
+    src: &[f64],
+    input_dims: &[usize],
+    window_dims: &[usize],
+    strides: &[usize],
+    pad_lows: &[usize],
+    out_dims: &[usize],
+) -> Vec<f64> {
+    let rank = input_dims.len();
+    let pooled = rank - 1;
+    let c = input_dims[pooled];
+    let out_total: usize = out_dims.iter().product();
+    let mut out = vec![0.0f64; out_total];
+    let mut in_strides = vec![1usize; rank];
+    for d in (0..rank - 1).rev() {
+        in_strides[d] = in_strides[d + 1] * input_dims[d + 1];
+    }
+    let out_spatial: usize = out_dims[..pooled].iter().product();
+    let win_total: usize = window_dims[..pooled].iter().product();
+    let threads = crate::arithmetic::work_scaled_threads(out_total).min(out_spatial.max(1));
+    if threads <= 1 {
+        simd_channel_sum_block_f64(
+            src,
+            &in_strides,
+            window_dims,
+            strides,
+            pad_lows,
+            out_dims,
+            input_dims,
+            c,
+            win_total,
+            0,
+            &mut out,
+        );
+        return out;
+    }
+    let in_strides: &[usize] = &in_strides;
+    let per = out_spatial.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut b0 = 0usize;
+        let mut rest: &mut [f64] = out.as_mut_slice();
+        while b0 < out_spatial {
+            let cnt = per.min(out_spatial - b0);
+            let (chunk, tail) = rest.split_at_mut(cnt * c);
+            rest = tail;
+            scope.spawn(move || {
+                simd_channel_sum_block_f64(
+                    src,
+                    in_strides,
+                    window_dims,
+                    strides,
+                    pad_lows,
+                    out_dims,
+                    input_dims,
+                    c,
+                    win_total,
+                    b0,
+                    chunk,
+                );
+            });
+            b0 += cnt;
+        }
+    });
+    out
+}
+
+fn reduce_window_simd_channel_sum_f32(
+    src: &[f32],
+    input_dims: &[usize],
+    window_dims: &[usize],
+    strides: &[usize],
+    pad_lows: &[usize],
+    out_dims: &[usize],
+) -> Vec<f32> {
+    let rank = input_dims.len();
+    let pooled = rank - 1;
+    let c = input_dims[pooled];
+    let out_total: usize = out_dims.iter().product();
+    let mut out = vec![0.0f32; out_total];
+    let mut in_strides = vec![1usize; rank];
+    for d in (0..rank - 1).rev() {
+        in_strides[d] = in_strides[d + 1] * input_dims[d + 1];
+    }
+    let out_spatial: usize = out_dims[..pooled].iter().product();
+    let win_total: usize = window_dims[..pooled].iter().product();
+    let threads = crate::arithmetic::work_scaled_threads(out_total).min(out_spatial.max(1));
+    if threads <= 1 {
+        simd_channel_sum_block_f32(
+            src,
+            &in_strides,
+            window_dims,
+            strides,
+            pad_lows,
+            out_dims,
+            input_dims,
+            c,
+            win_total,
+            0,
+            &mut out,
+        );
+        return out;
+    }
+    let in_strides: &[usize] = &in_strides;
+    let per = out_spatial.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut b0 = 0usize;
+        let mut rest: &mut [f32] = out.as_mut_slice();
+        while b0 < out_spatial {
+            let cnt = per.min(out_spatial - b0);
+            let (chunk, tail) = rest.split_at_mut(cnt * c);
+            rest = tail;
+            scope.spawn(move || {
+                simd_channel_sum_block_f32(
+                    src,
+                    in_strides,
+                    window_dims,
+                    strides,
+                    pad_lows,
+                    out_dims,
+                    input_dims,
+                    c,
+                    win_total,
+                    b0,
+                    chunk,
+                );
+            });
+            b0 += cnt;
+        }
+    });
+    out
+}
+
 /// Separable sliding-window max/min: reduce each window axis with an independent
 /// monotonic-deque 1D pass. This turns the O(output·∏window) full-window scan and
 /// the older O(output·∑window) per-axis scan into O(input+output) work per axis.
@@ -5990,6 +6274,57 @@ fn eval_reduce_window(
         return Ok(Value::Tensor(
             TensorValue::new_f32_values(shape, values).map_err(EvalError::from)?,
         ));
+    }
+
+    // SIMD-over-channel SUM fast path (channel-last f64/f32) — sum/average pooling. The scalar
+    // dense_float odometer was ~58-200x JAX. SIMD across C with an f64 accumulator preserving the
+    // row-major tap order (bit-identical to the odometer despite float non-associativity, since
+    // channels are summed independently; f32 widens→f64→rounds exactly as dense_float does).
+    // Matches the rank-2 sum path's `reduce_window_sum_like` contract. Threaded outer loop.
+    if no_base_dilation
+        && no_window_dilation
+        && reduce_window_sum_like(reduce_op)
+        && rank >= 2
+        && window_dims[rank - 1] == 1
+        && strides[rank - 1] == 1
+        && pad_lows[rank - 1] == 0
+        && out_dims[rank - 1] as usize == tensor.shape.dims[rank - 1] as usize
+        && output_dtype == tensor.dtype
+    {
+        let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+        let out_dims_usize: Vec<usize> = out_dims.iter().map(|&d| d as usize).collect();
+        let shape = Shape {
+            dims: out_dims.clone(),
+        };
+        if tensor.dtype == fj_core::DType::F64
+            && let Some(src) = tensor.elements.as_f64_slice()
+        {
+            let values = reduce_window_simd_channel_sum_f64(
+                src,
+                &input_dims,
+                &window_dims,
+                &strides,
+                &pad_lows,
+                &out_dims_usize,
+            );
+            return Ok(Value::Tensor(
+                TensorValue::new_f64_values(shape, values).map_err(EvalError::from)?,
+            ));
+        } else if tensor.dtype == fj_core::DType::F32
+            && let Some(src) = tensor.elements.as_f32_slice()
+        {
+            let values = reduce_window_simd_channel_sum_f32(
+                src,
+                &input_dims,
+                &window_dims,
+                &strides,
+                &pad_lows,
+                &out_dims_usize,
+            );
+            return Ok(Value::Tensor(
+                TensorValue::new_f32_values(shape, values).map_err(EvalError::from)?,
+            ));
+        }
     }
 
     // Separable i64 max/min: integer sibling of the float deque above. Large-window
@@ -6754,6 +7089,213 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    // SIMD-over-channel SUM (avg/sum pooling) bit-identity guard: the f64/f32 SIMD sum fns must
+    // match the REAL scalar odometer (eval_reduce_window_dense_float) bit-for-bit, incl. NaN, padded
+    // windows, and large (threaded) shapes. f32 verifies the f64-accumulate-then-round path.
+    #[test]
+    fn sumpool_simd_channel_bit_identical() {
+        let in_strides_of = |dims: &[usize]| {
+            let r = dims.len();
+            let mut s = vec![1usize; r];
+            for d in (0..r - 1).rev() {
+                s[d] = s[d + 1] * dims[d + 1];
+            }
+            s
+        };
+        type Cfg = (Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>);
+        let configs: &[Cfg] = &[
+            (
+                vec![2, 16, 16, 12],
+                vec![1, 3, 3, 1],
+                vec![1, 2, 2, 1],
+                vec![0, 0, 0, 0],
+            ),
+            (
+                vec![2, 16, 16, 12],
+                vec![1, 3, 3, 1],
+                vec![1, 1, 1, 1],
+                vec![0, 1, 1, 0],
+            ),
+            (
+                vec![8, 56, 56, 64],
+                vec![1, 3, 3, 1],
+                vec![1, 2, 2, 1],
+                vec![0, 0, 0, 0],
+            ),
+        ];
+        for (dims, win, strides, pad) in configs {
+            let rank = dims.len();
+            let out_dims: Vec<usize> = (0..rank)
+                .map(|d| (dims[d] + 2 * pad[d] - win[d]) / strides[d] + 1)
+                .collect();
+            let out_dims_u32: Vec<u32> = out_dims.iter().map(|&d| d as u32).collect();
+            let total_out: usize = out_dims.iter().product();
+            let in_strides = in_strides_of(dims);
+            let win_dil = vec![1usize; rank];
+            let total: usize = dims.iter().product();
+            for variant in 0..2 {
+                let mut s64: Vec<f64> = (0..total)
+                    .map(|i| ((i % 113) as f64) * 0.29 - 16.0)
+                    .collect();
+                if variant == 1 {
+                    s64[total / 3] = f64::NAN;
+                }
+                let s32: Vec<f32> = s64.iter().map(|&v| v as f32).collect();
+                // f64 vs the real odometer.
+                let want64 = match super::eval_reduce_window_dense_float(
+                    DType::F64,
+                    "add",
+                    &s64,
+                    win,
+                    strides,
+                    &win_dil,
+                    &out_dims_u32,
+                    pad,
+                    dims,
+                    &in_strides,
+                    total_out,
+                )
+                .unwrap()
+                {
+                    Value::Tensor(t) => t.elements.as_f64_slice().unwrap().to_vec(),
+                    _ => panic!(),
+                };
+                let got64 = super::reduce_window_simd_channel_sum_f64(
+                    &s64, dims, win, strides, pad, &out_dims,
+                );
+                assert_eq!(
+                    got64.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    want64.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    "f64 SIMD-channel sumpool mismatch (dims={dims:?} variant={variant})"
+                );
+                // f32: odometer widens s32→f64 then rounds; SIMD does the same.
+                let widened: Vec<f64> = s32.iter().map(|&v| f64::from(v)).collect();
+                let want32 = match super::eval_reduce_window_dense_float(
+                    DType::F32,
+                    "add",
+                    &widened,
+                    win,
+                    strides,
+                    &win_dil,
+                    &out_dims_u32,
+                    pad,
+                    dims,
+                    &in_strides,
+                    total_out,
+                )
+                .unwrap()
+                {
+                    Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
+                    _ => panic!(),
+                };
+                let got32 = super::reduce_window_simd_channel_sum_f32(
+                    &s32, dims, win, strides, pad, &out_dims,
+                );
+                assert_eq!(
+                    got32.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    want32.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    "f32 SIMD-channel sumpool mismatch (dims={dims:?} variant={variant})"
+                );
+            }
+        }
+    }
+
+    // Same-binary A/B: scalar odometer (eval_reduce_window_dense_float) vs the SIMD-channel sum, per
+    // CNN shape/dtype. Sum/avg pooling baseline vs the new fast path.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_sumpool_simd_ab() {
+        use std::time::Instant;
+        for (nb, hw, c, win, stride) in [
+            (8usize, 112usize, 64usize, 3usize, 2usize),
+            (8, 56, 128, 2, 2),
+        ] {
+            let dims = [nb, hw, hw, c];
+            let wd = [1usize, win, win, 1];
+            let st = [1usize, stride, stride, 1];
+            let pad = [0usize, 0, 0, 0];
+            let dil = [1usize; 4];
+            let out_dims: Vec<usize> = (0..4).map(|d| (dims[d] - wd[d]) / st[d] + 1).collect();
+            let out_u32: Vec<u32> = out_dims.iter().map(|&d| d as u32).collect();
+            let total_out: usize = out_dims.iter().product();
+            let mut in_strides = [1usize; 4];
+            for d in (0..3).rev() {
+                in_strides[d] = in_strides[d + 1] * dims[d + 1];
+            }
+            let total = nb * hw * hw * c;
+            let s64: Vec<f64> = (0..total)
+                .map(|i| ((i % 9973) as f64) * 0.013 - 50.0)
+                .collect();
+            let s32: Vec<f32> = s64.iter().map(|&v| v as f32).collect();
+            let w64: Vec<f64> = s32.iter().map(|&v| f64::from(v)).collect();
+            let odo64 = || {
+                super::eval_reduce_window_dense_float(
+                    DType::F64,
+                    "add",
+                    &s64,
+                    &wd,
+                    &st,
+                    &dil,
+                    &out_u32,
+                    &pad,
+                    &dims,
+                    &in_strides,
+                    total_out,
+                )
+                .unwrap()
+            };
+            let simd64 = || {
+                super::reduce_window_simd_channel_sum_f64(&s64, &dims, &wd, &st, &pad, &out_dims)
+            };
+            let odo32 = || {
+                super::eval_reduce_window_dense_float(
+                    DType::F32,
+                    "add",
+                    &w64,
+                    &wd,
+                    &st,
+                    &dil,
+                    &out_u32,
+                    &pad,
+                    &dims,
+                    &in_strides,
+                    total_out,
+                )
+                .unwrap()
+            };
+            let simd32 = || {
+                super::reduce_window_simd_channel_sum_f32(&s32, &dims, &wd, &st, &pad, &out_dims)
+            };
+            let bench = |f: &dyn Fn()| {
+                f();
+                let mut b = f64::MAX;
+                for _ in 0..15 {
+                    let t = Instant::now();
+                    f();
+                    b = b.min(t.elapsed().as_secs_f64());
+                }
+                b * 1e3
+            };
+            let o64 = bench(&|| {
+                std::hint::black_box(odo64());
+            });
+            let m64 = bench(&|| {
+                std::hint::black_box(simd64());
+            });
+            let o32 = bench(&|| {
+                std::hint::black_box(odo32());
+            });
+            let m32 = bench(&|| {
+                std::hint::black_box(simd32());
+            });
+            println!(
+                "AB sumpool N{nb} {hw}x{hw}x{c} {win}x{win}/s{stride}: f64 odo={o64:.4} simd={m64:.4} ({:.1}x) | f32 odo={o32:.4} simd={m32:.4} ({:.1}x)",
+                o64 / m64,
+                o32 / m32
+            );
         }
     }
 

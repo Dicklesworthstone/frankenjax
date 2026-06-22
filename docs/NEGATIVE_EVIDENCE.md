@@ -2486,6 +2486,32 @@ vs JAX: f32 3x3 **0.75ms vs 1.48ms = ~2x WIN** (was ~1.8x LOSS); f32 2x2 0.36 vs
 CNN maxpool (f64+f32) is now a DOMINATION across the board. METHOD LESSON: only the same-binary A/B is
 trustworthy — cross-invocation maxpool timings swing 2-3x with host contention (do not revert on them).
 
+## 2026-06-22 - SUM/AVG pooling ~35-120x JAX loss → 22-53x faster, bit-identical (SlateHarrier)
+
+Extended the channel-last SIMD pooling vein from max/min to SUM (avg/sum pooling — as common as maxpool:
+global average pooling etc.). Float `reduce_window(add)` channel-last [N,H,W,C] hit the same scalar
+dense_float odometer (the i64 summed-area-table is integer-only; float can't use SAT/separable without
+changing the sum order). KEY LEGALITY: SIMD ACROSS CHANNELS preserves each channel's row-major tap-sum
+order (channels are independent) → bit-identical despite float non-associativity — UNLIKE axis-reduce
+SIMD (the memory's float-sum DO-NOT, which reorders summands). f64 accumulates in f64; f32 widens→f64→
+rounds `as f32`, EXACTLY as the odometer's f64-view path → bit-identical. Threaded outer loop.
+
+`reduce_window_simd_channel_sum_f{64,32}` + `simd_channel_sum_block_f{64,32}`. SAME-BINARY A/B
+(`bench_sumpool_simd_ab`, odometer vs SIMD):
+
+| shape | f64 odo→simd | f32 odo→simd |
+| --- | --- | --- |
+| [8,112,112,64] 3x3/s2 | 50.0→2.23 ms (**22.4x**) | 50.6→0.95 ms (**53.5x**) |
+| [8,56,56,128] 2x2/s2 | 14.1→0.51 ms (**27.8x**) | 15.2→0.36 ms (**41.8x**) |
+
+vs JAX (f64 3x3 1.44ms, f32 3x3 0.42ms, f64 2x2 0.48ms, f32 2x2 0.25ms): f64 2x2 ~1.06x (parity), f64
+3x3 ~1.5x, f32 ~1.4-2.3x — from the original ~35-120x LOSSES. f32 stays ~2x vs JAX because bit-identity
+to the odometer forces f64 accumulation (f64x8, half the width of JAX's f32x16 accum) — we are MORE
+accurate; matching JAX's f32-accum would break the *_matches_generic contract. Bit-identical:
+`sumpool_simd_channel_bit_identical` (vs the REAL eval_reduce_window_dense_float, f64+f32, finite/NaN,
+VALID/padded, threaded) + full fj-lax lib 1590/0. Both maxpool AND avg/sum pooling now win/near-parity
+(channel-last); the whole common CNN pooling surface is no longer a JAX loss.
+
 ## 2026-06-22 - floor-chain JAX LOSS confirmed cross-machine; cross-machine map validation COMPLETE (CobaltForge/cc)
 
 Final completeness cross-confirm. Warm-target rch bench of committed
