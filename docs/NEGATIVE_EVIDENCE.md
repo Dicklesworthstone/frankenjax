@@ -2064,3 +2064,23 @@ COMPLETE matmul characterization — the domination is entirely about the BLAS g
 So Rust-over-JAX matmul domination is INTEGER-ONLY: Rust wins exactly where JAX
 lacks a BLAS path; wherever JAX has BLAS (float/complex) Rust loses (no fma + no
 BLAS-grade kernel). Clean, defensible, and explains the whole matmul row set.
+
+## 2026-06-22 - i32 matmul is a JAX LOSS (vpmulld SIMD) — integer-matmul domination is i64-ONLY (CobaltForge/cc)
+
+CORRECTS the prior "integer matmul (i64/i32/u32) dominates ~80x" overgeneralization.
+Warm-target rch `eval/matmul_512x512_i32_dense` on `hz2` = **4.84ms** vs fresh
+local JAX int32 `a@b` 512x512 = **0.62ms** (min 0.52) = **~7.8x Rust LOSS**.
+
+ROOT CAUSE (the i64 vs i32 asymmetry): AVX2 has `vpmulld` (32-bit SIMD multiply)
+but 64-bit SIMD multiply (`vpmullq`) is AVX512-only. So:
+- JAX i32 matmul VECTORIZES (vpmulld) -> 0.62ms; JAX i64 matmul is SCALAR -> 374ms.
+- Rust's i32 matmul does NOT SIMD (it stores i32 as Literal::I64, so its kernel is
+  ~the same ~4.8ms as i64 -- a blocked but non-vectorized integer GEMM).
+Result: i64 -> Rust 4.64ms vs JAX 374ms = Rust WINS 80x (both scalar, Rust blocked
+beats JAX naive); i32 -> Rust 4.84ms vs JAX 0.62ms = Rust LOSES 7.8x (JAX vpmulld
+beats Rust non-SIMD). The matmul domination is i64-ONLY, not integer-family.
+
+NEW LEVER (recorded, not pursued -- build-blocked): a native-i32 SIMD matmul
+(vpmulld, i32 storage instead of i64) would close the ~7.8x i32 gap. Likely also
+applies to u32. Touches the matmul kernel (cod/codex linalg zone) -- needs an
+owner + same-binary A/B when builds resume.
