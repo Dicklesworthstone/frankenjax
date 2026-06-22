@@ -52,6 +52,16 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     (sort ≤ its f64 1.25ms) still wins ≥10x in the dtype JAX users actually run. **(fj-lax f32 exact
     now MEASURED, gap closed — see the 2026-06-22 f32-sort entry below: fj-lax f32 64k = ~0.77ms,
     FASTER than its own f64, ~10x over JAX f32.)**
+  - **COMPLEX128 MATMUL 4-row register-blocking SHIPPED (2026-06-22, SlateHarrier) — narrows JAX
+    loss 1.95x→1.31x.** Unlike integer, XLA DOES have fast complex GEMM (zgemm): fresh JAX c128
+    matmul 512³ **11.97ms**, 1024³ **58.7ms**. fj-lax `rank2_complex_row_block` was a NAIVE single-row
+    i-k-j loop (no register blocking, unlike the f64/i64 kernels) → at RAM-bound 1024³ (B=16MB>L3) it
+    re-streamed B once per output row. Applied 4-row register blocking (B streamed rows/4×; mirrors
+    `rank2_i64_row_block`). BIT-IDENTICAL (interleaves 4 independent output rows, never regroups a
+    sum): complex lib 132/0, dot_general 29/0, dot 38/0, tensor_contraction 10/0; same-binary
+    block-isolated A/B (`i64_matmul_speed` C128 section) **512³ 1.71x / 1024³ 1.26x** single-thread.
+    Production threaded c128 matmul 1024³ **~114ms → ~77ms** vs JAX 58.7ms = loss **1.95x → 1.31x**;
+    512³ 14.5ms vs 11.97ms = 1.21x. Residual is the `cntiy` +fma gate (zgemm fuses complex MACs).
   - **INTEGER MATMUL is a NEW fj-lax domination zone (2026-06-22, SlateHarrier)** — XLA has no
     integer BLAS, so JAX falls back to a scalar/naive int matmul that is catastrophically slow.
     Fresh `JAX_ENABLE_X64=1` jaxlib CPU x64 `int64 @ int64`: **512³ = 367.2ms mean (min 347ms),

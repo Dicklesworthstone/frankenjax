@@ -132,4 +132,111 @@ fn main() {
     // 4x fewer B passes from 4-row blocking is where the structural win appears.
     bench_size(1536, 1536, 1536, 3); // B = 18 MB
     bench_size(2048, 2048, 2048, 2); // B = 32 MB
+
+    // Complex128 matmul head-to-head context (vs JAX zgemm, which IS fast unlike int).
+    for (nsz, iters) in [(512usize, 8usize), (1024, 4)] {
+        let a: Vec<(f64, f64)> = (0..nsz * nsz)
+            .map(|i| ((i % 13) as f64 - 6.0, (i % 7) as f64 - 3.0))
+            .collect();
+        let b: Vec<(f64, f64)> = (0..nsz * nsz)
+            .map(|i| ((i % 11) as f64 - 5.0, (i % 5) as f64 - 2.0))
+            .collect();
+        // Single-row reference (the PRE-blocking kernel), single-threaded over the whole
+        // matrix — to A/B the 4-row register blocking same-binary and prove bit-identity.
+        let single_row_ref = |a: &[(f64, f64)], b: &[(f64, f64)]| -> Vec<(f64, f64)> {
+            let mut c = vec![(0.0f64, 0.0f64); nsz * nsz];
+            for (ri, c_row) in c.chunks_mut(nsz).enumerate() {
+                let a_off = ri * nsz;
+                for l in 0..nsz {
+                    let (ar, ai) = a[a_off + l];
+                    let b_row = &b[l * nsz..l * nsz + nsz];
+                    for (cc, &(br, bi)) in c_row.iter_mut().zip(b_row) {
+                        cc.0 += ar * br - ai * bi;
+                        cc.1 += ar * bi + ai * br;
+                    }
+                }
+            }
+            c
+        };
+        // 1-thread 4-row-BLOCKED reference (the production inner kernel's shape) — isolates
+        // the register-blocking win vs single_row_ref, same-binary (both 1-thread).
+        let blocked_ref = |a: &[(f64, f64)], b: &[(f64, f64)]| -> Vec<(f64, f64)> {
+            let mut c = vec![(0.0f64, 0.0f64); nsz * nsz];
+            let full = nsz - nsz % 4;
+            let (blocked, tail) = c.split_at_mut(full * nsz);
+            for (g, four) in blocked.chunks_mut(4 * nsz).enumerate() {
+                let (c0, rest) = four.split_at_mut(nsz);
+                let (c1, rest) = rest.split_at_mut(nsz);
+                let (c2, c3) = rest.split_at_mut(nsz);
+                let base = g * 4 * nsz;
+                for l in 0..nsz {
+                    let (a0r, a0i) = a[base + l];
+                    let (a1r, a1i) = a[base + nsz + l];
+                    let (a2r, a2i) = a[base + 2 * nsz + l];
+                    let (a3r, a3i) = a[base + 3 * nsz + l];
+                    let b_row = &b[l * nsz..l * nsz + nsz];
+                    for ((((e0, e1), e2), e3), &(br, bi)) in c0
+                        .iter_mut()
+                        .zip(c1.iter_mut())
+                        .zip(c2.iter_mut())
+                        .zip(c3.iter_mut())
+                        .zip(b_row)
+                    {
+                        e0.0 += a0r * br - a0i * bi;
+                        e0.1 += a0r * bi + a0i * br;
+                        e1.0 += a1r * br - a1i * bi;
+                        e1.1 += a1r * bi + a1i * br;
+                        e2.0 += a2r * br - a2i * bi;
+                        e2.1 += a2r * bi + a2i * br;
+                        e3.0 += a3r * br - a3i * bi;
+                        e3.1 += a3r * bi + a3i * br;
+                    }
+                }
+            }
+            for (ri, c_row) in tail.chunks_mut(nsz).enumerate() {
+                let a_off = (full + ri) * nsz;
+                for l in 0..nsz {
+                    let (ar, ai) = a[a_off + l];
+                    let b_row = &b[l * nsz..l * nsz + nsz];
+                    for (cc, &(br, bi)) in c_row.iter_mut().zip(b_row) {
+                        cc.0 += ar * br - ai * bi;
+                        cc.1 += ar * bi + ai * br;
+                    }
+                }
+            }
+            c
+        };
+
+        let prod = fj_lax::tensor_contraction::rank2_complex_matmul(&a, nsz, nsz, &b, nsz);
+        let sref = single_row_ref(&a, &b);
+        assert_eq!(
+            prod, sref,
+            "threaded blocked complex matmul != single-row ref"
+        );
+        assert_eq!(blocked_ref(&a, &b), sref, "1thr blocked != single-row ref");
+        let t = Instant::now();
+        for _ in 0..iters {
+            let r = fj_lax::tensor_contraction::rank2_complex_matmul(
+                black_box(&a),
+                nsz,
+                nsz,
+                black_box(&b),
+                nsz,
+            );
+            black_box(&r);
+        }
+        let prod_ms = t.elapsed().as_nanos() as f64 / iters as f64 / 1e6;
+        let _ = single_row_ref(&a, &b);
+        let t2 = Instant::now();
+        black_box(single_row_ref(black_box(&a), black_box(&b)));
+        let single_ms = t2.elapsed().as_nanos() as f64 / 1e6;
+        let _ = blocked_ref(&a, &b);
+        let t3 = Instant::now();
+        black_box(blocked_ref(black_box(&a), black_box(&b)));
+        let blocked_ms = t3.elapsed().as_nanos() as f64 / 1e6;
+        println!(
+            "C128_MATMUL {nsz}^3 prod_threaded={prod_ms:.3}ms | 1thr single_row={single_ms:.3}ms blocked={blocked_ms:.3}ms block_speedup={:.2}x",
+            single_ms / blocked_ms,
+        );
+    }
 }

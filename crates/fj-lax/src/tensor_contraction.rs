@@ -1105,6 +1105,14 @@ pub fn rank2_complex_matmul(
 }
 
 /// i-k-j row-block for [`rank2_complex_matmul`]: rows `[row_start, row_start+block.len()/n)`.
+///
+/// 4-row register-blocked, mirroring the i64/f64 kernels: four output rows share ONE `b_row`
+/// load per `l`, so B is streamed `rows/4` times instead of `rows` — 4x less C-vs-B cache/RAM
+/// traffic (complex128 B is 16MB at 1024³, far past L3, so this is the dominant cost), plus
+/// 4-way ILP for the independent complex MACs. BIT-IDENTICAL to the prior single-row loop: each
+/// output still accumulates its `ar*br - ai*bi` / `ar*bi + ai*br` products over `l` in strictly
+/// ascending order; the blocking only interleaves four INDEPENDENT output rows and never
+/// regroups any one output's partial sum (so the f64 add order per output is unchanged).
 fn rank2_complex_row_block(
     a: &[(f64, f64)],
     b: &[(f64, f64)],
@@ -1113,8 +1121,44 @@ fn rank2_complex_row_block(
     row_start: usize,
     block: &mut [(f64, f64)],
 ) {
-    for (ri, c_row) in block.chunks_mut(n).enumerate() {
-        let a_off = (row_start + ri) * k;
+    let rows = block.len() / n;
+    let full = rows - rows % 4;
+    let (blocked, tail) = block.split_at_mut(full * n);
+
+    for (g, four) in blocked.chunks_mut(4 * n).enumerate() {
+        let (c0, rest) = four.split_at_mut(n);
+        let (c1, rest) = rest.split_at_mut(n);
+        let (c2, c3) = rest.split_at_mut(n);
+        let base = (row_start + g * 4) * k;
+        let (a0o, a1o, a2o, a3o) = (base, base + k, base + 2 * k, base + 3 * k);
+        for l in 0..k {
+            let (a0r, a0i) = a[a0o + l];
+            let (a1r, a1i) = a[a1o + l];
+            let (a2r, a2i) = a[a2o + l];
+            let (a3r, a3i) = a[a3o + l];
+            let b_row = &b[l * n..l * n + n];
+            for ((((e0, e1), e2), e3), &(br, bi)) in c0
+                .iter_mut()
+                .zip(c1.iter_mut())
+                .zip(c2.iter_mut())
+                .zip(c3.iter_mut())
+                .zip(b_row)
+            {
+                e0.0 += a0r * br - a0i * bi;
+                e0.1 += a0r * bi + a0i * br;
+                e1.0 += a1r * br - a1i * bi;
+                e1.1 += a1r * bi + a1i * br;
+                e2.0 += a2r * br - a2i * bi;
+                e2.1 += a2r * bi + a2i * br;
+                e3.0 += a3r * br - a3i * bi;
+                e3.1 += a3r * bi + a3i * br;
+            }
+        }
+    }
+
+    let tail_start = row_start + full;
+    for (ri, c_row) in tail.chunks_mut(n).enumerate() {
+        let a_off = (tail_start + ri) * k;
         for l in 0..k {
             let (ar, ai) = a[a_off + l];
             let b_row = &b[l * n..l * n + n];
