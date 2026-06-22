@@ -6533,6 +6533,29 @@ fn bench_scatter_add_1m_f64_1d(c: &mut Criterion) {
     });
 }
 
+// CrimsonOtter 2026-06-22: scattered single-element OVERWRITE scatter (1M random writes into
+// a 4M f64 operand). The general scatter_typed loop pays a per-element copy_from_slice(len 1)
+// CALL + overflow/bounds checks; the branchless `out[idx]=upd[i]` fast path lets the store
+// buffer overlap the random writes (the scatter dual of the gather MLP win).
+fn bench_scatter_overwrite_1m_f64(c: &mut Criterion) {
+    let n = 1_usize << 22; // 4M operand (DRAM-bound random scatter)
+    let operand = Value::vector_f64(&vec![0.0; n]).unwrap();
+    let k = 1_usize << 20; // 1M overwrites
+    let indices_data: Vec<i64> = (0..k)
+        .map(|i| ((i.wrapping_mul(2_654_435_761) ^ (i >> 3)) % n) as i64)
+        .collect();
+    let indices = Value::vector_i64(&indices_data).unwrap();
+    let updates_data: Vec<f64> = (0..k).map(|i| (i % 4099) as f64 * 0.001).collect();
+    let updates = Value::vector_f64(&updates_data).unwrap();
+    let inputs = [operand, indices, updates];
+    let mut p = BTreeMap::new();
+    p.insert("mode".into(), "overwrite".into());
+    p.insert("index_mode".into(), "clip".into());
+    c.bench_function("eval/scatter_overwrite_1m_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Scatter, &inputs, &p))
+    });
+}
+
 // Large scatter (256x256 f64 operand, overwrite 256 rows reversed): dense fast
 // path (pass84) vs the Vec<Literal> materialize + copy. Same process.
 fn bench_scatter_256x256_f64_vec(c: &mut Criterion) {
@@ -7156,6 +7179,7 @@ criterion_group!(
     bench_gather_256x256_f64_literal_reference,
     bench_scatter_128_rows_16_cols,
     bench_scatter_add_1m_f64_1d,
+    bench_scatter_overwrite_1m_f64,
     bench_scatter_256x256_f64_vec,
     bench_scatter_256x256_f64_literal_reference,
     bench_slice_64_rows_16_cols,

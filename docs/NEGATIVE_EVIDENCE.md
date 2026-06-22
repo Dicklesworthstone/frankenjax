@@ -2617,3 +2617,23 @@ So the scattered single-element gather family (f64/f32/i64/i32/u32/u64/bf16/f16)
 uniformly ~2x faster, halving the JAX gap (~28x->~15x for f64; i32 family proportionally).
 The residual ~15x is memory-latency (olm4p stage c: std::simd Simd::gather, deferred — Zen3
 vgather is microcoded so SIMD gather may not beat the scalar-MLP path; needs measurement).
+
+## 2026-06-22 - scatter-overwrite branchless fast path: 1.24x (the gather dual, smaller — stores less latency-bound) (CrimsonOtter/cc)
+
+Applied the branchless-MLP gather lesson to its dual: scatter OVERWRITE, slice_elems==1.
+The general `scatter_typed` loop pays a per-element `copy_from_slice(len 1)` CALL + four
+checked mul/add + two bounds checks; for slice_elems==1 the whole body is `out[idx]=upd[i]`,
+so a tight branchless loop (gated on `upd.len() >= index_count`) lets the store buffer
+overlap the random writes. Wired inside the macro -> covers f64/f32/i64/i32/u32/u64 at once.
+
+MEASURED same-binary A/B (Zen3, eval/scatter_overwrite_1m_f64, 1M random writes -> 4M f64):
+- **35.0ms (general path) -> 28.3ms (branchless) = 1.24x.** Real but MODEST — smaller than
+  the gather ~2x because scattered STORES are less latency-bound than scattered LOADS (the
+  store buffer already hides some latency; the per-element call/checks were a smaller fraction).
+- Bit-identical: serial in index order (preserves overwrite last-wins), same resolved idx,
+  same None-skip. GREEN: `cargo test -p fj-lax --lib scatter` = 31 passed / 0 failed
+  (overwrite + duplicate-index + OOB-clip all pass). FillOrDrop-with-None still handled
+  (the if-let skip); the `upd` precheck falls non-conforming shapes back to the general path.
+- KEPT (1.24x > ~0-gain, low-risk, bit-identical). The branchless lesson generalizes across
+  gather (2x) and scatter-overwrite (1.24x); the asymmetry quantifies that loads benefit
+  ~2-3x more from MLP than stores on Zen3. scatter-ADD stays on its own optimized path.

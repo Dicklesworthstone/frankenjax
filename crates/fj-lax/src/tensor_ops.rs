@@ -3866,6 +3866,24 @@ fn eval_scatter_dense(
             let mut out = $op.to_vec();
             let upd_src = $upd;
             let cf = $combine_fn;
+            // Branchless single-element OVERWRITE fast path (slice_elems == 1): the general
+            // loop below pays a per-element `copy_from_slice(len 1)` CALL + four checked
+            // mul/add + two bounds checks, which serialize the scattered stores. For
+            // slice_elems == 1 the whole body is `out[idx] = upd_src[i]` (base == idx,
+            // uoff == i), so a tight loop lets the store buffer overlap the random writes.
+            // Bit-identical: same resolved idx, same per-index last-write order (serial),
+            // same None-skip. `upd_src.len() >= index_vals.len()` is the only precondition
+            // (the general path errors when an update slice would exceed updates; here every
+            // `i < index_vals.len() <= upd_src.len()` and every resolved `idx < dim0 <=
+            // out.len()`, so no bounds error is reachable — non-conforming shapes fall back).
+            if is_overwrite && slice_elems == 1 && upd_src.len() >= index_vals.len() {
+                for (i, &raw_idx) in index_vals.iter().enumerate() {
+                    if let Some(idx) = resolve_axis0_index(raw_idx, dim0, index_mode) {
+                        out[idx] = upd_src[i];
+                    }
+                }
+                return Ok(Some(Value::Tensor($ctor(operand.shape.clone(), out)?)));
+            }
             for (i, &raw_idx) in index_vals.iter().enumerate() {
                 let Some(idx) = resolve_axis0_index(raw_idx, dim0, index_mode) else {
                     continue;
