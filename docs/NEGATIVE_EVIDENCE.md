@@ -2657,6 +2657,16 @@ NHWC/HWIO/SAME) = **0.957ms** (min 0.819, ~314 GFLOP/s) = **~11.8x Rust LOSS**.
   efficiency + the matmul fma/microkernel lever (cntiy) + conv threading.
 - Adds to the JAX-relative map: conv2d ~11.8x loss (the largest float-op loss
   measured; bigger than float matmul because of the im2col overhead).
+- **MEASURED SPLIT (2026-06-22, SlateHarrier) — corrects the "im2col overhead / less-threaded"
+  framing above.** f64 conv2d ALREADY routes through im2col + the threaded `matmul_2d`
+  (it is NOT a missing-GEMM-route or unthreaded path). Same-binary component A/B
+  (`bench_conv2d_f64_im2col_vs_gemm_split`, the exact [4,64,64,32]×[3,3,32,64] shape):
+  **im2col = 0.86-0.96ms (≈16%), GEMM = 4.37-5.24ms (≈84%) at 115-138 GFLOP/s**. So the conv2d
+  gap is ~84% the **fma-bound f64 GEMM** (`matmul_2d`, the SAME `cntiy` lever as f64 matmul) and
+  only ~16% im2col (already threaded, fast). An implicit-GEMM conv (avoiding the 37MB col buffer)
+  would save only ~16% — NOT worth it. CONCLUSION: conv2d is essentially `cntiy` +fma-gated (folds
+  into that bucket, one more op the +fma decision unlocks), NOT a separate structural/im2col/threading
+  lever. Do NOT chase "faster im2col" or "thread the conv" — both are already done; it's the GEMM.
 
 ## 2026-06-22 - cholesky ~6.8x JAX loss (LAPACK gap) — fills the linalg category (CobaltForge/cc)
 

@@ -25192,6 +25192,63 @@ mod tests {
         );
     }
 
+    // BOLD-VERIFY: conv2d is ~11.8x JAX loss. It ALREADY routes f64 through im2col + matmul_2d
+    // (threaded), so the gap is NOT a missing GEMM route. This quantifies WHERE the time goes —
+    // im2col materialization (37MB col buffer) vs the skinny-N (N=c_out) GEMM — to scope whether
+    // an implicit-GEMM conv (avoiding the col buffer) is worth a future swing vs the fma gate.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_conv2d_f64_im2col_vs_gemm_split() {
+        use std::time::Instant;
+        let (batch, h, w, cin, cout, k) = (4usize, 64usize, 64usize, 32usize, 64usize, 3usize);
+        let (out_h, out_w, pad, stride, dil) = (64usize, 64usize, 1usize, 1usize, 1usize);
+        let lhs: Vec<f64> = (0..batch * h * w * cin)
+            .map(|i| ((i % 251) as f64) * 0.01 - 1.0)
+            .collect();
+        let rhs: Vec<f64> = (0..k * k * cin * cout)
+            .map(|i| ((i % 247) as f64) * 0.01 - 1.0)
+            .collect();
+        let total = batch * out_h * out_w * cout;
+        let num_rows = total / cout;
+        let kdim = k * k * cin;
+        let hwc = h * w * cin;
+        let wc = w * cin;
+        let kw_c_in = k * cin;
+        let threads = super::conv_morsel_threads(num_rows, total.saturating_mul(kdim));
+
+        let mut col = vec![0.0f64; num_rows * kdim];
+        let do_im2col = |col: &mut [f64]| {
+            super::fill_conv2d_im2col(
+                col, &lhs, batch, h, w, cin, out_h, out_w, k, k, stride, stride, dil, dil, pad,
+                pad, hwc, wc, kdim, kw_c_in, threads,
+            );
+        };
+        do_im2col(&mut col);
+        let _ = crate::tensor_contraction::matmul_2d(&col, num_rows, kdim, &rhs, cout);
+
+        let mut im2col_ms = f64::MAX;
+        let mut gemm_ms = f64::MAX;
+        for _ in 0..20 {
+            let t = Instant::now();
+            do_im2col(&mut col);
+            im2col_ms = im2col_ms.min(t.elapsed().as_secs_f64());
+            std::hint::black_box(&col);
+            let t = Instant::now();
+            let o = crate::tensor_contraction::matmul_2d(&col, num_rows, kdim, &rhs, cout);
+            gemm_ms = gemm_ms.min(t.elapsed().as_secs_f64());
+            std::hint::black_box(&o);
+        }
+        let gflops = (total as f64 * kdim as f64 * 2.0) / (gemm_ms * 1e9);
+        println!(
+            "BENCH conv2d f64 [4,64,64,32]x[3,3,32,64]: im2col={:.4}ms gemm={:.4}ms total={:.4}ms gemm_gflops={:.1} im2col_frac={:.0}%",
+            im2col_ms * 1e3,
+            gemm_ms * 1e3,
+            (im2col_ms + gemm_ms) * 1e3,
+            gflops,
+            100.0 * im2col_ms / (im2col_ms + gemm_ms)
+        );
+    }
+
     // BOLD-VERIFY: complex128 scattered gather (slice_elems==1) was serial-only (no branchless
     // fast path, unlike the real dtypes). gather_single_dense<(f64,f64)> is the complex sibling.
     // Same-binary A/B vs the prior serial per-element loop; bit-identical.
