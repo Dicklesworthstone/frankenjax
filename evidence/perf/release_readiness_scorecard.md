@@ -1611,6 +1611,13 @@ Additional cod-a FFT SoA gate recheck environment:
   x64) **p50 182.30ms** = **5.46x FASTER** (vs 4.06x for f64). Rust's f32 radix is
   4 passes vs f64's 8, so the lead widens; JAX bitonic is dtype-agnostic (~182ms
   both). So the domination is fully defensible for the dtype users actually run.
+- ROBUST ACROSS MACHINE (validated 2026-06-22): warm-target rch bench of the
+  committed `eval/sort_64k_f64` on worker `hz2` = **1.256ms** vs fresh local JAX
+  `jnp.sort` 64k f64 **8.20ms** = **6.53x FASTER** cross-machine. So the sort
+  domination holds on an INDEPENDENT machine and at 64k too — now confirmed across
+  dtype (f64/f32), size (64K-4M), and host (local + rch `hz2`). (Cross-machine, so
+  the 6.53x mixes a CPU difference; it's directional confirmation, not a precise
+  same-machine ratio — but a 6.5x margin dwarfs any worker-CPU gap.)
 - Positive BOLD-VERIFY data point (not a loss): a same-machine head-to-head where
   the Rust port DOMINATES JAX. Sort is compute-dominated (the single output alloc
   is negligible vs the sort), so this is a fair algorithm-vs-algorithm test.
