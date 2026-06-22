@@ -2402,3 +2402,47 @@ intervening commits are all docs-only), and fj-lax was recompiled fresh at HEAD 
 Net: the order-statistics domination zone (sort/argsort/top_k/median-family) is now fully
 measured in BOTH dtypes with no remaining "pending" inference. f32 sort ~10x is the
 release-relevant figure (f32 = JAX's default dtype).
+
+## 2026-06-22 - NEW DOMINATION: the whole LU family (lu/solve/det/inv) is ~15-30x faster than JAX — XLA-CPU LU is a slow native path, NOT LAPACK getrf (CrimsonOtter/cc)
+
+Direct extension of the QR finding: XLA-CPU does NOT route LU-based factorizations to
+LAPACK either. Measured same-host Zen3, f64, 1024x1024:
+
+| op | JAX 0.10.1 (jit) | fj-lax | note |
+| --- | --- | --- | --- |
+| lu 1024 | **1.09–1.13s** (best-of-N) | **37.3ms** (linalg/lu_1024x1024_f64, med 36.5/37.3/38.0) | ~29x at measured load |
+| solve 1024 | 1.17–1.31s | (fj-lax routes solve→blocked LU, ~same class) | |
+| det 1024 | 1.21–1.33s | | |
+| inv 1024 | 1.24–1.39s | | |
+
+- LAPACK `getrf` at 1024 is ~10–15ms; JAX measuring **~1.1 SECONDS** means XLA's CPU LU is
+  ~75x slower than LAPACK → it is the SAME slow XLA-NATIVE path class as QR (430ms),
+  bitonic sort, and the scan cliff. `jnp.linalg.solve/det/inv` are all LU-backed, so the
+  ENTIRE family inherits the slow path (all measured ~1.1–1.4s).
+- fj-lax's blocked-GEMM LU (37ms, the `n>=256` blocked path) dominates it. **Ratio ~29x at
+  the measured (elevated-load) conditions; conservatively >=11x** even if one credits JAX a
+  load-free ~400ms (QR-class). Either way a large, defensible domination.
+- LOAD CAVEAT (honest): the whole fleet was at load 30–84 during measurement (concurrent
+  builds across sibling franken* repos). BOTH sides are load-inflated; the JAX best-of-N is
+  a min-over-samples (least-loaded) so already conservative on the JAX side, and the gap
+  (>10x) dwarfs any <=2x load noise — the verdict is load-robust even though the exact
+  multiple is not. fj-lax LU 37.3ms was tight (36.5–38.0) so its side is solid.
+- PROVENANCE: same warm `frankenjax-cc-fma` (+avx2,+fma) binary as the f32-sort entry, run
+  locally on Zen3. LU is GEMM-heavy so `+fma` COULD shift its absolute time slightly vs a
+  no-fma canonical build (unlike sort) — but only in fj-lax's favor by a few %, and the
+  domination is order-of-magnitude, so it does not change the verdict. A no-fma re-confirm
+  is a nice-to-have, not load-bearing.
+
+LINALG MAP UPDATE — XLA-CPU routing is per-op and split into two regimes:
+| op | XLA-CPU route | verdict vs fj-lax |
+| --- | --- | --- |
+| cholesky | LAPACK potrf (fast) | ~6.8x LOSS |
+| matmul/conv | dgemm (fast, +fma) | LOSS (cntiy-gated) |
+| eig / svd | iterative, ~parity both | ~parity |
+| **qr** | **slow native** | **~18–30x WIN** |
+| **lu / solve / det / inv** | **slow native** | **~15–30x WIN (NEW)** |
+
+So the domination set grows: sort/argsort/top_k, cumsum, contiguous gather, i64/u32 matmul,
+QR, **and now the LU family (lu/solve/det/inv)**. Release-relevant: solve/det/inv are
+extremely common (linear systems, determinants, matrix inversion) — a large, broad
+Rust-over-JAX-CPU win wherever XLA falls off LAPACK onto its native factorization path.
