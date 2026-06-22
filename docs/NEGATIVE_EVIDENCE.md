@@ -1971,3 +1971,17 @@ DIFFERENT machine and quantify the cross- vs same-machine ratio gap:
   is slower than local; the same-machine head-to-head is the accurate one. JAX
   cannot run on rch workers, so a clean cross-machine ratio is impossible — report
   both and label which host each side ran on.
+
+## 2026-06-22 - scatter-add JAX LOSS confirmed cross-machine (not a local artifact) (CobaltForge/cc)
+
+Completeness: cross-confirming a documented LOSS on an independent machine (the
+cross-machine validation should rule out local-host artifacts in BOTH directions,
+not just for dominations). Warm-target rch bench of committed
+`eval/scatter_add_1m_f64_1d` on `ovh-a` = **17.06ms** vs fresh local JAX
+`op.at[idx].add` 1M = **3.71ms** = **~4.6x Rust LOSS** cross-machine. Same-machine
+was ~3.2x (local Rust 14.4ms / local JAX 4.5ms). ovh-a Rust (17.06ms) is ~1.2x
+slower than local (14.4ms), consistent with the cumsum cross-machine observation.
+So scatter-add is a confirmed JAX loss on BOTH machines (3.2x same / 4.6x cross),
+not a local quirk — XLA's CPU scatter is genuinely well-optimized; the Rust
+eval_primitive boxing path loses regardless of host. (The dense-path lever to
+narrow it remains cod-a's scatter-bucketing work; see prior scatter entries.)
