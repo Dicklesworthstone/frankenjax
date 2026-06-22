@@ -272,6 +272,28 @@ a multi-party effort (fj-ad is codex-owned; the flag is the maintainer's call).
 
 Second unlock: a quiesced host to measure FFT/threading wins JAX gets from idle cores.
 
+## 2026-06-22 - SlateHarrier vmap(Dot) batched-matmul naive-loop → fj-lax batched GEMM — SHIPPED (38-66x)
+
+Extending the naive-loop→GEMM vein from fj-ad into fj-dispatch (vmap). `batch_dot_general`
+(Primitive::DotGeneral, what jnp.matmul lowers to) ALREADY routes both-batched matmul through
+`eval_dot_general`'s vectorized `batched_standard_f64_matmul` — optimized. But `batch_dot`
+(Primitive::Dot = numpy.dot semantics; `vmap(jnp.dot(2D,2D))` lands here) sent its both-batched
+(2,2)/(3,2)/(2,3)/(3,3) cases to `batch_paired_numeric_dot` — a `batch·rows·cols` triple loop
+each calling the per-element-boxed `batch_dot_accumulate` (`as_f64()` per element). So vmap of a
+2D dot was O(B·m·n·k) with boxed element access. Routed the REAL (f64/f32/…) cases through
+`fj_lax::tensor_contraction::batched_matmul_2d` (each rank pair = a batched [batch,m,k]·[batch,k,n]
+product, vector operands using extent 1); Integral stays on the loop (separate kernel, rarer).
+The per-slice fallback already used this same blocked GEMM, so batched Dot is now CONSISTENT with
+it; tolerance-legal (f64 accumulation, ascending-k). Same-binary A/B `bench_batched_dot_naive_vs_gemm`,
+maxerr vs naive < 1e-8:
+  - **b=128, 64×64×64: 159.79ms → 4.22ms = 37.9x**
+  - **b=32, 128×128×128: 329.90ms → 4.98ms = 66.2x**
+The batched dot now uses the SAME GEMM algorithm JAX/XLA uses; residual is the documented `cntiy`
++fma matmul row. GREEN: `cargo test -p fj-dispatch --lib` 304/0 (a one-off flake in the unrelated
+scalar-grad `prepared_metadata_yields_identical_response` was a pre-existing inter-test global-state
+ordering race — passes in isolation and on re-run); fmt + clippy clean. Scorecard: **1 large win /
+0 losses; kept**.
+
 ## 2026-06-22 - SlateHarrier fj-ad linalg-VJP matmul_2d naive-loop → fj-lax GEMM — SHIPPED (22-119x)
 
 BOLD-VERIFY moved off the (now floor-mined) scatter lane into the fj-ad VJP audit (the
@@ -2844,3 +2866,52 @@ Modest (the serial scatter inner loop / partitioned scatter-add dominates; index
 partitioned scatter-add all pass). KEPT (1.14x > ~0-gain). Completes the dense-index-extraction
 lesson across both indexed ops; scatter has no separate `resolved` Vec to fuse (it resolves
 inline in the scatter loop), so this is the full scatter pre-pass lever.
+
+## 2026-06-22 - t1pb0 BOLD-VERIFY closeout: scan radical levers rejected under disk gate (CrimsonOtter/cod-b)
+
+Claimed `frankenjax-t1pb0` after `bv --robot-triage`/`br ready --json`: the open, unowned
+actionable bead was the cumprod/cummax 4M scan gap. `frankenjax-murmw` and `frankenjax-mcqr`
+were already in progress under `cod-a`; `frankenjax-cntiy` is assigned to `cod-b` but remains
+maintainer-policy gated, not code-actionable.
+
+Alien-graveyard routes considered:
+- Blelloch/NESL segmented scan (§4.6): already represented by the current two-pass blocked
+  prefix scan. A new segmented-scan abstraction would not change the hot local per-block
+  recurrence and would add interface/scheduling surface.
+- Vectorized execution + morsel-driven parallelism (§8.2): also already structurally present
+  for the single long line via block partitioning and threaded offset application. The residual
+  gap is inside each block, not in tuple-at-a-time dispatch.
+- Manual SIMD prefix-product / NaN-propagating SIMD prefix-max: rejected before editing because
+  the existing no-build disassembly showed the current monomorphizations already emit packed
+  `vmulpd`, `vmaxpd`, `vcmpunordpd`, and `vblendvpd` with inlined closures. That kills the
+  original "not vectorized / not inlined" hypothesis.
+
+Fresh JAX comparator, repo venv `benchmarks/jax_comparison/.venv/bin/python`, JAX 0.10.1,
+`JAX_ENABLE_X64=1`, CPU, 8 runs after compile:
+
+| op 4M f64 1D | fresh JAX best | fresh JAX p50 | fresh JAX mean | Rust reference | Rust/JAX p50 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| cumsum | 15.903ms | 17.197ms | 17.038ms | 7.55ms prior same-session | 0.44x, Rust wins 2.28x |
+| cumprod | 17.055ms | 17.932ms | 18.219ms | 20.9ms prior same-session | 1.17x loss |
+| cummax | 17.337ms | 18.514ms | 19.028ms | 20.9ms prior same-session | 1.13x loss |
+
+Disk/toolchain constraint note: the allowed warm target was
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b` only. A direct run of the
+existing warm `lax_baseline` binary proved it predates the committed cumprod/cummax 4M bench
+rows (its `--list` contains `eval/cumsum_4m_f64_1d` but not `eval/cumprod_4m_f64_1d` or
+`eval/cummax_4m_f64_1d`). A filtered RCH bench first failed because this Cargo does not accept
+`cargo bench --release`; the corrected filtered RCH bench then selected a cold worker
+(`vmi1227854`) and began compiling dependencies, so it was interrupted to honor the no-cold-build
+disk rule. A local filtered `cargo bench -p fj-lax --bench lax_baseline 4m_f64_1d` also did not
+produce evidence: the target was built by `rustc 1.98.0-nightly (b30f3df3b 2026-06-11)`, while
+the active toolchain is `rustc 1.98.0-nightly (f20a92ec0 2026-06-07)`, producing E0514
+incompatible-crate errors rather than a valid benchmark.
+
+Conformance stayed green without compiling new artifacts: direct prebuilt release oracle
+`/data/projects/.rch-targets/frankenjax-cod-b/release/deps/cumulative_oracle-9464b19459022a37
+--nocapture` passed 45/45.
+
+Conclusion: no code lever shipped. The plausible radical levers collapse to "already vectorized"
+or require a quiesced perf-counter pass on a rebuildable warm toolchain. Reopened retry predicate:
+only resume t1pb0-style code work after a fresh same-binary Rust A/B can be run from a matching
+warm target and perf counters identify a concrete stall source in the blocked scan's local pass.
