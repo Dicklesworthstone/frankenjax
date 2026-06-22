@@ -52,6 +52,16 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     (sort ≤ its f64 1.25ms) still wins ≥10x in the dtype JAX users actually run. **(fj-lax f32 exact
     now MEASURED, gap closed — see the 2026-06-22 f32-sort entry below: fj-lax f32 64k = ~0.77ms,
     FASTER than its own f64, ~10x over JAX f32.)**
+  - **INTEGER MATMUL is a NEW fj-lax domination zone (2026-06-22, SlateHarrier)** — XLA has no
+    integer BLAS, so JAX falls back to a scalar/naive int matmul that is catastrophically slow.
+    Fresh `JAX_ENABLE_X64=1` jaxlib CPU x64 `int64 @ int64`: **512³ = 367.2ms mean (min 347ms),
+    1024³ = 3977.3ms mean (min 3792ms)**. fj-lax production threaded `rank2_i64_matmul` (same-binary
+    `i64_matmul_speed` bench, worker shared): **512³ = 11.50ms (31.9x WIN), 1024³ = 182.6ms (21.8x
+    WIN)**; 1536³ 201.5ms / 2048³ 561ms thread cleanly (8-8.8x over single-row). Already optimized
+    (threaded row-block + 4-row B-reuse kernel) — NO lever, it's a confirmed large domination. JAX-CPU
+    integer GEMM joins sort/order-statistics as a worst-surface for XLA that fj-lax crushes. (The f64
+    GEMM loss is a SEPARATE story — that one is `cntiy` +fma-gated; integers have no fma so fj-lax's
+    safe-Rust int kernel wins outright.)
   - OPPORTUNITY (feature gap, not a perf lever for fj-lax): **median/percentile/quantile** are
     sort-based and JAX-CPU-slow (median 1M = **226ms**, argsort-backed), but frankenjax has NO
     user-facing median/percentile (only internal `median_ms` timing helpers in linalg/tensor_contraction

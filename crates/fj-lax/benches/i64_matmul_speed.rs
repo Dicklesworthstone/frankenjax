@@ -105,17 +105,29 @@ fn bench_size(m: usize, k: usize, n: usize, iters: usize) {
     }
     let blocked = t1.elapsed().as_nanos() as f64 / iters as f64;
 
+    // Production THREADED path (what eval_primitive(Dot) on i64 tensors uses) — the real
+    // head-to-head vs JAX. XLA has no integer BLAS, so JAX falls back to a scalar int matmul.
+    let _ = fj_lax::tensor_contraction::rank2_i64_matmul(&a, m, k, &b, n);
+    let t2 = Instant::now();
+    for _ in 0..iters {
+        let p = fj_lax::tensor_contraction::rank2_i64_matmul(black_box(&a), m, k, black_box(&b), n);
+        black_box(&p);
+    }
+    let prod = t2.elapsed().as_nanos() as f64 / iters as f64;
+
     println!(
-        "I64_MATMUL m={m} k={k} n={n} single_row={:.3}ms row_block4={:.3}ms speedup={:.2}x",
+        "I64_MATMUL m={m} k={k} n={n} single_row={:.3}ms row_block4={:.3}ms speedup={:.2}x prod_threaded={:.3}ms",
         single / 1e6,
         blocked / 1e6,
         single / blocked,
+        prod / 1e6,
     );
 }
 
 fn main() {
     // L2/L3-resident (B small): blocking's B-reuse barely matters here.
     bench_size(512, 512, 512, 12);
+    bench_size(1024, 1024, 1024, 6); // direct head-to-head vs JAX i64 1024^3
     // RAM-bound (B > L3): re-streaming B from RAM `rows` times dominates, so the
     // 4x fewer B passes from 4-row blocking is where the structural win appears.
     bench_size(1536, 1536, 1536, 3); // B = 18 MB
