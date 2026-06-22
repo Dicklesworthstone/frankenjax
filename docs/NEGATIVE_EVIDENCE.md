@@ -2506,3 +2506,32 @@ flips BOTH losses to ~2.4x / ~2.5x JAX WINS (extends the cumsum scan domination 
 cheap-combiner scan family). Single-threaded-or-blocked, bit/tolerance-legal (cumsum already
 uses the tolerance-legal blocked reassociation). NOT fma-gated. Reproduce: the two new
 benches vs JAX cumprod/cummax 4M. Benches kept as measurement infra (cf cumsum_4m_1d_tight).
+
+## 2026-06-22 - cumprod/cummax scan: zero-init optimization TRIED + REVERTED (~0 gain); root cause confirmed OP-dependent (add vectorizes, mul/max don't) (CrimsonOtter/cc)
+
+Follow-up to the cumprod/cummax-4M loss (bead t1pb0). Drilled the root cause to certainty
+and tested one candidate fix:
+
+DEFINITIVELY ESTABLISHED (FJ_SCAN_TRACE instrumentation + objdump + controlled bench, load 8):
+- BOTH cumprod AND cumsum take the SAME `blocked_prefix_scan_to_vec` BLOCKED path (trace:
+  `FJSCAN: BLOCKED total=4194304 prim=Cumprod` / `prim=Cumsum`) — NOT a routing miss.
+- Yet cumsum_4m = 7.6ms (≈memory-bound) while cumprod_4m = cummax_4m = ~21ms (compute-bound,
+  ~21 cyc/elem). It is OP-dependent, NOT data-dependent: cummax (random ±32768 data) and
+  cumprod (near-1.0 data) are WILDLY different distributions but BOTH 21ms, while cumsum
+  (add) is 7.6ms → the differentiator is the operator (add vs mul/max), not the values.
+- LLVM auto-vectorizes/streams the ADD prefix-scan to memory-bound; the mul/max
+  monomorphizations stay on the scalar dependency-chain scan.
+
+CANDIDATE FIX TRIED + REVERTED (~0 gain): hypothesized the non-zero `vec![init; n]` buffer
+fill (init=1.0 cumprod / ±inf cummax) cost vs cumsum's calloc-free `vec![0.0]`. Changed the
+alloc to `vec![0.0; n]` (SAFE — pass A overwrites every slot before any read; `init` stays
+the scan seed). Result: cumprod 21.06->21.24ms, cummax ->21.19ms = **0 gain, REVERTED**.
+So the init-fill is NOT the bottleneck — it is purely the scalar mul/max scan.
+
+REMAINING FIX (bead t1pb0, now fully scoped): a manual SIMD prefix-product for cumprod and a
+NaN-PROPAGATING SIMD prefix-max for cummax (std::simd `simd_swizzle!` lane-shift Hillis-Steele;
+note: `simd_max` DROPS NaN so cummax needs explicit NaN tracking to match jax_max_f64). Per-
+thread local scan only; cumsum's auto-vectorized add path stays untouched (no regression).
+Tolerance-legal (blocked already reassociates). Prize unchanged: 21->~7.5ms flips both to
+~2.4x JAX wins. NOT attempted inline this pass (SIMD-prefix + NaN-safe max + parity is a
+focused multi-step task, high bug-risk to rush).
