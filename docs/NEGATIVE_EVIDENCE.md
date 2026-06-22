@@ -2423,6 +2423,36 @@ fits L2, so strided reads hit L2 not DRAM; modest penalty). A transpose-to-conti
 ~5-12% — not worth the transpose overhead. So the maxpool gap is the scalar deque's branchy per-element
 push/pop overhead vs XLA's SIMD, UNIFORM across both axes — confirming no contained lever (only the hard
 SIMD-windowed-max rewrite). maxpool is fully characterized: ~1.4x JAX, SIMD-gated, do not re-probe.
+NOTE: the "SIMD-gated, hard" conclusion above applies to the LARGE-window DEQUE path (15x15). The
+COMMON SMALL-window CNN case is a SEPARATE, bigger loss that DID have a tractable SIMD win — see next.
+
+## 2026-06-22 - CNN maxpool (small window) ~6-9x JAX LOSS → WIN via SIMD-over-channel (SlateHarrier)
+
+The 15x15 maxpool I'd been measuring (~1.4x, deque path) was NOT the common case. COMMON CNN pooling
+is 2x2/3x3, and `win_total <= 2*win_sum` so it MISSES the separable-deque gate — rank-4 [N,H,W,C]
+fell to the scalar `eval_reduce_window_dense_float` ODOMETER. Measured (eval_primitive, f64):
+
+| shape | window | fj-lax BEFORE | JAX | ratio |
+| --- | --- | ---: | ---: | --- |
+| [8,112,112,64] | 3x3/s2 | 84 ms | 9.34 ms | **~9x LOSS** |
+| [8,56,56,128] | 2x2/s2 | 12-16 ms | 2.11 ms | **~6-7x LOSS** |
+
+Root cause: the channel axis C is the contiguous last dim with window 1 (not pooled), but the scalar
+odometer walks it element-by-element. FIX: `reduce_window_simd_channel_maxmin_f64` — for each output
+position, max/min over the (kh,kw) taps VECTORIZED across C channels (f64x8, NaN-propagating to
+canonical NaN via a `simd_ne|select` mask to match lax.max/min; signed-zero matches f64::max/min).
+Wired before the scalar odometer, gated to channel-last (last axis window==1/stride==1/pad==0), f64,
+max/min, no dilation; large windows still prefer the deque. Result (eval_primitive, f64):
+
+| shape | fj-lax AFTER | JAX | verdict |
+| --- | ---: | ---: | --- |
+| [8,112,112,64] 3x3/s2 | **8.73 ms** | 9.34 ms | **WIN ~1.07x** (was 9x loss; ~9.6x Rust-side) |
+| [8,56,56,128] 2x2/s2 | **2.76 ms** | 2.11 ms | ~1.3x (was 6-7x loss; near-parity) |
+
+Bit-identical: `maxpool_simd_channel_bit_identical` permanent guard (max/min × finite/NaN/±0 ×
+VALID/padded × rank-3/4) + reduce_window 44/0 + full fj-lax lib 1587/0. NEXT (filed under
+simd-reduce-window-maxmin-od11p): F32 sibling (JAX's default CNN dtype — f32x16, the same kernel) is
+the obvious follow-up, likely a similar flip; the production gate is f64-only for now.
 
 ## 2026-06-22 - floor-chain JAX LOSS confirmed cross-machine; cross-machine map validation COMPLETE (CobaltForge/cc)
 
