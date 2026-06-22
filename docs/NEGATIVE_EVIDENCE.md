@@ -2207,3 +2207,23 @@ are not (no prefix-scan optimization).
   the same order-preserving blocked approach. Build path now warm (target/).
 - Corrected domination set: sort, large-n CUMSUM (not cumprod/cummax), contiguous
   gather, i64/u32 matmul.
+
+## 2026-06-22 - gather domination is CONTIGUOUS-ONLY; non-contiguous gather is an 18x LOSS (CobaltForge/cc)
+
+Boundary test (same-machine, warm target/, correctness-verified before timing).
+1M scattered single-element gathers from a 4M f64 operand (slice_sizes=1):
+- Rust `eval_primitive(Gather)` = **34.6ms** (min 30.3); JAX `jnp.take` = **1.91ms**
+  (min 1.68) = **~18x Rust LOSS**.
+- Contrast: CONTIGUOUS row-gather (slice 1,256, memcpy) was a Rust ~3.7x WIN.
+
+So the gather domination is MEMCPY/CONTIGUOUS-SPECIFIC only. For scattered/non-
+contiguous gather (the common real-world case), Rust LOSES ~18x: XLA's gather is
+vectorized and dense, while Rust's eval_primitive path boxes the output
+(Vec<Literal>) and does per-element random access. CORRECTS the broad "gather
+domination" — it's narrow (contiguous-block memcpy), unlike the robust sort/cumsum/
+i64-matmul dominations.
+- NEW LEVER: a dense non-contiguous gather path (skip the Vec<Literal> boxing,
+  write into dense f64 storage) would cut the 18x substantially. (cod-a's
+  contiguous-block memcpy vein is the contiguous case; this is the scattered case.)
+- Corrected domination set: sort, large-n cumsum, CONTIGUOUS gather only, i64/u32
+  matmul. (gather general = loss.)
