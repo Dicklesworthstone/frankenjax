@@ -92,7 +92,9 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     `gather_scatter_oracle` 59/0. Same-binary A/B `bench_gather_complex_branchless_vs_serial` (1M←4M c128):
     serial 7.26-7.69ms → branchless **2.56-2.68x** (higher than f64's ~2x — c128 is 16B/elem so the
     per-element extend overhead was relatively larger). Plus contiguous-row complex gather now threads.
-    (Follow-up: complex SCATTER is still generic-boxed — a remaining sibling, lower-EV.)
+    (Follow-up RESOLVED: complex SCATTER is NOT generic-boxed — `eval_scatter_dense` has a complex
+    branch (`scatter_typed!` + lexicographic min/max), and complex scatter-ADD now routes through the
+    parallel range-partition (~1.39x, entry above). This earlier "still generic-boxed" note was stale.)
   - **DTYPE-SIBLING-GAP AUDIT (2026-06-22, SlateHarrier) — matmul family now complete; complex conv
     filed.** After flipping complex matmul (below), swept the matmul/conv family for kernels lagging
     their f64/i64 siblings: bf16/f16 matmul VERIFIED already optimized (f16 decodes→f32 GEMM; bf16 has
