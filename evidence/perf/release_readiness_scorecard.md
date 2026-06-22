@@ -1749,7 +1749,7 @@ DOMINATIONS (Rust faster) — Rust has a specialized path AND XLA-CPU lacks one:
 | op | ratio | mechanism |
 | --- | ---: | --- |
 | sort (f64/f32, 64K-4M) | 4-6.5x | Rust LSD radix vs XLA bitonic (XLA uniformly slow) |
-| cumsum/cumprod/cummax, large-n (>=2M) | ~4x (grows) | XLA scan size cliff; Rust linear scan |
+| cumsum ONLY, large-n (>=2M) | ~4.4x (grows) | XLA scan cliff; Rust optimized prefix-scan (4.2ms@4M). cumprod/cummax are LOSSES ~1.2-1.6x (generic serial ~20ms) — scan domination is cumsum-specific, see NEGATIVE_EVIDENCE correction |
 | gather, contiguous rows | ~3.7x | Rust memcpy vs XLA general gather (small-op/cross-machine caveat) |
 | i64 matmul | ~80x (grows w/ n; 1024^3 JAX ~4s) | no integer BLAS; Rust blocked GEMM |
 | u32 matmul | ~8.9x | no u32 SIMD; Rust generic u64-wrap (lever: native u32 kernel) |
