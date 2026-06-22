@@ -2323,3 +2323,25 @@ variance band; neither clearly wins).
   eig ~parity (iterative). svd/qr likely between (BLAS-heavy steps -> loss, but less
   than cholesky). This is another case where testing beat the "linalg=loss"
   assumption — the model keeps needing empirical correction.
+
+## 2026-06-22 - svd is ~PARITY too — iterative linalg (eig/svd) competitive with LAPACK; only direct factorizations (cholesky) lose (CobaltForge/cc)
+
+Same-machine svd 256x256 (most common linalg op): eval_primitive_multi(Svd) f64 =
+**177.7ms** (min 174) vs fresh local JAX `jnp.linalg.svd` (LAPACK gesdd) =
+**234ms p50 / 157 min** = **~PARITY** (Rust 1.32x faster by p50, JAX 1.11x by min;
+within JAX variance) — same shape as the eig result.
+
+LINALG PATTERN now clear (and counterintuitive):
+| op | type | verdict |
+| --- | --- | --- |
+| cholesky | direct, BLAS-heavy (potrf) | ~6.8x LOSS |
+| eig (non-sym) | iterative (Francis) | ~parity |
+| svd | bidiag + iterative QR | ~parity |
+
+So LAPACK's advantage is concentrated in BLAS-HEAVY DIRECT factorizations (cholesky;
+also matmul/conv via dgemm). For the ITERATIVE decompositions (eig, svd), where the
+work is dominated by sequential QR/Francis sweeps that don't BLAS-accelerate well,
+Rust's full pure-Rust implementations are COMPETITIVE with LAPACK (~parity). This
+substantially corrects "linalg = LAPACK loss" — the hard linalg ops (svd/eig) are
+NOT losses. Big credit to the Rust linalg kernels (tridiag/QL, Francis, bidiag+QR).
+Release-relevant: pure-Rust SVD/eig hold their own vs JAX/LAPACK on CPU.
