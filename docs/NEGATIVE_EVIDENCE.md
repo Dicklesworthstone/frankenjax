@@ -2395,6 +2395,17 @@ cross-machine validation now covers sort (win), cumsum (win), scatter (loss),
 maxpool (loss) — all hold in the correct direction across machines, with the
 ratio magnitude shifting by worker CPU speed (always report the host).
 
+DISPATCH VERIFIED (2026-06-22, SlateHarrier) — maxpool is NOT a dispatch bug; the 2.3x is purely
+the deque-vs-SIMD gap. Confirmed eval_primitive routes overlapping/large windows (15x15: win_total
+225 > 2·win_sum 60) to the O(n) separable deque (`reduce_window_separable_maxmin`, lib.rs ~5531)
+BEFORE the rank-2 direct O(out·∏window) loop (~5630, small-window-only). Same-binary A/B
+(`bench_maxpool_rank2_direct_vs_deque`, 256x256/15x15): direct loop **49ms** vs deque **0.87ms =
+56x** (bit-identical) — i.e. the deque IS used (the dispatch gate is correct; the direct loop would
+be catastrophic if mis-routed, so the A/B stays as a routing regression guard). The residual ~2x JAX
+loss is the safe-Rust **scalar deque vs XLA's SIMD-vectorized window reduction** — a hard SIMD lever
+(the deque is inherently sequential/pointer-chasing; SIMD-direct loses for large windows since deque
+is O(n) vs O(n·k)), NOT a contained fix. Do NOT chase the maxpool dispatch — it's correct.
+
 ## 2026-06-22 - floor-chain JAX LOSS confirmed cross-machine; cross-machine map validation COMPLETE (CobaltForge/cc)
 
 Final completeness cross-confirm. Warm-target rch bench of committed

@@ -6080,6 +6080,88 @@ mod tests {
     use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value, ValueError};
     use std::collections::BTreeMap;
 
+    // BOLD-VERIFY (HYPOTHESIS DISPROVEN, kept as routing guard): I suspected the rank-2 f64
+    // maxpool dispatch hit the DIRECT O(out·window) loop for 15x15. It does NOT — the separable
+    // deque check (`win_total > 2·win_sum`, lib.rs ~5531) precedes the rank-2 direct path, and
+    // 15x15 (225 > 60) routes to the O(n) deque already. This A/B confirms that routing matters:
+    // for a large overlapping window the direct loop is ~56x SLOWER than the deque, so the
+    // `win_total > 2·win_sum` gate MUST keep large windows on the deque (regression guard). The
+    // real maxpool 2.3x JAX loss is the deque-vs-XLA-SIMD gap (XLA vectorizes the window reduction;
+    // the safe-Rust deque is scalar) — a hard SIMD lever, NOT a dispatch bug. Bit-identity asserted.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_maxpool_rank2_direct_vs_deque() {
+        use std::time::Instant;
+        let (n, win) = (256usize, 15usize);
+        let out = n - win + 1; // VALID, stride 1
+        let src: Vec<f64> = (0..n * n)
+            .map(|i| ((i % 9973) as f64) * 0.013 - 50.0)
+            .collect();
+        let tensor = TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            src.clone(),
+        )
+        .unwrap();
+        let total_output = out * out;
+        let direct = || {
+            super::eval_reduce_window_rank2_f64_max_min(
+                Primitive::ReduceWindow,
+                &tensor,
+                &src,
+                &[win, win],
+                &[1, 1],
+                &[out as u32, out as u32],
+                &[0, 0],
+                total_output,
+                true,
+            )
+            .unwrap()
+        };
+        let deque = || {
+            super::eval_reduce_window_separable_extremum(
+                DType::F64,
+                true,
+                &src,
+                &[win, win],
+                &[1, 1],
+                &[out as u32, out as u32],
+                &[0, 0],
+                &[n, n],
+            )
+            .unwrap()
+        };
+        let dv = match direct() {
+            Value::Tensor(t) => t.elements.as_f64_slice().unwrap().to_vec(),
+            _ => panic!(),
+        };
+        let qv = match deque() {
+            Value::Tensor(t) => t.elements.as_f64_slice().unwrap().to_vec(),
+            _ => panic!(),
+        };
+        assert_eq!(dv, qv, "separable deque maxpool diverges from direct loop");
+        let _ = direct();
+        let _ = deque();
+        let (mut db, mut qb) = (f64::MAX, f64::MAX);
+        for _ in 0..30 {
+            let t = Instant::now();
+            let a = direct();
+            db = db.min(t.elapsed().as_secs_f64());
+            std::hint::black_box(&a);
+            let t = Instant::now();
+            let b = deque();
+            qb = qb.min(t.elapsed().as_secs_f64());
+            std::hint::black_box(&b);
+        }
+        println!(
+            "BENCH maxpool 256x256 15x15 VALID: direct(current)={:.4}ms deque={:.4}ms speedup={:.2}x",
+            db * 1e3,
+            qb * 1e3,
+            db / qb
+        );
+    }
+
     #[test]
     fn threaded_bitwise_bit_identical_to_serial() {
         // i64/u64 and/or/xor at >= gate engage the threaded dense map; compare bit-for-bit
