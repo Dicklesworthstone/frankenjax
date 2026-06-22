@@ -2287,3 +2287,21 @@ NHWC/HWIO/SAME) = **0.957ms** (min 0.819, ~314 GFLOP/s) = **~11.8x Rust LOSS**.
   efficiency + the matmul fma/microkernel lever (cntiy) + conv threading.
 - Adds to the JAX-relative map: conv2d ~11.8x loss (the largest float-op loss
   measured; bigger than float matmul because of the im2col overhead).
+
+## 2026-06-22 - cholesky ~6.8x JAX loss (LAPACK gap) — fills the linalg category (CobaltForge/cc)
+
+Same-machine linalg measurement (scientific-computing relevant; the last major
+untouched category). Local Zen3, warm target/: eval_primitive(Cholesky) f64 512x512
+SPD (A=B^T B + nI, replicates bench_cholesky_512_f64) = **8.96ms** (min 6.48) vs
+fresh local JAX `jnp.linalg.cholesky` (LAPACK potrf) = **1.317ms** (min 1.20) =
+**~6.8x Rust LOSS**.
+- Fits the model: JAX has an optimized path (LAPACK), so Rust loses. But less
+  catastrophic than feared — Rust's blocked cholesky (8.96ms) is decent; LAPACK is
+  ~7x faster (decades-tuned + fma). svd/qr/lu likely similar-or-larger (more
+  complex factorizations); eigh/eig may differ.
+- Lever: same as float matmul — +fma + better blocked microkernel (cntiy), plus
+  cache-aware panel factorization. linalg.rs is the cod-b/codex zone (measured here,
+  not edited).
+- Map now covers the linalg category: cholesky ~6.8x loss. Together with conv2d
+  (11.8x) and float matmul (3.3-4x), the compute-heavy numeric ops are all
+  BLAS/LAPACK-bound JAX losses (3-12x), closeable via the +fma/microkernel lever.
