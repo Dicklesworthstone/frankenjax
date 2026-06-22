@@ -3218,6 +3218,13 @@ pub(crate) fn eval_gather(
     // Extract indices as flat i64 values + capture indices shape
     let (index_vals, index_shape): (Vec<i64>, Vec<u32>) = match &inputs[1] {
         Value::Scalar(lit) => (vec![lit_to_i64(lit, primitive)?], Vec::new()),
+        // Dense i64/i32 (i32 is i64-backed) index tensor: bulk-copy the typed slice instead of
+        // a per-element `lit_to_i64` match + Result over 1M indices. Identical values; non-dense
+        // (boxed) index tensors keep the per-element path.
+        Value::Tensor(t) if t.elements.as_i64_slice().is_some() => (
+            t.elements.as_i64_slice().unwrap().to_vec(),
+            t.shape.dims.clone(),
+        ),
         Value::Tensor(t) => (
             t.elements
                 .iter()
@@ -3265,22 +3272,39 @@ pub(crate) fn eval_gather(
     let index_mode = parse_index_mode(primitive, params, IndexMode::Clip)?;
     let dim0 = op_dims[0] as usize;
     let fill_lit = gather_fill_literal(operand.dtype);
-    let resolved: Vec<Option<usize>> = index_vals
-        .iter()
-        .map(|&idx| resolve_axis0_index(idx, dim0, index_mode))
-        .collect();
 
-    // Branchless single-element gather indices (`slice_elems == 1`): when the index mode
-    // never yields `None` (Clip / PromiseInBounds resolve every index to an in-bounds
-    // `Some`), each output is a pure `out[i] = src[idx[i]]`. Resolve to `usize` once so the
-    // hot path runs the MLP-friendly `gather_single_dense` (a tight branchless gather that
-    // lets the OoO engine overlap the random loads) instead of the per-element
-    // Option-match + `copy_from_slice` that serializes them. FillOrDrop (can yield None ->
-    // fill) keeps the generic `gather_contiguous_into` path. Every resolved index is
-    // `< dim0 <= src.len()`, so `src[idx]` never panics for these modes.
-    let single_idx: Option<Vec<usize>> = (slice_elems == 1
-        && index_mode != IndexMode::FillOrDrop)
-        .then(|| resolved.iter().map(|r| r.unwrap_or(0)).collect());
+    // Pre-pass fusion (kkawk): the scattered single-element fast path (`slice_elems == 1`,
+    // never-None index mode) resolves straight into a `Vec<usize>` (`single_idx`) and the
+    // matching dtype branch runs the MLP-friendly branchless `gather_single_dense`. When the
+    // operand is a DENSE fast-path-dtype, that branch is GUARANTEED to consume `single_idx`
+    // and return, so the 16MB `resolved: Vec<Option<usize>>` is never read — skip building it
+    // (and skip the redundant resolved->unwrap second pass). Complex/bool/boxed operands and
+    // FillOrDrop / slice_elems>1 keep the full `resolved` (the fallback/contiguous/generic
+    // paths read it). Every resolved index is `< dim0 <= src.len()`, so `src[idx]` is in-bounds.
+    let operand_dense_fastpath = match operand.dtype {
+        DType::F64 => operand.elements.as_f64_slice().is_some(),
+        DType::F32 => operand.elements.as_f32_slice().is_some(),
+        DType::I64 | DType::I32 => operand.elements.as_i64_slice().is_some(),
+        DType::U32 => operand.elements.as_u32_slice().is_some(),
+        DType::U64 => operand.elements.as_u64_slice().is_some(),
+        DType::BF16 | DType::F16 => operand.elements.as_half_float_slice().is_some(),
+        _ => false,
+    };
+    let use_fused =
+        slice_elems == 1 && index_mode != IndexMode::FillOrDrop && operand_dense_fastpath;
+    let (resolved, single_idx): (Vec<Option<usize>>, Option<Vec<usize>>) = if use_fused {
+        let s = index_vals
+            .iter()
+            .map(|&idx| resolve_axis0_index(idx, dim0, index_mode).unwrap_or(0))
+            .collect();
+        (Vec::new(), Some(s))
+    } else {
+        let r: Vec<Option<usize>> = index_vals
+            .iter()
+            .map(|&idx| resolve_axis0_index(idx, dim0, index_mode))
+            .collect();
+        (r, None)
+    };
 
     if total == 0 {
         return Ok(Value::Tensor(TensorValue::new(

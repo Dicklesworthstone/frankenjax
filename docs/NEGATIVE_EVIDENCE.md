@@ -2708,3 +2708,24 @@ GREEN: `cargo test -p fj-lax --lib gather` = 23 passed / 0 failed (dense_i32/u32
 gather_contiguous_into_bit_identical_to_serial all pass). KEPT (1.40x > scatter-overwrite's
 kept 1.24x). Completes the gather dtype-coverage: every dense dtype now has both the
 slice_elems==1 branchless path AND the slice_elems>1 threaded row path.
+
+## 2026-06-22 - kkawk SHIPPED: gather pre-pass fusion 1.86x (25.06ms->13.45ms) — JAX gap ~15x->~7.5x (CrimsonOtter/cc)
+
+Implemented bead kkawk (safe subset). The scattered single-element gather built THREE serial
+1M intermediate Vecs + ~24MB allocs before the threaded branchless gather: index_vals
+(per-element `lit_to_i64` over boxed Literals), `resolved: Vec<Option<usize>>` (16MB), and
+`single_idx: Vec<usize>` (8MB, from resolved). Two fixes:
+1. Dense index extraction: `as_i64_slice().to_vec()` instead of per-element `lit_to_i64`
+   (i32 is i64-backed too). Non-dense indices keep the per-element path.
+2. Lazy `resolved`: when slice_elems==1 + never-None mode + DENSE fast-path-dtype operand
+   (`use_fused`), resolve straight into `single_idx: Vec<usize>` and SKIP the 16MB
+   `Vec<Option>` — the matching dtype branch is guaranteed to consume single_idx and return,
+   so `resolved` is never read. Complex/bool/boxed/FillOrDrop/slice_elems>1 keep full resolved
+   (gated on the same dense-slice check the dtype branches use -> no boxed-operand hazard).
+
+MEASURED same-session same-binary A/B (Zen3, eval/gather_scatter_1m_f64, 1M<-4M f64):
+**branchless-HEAD 25.06ms -> fused 13.45ms = 1.86x** (far above the ~1.2x estimate; the
+per-element lit_to_i64 + 16MB Vec<Option> alloc + double-resolve were ~11.6ms of the 25ms).
+vs JAX jnp.take 1.786ms: the gather gap **halves again ~15x -> ~7.5x** (cumulative ~3.7x from
+the original ~28x: branchless 2x then fusion 1.86x). Bit-identical: GREEN cargo test -p fj-lax
+--lib gather 23/0 (dense_complex/boxed/OOB-clip/i32/u32/u64 all pass). KEPT (1.86x). kkawk closed.
