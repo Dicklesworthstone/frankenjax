@@ -6435,6 +6435,29 @@ fn bench_gather_scatter_1m_i32(c: &mut Criterion) {
     });
 }
 
+// CrimsonOtter 2026-06-22: i32 CONTIGUOUS ROW gather (slice_sizes=[1,256]): gather 4096
+// random rows of a [16384,256] i32 table -> [4096,256] = 1M elems. The i32 contiguous path
+// was serial-only (no threaded gather_contiguous_into like f64/bf16); this measures the
+// serial->threaded row-memcpy win for int embedding/row lookup.
+fn bench_gather_rows_1m_i32(c: &mut Criterion) {
+    let (rows, cols) = (1usize << 14, 256usize);
+    let data: Vec<i64> = (0..(rows * cols) as i64).map(|i| i % 4096).collect();
+    let operand = Value::Tensor(
+        TensorValue::new_i32_values(Shape { dims: vec![rows as u32, cols as u32] }, data).unwrap(),
+    );
+    let k = 4096usize;
+    let idx: Vec<i64> = (0..k)
+        .map(|i| ((i.wrapping_mul(2_654_435_761) ^ (i >> 3)) % rows) as i64)
+        .collect();
+    let indices = Value::vector_i64(&idx).unwrap();
+    let mut p = BTreeMap::new();
+    p.insert("slice_sizes".into(), format!("1,{cols}"));
+    let args = [operand, indices];
+    c.bench_function("eval/gather_rows_1m_i32", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Gather, &args, &p))
+    });
+}
+
 fn bench_gather_256x256_f64_vec(c: &mut Criterion) {
     let n = 256usize;
     let data: Vec<f64> = (0..n * n).map(|i| i as f64 * 0.001).collect();
@@ -7175,6 +7198,7 @@ criterion_group!(
     bench_gather_128_rows_16_cols,
     bench_gather_scatter_1m_f64,
     bench_gather_scatter_1m_i32,
+    bench_gather_rows_1m_i32,
     bench_gather_256x256_f64_vec,
     bench_gather_256x256_f64_literal_reference,
     bench_scatter_128_rows_16_cols,

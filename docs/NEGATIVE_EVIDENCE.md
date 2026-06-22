@@ -2692,3 +2692,18 @@ t1pb0's fix hypotheses BEFORE spending a build:
   (disasm proves they're already done); next step is a profiling pass on a quiesced host.
   Net: cumprod/cummax (~1.13-1.25x JAX loss) is NOT a quick contained win. Frees future
   build budget by killing two wrong hypotheses with a free disasm read.
+
+## 2026-06-22 - int contiguous row-gather threaded: i32/u32/u64 1.40x (was serial-only) (CrimsonOtter/cc)
+
+The scattered single-element gather branchless win (slice_elems==1) was wired for all dtypes,
+but the CONTIGUOUS row-gather path (slice_elems>1, embedding/row lookup) was still SERIAL for
+i32/u32/u64 — only f64/f32/i64/bf16 had the threaded `gather_contiguous_into`. Added it to the
+three int dtypes (same proven generic fn; OOB falls back to serial; bit-identical).
+
+MEASURED same-binary A/B (Zen3, eval/gather_rows_1m_i32 = gather 4096 random rows of a
+[16384,256] i32 table -> 1M elems): **serial 1.189ms -> threaded 0.851ms = 1.40x**. Real,
+modest (row memcpy is memory-bandwidth-bound, so threading scales sub-linearly), bit-identical.
+GREEN: `cargo test -p fj-lax --lib gather` = 23 passed / 0 failed (dense_i32/u32/u64 +
+gather_contiguous_into_bit_identical_to_serial all pass). KEPT (1.40x > scatter-overwrite's
+kept 1.24x). Completes the gather dtype-coverage: every dense dtype now has both the
+slice_elems==1 branchless path AND the slice_elems>1 threaded row path.

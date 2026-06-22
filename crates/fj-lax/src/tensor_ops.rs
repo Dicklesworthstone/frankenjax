@@ -3426,6 +3426,16 @@ pub(crate) fn eval_gather(
                     out,
                 )?));
             }
+            if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+                let mut out = vec![0i64; total];
+                if gather_contiguous_into(&mut out, src, &resolved, i64::from(i32::MIN), slice_elems)
+                {
+                    return Ok(Value::Tensor(TensorValue::new_i32_values(
+                        Shape { dims: out_dims },
+                        out,
+                    )?));
+                }
+            }
             dense_contiguous_gather!(src, i64::from(i32::MIN), TensorValue::new_i32_values);
         }
         // Dense u32/u64 gather (structural copy, no wrap). OOB fill = u32::MAX/u64::MAX
@@ -3441,6 +3451,17 @@ pub(crate) fn eval_gather(
                     out,
                 )?));
             }
+            // Contiguous int row-gather (slice_elems>1): thread the row memcpys above the gate
+            // (was serial-only). Same proven gather_contiguous_into f64/i64/bf16 use; bit-identical.
+            if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+                let mut out = vec![0u32; total];
+                if gather_contiguous_into(&mut out, src, &resolved, u32::MAX, slice_elems) {
+                    return Ok(Value::Tensor(TensorValue::new_u32_values(
+                        Shape { dims: out_dims },
+                        out,
+                    )?));
+                }
+            }
             dense_contiguous_gather!(src, u32::MAX, TensorValue::new_u32_values);
         }
         if operand.dtype == DType::U64
@@ -3453,6 +3474,15 @@ pub(crate) fn eval_gather(
                     Shape { dims: out_dims },
                     out,
                 )?));
+            }
+            if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+                let mut out = vec![0u64; total];
+                if gather_contiguous_into(&mut out, src, &resolved, u64::MAX, slice_elems) {
+                    return Ok(Value::Tensor(TensorValue::new_u64_values(
+                        Shape { dims: out_dims },
+                        out,
+                    )?));
+                }
             }
             dense_contiguous_gather!(src, u64::MAX, TensorValue::new_u64_values);
         }
