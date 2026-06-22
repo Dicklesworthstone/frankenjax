@@ -27,8 +27,9 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     bitonic network). This is fj-lax's single biggest domination zone — JAX-CPU's worst surface.
     REAL-WORLD-DTYPE CHECK: the domination is NOT an x64 artifact — in JAX's DEFAULT f32, **JAX sort
     64k f32 = 12.25ms ≈ its f64 (12.51ms)** (XLA's bitonic sort is dtype-agnostic-slow), so fj-lax
-    (sort ≤ its f64 1.25ms) still wins ≥10x in the dtype JAX users actually run. (fj-lax f32 exact
-    pending — recurring rch two-stage-grep capture flake on the bench-time line.)
+    (sort ≤ its f64 1.25ms) still wins ≥10x in the dtype JAX users actually run. **(fj-lax f32 exact
+    now MEASURED, gap closed — see the 2026-06-22 f32-sort entry below: fj-lax f32 64k = ~0.77ms,
+    FASTER than its own f64, ~10x over JAX f32.)**
   - OPPORTUNITY (feature gap, not a perf lever for fj-lax): **median/percentile/quantile** are
     sort-based and JAX-CPU-slow (median 1M = **226ms**, argsort-backed), but frankenjax has NO
     user-facing median/percentile (only internal `median_ms` timing helpers in linalg/tensor_contraction
@@ -2364,3 +2365,40 @@ qr 512x512 f64: eval_primitive_multi(Qr) = **14.54ms** (min 13.5) vs fresh local
   domination set: sort, cumsum, contiguous gather, i64/u32 matmul, **QR (~30x)**.
 - Release-relevant: QR is common (least-squares, orthogonalization); ~30x is a major,
   defensible Rust-over-JAX win.
+
+## 2026-06-22 - f32-sort gap CLOSED: fj-lax f32 sort 64k = ~0.77ms (FASTER than its f64), ~10x over JAX; same-host Zen3 pair (CrimsonOtter/cc)
+
+Closes the flagged "fj-lax f32 exact pending" item in the scorecard. Measured a clean
+**same-host pair on the canonical Zen3 5975WX bench host** (no cross-worker inference):
+
+| op (64k, ascending) | fj-lax (HEAD, radix path) | JAX 0.10.1 (jit, x64 enabled) | ratio |
+| --- | --- | --- | --- |
+| sort f32 | **~0.77ms** (med of 0.748/0.774/0.779) | 7.45–8.18ms p50 | **~10x fj-lax WIN** |
+| sort f64 | 1.566ms | 8.18ms p50 (≡ f32) | ~5.2x fj-lax WIN |
+
+Key confirmations:
+- **JAX f32 sort ≡ f64 sort** (8.184ms vs 8.184ms, identical to the µs): independently
+  re-confirms "XLA-CPU bitonic sort is dtype-agnostic-slow" — now on a SECOND jaxlib
+  version (0.10.1, vs the scorecard's 0.10.2) AND the canonical Zen3 host. The domination
+  is robustly NOT an x64-only artifact.
+- **fj-lax f32 (0.77ms) is FASTER than fj-lax f64 (1.57ms)** — expected: f32 LSD radix
+  moves 4-byte keys vs 8-byte, and JAX gains nothing from the narrower dtype. So f32 (the
+  dtype JAX users actually run) is fj-lax's BEST sort case, not a weaker one.
+- HONESTY NOTE on the ratio vs the scorecard's ~10x: that ~10x was a same-WORKER pair
+  where JAX measured 12.5ms (slower VPS). On the faster Zen3 host JAX is ~7.5–8.2ms, so
+  the f64 ratio reads ~5x here and f32 ~10x. The DOMINATION holds across hosts (4.8–10x);
+  the absolute multiple just tracks how fast the JAX host is. fj-lax's own sort time is
+  host-stable (Zen3 f64 1.57ms ≈ worker 1.25ms class).
+
+PROVENANCE / why this is honest despite the +fma build dir: the binary was built into the
+warm `frankenjax-cc-fma` target (`+avx2,+fma`) because the canonical `frankenjax-cc`
+(`+avx2`, no-fma) target was reclaimed under disk pressure. This does NOT affect the sort
+number: the sort path is an **integer LSD radix on total_cmp bit-keys** — zero float
+mul-add, so `+fma` vs no-fma produces bit-identical codegen and identical timing for sort.
+(For FMA-sensitive ops — matmul/exp/FFT butterflies — an fma-target number would NOT be
+canonical; sort is specifically exempt.) Source unchanged since the warm rlib (the 5
+intervening commits are all docs-only), and fj-lax was recompiled fresh at HEAD 2f47cc82.
+
+Net: the order-statistics domination zone (sort/argsort/top_k/median-family) is now fully
+measured in BOTH dtypes with no remaining "pending" inference. f32 sort ~10x is the
+release-relevant figure (f32 = JAX's default dtype).
