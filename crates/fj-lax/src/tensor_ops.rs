@@ -4246,6 +4246,13 @@ pub(crate) fn eval_scatter(
 
     let (index_vals, index_shape): (Vec<i64>, Vec<u32>) = match &inputs[1] {
         Value::Scalar(lit) => (vec![lit_to_i64(lit, primitive)?], Vec::new()),
+        // Dense i64/i32 (i32 is i64-backed) index tensor: bulk-copy the typed slice instead of
+        // a per-element `lit_to_i64` match + Result over the index count. Identical values;
+        // non-dense (boxed) index tensors keep the per-element path. (Mirrors eval_gather.)
+        Value::Tensor(t) if t.elements.as_i64_slice().is_some() => (
+            t.elements.as_i64_slice().unwrap().to_vec(),
+            t.shape.dims.clone(),
+        ),
         Value::Tensor(t) => (
             t.elements
                 .iter()

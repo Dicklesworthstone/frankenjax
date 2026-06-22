@@ -2729,3 +2729,17 @@ per-element lit_to_i64 + 16MB Vec<Option> alloc + double-resolve were ~11.6ms of
 vs JAX jnp.take 1.786ms: the gather gap **halves again ~15x -> ~7.5x** (cumulative ~3.7x from
 the original ~28x: branchless 2x then fusion 1.86x). Bit-identical: GREEN cargo test -p fj-lax
 --lib gather 23/0 (dense_complex/boxed/OOB-clip/i32/u32/u64 all pass). KEPT (1.86x). kkawk closed.
+
+## 2026-06-22 - scatter dense index extraction 1.14x (mirrors gather) — completes the dense-index lesson across gather+scatter (CrimsonOtter/cc)
+
+eval_scatter extracted its 1M indices via per-element `lit_to_i64` (match + Result over boxed
+Literals), same as eval_gather did before the kkawk fusion. Added the dense `as_i64_slice()
+.to_vec()` fast path (i32 is i64-backed; non-dense keeps per-element). Same-session A/B (Zen3):
+- **scatter_overwrite_1m_f64: 29.41ms -> 25.81ms = 1.14x**
+- **scatter_add_1m_f64_1d: 13.82ms -> 12.17ms = 1.14x**
+Modest (the serial scatter inner loop / partitioned scatter-add dominates; index extraction is
+~14% of total) but real and consistent across both, bit-identical. GREEN: cargo test -p fj-lax
+--lib scatter = 31 passed / 0 failed (dense_i32/u32/u64, complex, duplicate-last-wins, range-
+partitioned scatter-add all pass). KEPT (1.14x > ~0-gain). Completes the dense-index-extraction
+lesson across both indexed ops; scatter has no separate `resolved` Vec to fuse (it resolves
+inline in the scatter loop), so this is the full scatter pre-pass lever.
