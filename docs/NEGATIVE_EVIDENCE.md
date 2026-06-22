@@ -52,6 +52,16 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     (sort ≤ its f64 1.25ms) still wins ≥10x in the dtype JAX users actually run. **(fj-lax f32 exact
     now MEASURED, gap closed — see the 2026-06-22 f32-sort entry below: fj-lax f32 64k = ~0.77ms,
     FASTER than its own f64, ~10x over JAX f32.)**
+  - **DTYPE-SIBLING-GAP AUDIT (2026-06-22, SlateHarrier) — matmul family now complete; complex conv
+    filed.** After flipping complex matmul (below), swept the matmul/conv family for kernels lagging
+    their f64/i64 siblings: bf16/f16 matmul VERIFIED already optimized (f16 decodes→f32 GEMM; bf16 has
+    tuned row-block kernels) — no gap. complex64 matmul upcasts→(f64,f64)→`rank2_complex_matmul` (now
+    blocked) — covered. complex transposed/general orientations permute→canonical blocked kernel —
+    covered. **REMAINING: complex CONV is a naive per-element-boxed loop** (excluded from the real
+    im2col+GEMM path via `if !is_complex`); fresh JAX c128 conv N8×32×32×32→64 k3×3 = 42.4ms mean /
+    25.3ms min, fj-lax ~30x+ slower. Niche op (signal/quantum) + multi-path (conv1d/2d/grouped) → filed
+    bead `frankenjax-complex-conv-gemm-5xdr7` (P3) with the f32-template approach rather than risking the
+    intricate conv code inline. The matmul-family dtype-sibling gap is otherwise CLOSED.
   - **COMPLEX128 MATMUL 4-row register-blocking SHIPPED (2026-06-22, SlateHarrier) — narrows JAX
     loss 1.95x→1.31x.** Unlike integer, XLA DOES have fast complex GEMM (zgemm): fresh JAX c128
     matmul 512³ **11.97ms**, 1024³ **58.7ms**. fj-lax `rank2_complex_row_block` was a NAIVE single-row
