@@ -239,4 +239,56 @@ fn main() {
             single_ms / blocked_ms,
         );
     }
+
+    // BATCHED complex128 matmul: 1-thread naive-single-row vs 1-thread batch-aware-4row-blocked
+    // (same-binary, isolates the per-batch register blocking now shipped in batched_complex_row_block).
+    for (batch, msz) in [(32usize, 128usize)] {
+        let (k, n) = (msz, msz);
+        let a: Vec<(f64, f64)> = (0..batch * msz * k)
+            .map(|i| ((i % 13) as f64 - 6.0, (i % 7) as f64 - 3.0))
+            .collect();
+        let b: Vec<(f64, f64)> = (0..batch * k * n)
+            .map(|i| ((i % 11) as f64 - 5.0, (i % 5) as f64 - 2.0))
+            .collect();
+        let naive = || -> Vec<(f64, f64)> {
+            let mut c = vec![(0.0f64, 0.0f64); batch * msz * n];
+            for bt in 0..batch {
+                let (ao, bo, co) = (bt * msz * k, bt * k * n, bt * msz * n);
+                for row in 0..msz {
+                    for l in 0..k {
+                        let (ar, ai) = a[ao + row * k + l];
+                        for j in 0..n {
+                            let (br, bi) = b[bo + l * n + j];
+                            let cc = &mut c[co + row * n + j];
+                            cc.0 += ar * br - ai * bi;
+                            cc.1 += ar * bi + ai * br;
+                        }
+                    }
+                }
+            }
+            c
+        };
+        let prod =
+            fj_lax::tensor_contraction::batched_rank2_complex_matmul(&a, batch, msz, k, &b, n);
+        assert_eq!(prod, naive(), "batched blocked complex != naive");
+        let _ = naive();
+        let t = Instant::now();
+        black_box(naive());
+        let naive_ms = t.elapsed().as_nanos() as f64 / 1e6;
+        let _ = fj_lax::tensor_contraction::batched_rank2_complex_matmul(&a, batch, msz, k, &b, n);
+        let t2 = Instant::now();
+        black_box(fj_lax::tensor_contraction::batched_rank2_complex_matmul(
+            black_box(&a),
+            batch,
+            msz,
+            k,
+            black_box(&b),
+            n,
+        ));
+        let prod_ms = t2.elapsed().as_nanos() as f64 / 1e6;
+        println!(
+            "C128_BATCHED_MATMUL b={batch} {msz}^3 naive_1thr={naive_ms:.3}ms prod_threaded_blocked={prod_ms:.3}ms speedup={:.2}x",
+            naive_ms / prod_ms,
+        );
+    }
 }

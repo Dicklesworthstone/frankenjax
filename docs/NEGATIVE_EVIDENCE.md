@@ -62,6 +62,17 @@ MEASURED HEAD-TO-HEAD (2026-06-21, CrimsonOtter, SAME-WORKER vs JAX 0.10.2 CPU x
     block-isolated A/B (`i64_matmul_speed` C128 section) **512³ 1.71x / 1024³ 1.26x** single-thread.
     Production threaded c128 matmul 1024³ **~114ms → ~77ms** vs JAX 58.7ms = loss **1.95x → 1.31x**;
     512³ 14.5ms vs 11.97ms = 1.21x. Residual is the `cntiy` +fma gate (zgemm fuses complex MACs).
+  - **BATCHED complex128 matmul ALSO 4-row-blocked (2026-06-22, SlateHarrier).** `batched_complex_row_block`
+    (vmap(complex matmul) / 3D complex dot_general) was the same naive single-row sibling; applied
+    batch-AWARE 4-row blocking (a 4-row group only shares a `b_row` load when all four rows are in the
+    same batch `g/m`, since each batch reads its own `b[bt*k*n..]`). BIT-IDENTICAL (lib complex 132/0
+    incl. `batched_rank2_complex_matmul_matches_generic`; bench assert vs naive). Same-binary
+    `C128_BATCHED_MATMUL b=32 128³` = naive-1thr 47.9ms → prod-threaded-blocked 5.23ms = **9.16x**
+    (thread×block). REFINEMENT to the non-batched row above: a less-contended re-run measured the
+    single-thread block isolation at **1.78x (512³) / 2.00x (1024³)** and production threaded c128
+    matmul **512³ 9.07ms (now BEATS JAX 11.97ms) / 1024³ 61ms (≈ JAX 58.7ms parity)** — so the complex
+    matmul JAX gap is now parity-to-win, not the prior 1.31x (the 1.31x figure was a contended run;
+    the block ratio is robustly 1.7-2.0x). Both non-batched + batched complex now register-blocked.
   - **INTEGER MATMUL is a NEW fj-lax domination zone (2026-06-22, SlateHarrier)** — XLA has no
     integer BLAS, so JAX falls back to a scalar/naive int matmul that is catastrophically slow.
     Fresh `JAX_ENABLE_X64=1` jaxlib CPU x64 `int64 @ int64`: **512³ = 367.2ms mean (min 347ms),

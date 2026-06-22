@@ -1474,19 +1474,67 @@ fn batched_complex_row_block(
     g_start: usize,
     block: &mut [(f64, f64)],
 ) {
-    for (ri, c_row) in block.chunks_mut(n).enumerate() {
+    // 4-row register blocking (mirrors the non-batched `rank2_complex_row_block` + i64 kernel)
+    // applied WITHIN each batch: a 4-row group only shares one `b_row` load when all four output
+    // rows belong to the same batch (`g/m`), since each batch `bt` reads its own `b[bt*k*n..]`.
+    // We walk the chunk one same-batch segment at a time and 4-row-block inside it; the < 4-row
+    // remainder of each segment uses the single-row path. BIT-IDENTICAL: every output still folds
+    // `l` in ascending order; blocking only interleaves independent same-batch rows.
+    let total_rows = block.len() / n;
+    let mut rest: &mut [(f64, f64)] = block;
+    let mut ri = 0usize;
+    while ri < total_rows {
         let g = g_start + ri;
         let bt = g / m;
-        let a_off = g * k;
         let b_off = bt * k * n;
-        for l in 0..k {
-            let (ar, ai) = a[a_off + l];
-            let src = &b[b_off + l * n..b_off + l * n + n];
-            for (c, &(br, bi)) in c_row.iter_mut().zip(src) {
-                c.0 += ar * br - ai * bi;
-                c.1 += ar * bi + ai * br;
+        let seg_rows = ((bt + 1) * m - g).min(total_rows - ri);
+        let (seg, tail) = rest.split_at_mut(seg_rows * n);
+        rest = tail;
+
+        let full = seg_rows - seg_rows % 4;
+        let (blocked, seg_tail) = seg.split_at_mut(full * n);
+        for (gi, four) in blocked.chunks_mut(4 * n).enumerate() {
+            let (c0, r) = four.split_at_mut(n);
+            let (c1, r) = r.split_at_mut(n);
+            let (c2, c3) = r.split_at_mut(n);
+            let abase = (g + gi * 4) * k;
+            let (a0o, a1o, a2o, a3o) = (abase, abase + k, abase + 2 * k, abase + 3 * k);
+            for l in 0..k {
+                let (a0r, a0i) = a[a0o + l];
+                let (a1r, a1i) = a[a1o + l];
+                let (a2r, a2i) = a[a2o + l];
+                let (a3r, a3i) = a[a3o + l];
+                let src = &b[b_off + l * n..b_off + l * n + n];
+                for ((((e0, e1), e2), e3), &(br, bi)) in c0
+                    .iter_mut()
+                    .zip(c1.iter_mut())
+                    .zip(c2.iter_mut())
+                    .zip(c3.iter_mut())
+                    .zip(src)
+                {
+                    e0.0 += a0r * br - a0i * bi;
+                    e0.1 += a0r * bi + a0i * br;
+                    e1.0 += a1r * br - a1i * bi;
+                    e1.1 += a1r * bi + a1i * br;
+                    e2.0 += a2r * br - a2i * bi;
+                    e2.1 += a2r * bi + a2i * br;
+                    e3.0 += a3r * br - a3i * bi;
+                    e3.1 += a3r * bi + a3i * br;
+                }
             }
         }
+        for (ti, c_row) in seg_tail.chunks_mut(n).enumerate() {
+            let a_off = (g + full + ti) * k;
+            for l in 0..k {
+                let (ar, ai) = a[a_off + l];
+                let src = &b[b_off + l * n..b_off + l * n + n];
+                for (c, &(br, bi)) in c_row.iter_mut().zip(src) {
+                    c.0 += ar * br - ai * bi;
+                    c.1 += ar * bi + ai * br;
+                }
+            }
+        }
+        ri += seg_rows;
     }
 }
 
