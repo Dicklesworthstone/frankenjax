@@ -1759,7 +1759,9 @@ PARITY (bandwidth-bound, both at memory bw): argmax/argmin/reduce over large arr
 LOSSES (Rust slower) — XLA has BLAS/SIMD, or Rust hits boxed/per-call path:
 | op | ratio | mechanism |
 | --- | ---: | --- |
-| f64 matmul (DotGeneral) | ~3.35x | same-machine 1024^3: Rust 8.93ms (240 GFLOP/s) vs JAX 2.665ms (806 GFLOP/s dgemm BLAS). NB the older 5-15x figures were `matmul_2d` (40ms@1024) — DotGeneral (the @ path) is ~4.5x faster; gap more closeable via +fma/microkernel |
+| f64 matmul (DotGeneral) | ~3.35x | same-machine 1024^3: Rust 8.93ms (240 GFLOP/s) vs JAX 2.665ms (806 GFLOP/s dgemm BLAS). NB older 5-15x were single-threaded `matmul_2d` microbench; DotGeneral (@ path, threaded) is the production number; closeable via +fma/microkernel |
+| f32 matmul (DotGeneral, DEFAULT dtype) | ~4.02x | 1024^3: Rust 5.51ms (390 GFLOP/s) vs JAX 1.369ms (1568 GFLOP/s sgemm) |
+| conv2d (f64, NHWC 4x64x64x32 3x3->64) | ~11.8x | 11.32ms (27 GFLOP/s) vs JAX 0.957ms (314); im2col overhead + fma-bound GEMM + less threading. Largest float-op loss; CNN-relevant |
 | complex128 matmul | ~3.7x | XLA zgemm BLAS |
 | i32 matmul | ~7.8x | XLA vpmulld SIMD (only signed-32 vectorizes) |
 | scatter-add | ~3-4.6x | XLA OK; Rust eval_primitive boxed path |
