@@ -2271,3 +2271,19 @@ COMPLETE production matmul map (threaded DotGeneral, same-machine vs JAX):
   and are CLOSEABLE via +fma + a tuned microkernel (cntiy) — not the 5-15x the
   single-threaded matmul_2d microbench implied. Rust wins matmul iff XLA lacks a
   BLAS/SIMD path (i64/u32).
+
+## 2026-06-22 - conv2d is a ~11.8x JAX LOSS same-machine — the other big ML op, worse than matmul (CobaltForge/cc)
+
+Same-machine authoritative conv2d (CNN-relevant; replicates bench_conv2d_64x64x32_
+3x3x64_f64). Local Zen3, warm target/: eval_primitive(Conv) f64 input NHWC
+[4,64,64,32] x kernel HWIO [3,3,32,64], SAME pad, stride 1 = **11.32ms** (min
+10.49, ~27 GFLOP/s) vs fresh local JAX `lax.conv_general_dilated` (same dims/
+NHWC/HWIO/SAME) = **0.957ms** (min 0.819, ~314 GFLOP/s) = **~11.8x Rust LOSS**.
+- BIGGER gap than matmul (~3-4x). Conv = im2col (materialize patches, memory
+  overhead matmul lacks) + GEMM (fma-bound), and likely less-threaded than the
+  DotGeneral path; XLA conv is highly optimized (direct/efficient im2col + fma
+  sgemm). Compute-bound, no bandwidth artifact (27 vs 314 GFLOP/s both plausible).
+- Release-relevant: conv is the core CNN op; ~12x is a real gap. Levers: im2col
+  efficiency + the matmul fma/microkernel lever (cntiy) + conv threading.
+- Adds to the JAX-relative map: conv2d ~11.8x loss (the largest float-op loss
+  measured; bigger than float matmul because of the im2col overhead).
