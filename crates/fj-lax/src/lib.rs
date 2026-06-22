@@ -5284,6 +5284,108 @@ fn reduce_window_simd_channel_maxmin_f64(
     out
 }
 
+/// f32 sibling of [`reduce_window_simd_channel_maxmin_f64`] — JAX's DEFAULT CNN dtype. Same
+/// channel-last SIMD reduction, f32x16 across the contiguous feature axis (2× the f64 width).
+/// NaN-propagating to canonical `f32::NAN`; signed-zero matches `f32::max`/`f32::min`.
+fn reduce_window_simd_channel_maxmin_f32(
+    src: &[f32],
+    input_dims: &[usize],
+    window_dims: &[usize],
+    strides: &[usize],
+    pad_lows: &[usize],
+    out_dims: &[usize],
+    is_max: bool,
+) -> Vec<f32> {
+    use std::simd::cmp::SimdPartialEq;
+    use std::simd::num::SimdFloat;
+    use std::simd::{Mask, Select, Simd};
+    type F = Simd<f32, 16>;
+    let rank = input_dims.len();
+    let pooled = rank - 1;
+    let c = input_dims[pooled];
+    let init = if is_max {
+        f32::NEG_INFINITY
+    } else {
+        f32::INFINITY
+    };
+    let out_total: usize = out_dims.iter().product();
+    let mut out = vec![init; out_total];
+    let c16 = c - c % 16;
+    let mut in_strides = vec![1usize; rank];
+    for d in (0..rank - 1).rev() {
+        in_strides[d] = in_strides[d + 1] * input_dims[d + 1];
+    }
+    let out_spatial: usize = out_dims[..pooled].iter().product();
+    let win_total: usize = window_dims[..pooled].iter().product();
+    let mut out_coord = vec![0usize; pooled];
+    for _ in 0..out_spatial {
+        let ob = {
+            let mut b = 0usize;
+            for d in 0..pooled {
+                b = b * out_dims[d] + out_coord[d];
+            }
+            b * c
+        };
+        let mut tap = vec![0usize; pooled];
+        for _ in 0..win_total {
+            let mut in_base = 0usize;
+            let mut oob = false;
+            for d in 0..pooled {
+                let padded = out_coord[d] * strides[d] + tap[d];
+                if padded < pad_lows[d] {
+                    oob = true;
+                    break;
+                }
+                let ic = padded - pad_lows[d];
+                if ic >= input_dims[d] {
+                    oob = true;
+                    break;
+                }
+                in_base += ic * in_strides[d];
+            }
+            if !oob {
+                let mut ci = 0;
+                while ci < c16 {
+                    let a = F::from_slice(&out[ob + ci..ob + ci + 16]);
+                    let t = F::from_slice(&src[in_base + ci..in_base + ci + 16]);
+                    let m = if is_max { a.simd_max(t) } else { a.simd_min(t) };
+                    let nanm: Mask<i32, 16> = a.simd_ne(a) | t.simd_ne(t);
+                    let res = nanm.select(F::splat(f32::NAN), m);
+                    res.copy_to_slice(&mut out[ob + ci..ob + ci + 16]);
+                    ci += 16;
+                }
+                while ci < c {
+                    let a = out[ob + ci];
+                    let t = src[in_base + ci];
+                    out[ob + ci] = if a.is_nan() || t.is_nan() {
+                        f32::NAN
+                    } else if is_max {
+                        a.max(t)
+                    } else {
+                        a.min(t)
+                    };
+                    ci += 1;
+                }
+            }
+            for d in (0..pooled).rev() {
+                tap[d] += 1;
+                if tap[d] < window_dims[d] {
+                    break;
+                }
+                tap[d] = 0;
+            }
+        }
+        for d in (0..pooled).rev() {
+            out_coord[d] += 1;
+            if out_coord[d] < out_dims[d] {
+                break;
+            }
+            out_coord[d] = 0;
+        }
+    }
+    out
+}
+
 /// Separable sliding-window max/min: reduce each window axis with an independent
 /// monotonic-deque 1D pass. This turns the O(output·∏window) full-window scan and
 /// the older O(output·∑window) per-axis scan into O(input+output) work per axis.
@@ -5733,6 +5835,38 @@ fn eval_reduce_window(
         };
         return Ok(Value::Tensor(
             TensorValue::new_f64_values(shape, values).map_err(EvalError::from)?,
+        ));
+    }
+
+    // f32 sibling of the SIMD-over-channel path above — JAX's DEFAULT CNN dtype (was ~57x JAX loss
+    // on the scalar odometer; JAX f32 maxpool is 16-wide). f32x16 across the contiguous channel.
+    if no_base_dilation
+        && no_window_dilation
+        && tensor.dtype == fj_core::DType::F32
+        && matches!(reduce_op, "max" | "min")
+        && rank >= 2
+        && window_dims[rank - 1] == 1
+        && strides[rank - 1] == 1
+        && pad_lows[rank - 1] == 0
+        && out_dims[rank - 1] as usize == tensor.shape.dims[rank - 1] as usize
+        && let Some(src) = tensor.elements.as_f32_slice()
+    {
+        let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+        let out_dims_usize: Vec<usize> = out_dims.iter().map(|&d| d as usize).collect();
+        let values = reduce_window_simd_channel_maxmin_f32(
+            src,
+            &input_dims,
+            &window_dims,
+            &strides,
+            &pad_lows,
+            &out_dims_usize,
+            reduce_op == "max",
+        );
+        let shape = Shape {
+            dims: out_dims.clone(),
+        };
+        return Ok(Value::Tensor(
+            TensorValue::new_f32_values(shape, values).map_err(EvalError::from)?,
         ));
     }
 
@@ -6379,6 +6513,118 @@ mod tests {
         }
     }
 
+    // f32 sibling guard: the f32x16 SIMD-channel maxpool must match a naive f32 scalar reference
+    // bit-for-bit (max/min × finite/NaN/signed-zero), pinning the f32 simd_max/simd_ne/select.
+    #[test]
+    fn maxpool_simd_channel_f32_bit_identical() {
+        fn naive_f32(
+            src: &[f32],
+            dims: &[usize],
+            win: &[usize],
+            strides: &[usize],
+            pad: &[usize],
+            out_dims: &[usize],
+            is_max: bool,
+        ) -> Vec<f32> {
+            let rank = dims.len();
+            let pooled = rank - 1;
+            let c = dims[pooled];
+            let init = if is_max {
+                f32::NEG_INFINITY
+            } else {
+                f32::INFINITY
+            };
+            let mut in_strides = vec![1usize; rank];
+            for d in (0..rank - 1).rev() {
+                in_strides[d] = in_strides[d + 1] * dims[d + 1];
+            }
+            let mut out = vec![init; out_dims.iter().product()];
+            let out_spatial: usize = out_dims[..pooled].iter().product();
+            let win_total: usize = win[..pooled].iter().product();
+            let mut oc = vec![0usize; pooled];
+            for _ in 0..out_spatial {
+                let mut ob = 0usize;
+                for d in 0..pooled {
+                    ob = ob * out_dims[d] + oc[d];
+                }
+                ob *= c;
+                let mut tap = vec![0usize; pooled];
+                for _ in 0..win_total {
+                    let mut ib = 0usize;
+                    let mut oob = false;
+                    for d in 0..pooled {
+                        let p = oc[d] * strides[d] + tap[d];
+                        if p < pad[d] || p - pad[d] >= dims[d] {
+                            oob = true;
+                            break;
+                        }
+                        ib += (p - pad[d]) * in_strides[d];
+                    }
+                    if !oob {
+                        for ci in 0..c {
+                            let a = out[ob + ci];
+                            let t = src[ib + ci];
+                            out[ob + ci] = if a.is_nan() || t.is_nan() {
+                                f32::NAN
+                            } else if is_max {
+                                a.max(t)
+                            } else {
+                                a.min(t)
+                            };
+                        }
+                    }
+                    for d in (0..pooled).rev() {
+                        tap[d] += 1;
+                        if tap[d] < win[d] {
+                            break;
+                        }
+                        tap[d] = 0;
+                    }
+                }
+                for d in (0..pooled).rev() {
+                    oc[d] += 1;
+                    if oc[d] < out_dims[d] {
+                        break;
+                    }
+                    oc[d] = 0;
+                }
+            }
+            out
+        }
+        let dims = [2usize, 15, 13, 20];
+        let win = [1usize, 3, 3, 1];
+        let strides = [1usize, 2, 2, 1];
+        let pad = [0usize, 1, 1, 0];
+        let out_dims: Vec<usize> = (0..4)
+            .map(|d| (dims[d] + 2 * pad[d] - win[d]) / strides[d] + 1)
+            .collect();
+        let total: usize = dims.iter().product();
+        for is_max in [true, false] {
+            for variant in 0..3 {
+                let mut src: Vec<f32> = (0..total)
+                    .map(|i| ((i % 103) as f32) * 0.41 - 21.0)
+                    .collect();
+                if variant == 1 {
+                    src[total / 3] = f32::NAN;
+                    src[total / 2] = f32::NAN;
+                } else if variant == 2 {
+                    for (i, v) in src.iter_mut().enumerate() {
+                        *v = if i % 2 == 0 { 0.0 } else { -0.0 };
+                    }
+                }
+                let got = super::reduce_window_simd_channel_maxmin_f32(
+                    &src, &dims, &win, &strides, &pad, &out_dims, is_max,
+                );
+                let want = naive_f32(&src, &dims, &win, &strides, &pad, &out_dims, is_max);
+                assert_eq!(
+                    got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    "f32 SIMD-channel maxpool mismatch (is_max={is_max} variant={variant})"
+                );
+            }
+        }
+    }
+
     // BOLD-VERIFY: COMMON CNN maxpool (small windows 2x2/3x3) does NOT hit the deque
     // (win_total <= 2*win_sum) — rank-4 [N,H,W,C] routes to the scalar dense_float odometer.
     // Measure it vs JAX (3x3/s2 = 9.34ms, 2x2/s2 = 2.11ms) — the contiguous channel axis (C) is
@@ -6421,9 +6667,35 @@ mod tests {
                 best = best.min(t.elapsed().as_secs_f64());
                 std::hint::black_box(&r);
             }
+            // f32 (JAX's default CNN dtype)
+            let src32: Vec<f32> = (0..total)
+                .map(|i| ((i % 9973) as f32) * 0.013 - 50.0)
+                .collect();
+            let tensor32 = Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: vec![nb as u32, hw as u32, hw as u32, c as u32],
+                    },
+                    src32,
+                )
+                .unwrap(),
+            );
+            let run32 = || {
+                eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor32), &p)
+                    .unwrap()
+            };
+            let _ = run32();
+            let mut best32 = f64::MAX;
+            for _ in 0..15 {
+                let t = Instant::now();
+                let r = run32();
+                best32 = best32.min(t.elapsed().as_secs_f64());
+                std::hint::black_box(&r);
+            }
             println!(
-                "BENCH maxpool-cnn N{nb} {hw}x{hw}x{c} {win}x{win}/s{stride}: fj-lax={:.4}ms",
-                best * 1e3
+                "BENCH maxpool-cnn N{nb} {hw}x{hw}x{c} {win}x{win}/s{stride}: fj-lax-f64={:.4}ms fj-lax-f32={:.4}ms",
+                best * 1e3,
+                best32 * 1e3
             );
         }
     }

@@ -2450,9 +2450,24 @@ max/min, no dilation; large windows still prefer the deque. Result (eval_primiti
 | [8,56,56,128] 2x2/s2 | **2.76 ms** | 2.11 ms | ~1.3x (was 6-7x loss; near-parity) |
 
 Bit-identical: `maxpool_simd_channel_bit_identical` permanent guard (max/min × finite/NaN/±0 ×
-VALID/padded × rank-3/4) + reduce_window 44/0 + full fj-lax lib 1587/0. NEXT (filed under
-simd-reduce-window-maxmin-od11p): F32 sibling (JAX's default CNN dtype — f32x16, the same kernel) is
-the obvious follow-up, likely a similar flip; the production gate is f64-only for now.
+VALID/padded × rank-3/4) + reduce_window 44/0 + full fj-lax lib 1587/0.
+
+F32 SIBLING SHIPPED (2026-06-22, SlateHarrier) — JAX's DEFAULT CNN dtype. fj-lax f32 maxpool also hit
+the scalar odometer (~84ms) but JAX f32 is 16-wide (3x3/s2 = 1.48ms, 2x2/s2 = 0.59ms) so it was a
+~57x LOSS — worse than f64. `reduce_window_simd_channel_maxmin_f32` (f32x16, same channel-last kernel,
+NaN→canonical f32::NAN, signed-zero matches f32::max/min) results (eval_primitive, f32):
+
+| shape | f32 BEFORE | f32 AFTER | JAX f32 | verdict |
+| --- | ---: | ---: | ---: | --- |
+| [8,56,56,128] 2x2/s2 | ~12ms+ | **0.54 ms** | 0.59 ms | **WIN ~1.1x** (was ~40-57x loss) |
+| [8,112,112,64] 3x3/s2 | ~84ms | **2.68 ms** | 1.48 ms | ~1.8x (was ~57x; near-parity) |
+
+Bit-identical: `maxpool_simd_channel_f32_bit_identical` guard (max/min × finite/NaN/±0) + full fj-lax
+lib 1589/0. The residual ~1.8x on 3x3 f32 is JAX's THREADING (XLA parallelizes; the SIMD-channel path
+is single-thread) — the outer spatial loop is embarrassingly parallel (disjoint per-osp output blocks),
+so threading it (filed, od11p) should flip 3x3 too. Both f64+f32 channel-last CNN maxpool now win or
+near-parity vs the original 6-57x losses. (clippy blocked this commit by the ovh-b zerocopy SIGILL
+infra flake; verified via ovh-a build + 1589/0 + guards; f32 mirrors the clippy-clean f64 code.)
 
 ## 2026-06-22 - floor-chain JAX LOSS confirmed cross-machine; cross-machine map validation COMPLETE (CobaltForge/cc)
 
