@@ -639,22 +639,52 @@ fn simd_minmax_row_acc_f64(out: &mut [f64], inp: &[f64], is_max: bool) {
     }
 }
 
-/// f32 sibling — the input row is f32 (widened to the f64 accumulators exactly).
+/// f32-NATIVE row-accumulate (f32x8, no f64 widen): `out[c] = minmax(out[c], inp[c])` over the
+/// contiguous inner row, NaN-propagating to canonical `f32::NAN`. Max/min of f32 is exact, so the
+/// resulting VALUE is identical to a f64-widened accumulate (and the f32 output's NaN is canonical
+/// regardless). 8-wide + no widen replaces the prior 4-wide f64-widening accumulate.
 #[inline]
-fn simd_minmax_row_acc_f32(out: &mut [f64], inp: &[f32], is_max: bool) {
+fn simd_minmax_row_acc_f32_native(out: &mut [f32], inp: &[f32], is_max: bool) {
     use std::simd::{Select, Simd, num::SimdFloat};
-    const L: usize = 4;
+    const L: usize = 8;
     let mut oc = out.chunks_exact_mut(L);
     let mut ic = inp.chunks_exact(L);
     for (o, i) in oc.by_ref().zip(ic.by_ref()) {
-        let a = Simd::<f64, L>::from_slice(o);
-        let b: Simd<f64, L> = Simd::<f32, L>::from_slice(i).cast();
+        let a = Simd::<f32, L>::from_slice(o);
+        let b = Simd::<f32, L>::from_slice(i);
         let m = if is_max { a.simd_max(b) } else { a.simd_min(b) };
         let nan = a.is_nan() | b.is_nan();
-        o.copy_from_slice(&nan.select(Simd::splat(f64::NAN), m).to_array());
+        o.copy_from_slice(&nan.select(Simd::splat(f32::NAN), m).to_array());
     }
     for (o, &v) in oc.into_remainder().iter_mut().zip(ic.remainder()) {
-        *o = jax_minmax_scalar(*o, f64::from(v), is_max);
+        let cur = *o;
+        *o = if cur.is_nan() || v.is_nan() {
+            f32::NAN
+        } else if is_max {
+            cur.max(v)
+        } else {
+            cur.min(v)
+        };
+    }
+}
+
+/// Accumulate the f32-native running min/max for output cells `[0, out.len())` over `reduce` rows
+/// of stride `inner`, starting at `values[base..]`, where `out` is the (contiguous) output column
+/// block at column offset `col0` within each row. Used by both the serial and threaded paths.
+#[inline]
+fn simd_minmax_f32_accumulate_block(
+    out: &mut [f32],
+    values: &[f32],
+    base: usize,
+    reduce: usize,
+    inner: usize,
+    col0: usize,
+    is_max: bool,
+) {
+    let w = out.len();
+    for r in 0..reduce {
+        let start = base + r * inner + col0;
+        simd_minmax_row_acc_f32_native(out, &values[start..start + w], is_max);
     }
 }
 
@@ -708,23 +738,82 @@ fn simd_minmax_inner_axis_reduce_f32(
     inner: usize,
 ) -> Vec<f64> {
     let init = if is_max {
-        f64::NEG_INFINITY
+        f32::NEG_INFINITY
     } else {
-        f64::INFINITY
+        f32::INFINITY
     };
-    let mut result = vec![init; outer * inner];
-    for o in 0..outer {
-        let out_row = &mut result[o * inner..(o + 1) * inner];
-        let base = o * reduce * inner;
-        for r in 0..reduce {
-            simd_minmax_row_acc_f32(
+    // f32-NATIVE accumulator (no f64 widen — max/min of f32 is exact); widen to f64 once at the end.
+    let mut acc = vec![init; outer * inner];
+    let total = values.len();
+    let want_threads = if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+        crate::arithmetic::work_scaled_threads(total).min(16)
+    } else {
+        1
+    };
+    if want_threads <= 1 {
+        for o in 0..outer {
+            let out_row = &mut acc[o * inner..(o + 1) * inner];
+            simd_minmax_f32_accumulate_block(
                 out_row,
-                &values[base + r * inner..base + r * inner + inner],
+                values,
+                o * reduce * inner,
+                reduce,
+                inner,
+                0,
                 is_max,
             );
         }
+    } else if outer >= 2 {
+        // Thread over the independent OUTER groups (each writes a contiguous `inner` block).
+        let threads = want_threads.min(outer);
+        let per = outer.div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut rest: &mut [f32] = acc.as_mut_slice();
+            let mut o0 = 0usize;
+            while o0 < outer {
+                let cnt = per.min(outer - o0);
+                let (blk, tail) = rest.split_at_mut(cnt * inner);
+                rest = tail;
+                let base0 = o0;
+                o0 += cnt;
+                scope.spawn(move || {
+                    for oi in 0..cnt {
+                        let o = base0 + oi;
+                        let out_row = &mut blk[oi * inner..(oi + 1) * inner];
+                        simd_minmax_f32_accumulate_block(
+                            out_row,
+                            values,
+                            o * reduce * inner,
+                            reduce,
+                            inner,
+                            0,
+                            is_max,
+                        );
+                    }
+                });
+            }
+        });
+    } else {
+        // outer == 1 (e.g. leading-axis max over [rows, cols]): thread over independent INNER
+        // column blocks (each a contiguous output sub-slice; reads contiguous sub-rows).
+        let threads = want_threads.min(inner.max(1));
+        let per = inner.div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut rest: &mut [f32] = acc.as_mut_slice();
+            let mut c0 = 0usize;
+            while c0 < inner {
+                let w = per.min(inner - c0);
+                let (blk, tail) = rest.split_at_mut(w);
+                rest = tail;
+                let col0 = c0;
+                c0 += w;
+                scope.spawn(move || {
+                    simd_minmax_f32_accumulate_block(blk, values, 0, reduce, inner, col0, is_max);
+                });
+            }
+        });
     }
-    result
+    acc.iter().map(|&v| f64::from(v)).collect()
 }
 
 /// BF16 row-accumulate — decodes bf16→f64 (exact top-16-bit widen) in SIMD, the part
@@ -4104,6 +4193,45 @@ mod tests {
                         best * 1e3
                     );
                 }
+            }
+        }
+    }
+
+    // BOLD-VERIFY: max-reduce 2D vs JAX (f32 ax0 1.67 ax1 0.65ms; f64 ax0 10.36 ax1 3.13ms).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_maxreduce2d() {
+        use std::time::Instant;
+        let (rows, cols) = (4096usize, 4096usize);
+        let total = rows * cols;
+        let d64: Vec<f64> = (0..total)
+            .map(|i| ((i % 99991) as f64) * 0.001 - 50.0)
+            .collect();
+        let d32: Vec<f32> = d64.iter().map(|&v| v as f32).collect();
+        let shape = Shape {
+            dims: vec![rows as u32, cols as u32],
+        };
+        let t64 = Value::Tensor(TensorValue::new_f64_values(shape.clone(), d64).unwrap());
+        let t32 = Value::Tensor(TensorValue::new_f32_values(shape, d32).unwrap());
+        for (name, t) in [("f64", &t64), ("f32", &t32)] {
+            for ax in [0usize, 1usize] {
+                let p = BTreeMap::from([("axes".to_owned(), ax.to_string())]);
+                let run = || {
+                    crate::eval_primitive(Primitive::ReduceMax, std::slice::from_ref(t), &p)
+                        .unwrap()
+                };
+                let _ = run();
+                let mut best = f64::MAX;
+                for _ in 0..15 {
+                    let s = Instant::now();
+                    let r = run();
+                    best = best.min(s.elapsed().as_secs_f64());
+                    std::hint::black_box(&r);
+                }
+                println!(
+                    "BENCH maxreduce [4096,4096] {name} axis={ax}: fj-lax={:.4}ms",
+                    best * 1e3
+                );
             }
         }
     }

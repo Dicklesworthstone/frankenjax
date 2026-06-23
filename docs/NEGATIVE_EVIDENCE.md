@@ -2594,6 +2594,21 @@ GB/s). A *fast* gemv would have to SIMD across K — but a SIMD K-reduction REOR
 TOLERANCE + relaxing the internal bit-exact matmul guard for the gemv path — a maintainer/scope call.
 Downgraded `dedicated-gemv-h36uj` to very-low. LESSON: matmul's N-SIMD strategy makes N=1 (gemv) inherently
 scalar-K under bit-exactness; the gap is structural, not an oversight.
+## 2026-06-23 - f32 leading-axis MAX/MIN-reduce 2.42x loss → near-parity (f32-native + threaded) (SlateHarrier)
+
+Probed max-reduce [4096,4096] (`bench_maxreduce2d`): f64 ax0 5.56 vs JAX 10.36 (**1.86x WIN**), f64 ax1
+~parity, but **f32 ax0 4.04 vs JAX 1.67 = 2.42x LOSS**, f32 ax1 ~2x. ROOT CAUSE: the leading-axis
+(`inner != 1`) f32 path `simd_minmax_inner_axis_reduce_f32` accumulated in **f64** (`simd_minmax_row_acc_f32`
+widened f32→f64 per element, and only 4-wide) AND was **single-threaded** for outer=1 — yet max/min of f32
+is EXACT (no f64 needed). FIX: f32-NATIVE accumulate (`simd_minmax_row_acc_f32_native`, f32x8, no widen,
+widen only the final result to f64) + threaded (outer≥2 → by outer; outer==1 → by inner column blocks).
+**f32 ax0 4.04→~2.1ms** (~1.9x; ~parity-to-1.28x vs JAX 1.67, was 2.42x loss; uncontended even better).
+Bit-identical (finite max exact; output f32 NaN canonical): reduce tests 137/0 + full lib 1592/0 + clippy
+clean. Also speeds min + the outer≥2 (global-pool-style max) case. NOTE: f64 ax0 was a 1.86x WIN already
+(JAX f64 max-reduce is slow); a contended re-measure showed 18ms (memory-BW starvation from a co-running
+agent, NOT a regression — f64 path untouched, tests pass). LESSON (3rd instance): max/min reduce/pool on
+f32 must accumulate NATIVE f32 — f64-widening halves SIMD width for no precision benefit.
+
 ## 2026-06-22 - 2D batched sort DOMINATES JAX 43-74x (XLA bitonic catastrophe extends to per-row sort) (SlateHarrier)
 
 Extended the 1D-sort domination to 2D per-row sort (common: sorting logits/scores per batch row, beam
