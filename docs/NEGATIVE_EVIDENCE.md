@@ -2512,6 +2512,15 @@ accurate; matching JAX's f32-accum would break the *_matches_generic contract. B
 VALID/padded, threaded) + full fj-lax lib 1590/0. Both maxpool AND avg/sum pooling now win/near-parity
 (channel-last); the whole common CNN pooling surface is no longer a JAX loss.
 
+bf16/f16 PARTIAL (2026-06-22, SlateHarrier): extended channel-last pooling to bf16/f16 (max/min/sum) by
+REUSING the f64 SIMD fns on the widened f64 view + rounding back — bit-identical to the odometer
+(`half_pool_simd_channel_bit_identical` vs the real dense_float, bf16+f16, max+sum; lib 1591/0). But it's
+only a MODEST 2.4x win: bf16 maxpool 84→**34.6ms**, sumpool →**34.2ms** (vs JAX bf16 2.80/2.96ms = still
+~12x LOSS, narrowed from ~30x). ROOT CAUSE: the win is bottlenecked by the SCALAR per-element widening
+(`reduce_window_dense_f64_view` converts 6.4M bf16→f64 one-at-a-time, ~32ms) BEFORE the fast (~2ms) SIMD
+pool. Real parity needs SIMD bf16→f32 widening (a bit-shift `(bits as u32)<<16`, vectorizable) inline in
+a dedicated half kernel + f32/f64 accum — FILED as a bead. Kept the 2.4x (bit-identical, real) meanwhile.
+
 ## 2026-06-22 - floor-chain JAX LOSS confirmed cross-machine; cross-machine map validation COMPLETE (CobaltForge/cc)
 
 Final completeness cross-confirm. Warm-target rch bench of committed

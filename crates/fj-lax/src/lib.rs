@@ -6327,6 +6327,60 @@ fn eval_reduce_window(
         }
     }
 
+    // bf16/f16 channel-last pooling (max/min/sum) — REUSES the f64 SIMD fns on the widened f64 view
+    // (EXACTLY the widen the dense_float odometer applies), then rounds f64→half via
+    // reduce_window_literal_from_f64. Bit-identical to the odometer (same widen, same f64 op/order,
+    // same round); ~30x JAX loss → win, no new half SIMD kernel. Small windows that miss the deque.
+    if no_base_dilation
+        && no_window_dilation
+        && matches!(output_dtype, fj_core::DType::BF16 | fj_core::DType::F16)
+        && output_dtype == tensor.dtype
+        && (matches!(reduce_op, "max" | "min") || reduce_window_sum_like(reduce_op))
+        && rank >= 2
+        && window_dims[rank - 1] == 1
+        && strides[rank - 1] == 1
+        && pad_lows[rank - 1] == 0
+        && out_dims[rank - 1] as usize == tensor.shape.dims[rank - 1] as usize
+        && let Some(src) = reduce_window_dense_f64_view(tensor)
+    {
+        let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+        let out_dims_usize: Vec<usize> = out_dims.iter().map(|&d| d as usize).collect();
+        let values = if matches!(reduce_op, "max" | "min") {
+            reduce_window_simd_channel_maxmin_f64(
+                src.as_ref(),
+                &input_dims,
+                &window_dims,
+                &strides,
+                &pad_lows,
+                &out_dims_usize,
+                reduce_op == "max",
+            )
+        } else {
+            reduce_window_simd_channel_sum_f64(
+                src.as_ref(),
+                &input_dims,
+                &window_dims,
+                &strides,
+                &pad_lows,
+                &out_dims_usize,
+            )
+        };
+        let bits: Vec<u16> = values
+            .iter()
+            .map(|&v| match reduce_window_literal_from_f64(output_dtype, v) {
+                fj_core::Literal::BF16Bits(b) | fj_core::Literal::F16Bits(b) => b,
+                _ => 0,
+            })
+            .collect();
+        let shape = Shape {
+            dims: out_dims.clone(),
+        };
+        return Ok(Value::Tensor(
+            TensorValue::new_half_float_values(output_dtype, shape, bits)
+                .map_err(EvalError::from)?,
+        ));
+    }
+
     // Separable i64 max/min: integer sibling of the float deque above. Large-window
     // integer max/min pooling otherwise ran the per-window O(output·∏window) dense
     // path; the monotonic-deque per-axis pass is window-independent and bit-identical
@@ -7200,6 +7254,156 @@ mod tests {
                     "f32 SIMD-channel sumpool mismatch (dims={dims:?} variant={variant})"
                 );
             }
+        }
+    }
+
+    // bf16/f16 channel-last pooling: the fast path (eval_primitive, widen→f64-SIMD→round) must equal
+    // the REAL scalar odometer (eval_reduce_window_dense_float) for max + sum, bit-for-bit.
+    #[test]
+    fn half_pool_simd_channel_bit_identical() {
+        let dims = vec![2usize, 15, 13, 16];
+        let win = vec![1usize, 3, 3, 1];
+        let strides = vec![1usize, 2, 2, 1];
+        let pad = vec![0usize, 0, 0, 0];
+        let rank = 4;
+        let out_dims: Vec<usize> = (0..rank)
+            .map(|d| (dims[d] - win[d]) / strides[d] + 1)
+            .collect();
+        let out_u32: Vec<u32> = out_dims.iter().map(|&d| d as u32).collect();
+        let total_out: usize = out_dims.iter().product();
+        let mut in_strides = vec![1usize; rank];
+        for d in (0..rank - 1).rev() {
+            in_strides[d] = in_strides[d + 1] * dims[d + 1];
+        }
+        let dil = vec![1usize; rank];
+        let total: usize = dims.iter().product();
+        let data: Vec<f64> = (0..total).map(|i| ((i % 37) as f64) * 0.5 - 9.0).collect();
+        for dt in [DType::BF16, DType::F16] {
+            let bits: Vec<u16> = data
+                .iter()
+                .map(|&v| {
+                    let lit = if dt == DType::BF16 {
+                        Literal::from_bf16_f64(v)
+                    } else {
+                        Literal::from_f16_f64(v)
+                    };
+                    match lit {
+                        Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                        _ => 0,
+                    }
+                })
+                .collect();
+            let tensor = Value::Tensor(
+                TensorValue::new_half_float_values(
+                    dt,
+                    Shape {
+                        dims: dims.iter().map(|&d| d as u32).collect(),
+                    },
+                    bits,
+                )
+                .unwrap(),
+            );
+            let tref = match &tensor {
+                Value::Tensor(t) => t,
+                _ => unreachable!(),
+            };
+            let widened = super::reduce_window_dense_f64_view(tref).unwrap();
+            // eval_primitive's sum reduce_op is "sum" (not "add"); dense_float accepts either.
+            for op in ["max", "sum"] {
+                let want = super::eval_reduce_window_dense_float(
+                    dt,
+                    op,
+                    widened.as_ref(),
+                    &win,
+                    &strides,
+                    &dil,
+                    &out_u32,
+                    &pad,
+                    &dims,
+                    &in_strides,
+                    total_out,
+                )
+                .unwrap();
+                let p = rw_params(op, "1,3,3,1", "1,2,2,1");
+                let got =
+                    eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor), &p)
+                        .unwrap();
+                // Compare VALUES (widen each half output→f64, exact) — not Value structs, which
+                // can differ by dense-vs-boxed representation while value-equal (Arc-COW gotcha).
+                let to_f64 = |v: &Value| match v {
+                    Value::Tensor(t) => {
+                        super::reduce_window_dense_f64_view(t).unwrap().into_owned()
+                    }
+                    _ => panic!(),
+                };
+                let wf = to_f64(&want);
+                let gf = to_f64(&got);
+                for i in 0..wf.len().min(gf.len()) {
+                    if wf[i].to_bits() != gf[i].to_bits() {
+                        panic!(
+                            "half mismatch dt={dt:?} op={op} len(w={} g={}) idx={i} want={} got={}",
+                            wf.len(),
+                            gf.len(),
+                            wf[i],
+                            gf[i]
+                        );
+                    }
+                }
+                assert_eq!(
+                    wf.len(),
+                    gf.len(),
+                    "half pooling len mismatch (dt={dt:?} op={op})"
+                );
+            }
+        }
+    }
+
+    // bf16 pooling production timing (eval_primitive → fast path) vs JAX bf16 (max 2.80ms, sum 2.96ms).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_bf16_pool_cnn() {
+        use std::time::Instant;
+        let (nb, hw, c, win, stride) = (8usize, 112usize, 64usize, 3usize, 2usize);
+        let total = nb * hw * hw * c;
+        let bits: Vec<u16> = (0..total)
+            .map(
+                |i| match Literal::from_bf16_f64(((i % 9973) as f64) * 0.013 - 50.0) {
+                    Literal::BF16Bits(b) => b,
+                    _ => 0,
+                },
+            )
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_half_float_values(
+                DType::BF16,
+                Shape {
+                    dims: vec![nb as u32, hw as u32, hw as u32, c as u32],
+                },
+                bits,
+            )
+            .unwrap(),
+        );
+        for op in ["max", "sum"] {
+            let p = rw_params(
+                op,
+                &format!("1,{win},{win},1"),
+                &format!("1,{stride},{stride},1"),
+            );
+            let run = || {
+                eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor), &p).unwrap()
+            };
+            let _ = run();
+            let mut best = f64::MAX;
+            for _ in 0..15 {
+                let t = Instant::now();
+                let r = run();
+                best = best.min(t.elapsed().as_secs_f64());
+                std::hint::black_box(&r);
+            }
+            println!(
+                "BENCH bf16 {op}pool 112x112x64 3x3/s2: fj-lax={:.4}ms",
+                best * 1e3
+            );
         }
     }
 
