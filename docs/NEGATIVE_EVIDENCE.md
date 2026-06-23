@@ -2560,12 +2560,18 @@ ReduceWindow): reduce middle axes {1,2} keeping the contiguous channel C — the
 SERIAL. Measured [8,112,112,64] sum axes{1,2}: fj-lax f64 1.70ms / f32 0.93ms vs JAX 0.42 / 0.14ms =
 ~4x / ~6.7x LOSS. THREADED across `outer` (each outer slice independent, per-outer ascending-reduce
 order preserved → bit-identical for sum AND max/min; reduce tests 137/0 + full lib 1591/0). SAME-BINARY
-A/B: f64 serial 1.94 → threaded 1.29ms = **1.51x** (real, not contention noise). Residual: still ~3x
-(f64) / ~7x (f32) vs JAX — fj-lax ~40 GB/s vs JAX ~120-178 GB/s; the GENERIC closure inner loop
-(`&impl Fn float_op`) doesn't autovectorize. The gap-closer (explicit dtype-specialized SIMD across the
-contiguous inner, bypassing the closure) is FILED as `simd-inner-axis-reduce-5y9jg`. Shipped the
-bit-identical 1.51x (also speeds larger-batch middle-axis reduces) meanwhile. NOTE: threading the
-REDUCE DIM would break float-sum bit-identity (non-associative) — only `outer` is safe to split.
+A/B: f64 serial 1.94 → threaded 1.29ms = **1.51x** (real, not contention noise). Shipped the bit-identical
+1.51x (also speeds larger-batch middle-axis reduces). NOTE: threading the REDUCE DIM would break
+float-sum bit-identity (non-associative) — only `outer` is safe to split.
+
+5y9jg CLOSED — explicit SIMD is a NO-WIN (2026-06-22, SlateHarrier): SAME-BINARY A/B
+(`bench_global_avg_pool_reduce`) of explicit f64x8 inner-reduce vs the generic closure: SIMD **2.10ms**
+vs closure **1.99ms = 0.94x** (slightly SLOWER). CORRECTS the earlier "the closure doesn't autovectorize"
+guess — it DOES autovec for f64 sum, so explicit SIMD adds nothing. The residual ~2.4x JAX (threaded
+1.0ms vs 0.42ms) is DRAM-BW-bound: bit-identity caps parallelism at `outer` (=8 here), and XLA reorders
+the sum to use more BW. Not improvable on-host while bit-identical. Lesson (reinforces the cumsum
+finding): these contiguous `out[c] op= in[c]` reduce/scan loops DO autovectorize — explicit SIMD ≈ 1.0x;
+don't re-attempt SIMD on them (the gap, if any, is BW/parallelism, not vectorization).
 
 ## 2026-06-22 - 2D batched sort DOMINATES JAX 43-74x (XLA bitonic catastrophe extends to per-row sort) (SlateHarrier)
 

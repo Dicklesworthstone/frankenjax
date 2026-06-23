@@ -4147,6 +4147,32 @@ mod tests {
             }
             out
         };
+        // Explicit-SIMD fold (single-thread) — does it beat the closure (i.e. does the closure
+        // fail to autovectorize)? Decides bead 5y9jg.
+        let simd_f64 = |v: &[f64]| {
+            use std::simd::Simd;
+            type F = Simd<f64, 8>;
+            let mut out = vec![0.0f64; outer * inner];
+            let c8 = inner - inner % 8;
+            for o in 0..outer {
+                let out_row = &mut out[o * inner..(o + 1) * inner];
+                for r in 0..reduce {
+                    let in_row = &v[(o * reduce + r) * inner..][..inner];
+                    let mut c = 0;
+                    while c < c8 {
+                        let a =
+                            F::from_slice(&out_row[c..c + 8]) + F::from_slice(&in_row[c..c + 8]);
+                        a.copy_to_slice(&mut out_row[c..c + 8]);
+                        c += 8;
+                    }
+                    while c < inner {
+                        out_row[c] += in_row[c];
+                        c += 1;
+                    }
+                }
+            }
+            out
+        };
         let bench = |f: &dyn Fn()| {
             f();
             let mut b = f64::MAX;
@@ -4160,6 +4186,20 @@ mod tests {
         let sref = bench(&|| {
             std::hint::black_box(serial_f64(&vals64));
         });
+        let simdref = bench(&|| {
+            std::hint::black_box(simd_f64(&vals64));
+        });
+        // sanity: same result
+        assert_eq!(
+            serial_f64(&vals64)
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            simd_f64(&vals64)
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        );
         let thr = bench(&|| {
             std::hint::black_box(
                 crate::eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&t64), &p)
@@ -4173,8 +4213,8 @@ mod tests {
             );
         });
         println!(
-            "AB global-avg-pool axes12 [8,112,112,64]: f64 serial={sref:.4} threaded={thr:.4} ({:.2}x) | f32 threaded={thr32:.4} (JAX f64 0.42 f32 0.14)",
-            sref / thr
+            "AB global-avg-pool axes12 [8,112,112,64]: f64 serial-closure={sref:.4} serial-SIMD={simdref:.4} (closure/simd={:.2}x) threaded={thr:.4} | f32 threaded={thr32:.4} (JAX f64 0.42 f32 0.14)",
+            sref / simdref
         );
     }
 
