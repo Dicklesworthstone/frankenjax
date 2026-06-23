@@ -8140,6 +8140,110 @@ fn parallel_arg_extreme_axis0<T: Copy + Sync>(
     out
 }
 
+/// SIMD f32 leading-axis (axis 0) argmin/argmax for the column block `[c0, c0 + best_idx.len())`:
+/// rows-outer (each row read once), columns-inner SIMD (f32x8) over persistent per-column
+/// best_val/best_idx lanes. Sticky-NaN state lives IN best_val (NaN, detected `bv != bv`) so no
+/// mask array is needed. BIT-IDENTICAL to [`arg_extreme_axis0_block`] (f64-widened): the INDEX is
+/// what's emitted; finite f32 comparisons order identically to f64-widened; first-occurrence strict
+/// `>`/`<` tie-break (ties keep the earlier index); sticky first-NaN. ~1.77x the scalar block.
+fn simd_arg_extreme_axis0_block_f32(
+    values: &[f32],
+    rows: usize,
+    cols: usize,
+    c0: usize,
+    find_max: bool,
+    best_idx: &mut [i64],
+) {
+    use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+    use std::simd::{Select, Simd};
+    type F = Simd<f32, 8>;
+    type I = Simd<i32, 8>;
+    let w = best_idx.len();
+    let c8 = w - w % 8;
+    let mut best_val = values[c0..c0 + w].to_vec();
+    let mut bidx = vec![0i32; w];
+    for k in 1..rows {
+        let row = &values[k * cols + c0..k * cols + c0 + w];
+        let kk = I::splat(k as i32);
+        let mut j = 0;
+        while j < c8 {
+            let bv = F::from_slice(&best_val[j..j + 8]);
+            let bi = I::from_slice(&bidx[j..j + 8]);
+            let v = F::from_slice(&row[j..j + 8]);
+            let active = !bv.simd_ne(bv); // best not already NaN
+            let v_nan = v.simd_ne(v);
+            let set_nan = active & v_nan;
+            let cmp = if find_max {
+                v.simd_gt(bv)
+            } else {
+                v.simd_lt(bv)
+            };
+            let greater = active & !v_nan & cmp;
+            let nv = set_nan.select(F::splat(f32::NAN), greater.select(v, bv));
+            let ni = (set_nan | greater).select(kk, bi);
+            nv.copy_to_slice(&mut best_val[j..j + 8]);
+            ni.copy_to_slice(&mut bidx[j..j + 8]);
+            j += 8;
+        }
+        while j < w {
+            let bvj = best_val[j];
+            if !bvj.is_nan() {
+                let v = row[j];
+                if v.is_nan() {
+                    bidx[j] = k as i32;
+                    best_val[j] = f32::NAN;
+                } else if (find_max && v > bvj) || (!find_max && v < bvj) {
+                    bidx[j] = k as i32;
+                    best_val[j] = v;
+                }
+            }
+            j += 1;
+        }
+    }
+    for (o, &x) in best_idx.iter_mut().zip(bidx.iter()) {
+        *o = x as i64;
+    }
+}
+
+/// f32 sibling of [`parallel_arg_extreme_axis0`] using the SIMD block — threads independent
+/// column blocks (bit-identical to the scalar per-column fold for any partition).
+fn parallel_arg_extreme_axis0_f32_simd(
+    values: &[f32],
+    rows: usize,
+    cols: usize,
+    find_max: bool,
+) -> Vec<i64> {
+    let total = values.len();
+    let threads = if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN && cols > 1 {
+        crate::arithmetic::work_scaled_threads(total)
+            .min(cols)
+            .min(16)
+    } else {
+        1
+    };
+    let mut out = vec![0i64; cols];
+    if threads <= 1 {
+        simd_arg_extreme_axis0_block_f32(values, rows, cols, 0, find_max, &mut out);
+        return out;
+    }
+    let cols_per = cols.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [i64] = out.as_mut_slice();
+        let mut c0 = 0usize;
+        while c0 < cols {
+            let w = cols_per.min(cols - c0);
+            let (blk, tail) = rest.split_at_mut(w);
+            rest = tail;
+            let cstart = c0;
+            c0 += w;
+            scope.spawn(move || {
+                simd_arg_extreme_axis0_block_f32(values, rows, cols, cstart, find_max, blk);
+            });
+        }
+    });
+    out
+}
+
 /// Contiguous i64 argmin/argmax over one row: strict integer compare with
 /// first-occurrence tie-break (no NaN for integers). Matches the serial i64 scan.
 fn arg_extreme_i64_contiguous(values: &[i64], find_max: bool) -> usize {
@@ -8398,10 +8502,9 @@ fn extremum_along_axis(
             ));
         }
         if axis == 0 && outer_count > 1 {
-            // Leading-axis f32 (argmax over axis 0): stream + thread the independent
-            // columns, widening each tap f32->f64 exactly. Bit-identical.
-            let idx =
-                parallel_arg_extreme_axis0(values, axis_dim, outer_count, find_max, f64::from);
+            // Leading-axis f32 (argmax over axis 0): SIMD f32x8 across columns, threaded over
+            // independent column blocks. Bit-identical to the f64-widened scalar fold (~1.77x).
+            let idx = parallel_arg_extreme_axis0_f32_simd(values, axis_dim, outer_count, find_max);
             return Ok(Value::Tensor(
                 TensorValue::new_i64_values(result_shape, idx).map_err(EvalError::InvalidTensor)?,
             ));
@@ -13924,6 +14027,162 @@ mod tests {
                 best * 1e3
             );
         }
+    }
+
+    // Permanent guard: the production f32 axis0 SIMD path (parallel_arg_extreme_axis0_f32_simd)
+    // must match the scalar f64-widened fold (parallel_arg_extreme_axis0) bit-for-bit (the INDEX),
+    // incl NaN, ties, ±0, single-thread + threaded shapes, max + min.
+    #[test]
+    fn argmax_axis0_f32_simd_matches_scalar() {
+        for &(rows, cols) in &[(7usize, 13usize), (300, 64), (1000, 257)] {
+            for variant in 0..4 {
+                let mut v: Vec<f32> = (0..rows * cols)
+                    .map(|i| ((i * 48271 % 9973) as f32) * 0.01 - 50.0)
+                    .collect();
+                if variant == 1 {
+                    if rows > 5 {
+                        v[3 * cols + 2] = f32::NAN;
+                        v[5 * cols + (cols / 2)] = f32::NAN;
+                    }
+                } else if variant == 2 {
+                    for c in 0..cols {
+                        v[(rows / 3) * cols + c] = 99.0;
+                        v[(2 * rows / 3) * cols + c] = 99.0; // ties
+                    }
+                } else if variant == 3 {
+                    for (i, x) in v.iter_mut().enumerate() {
+                        *x = if i % 2 == 0 { 0.0 } else { -0.0 };
+                    }
+                }
+                for find_max in [true, false] {
+                    let scalar =
+                        super::parallel_arg_extreme_axis0(&v, rows, cols, find_max, |x: f32| {
+                            f64::from(x)
+                        });
+                    let simd = super::parallel_arg_extreme_axis0_f32_simd(&v, rows, cols, find_max);
+                    assert_eq!(
+                        scalar, simd,
+                        "axis0 f32 SIMD argmax mismatch (rows={rows} cols={cols} variant={variant} max={find_max})"
+                    );
+                }
+            }
+        }
+    }
+
+    // BOLD-VERIFY prototype: SIMD leading-axis (axis0) f32 argmax across 8 columns — masked
+    // index + sticky-NaN in f32x8/i32x8 lanes. Verifies bit-identity (the INDEX) vs the scalar
+    // arg_extreme_axis0_block (f64-widened) incl NaN/ties + measures vs it.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_argmax_axis0_f32_simd_proto() {
+        use std::time::Instant;
+
+        // CORRECT structure: rows-OUTER (each row read once), columns-inner SIMD with persistent
+        // per-column best_val/best_idx. Sticky-NaN state lives IN best_val (set to NaN, detected
+        // via bv != bv) — no separate mask array, no Mask<->int conversion.
+        fn simd_axis0_f32(values: &[f32], rows: usize, cols: usize, find_max: bool) -> Vec<i64> {
+            use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+            use std::simd::{Select, Simd};
+            type F = Simd<f32, 8>;
+            type I = Simd<i32, 8>;
+            let c8 = cols - cols % 8;
+            let mut best_val = values[0..cols].to_vec();
+            let mut best_idx = vec![0i32; cols];
+            for k in 1..rows {
+                let row = &values[k * cols..(k + 1) * cols];
+                let kk = I::splat(k as i32);
+                let mut j = 0;
+                while j < c8 {
+                    let bv = F::from_slice(&best_val[j..j + 8]);
+                    let bi = I::from_slice(&best_idx[j..j + 8]);
+                    let v = F::from_slice(&row[j..j + 8]);
+                    let active = !bv.simd_ne(bv); // best not already NaN
+                    let v_nan = v.simd_ne(v);
+                    let set_nan = active & v_nan;
+                    let cmp = if find_max {
+                        v.simd_gt(bv)
+                    } else {
+                        v.simd_lt(bv)
+                    };
+                    let greater = active & !v_nan & cmp;
+                    let nv = set_nan.select(F::splat(f32::NAN), greater.select(v, bv));
+                    let ni = (set_nan | greater).select(kk, bi);
+                    nv.copy_to_slice(&mut best_val[j..j + 8]);
+                    ni.copy_to_slice(&mut best_idx[j..j + 8]);
+                    j += 8;
+                }
+                while j < cols {
+                    let bv = best_val[j];
+                    if !bv.is_nan() {
+                        let v = row[j];
+                        if v.is_nan() {
+                            best_idx[j] = k as i32;
+                            best_val[j] = f32::NAN;
+                        } else if (find_max && v > bv) || (!find_max && v < bv) {
+                            best_idx[j] = k as i32;
+                            best_val[j] = v;
+                        }
+                    }
+                    j += 1;
+                }
+            }
+            best_idx.iter().map(|&x| x as i64).collect()
+        }
+
+        // Bit-identity (index) vs scalar arg_extreme_axis0_block, incl NaN + ties.
+        for variant in 0..3 {
+            let (rows, cols) = (300usize, 64usize);
+            let mut v: Vec<f32> = (0..rows * cols)
+                .map(|i| ((i * 48271 % 9973) as f32) * 0.01 - 50.0)
+                .collect();
+            if variant == 1 {
+                v[37 * cols + 5] = f32::NAN;
+                v[100 * cols + 20] = f32::NAN;
+            } else if variant == 2 {
+                // ties: repeat a max value in two rows for some columns
+                for c in 0..cols {
+                    v[10 * cols + c] = 99.0;
+                    v[200 * cols + c] = 99.0;
+                }
+            }
+            for find_max in [true, false] {
+                let mut want = vec![0i64; cols];
+                super::arg_extreme_axis0_block(&v, rows, cols, 0, find_max, f64::from, &mut want);
+                let got = simd_axis0_f32(&v, rows, cols, find_max);
+                assert_eq!(
+                    want, got,
+                    "axis0 f32 argmax SIMD mismatch (variant={variant} max={find_max})"
+                );
+            }
+        }
+
+        // Speed vs scalar (single-thread block), [8192,2048].
+        let (rows, cols) = (8192usize, 2048usize);
+        let v: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i % 99991) as f32) * 0.001 - 50.0)
+            .collect();
+        let bench = |f: &dyn Fn()| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..10 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            b * 1e3
+        };
+        let scal = bench(&|| {
+            let mut o = vec![0i64; cols];
+            super::arg_extreme_axis0_block(&v, rows, cols, 0, true, f64::from, &mut o);
+            std::hint::black_box(&o);
+        });
+        let simd = bench(&|| {
+            std::hint::black_box(simd_axis0_f32(&v, rows, cols, true));
+        });
+        println!(
+            "AB argmax-axis0 f32 [8192,2048] (1 col-block, single-thread): scalar={scal:.4}ms simd={simd:.4}ms ({:.2}x)",
+            scal / simd
+        );
     }
 
     // BOLD-VERIFY: 2D argmax along axis vs JAX (f32 ax0 3.0 ax1 1.09ms; f64 ax0 6.08 ax1 2.76ms).

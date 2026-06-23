@@ -7396,7 +7396,9 @@ mod tests {
             out
         }
         // Small (edge-case heavy, single-thread) + large (exercises the THREADED partition).
-        let configs: &[([usize; 4], [usize; 4], [usize; 4], [usize; 4])] = &[
+        // (dims, window, strides, pad_low) — each a rank-4 [N,H,W,C] descriptor.
+        type Cfg4 = ([usize; 4], [usize; 4], [usize; 4], [usize; 4]);
+        let configs: &[Cfg4] = &[
             ([2, 15, 13, 20], [1, 3, 3, 1], [1, 2, 2, 1], [0, 1, 1, 0]),
             ([8, 56, 56, 64], [1, 3, 3, 1], [1, 2, 2, 1], [0, 0, 0, 0]),
         ];

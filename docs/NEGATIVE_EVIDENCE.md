@@ -2616,6 +2616,15 @@ compare + conditional idx update — no SIMD across columns); f32 ax0 (1.48x) is
 index+sticky-NaN tracking — intricate; argmax-SIMD is 43tr8's collision area; LOW priority). Did NOT
 attempt the intricate index+NaN SIMD this turn (modest gap, collision risk). Recorded for the map.
 
+f32 axis0 SIMD SHIPPED → PARITY (2026-06-22, SlateHarrier): `simd_arg_extreme_axis0_block_f32` +
+`parallel_arg_extreme_axis0_f32_simd` (rows-outer/cols-inner f32x8; sticky-NaN stored IN best_val as NaN
+detected `bv!=bv` — no mask array; masked index update). f32 ax0 argmax **4.46→3.07ms = ~PARITY** vs JAX
+3.01 (was 1.48x loss; ~1.45x Rust-side). Bit-identical: `argmax_axis0_f32_simd_matches_scalar` guard
+(NaN/ties/±0/single+threaded, max+min) + full lib 1592/0. KEY STRUCTURAL LESSON: the SIMD MUST be
+rows-OUTER/cols-inner — a cols-OUTER block (re-reads every row per 8-col block) measured **0.57x SLOWER**;
+the rows-outer/cols-SIMD (best arrays cache-resident) is **1.77x** faster than the scalar block. f64 axis0
+(already ~parity) + the trailing-axis (already 43tr8-SIMD'd, inherent) remain lower-priority on 9yw7e.
+
 ## 2026-06-22 - 2D cumsum DOMINATES JAX 1.48-5.87x (XLA size-cliff extends to 2D both-axes) (SlateHarrier)
 
 Extended the known 1D-4M cumsum win to 2D. JAX CPU cumsum is genuinely slow (the size-cliff). Measured
