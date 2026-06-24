@@ -2639,6 +2639,18 @@ full lib 1593/0 + clippy clean. Removed the now-unused `f16_widen8_f32`. LESSON:
 (magic-multiply) beats a per-chunk fast/slow branch even when the slow path is rarely taken — the branch + its
 `.any()` cost more than uniformly doing the SIMD work.
 
+BOLD-VERIFY vs JAX follow-up (2026-06-24, ProudSalmon/codex, commit `c9d80489` already on `main` and
+`origin/master`): independent same-worker RCH check on `vmi1149989` kept the branchless lever. Same-binary
+`bench_f16_trailing_reduce_ab`: f64x8 **7.7809ms** / prior needs_scalar-f32x8 **7.9875ms** /
+branchless-f32x8 **3.3771ms** -> **2.37x faster** than the prior needs-scalar split. Head-to-head CPU JAX
+0.10.1 comparator (`JAX_ENABLE_X64=1`, deterministic `[4096,4096]` f16 input): JAX p50 reduce_max axis0
+**6.691205ms**, axis1 **5.7879487ms**; Rust `bench_maxreduce2d` f16 axis0 **3.0578ms**, axis1 **1.2682ms**.
+Rust/JAX p50 ratios: axis0 **0.457** (Rust wins **2.19x**), axis1 **0.219** (Rust wins **4.56x**). Conservative
+best-time ratios still favor Rust: axis0 **0.585** (1.71x win; JAX axis0 CV was noisy), axis1 **0.235**
+(4.25x win). Proof commands were per-crate and warm-target scoped with
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b`: exhaustive f16 decode test passed, release A/B
+passed, and release `bench_maxreduce2d` passed. Decision: KEEP; no extra code change beyond landed `c9d80489`.
+
 ## 2026-06-23 - f32 leading-axis MAX/MIN-reduce 2.42x loss → near-parity (f32-native + threaded) (SlateHarrier)
 
 Probed max-reduce [4096,4096] (`bench_maxreduce2d`): f64 ax0 5.56 vs JAX 10.36 (**1.86x WIN**), f64 ax1
