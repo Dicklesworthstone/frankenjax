@@ -5960,6 +5960,169 @@ fn simd_channel_block_bf16_sum(
     }
 }
 
+/// FUSED f16 channel-last max/min pooling. f16 needs the IEEE decode (unlike bf16's shift), so it
+/// widens each tap via the branchless [`crate::arithmetic::f16_widen8_full_f32`] (all of
+/// normal/subnormal/±0/inf/NaN, no per-chunk fast/slow split) into an f32 running-max SCRATCH, then
+/// narrows ONCE per output to f16 bits (the max of f16 values IS an f16 value → exact, no SIMD
+/// f32→f16 narrow). Bit-identical to the widen-to-f64 odometer (verified vs it incl ±0/NaN).
+#[allow(clippy::too_many_arguments)]
+fn simd_channel_block_f16_maxmin(
+    bits: &[u16],
+    in_strides: &[usize],
+    window_dims: &[usize],
+    strides: &[usize],
+    pad_lows: &[usize],
+    out_dims: &[usize],
+    input_dims: &[usize],
+    c: usize,
+    win_total: usize,
+    is_max: bool,
+    b_start: usize,
+    out_chunk: &mut [u16],
+) {
+    use std::simd::cmp::SimdPartialEq;
+    use std::simd::num::SimdFloat;
+    use std::simd::{Select, Simd};
+    type F = Simd<f32, 8>;
+    let pooled = out_dims.len() - 1;
+    let c8 = c - c % 8;
+    let init = if is_max {
+        f32::NEG_INFINITY
+    } else {
+        f32::INFINITY
+    };
+    let narrow = |v: f32| -> u16 {
+        match Literal::from_f16_f64(v as f64) {
+            Literal::F16Bits(b) => b,
+            _ => 0,
+        }
+    };
+    let mut scratch = vec![init; c];
+    let mut out_coord = vec![0usize; pooled];
+    let mut tap = vec![0usize; pooled];
+    for bi in 0..out_chunk.len() / c {
+        let mut rem = b_start + bi;
+        for d in (0..pooled).rev() {
+            out_coord[d] = rem % out_dims[d];
+            rem /= out_dims[d];
+        }
+        scratch.iter_mut().for_each(|s| *s = init);
+        tap.iter_mut().for_each(|t| *t = 0);
+        for _ in 0..win_total {
+            let mut in_base = 0usize;
+            let mut oob = false;
+            for d in 0..pooled {
+                let padded = out_coord[d] * strides[d] + tap[d];
+                if padded < pad_lows[d] {
+                    oob = true;
+                    break;
+                }
+                let ic = padded - pad_lows[d];
+                if ic >= input_dims[d] {
+                    oob = true;
+                    break;
+                }
+                in_base += ic * in_strides[d];
+            }
+            if !oob {
+                let mut ci = 0;
+                while ci < c8 {
+                    let a = F::from_slice(&scratch[ci..ci + 8]);
+                    let t = crate::arithmetic::f16_widen8_full_f32(Simd::<u16, 8>::from_slice(
+                        &bits[in_base + ci..in_base + ci + 8],
+                    ));
+                    let m = if is_max { a.simd_max(t) } else { a.simd_min(t) };
+                    let nanm = a.simd_ne(a) | t.simd_ne(t);
+                    nanm.select(F::splat(f32::NAN), m)
+                        .copy_to_slice(&mut scratch[ci..ci + 8]);
+                    ci += 8;
+                }
+                while ci < c {
+                    let af = scratch[ci];
+                    let tf = Literal::F16Bits(bits[in_base + ci]).as_f64().unwrap_or(0.0) as f32;
+                    scratch[ci] = if af.is_nan() || tf.is_nan() {
+                        f32::NAN
+                    } else if is_max {
+                        af.max(tf)
+                    } else {
+                        af.min(tf)
+                    };
+                    ci += 1;
+                }
+            }
+            for d in (0..pooled).rev() {
+                tap[d] += 1;
+                if tap[d] < window_dims[d] {
+                    break;
+                }
+                tap[d] = 0;
+            }
+        }
+        let ob = bi * c;
+        for ci in 0..c {
+            out_chunk[ob + ci] = narrow(scratch[ci]);
+        }
+    }
+}
+
+/// Threaded fused f16 channel-last max/min pooling, threading independent output blocks.
+fn reduce_window_simd_channel_f16_maxmin(
+    bits: &[u16],
+    input_dims: &[usize],
+    window_dims: &[usize],
+    strides: &[usize],
+    pad_lows: &[usize],
+    out_dims: &[usize],
+    is_max: bool,
+) -> Vec<u16> {
+    let rank = input_dims.len();
+    let pooled = rank - 1;
+    let c = input_dims[pooled];
+    let out_total: usize = out_dims.iter().product();
+    let mut out = vec![0u16; out_total];
+    let mut in_strides = vec![1usize; rank];
+    for d in (0..rank - 1).rev() {
+        in_strides[d] = in_strides[d + 1] * input_dims[d + 1];
+    }
+    let win_total: usize = window_dims[..pooled].iter().product();
+    let out_spatial = out_total / c;
+    let run = |b0: usize, chunk: &mut [u16]| {
+        simd_channel_block_f16_maxmin(
+            bits,
+            &in_strides,
+            window_dims,
+            strides,
+            pad_lows,
+            out_dims,
+            input_dims,
+            c,
+            win_total,
+            is_max,
+            b0,
+            chunk,
+        );
+    };
+    let threads = crate::arithmetic::work_scaled_threads(out_total).min(out_spatial.max(1));
+    if threads <= 1 || out_spatial < 2 {
+        run(0, &mut out);
+        return out;
+    }
+    let per = out_spatial.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [u16] = out.as_mut_slice();
+        let mut b0 = 0usize;
+        while b0 < out_spatial {
+            let rows = per.min(out_spatial - b0);
+            let (blk, tail) = rest.split_at_mut(rows * c);
+            rest = tail;
+            let start = b0;
+            b0 += rows;
+            scope.spawn(move || run(start, blk));
+        }
+    });
+    out
+}
+
 /// Threaded fused bf16 channel-last pooling (max/min/sum), threading independent output blocks.
 fn reduce_window_simd_channel_bf16(
     bits: &[u16],
@@ -6603,6 +6766,42 @@ fn eval_reduce_window(
         };
         return Ok(Value::Tensor(
             TensorValue::new_half_float_values(fj_core::DType::BF16, shape, obits)
+                .map_err(EvalError::from)?,
+        ));
+    }
+
+    // FUSED f16 channel-last MAX/MIN pooling: widen each tap via the branchless f16_widen8_full_f32
+    // into an f32 running-max scratch, narrow once per output. Reads the half-size f16 input (vs the
+    // materialized-f64 odometer below) → bf16-like speedup. Bit-identical (half_pool guard). SUM
+    // stays on the f64-view path below (f64 accumulation order).
+    if no_base_dilation
+        && no_window_dilation
+        && output_dtype == fj_core::DType::F16
+        && tensor.dtype == fj_core::DType::F16
+        && matches!(reduce_op, "max" | "min")
+        && rank >= 2
+        && window_dims[rank - 1] == 1
+        && strides[rank - 1] == 1
+        && pad_lows[rank - 1] == 0
+        && out_dims[rank - 1] as usize == tensor.shape.dims[rank - 1] as usize
+        && let Some(bits) = tensor.elements.as_half_float_slice()
+    {
+        let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+        let out_dims_usize: Vec<usize> = out_dims.iter().map(|&d| d as usize).collect();
+        let obits = reduce_window_simd_channel_f16_maxmin(
+            bits,
+            &input_dims,
+            &window_dims,
+            &strides,
+            &pad_lows,
+            &out_dims_usize,
+            reduce_op == "max",
+        );
+        let shape = Shape {
+            dims: out_dims.clone(),
+        };
+        return Ok(Value::Tensor(
+            TensorValue::new_half_float_values(fj_core::DType::F16, shape, obits)
                 .map_err(EvalError::from)?,
         ));
     }
@@ -7693,7 +7892,9 @@ mod tests {
     // the REAL scalar odometer (eval_reduce_window_dense_float) for max + sum, bit-for-bit.
     #[test]
     fn half_pool_simd_channel_bit_identical() {
-        let dims = vec![2usize, 15, 13, 16];
+        // C=20: exercises the SIMD body (2×8 lanes) AND the c%8/c%16 scalar tail (the f16 fused
+        // maxmin path's tail + the bf16 path's tail).
+        let dims = vec![2usize, 15, 13, 20];
         let win = vec![1usize, 3, 3, 1];
         let strides = vec![1usize, 2, 2, 1];
         let pad = vec![0usize, 0, 0, 0];
@@ -7875,6 +8076,71 @@ mod tests {
             println!(
                 "BENCH f16 {op}pool 112x112x64 3x3/s2: fj-lax={:.4}ms",
                 best * 1e3
+            );
+        }
+        // Same-binary A/B for f16 MAXpool: FUSED (eval_primitive, current) vs the prior widen-to-f64
+        // odometer path (reduce_window_dense_f64_view + eval_reduce_window_dense_float).
+        {
+            let tref = match &t16 {
+                Value::Tensor(t) => t,
+                _ => unreachable!(),
+            };
+            let dims_u: Vec<usize> = vec![nb, hw, hw, c];
+            let win_v = vec![1usize, win, win, 1];
+            let str_v = vec![1usize, stride, stride, 1];
+            let dil_v = vec![1usize; 4];
+            let pad_v = vec![0usize; 4];
+            let out_u32: Vec<u32> = (0..4)
+                .map(|d| ((dims_u[d] - win_v[d]) / str_v[d] + 1) as u32)
+                .collect();
+            let total_out: usize = out_u32.iter().map(|&d| d as usize).product();
+            let mut in_strides = vec![1usize; 4];
+            for d in (0..3).rev() {
+                in_strides[d] = in_strides[d + 1] * dims_u[d + 1];
+            }
+            let widened = super::reduce_window_dense_f64_view(tref).unwrap();
+            let p = rw_params(
+                "max",
+                &format!("1,{win},{win},1"),
+                &format!("1,{stride},{stride},1"),
+            );
+            let bench = |f: &dyn Fn()| {
+                f();
+                let mut b = f64::MAX;
+                for _ in 0..15 {
+                    let t = Instant::now();
+                    f();
+                    b = b.min(t.elapsed().as_secs_f64());
+                }
+                b * 1e3
+            };
+            let fused = bench(&|| {
+                std::hint::black_box(
+                    eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&t16), &p)
+                        .unwrap(),
+                );
+            });
+            let odo = bench(&|| {
+                std::hint::black_box(
+                    super::eval_reduce_window_dense_float(
+                        DType::F16,
+                        "max",
+                        widened.as_ref(),
+                        &win_v,
+                        &str_v,
+                        &dil_v,
+                        &out_u32,
+                        &pad_v,
+                        &dims_u,
+                        &in_strides,
+                        total_out,
+                    )
+                    .unwrap(),
+                );
+            });
+            println!(
+                "AB f16 maxpool 112x112x64 3x3/s2: odometer(widen-f64)={odo:.4}ms fused-f32x8={fused:.4}ms ({:.2}x)",
+                odo / fused
             );
         }
     }

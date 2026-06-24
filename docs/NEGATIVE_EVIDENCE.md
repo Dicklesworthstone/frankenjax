@@ -2656,6 +2656,18 @@ full lib 1593/0 + clippy clean. Removed the now-unused `f16_widen8_f32`. LESSON:
 (magic-multiply) beats a per-chunk fast/slow branch even when the slow path is rarely taken — the branch + its
 `.any()` cost more than uniformly doing the SIMD work.
 
+f16 FUSED channel-last MAXPOOL — 21x (2026-06-24, SlateHarrier, bead `pthzx` maxmin done): the branchless
+`f16_widen8_full_f32` UNBLOCKED the deferred f16 fused pooling (the ±0/NaN/subnormal special-cases that
+deferred it are now handled in straight-line SIMD). Added `reduce_window_simd_channel_f16_maxmin` /
+`simd_channel_block_f16_maxmin`: per output keep an f32 running-max SCRATCH, widen each tap via
+`f16_widen8_full_f32` (f32x8) + simd_max/min + nan-select, narrow ONCE per output via `Literal::from_f16_f64`
+(exact — a max of f16 values IS an f16 value, so no SIMD f32→f16 narrow needed). f16 previously fell to the
+materialized-widen-to-f64 odometer. SAME-BINARY A/B [112×112×64, 3×3/s2]: odometer(widen-f64) **47.64ms** →
+fused-f32x8 **2.27ms = 20.99x**; production f16 maxpool **2.61ms** (~parity vs JAX bf16 2.80ms). Bit-identical:
+`half_pool_simd_channel_bit_identical` extended to C=20 (SIMD body + scalar tail, max+sum, vs the odometer) +
+full lib 1593/0 + clippy clean. f16 SUMpool still on the f64-view path (25ms; needs the f64-accum-order fused
+kernel — bead stays OPEN for it). The bf16 fused-pool lesson now generalized to f16 via the branchless decode.
+
 BOLD-VERIFY vs JAX follow-up (2026-06-24, ProudSalmon/codex, commit `c9d80489` already on `main` and
 `origin/master`): independent same-worker RCH check on `vmi1149989` kept the branchless lever. Same-binary
 `bench_f16_trailing_reduce_ab`: f64x8 **7.7809ms** / prior needs_scalar-f32x8 **7.9875ms** /
