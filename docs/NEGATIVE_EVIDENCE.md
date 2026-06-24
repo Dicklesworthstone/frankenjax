@@ -3550,3 +3550,33 @@ only resume t1pb0-style code work after a fresh same-binary Rust A/B can be run 
 warm target and perf counters identify a concrete stall source in the blocked scan's local pass.
 Scorecard mirror: targeted cumprod/cummax remains **0 wins / 2 losses / 0 neutral**; the broader
 4M cumulative rowset is **1 win / 2 losses / 0 neutral** because the earlier cumsum keep still wins.
+
+## 2026-06-24 - f16 min/max full-SIMD decode flips reduce_max vs JAX (ProudSalmon/cod-a)
+
+Confirmed no obvious unlanded `.scratch` FFT win remained; the retained new lever is the
+branchless/SIMD numeric-kernel path for F16 min/max reductions. `f16_widen8_full_f32` decodes
+normal, subnormal, +/-0, inf, and NaN in straight-line SIMD, so `simd_reduce_minmax_f16` no
+longer branches each 8-lane chunk through `f16_input_needs_scalar`. NaNs stay explicit via a
+SIMD mask, tails stay scalar, and signed-zero ties still use the scalar rescan.
+
+MEASURED same-binary A/B (`cargo test -p fj-lax bench_f16_trailing_reduce_ab --lib --release
+-- --ignored --nocapture`, warm target `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a`):
+old f64x8 **7.7602ms**, prior f32x8+needs-scalar **7.1450ms**, branchless f32x8 **3.5700ms** =
+**2.00x** over the prior path and **2.17x** over old f64x8.
+
+Fresh Criterion row (`eval/reduce_max_axis1_4096x4096_f16`, `[4096,4096]`, F16, axis 1):
+fj-lax **3.4581ms** midpoint (`3.1114..4.1135ms`). Fresh JAX/JAXLIB 0.10.1 CPU x64 comparator
+on the exact fixture: mean **5.020595ms**, p50 **5.103903ms**, p95 **5.508827ms**. Rust/JAX
+ratio is **0.689x**, so fj-lax is **1.45x faster than JAX** on this row. Scorecard:
+**1 win / 0 losses / 0 neutral; 1 kept / 0 reverted**.
+
+GREEN proof: `cargo test -p fj-lax f16 --lib --release -- --nocapture` passed **24/24**,
+including exhaustive all-65536 F16 decoder bits; `cargo test -p fj-conformance --test
+reduce_min_max_oracle -- --nocapture` passed **42/42**; `cargo check -p fj-lax --all-targets`
+passed on RCH worker `vmi1153651`. Remaining gates are pre-existing unrelated blockers:
+`cargo clippy -p fj-lax --all-targets -- -D warnings` fails in `benches/i64_matmul_speed.rs:245`
+(`single_element_loop`) and `src/fft.rs:1664` (`manual_is_multiple_of`); rustfmt on touched files
+also reports pre-existing `lax_baseline.rs` gather/scatter formatting, intentionally not bundled
+with this perf commit. `ubs` on the changed Rust files exits nonzero on pre-existing test/bench
+panic/unwrap surfaces in the large scanned files; the new local `decode`-name false positive was
+removed, and UBS now reports no JWT decode/validation bypass pattern.

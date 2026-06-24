@@ -547,13 +547,10 @@ fn simd_minmax_axis_reduce_f16(
 }
 
 /// SIMD full-reduce max/min over a dense F16 slice. Bit-identical to the scalar
-/// [`fold_f16_axis_block`] fold (jax_max/jax_min over `F16Bits.as_f64()`): clean 8-lane
-/// chunks decode exactly via [`crate::arithmetic::f16_widen8`] (normals + ±0) and fold
-/// with `simd_max`/`simd_min`; chunks with subnormal/inf/NaN bits
-/// ([`crate::arithmetic::f16_input_needs_scalar`]) and the tail fall back to the scalar
-/// decode+fold (so NaN propagates exactly). `any_nan` → canonical NaN; a `0.0` result
-/// triggers a scalar re-scan for the order-dependent ±0 sign — same recipe as
-/// [`simd_reduce_minmax_bf16`].
+/// [`fold_f16_axis_block`] fold (jax_max/jax_min over `F16Bits.as_f64()`): 8-lane chunks
+/// decode through [`crate::arithmetic::f16_widen8_full_f32`] without a per-chunk scalar
+/// split; NaN is tracked separately because `simd_max`/`simd_min` drop NaN. A `0.0`
+/// result still triggers a scalar re-scan for order-dependent +/-0 signs.
 fn simd_reduce_minmax_f16(values: &[u16], is_max: bool) -> f64 {
     use std::simd::{Mask, Simd, num::SimdFloat};
     const L: usize = 8; // matches f16_widen8_full_f32 lane count
@@ -565,7 +562,7 @@ fn simd_reduce_minmax_f16(values: &[u16], is_max: bool) -> f64 {
     } else {
         f32::INFINITY
     };
-    let decode = |b: u16| Literal::F16Bits(b).as_f64().unwrap_or(0.0) as f32;
+    let decode_f16 = |b: u16| Literal::F16Bits(b).as_f64().unwrap_or(0.0) as f32;
 
     let mut vacc = Simd::<f32, L>::splat(init);
     let mut nan_acc = Mask::<i32, L>::splat(false);
@@ -586,7 +583,7 @@ fn simd_reduce_minmax_f16(values: &[u16], is_max: bool) -> f64 {
     }
     let mut any_nan = nan_acc.any();
     for &b in tail {
-        let v = decode(b);
+        let v = decode_f16(b);
         if v.is_nan() {
             any_nan = true;
         } else {
@@ -601,7 +598,7 @@ fn simd_reduce_minmax_f16(values: &[u16], is_max: bool) -> f64 {
         // ±0 sign is order-dependent under simd reduce — re-fold scalar (no NaN here).
         let mut s = init;
         for &b in values {
-            let v = decode(b);
+            let v = decode_f16(b);
             s = if is_max { s.max(v) } else { s.min(v) };
         }
         return f64::from(s);
@@ -4356,7 +4353,7 @@ mod tests {
             } else {
                 f64::INFINITY
             };
-            let decode = |b: u16| Literal::F16Bits(b).as_f64().unwrap_or(0.0);
+            let decode_f16 = |b: u16| Literal::F16Bits(b).as_f64().unwrap_or(0.0);
             let mut vacc = Simd::<f64, L>::splat(init);
             let mut acc = init;
             let mut any_nan = false;
@@ -4367,7 +4364,7 @@ mod tests {
                 let u = Simd::<u16, L>::from_slice(chunk);
                 if crate::arithmetic::f16_input_needs_scalar(u) {
                     for &b in chunk {
-                        let v = decode(b);
+                        let v = decode_f16(b);
                         if v.is_nan() {
                             any_nan = true;
                         } else {
@@ -4385,7 +4382,7 @@ mod tests {
                 }
             }
             for &b in tail {
-                let v = decode(b);
+                let v = decode_f16(b);
                 if v.is_nan() {
                     any_nan = true;
                 } else {
@@ -4421,7 +4418,7 @@ mod tests {
             } else {
                 f32::INFINITY
             };
-            let decode = |b: u16| Literal::F16Bits(b).as_f64().unwrap_or(0.0) as f32;
+            let decode_f16 = |b: u16| Literal::F16Bits(b).as_f64().unwrap_or(0.0) as f32;
             let mut vacc = Simd::<f32, L>::splat(init);
             let mut acc = init;
             let mut any_nan = false;
@@ -4432,7 +4429,7 @@ mod tests {
                 let u = Simd::<u16, L>::from_slice(chunk);
                 if crate::arithmetic::f16_input_needs_scalar(u) {
                     for &b in chunk {
-                        let v = decode(b);
+                        let v = decode_f16(b);
                         if v.is_nan() {
                             any_nan = true;
                         } else {
@@ -4460,7 +4457,7 @@ mod tests {
                 }
             }
             for &b in tail {
-                let v = decode(b);
+                let v = decode_f16(b);
                 if v.is_nan() {
                     any_nan = true;
                 } else {

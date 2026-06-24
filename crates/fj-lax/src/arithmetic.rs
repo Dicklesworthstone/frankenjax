@@ -19155,7 +19155,7 @@ mod tests {
         }
     }
 
-    /// BIT-IDENTICAL to the scalar `jax_max_f64`/`jax_min_f64` half map over the f16 edge
+    /// SIMD f16 Max/Min must be BIT-IDENTICAL to the scalar `jax_max_f64`/`jax_min_f64` half map over the f16 edge
     /// patterns (incl. ±0 ties, subnormal/inf/NaN input fallback), crossing 8-lane+remainder.
     #[test]
     fn f16_minmax_simd_bit_identical_to_scalar() {

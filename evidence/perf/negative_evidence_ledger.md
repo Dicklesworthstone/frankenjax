@@ -6053,3 +6053,57 @@ regression). Honest framing: does NOT flip the absolute JAX loss on large chains
   force-inline scan changes; resume only after a matching warm target can run a
   same-binary Rust A/B and perf counters identify a concrete stall source in the
   blocked scan's local pass.
+
+## ProudSalmon / cod-a - f16 min/max full-SIMD decode keep, flips reduce_max vs JAX (2026-06-24)
+
+- Scope: BOLD-VERIFY pass under `frankenjax-mcqr`, after confirming the obvious
+  `.scratch` FFT wins were already on `main`. The retained lever is the
+  branchless/SIMD numeric-kernel route: remove the per-8-lane
+  `f16_input_needs_scalar` split from F16 min/max reductions by decoding every
+  F16 bit pattern directly to F32 in SIMD and tracking NaN with a SIMD mask.
+- Change: `f16_widen8_full_f32` handles normal, subnormal, +/-0, inf, and NaN
+  in straight-line SIMD. `simd_reduce_minmax_f16` and the row-accumulator use it
+  for all chunks, keep the existing scalar tail, and preserve the scalar rescan
+  for signed-zero tie semantics.
+- Rust-side same-binary A/B, `cargo test -p fj-lax bench_f16_trailing_reduce_ab
+  --lib --release -- --ignored --nocapture`, warm target
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a`:
+
+  | row | time |
+  | --- | ---: |
+  | old f64x8 | 7.7602 ms |
+  | prior f32x8 + needs-scalar split | 7.1450 ms |
+  | branchless full f32x8 decode | 3.5700 ms |
+
+  Branchless is **2.00x** faster than the prior f32x8 path and **2.17x** faster
+  than the old f64x8 route.
+- Fresh Criterion row, `cargo bench -p fj-lax --profile release --bench
+  lax_baseline 'eval/reduce_max_axis1_4096x4096_f16' -- --warm-up-time 1
+  --measurement-time 3 --sample-size 10 --noplot`: **3.4581 ms** midpoint
+  (`3.1114..4.1135 ms`) for F16 `reduce_max(axis=1)` over `[4096,4096]`.
+  Note: this repo's Cargo rejects `cargo bench --release` for this bench target,
+  so the equivalent accepted form was `--profile release`.
+- Fresh JAX comparator from the repo venv, JAX **0.10.1**, JAXLIB **0.10.1**,
+  CPU, `jax_enable_x64=true`, exact F16 fixture and `jnp.max(x, axis=1)`:
+  mean **5.020595 ms**, p50 **5.103903 ms**, p95 **5.508827 ms**.
+- Rust/JAX scorecard: kept Rust midpoint / JAX mean = **0.689x**, so fj-lax is
+  **1.45x faster than JAX** on this row. Scorecard **1 win / 0 losses /
+  0 neutral**; candidate disposition **1 kept / 0 reverted**.
+- Correctness gates:
+  - `cargo test -p fj-lax f16 --lib --release -- --nocapture`: **24/24**
+    passed, including exhaustive all-65536-bit-pattern
+    `f16_widen8_full_f32_exhaustive_matches_scalar`.
+  - `cargo test -p fj-conformance --test reduce_min_max_oracle --
+    --nocapture`: **42/42** passed.
+  - `cargo check -p fj-lax --all-targets`: passed on RCH worker
+    `vmi1153651`.
+  - `cargo clippy -p fj-lax --all-targets -- -D warnings`: still blocked by
+    unrelated pre-existing lints in `benches/i64_matmul_speed.rs:245`
+    (`single_element_loop`) and `src/fft.rs:1664` (`manual_is_multiple_of`).
+  - `rustfmt --edition 2024 --check` on the touched files is blocked by
+    pre-existing formatting in `lax_baseline.rs` gather/scatter bench rows;
+    the unrelated formatting hunks were intentionally left out of this commit.
+  - `ubs` on the changed Rust files exits nonzero on pre-existing test/bench
+    panic/unwrap surfaces in the large scanned files. The new local
+    `decode`-name false positive was removed; UBS now reports no JWT
+    decode/validation bypass pattern.
