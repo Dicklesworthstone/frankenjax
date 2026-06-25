@@ -11133,6 +11133,62 @@ fn eval_conv_1d_grouped(
     let out_dims = vec![batch as u32, out_w as u32, c_out as u32];
 
     if matches!(out_dtype, DType::Complex64 | DType::Complex128) {
+        // Per-group im2col + complex GEMM (1D sibling of the grouped conv2d complex path).
+        // Bit-identical to the naive loop (rank2_complex_matmul_matches_generic + same ascending
+        // (k,ci) order + 0-padded OOB). Tiny convs fall to the naive loop below.
+        let kdim_g = kernel_w * rhs_c_in;
+        let conv_ops = total.saturating_mul(kdim_g).saturating_mul(4);
+        let rows = batch * out_w;
+        if conv_ops >= CONV_IM2COL_MIN_OPS
+            && kdim_g > 0
+            && rows > 0
+            && let (Some(lhs_src), Some(rhs_src)) = (
+                lhs.elements.as_complex_slice(),
+                rhs.elements.as_complex_slice(),
+            )
+        {
+            let mut out_full = vec![(0.0_f64, 0.0_f64); rows * c_out];
+            for g in 0..group_count {
+                let ch_base = g * rhs_c_in;
+                let mut col = vec![(0.0_f64, 0.0_f64); rows * kdim_g];
+                for n in 0..batch {
+                    let n_off = n * width_c_in;
+                    for w in 0..out_w {
+                        let row_base = (n * out_w + w) * kdim_g;
+                        for k in 0..kernel_w {
+                            let in_pos = (w * stride + k * dil) as isize - pad_left as isize;
+                            if in_pos < 0 || (in_pos as usize) >= width {
+                                continue;
+                            }
+                            let src = n_off + (in_pos as usize) * c_in + ch_base;
+                            let cb = row_base + k * rhs_c_in;
+                            col[cb..cb + rhs_c_in].copy_from_slice(&lhs_src[src..src + rhs_c_in]);
+                        }
+                    }
+                }
+                let mut rhs_g = vec![(0.0_f64, 0.0_f64); kdim_g * cout_per_group];
+                for kidx in 0..kdim_g {
+                    let s = kidx * c_out + g * cout_per_group;
+                    rhs_g[kidx * cout_per_group..(kidx + 1) * cout_per_group]
+                        .copy_from_slice(&rhs_src[s..s + cout_per_group]);
+                }
+                let out_g = rank2_complex_matmul(&col, rows, kdim_g, &rhs_g, cout_per_group);
+                for row in 0..rows {
+                    let d = row * c_out + g * cout_per_group;
+                    out_full[d..d + cout_per_group]
+                        .copy_from_slice(&out_g[row * cout_per_group..(row + 1) * cout_per_group]);
+                }
+            }
+            let elements: Vec<Literal> = out_full
+                .iter()
+                .map(|&(re, im)| conv_literal_from_complex(out_dtype, re, im))
+                .collect();
+            return Ok(Value::Tensor(TensorValue::new(
+                out_dtype,
+                Shape { dims: out_dims },
+                elements,
+            )?));
+        }
         let mut elements = Vec::with_capacity(total);
         for n in 0..batch {
             let n_off = n * width_c_in;
@@ -16582,6 +16638,92 @@ mod tests {
         assert_eq!(
             got, want,
             "grouped complex conv GEMM path must be bit-identical to the naive loop (G={g})"
+        );
+    }
+
+    // conv1d GROUPED complex GEMM path (sized > CONV_IM2COL_MIN_OPS) must be bit-identical to the
+    // direct naive complex loop.
+    #[test]
+    fn conv1d_grouped_complex_gemm_matches_naive() {
+        let (wd, c_in, c_out, kw, g) = (256usize, 16, 16, 3, 4);
+        let rhs_c_in = c_in / g;
+        let cpg = c_out / g;
+        let lhs_c: Vec<(f64, f64)> = (0..wd * c_in)
+            .map(|i| {
+                (
+                    (i as f64 * 0.011).sin() + 0.2,
+                    (i as f64 * 0.017).cos() - 0.1,
+                )
+            })
+            .collect();
+        let rhs_c: Vec<(f64, f64)> = (0..kw * rhs_c_in * c_out)
+            .map(|i| {
+                (
+                    (i as f64 * 0.013).cos() * 0.6,
+                    (i as f64 * 0.009).sin() * 0.5,
+                )
+            })
+            .collect();
+        let lhs = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![1, wd as u32, c_in as u32],
+                },
+                lhs_c.clone(),
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![kw as u32, rhs_c_in as u32, c_out as u32],
+                },
+                rhs_c.clone(),
+            )
+            .unwrap(),
+        );
+        let out = eval_conv(
+            Primitive::Conv,
+            &[lhs, rhs],
+            &params(&[
+                ("padding", "valid"),
+                ("strides", "1"),
+                ("feature_group_count", &g.to_string()),
+            ]),
+        )
+        .unwrap();
+        let out_w = wd - kw + 1;
+        let t = out.as_tensor().unwrap();
+        assert_eq!(t.shape.dims, vec![1, out_w as u32, c_out as u32]);
+        let got: Vec<(u64, u64)> = t
+            .elements
+            .iter()
+            .map(|l| {
+                let (re, im) = literal_as_complex(l);
+                (re.to_bits(), im.to_bits())
+            })
+            .collect();
+        let mut want = Vec::new();
+        for ow in 0..out_w {
+            for co in 0..c_out {
+                let icb = (co / cpg) * rhs_c_in;
+                let (mut ar, mut ai) = (0.0f64, 0.0f64);
+                for k in 0..kw {
+                    for ci in 0..rhs_c_in {
+                        let (lre, lim) = lhs_c[(ow + k) * c_in + icb + ci];
+                        let (rre, rim) = rhs_c[(k * rhs_c_in + ci) * c_out + co];
+                        ar += lre * rre - lim * rim;
+                        ai += lre * rim + lim * rre;
+                    }
+                }
+                want.push((ar.to_bits(), ai.to_bits()));
+            }
+        }
+        assert_eq!(
+            got, want,
+            "conv1d grouped complex GEMM must match naive (G={g})"
         );
     }
 

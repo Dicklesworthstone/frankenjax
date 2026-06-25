@@ -2623,7 +2623,13 @@ SAME: naive **15.20ms → GEMM 8.72ms = 1.74x** (vs JAX complex64 7.29ms: 2.08x 
 (`rank2_complex_matmul_matches_generic` + same ascending (kh,kw,ci) order + 0-padded OOB):
 `conv2d_grouped_complex_gemm_matches_naive` (sized > CONV_IM2COL_MIN_OPS so the GEMM path runs, vs a direct
 naive reference) + full lib 1596/0 + clippy clean. Tiny convs stay on the naive fallback. The remaining
-naive complex path is conv1d GROUPED (extremely niche: complex+grouped+1d) — bead 5xdr7 stays open for it.
+naive complex path is conv1d GROUPED (extremely niche: complex+grouped+1d).
+
+UPDATE 2026-06-25 (SlateHarrier): conv1d GROUPED complex also routed through per-group im2col +
+`rank2_complex_matmul` (same pattern, minus kh/oh; `conv1d_grouped_complex_gemm_matches_naive` sized
+> CONV_IM2COL_MIN_OPS, bit-identical to the naive loop). So now ALL complex-conv paths (non-grouped 1d/2d
++ grouped 1d/2d) are GEMM-routed; NO naive complex-conv boxed loops remain. (Bead 5xdr7 was already closed
+by the author for the non-grouped scope; the grouped 1d/2d work is a bonus completion.) Full lib 1597/0.
 
 ## 2026-06-23 - bf16 MAX/MIN-reduce 27x loss → 2.7x (f64x4-widen → f32-native + threaded), 10x faster (SlateHarrier)
 
