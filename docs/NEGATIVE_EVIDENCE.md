@@ -2946,6 +2946,12 @@ the real eval path doesn't deliver. cummax stays a ~1.21x loss; the parallel-sca
 through the current eval path. Bead `frankenjax-parallel-cummax-scan` downgraded (needs the 29↔73 root-cause
 first, not just the algorithm).
 
+## 2026-06-25 - argsort is a ~35x fj-lax WIN vs JAX (SlateHarrier)
+
+`bench_argsort2d_vs_jax`: argsort f64 [2048,2048] axis1 — fj-lax **17.4ms vs JAX 616.8ms = ~35x WIN**.
+XLA's CPU argsort is catastrophic (same as its sort 2522ms); fj-lax's threaded radix argsort dominates. No
+lever (win); recorded + kept the bench. Completes the sort-family map: sort/argsort/top_k all crush JAX-on-CPU.
+
 ## 2026-06-25 - RNG (random_uniform) is a ~3x fj-lax WIN vs JAX (SlateHarrier)
 
 `bench_random_uniform_vs_jax` (16M): fj-lax random_uniform **36.84ms (f64)** vs JAX random.uniform **112.0ms

@@ -14766,6 +14766,44 @@ mod tests {
         );
     }
 
+    // argsort vs JAX (measured JAX 616.8ms): XLA CPU argsort is slow like its sort; fj-lax's threaded
+    // radix argsort should dominate.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_argsort2d_vs_jax() {
+        use std::time::Instant;
+        let (rows, cols) = (2048usize, 2048usize);
+        let d: Vec<f64> = (0..rows * cols)
+            .map(|i| ((i.wrapping_mul(2654435761) % 100003) as f64) * 0.01 - 500.0)
+            .collect();
+        let t = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                d,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([("axis".to_owned(), "1".to_owned())]);
+        let f = || {
+            std::hint::black_box(
+                crate::eval_primitive(Primitive::Argsort, std::slice::from_ref(&t), &p).unwrap(),
+            );
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..6 {
+            let s = Instant::now();
+            f();
+            b = b.min(s.elapsed().as_secs_f64());
+        }
+        println!(
+            "fj-lax argsort f64 [2048,2048] axis1: {:.3}ms | JAX=616.8ms",
+            b * 1e3
+        );
+    }
+
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_sort2d() {
