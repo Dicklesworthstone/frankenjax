@@ -31,8 +31,19 @@
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use std::f64::consts::PI;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::EvalError;
+
+const FFT_PLAN_CACHE_MAX_ENTRIES: usize = 32;
+
+type Radix2PlanCache = Vec<((usize, bool), Arc<Radix2Plan>)>;
+type TwiddlePlanCache = Vec<((usize, bool), Arc<Vec<(f64, f64)>>)>;
+type BluesteinPlanCache = Vec<((usize, bool), Arc<BluesteinPlan>)>;
+
+static RADIX2_PLAN_CACHE: OnceLock<Mutex<Radix2PlanCache>> = OnceLock::new();
+static TWIDDLE_PLAN_CACHE: OnceLock<Mutex<TwiddlePlanCache>> = OnceLock::new();
+static BLUESTEIN_PLAN_CACHE: OnceLock<Mutex<BluesteinPlanCache>> = OnceLock::new();
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -608,6 +619,105 @@ impl BluesteinPlan {
             output.push(((cr * vr - ci * vi) * inv_n, (cr * vi + ci * vr) * inv_n));
         }
     }
+}
+
+fn cached_radix2_plan(n: usize, inverse: bool) -> Arc<Radix2Plan> {
+    let cache = RADIX2_PLAN_CACHE.get_or_init(|| Mutex::new(Vec::new()));
+    {
+        let guard = match cache.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some((_, plan)) = guard
+            .iter()
+            .find(|((len, direction), _)| *len == n && *direction == inverse)
+        {
+            return Arc::clone(plan);
+        }
+    }
+
+    let built = Arc::new(Radix2Plan::new(n, inverse));
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some((_, plan)) = guard
+        .iter()
+        .find(|((len, direction), _)| *len == n && *direction == inverse)
+    {
+        return Arc::clone(plan);
+    }
+    if guard.len() >= FFT_PLAN_CACHE_MAX_ENTRIES {
+        guard.remove(0);
+    }
+    guard.push(((n, inverse), Arc::clone(&built)));
+    built
+}
+
+fn cached_twiddles(n: usize, inverse: bool) -> Arc<Vec<(f64, f64)>> {
+    let cache = TWIDDLE_PLAN_CACHE.get_or_init(|| Mutex::new(Vec::new()));
+    {
+        let guard = match cache.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some((_, roots)) = guard
+            .iter()
+            .find(|((len, direction), _)| *len == n && *direction == inverse)
+        {
+            return Arc::clone(roots);
+        }
+    }
+
+    let built = Arc::new(precompute_twiddles(n, inverse));
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some((_, roots)) = guard
+        .iter()
+        .find(|((len, direction), _)| *len == n && *direction == inverse)
+    {
+        return Arc::clone(roots);
+    }
+    if guard.len() >= FFT_PLAN_CACHE_MAX_ENTRIES {
+        guard.remove(0);
+    }
+    guard.push(((n, inverse), Arc::clone(&built)));
+    built
+}
+
+fn cached_bluestein_plan(n: usize, inverse: bool) -> Arc<BluesteinPlan> {
+    let cache = BLUESTEIN_PLAN_CACHE.get_or_init(|| Mutex::new(Vec::new()));
+    {
+        let guard = match cache.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some((_, plan)) = guard
+            .iter()
+            .find(|((len, direction), _)| *len == n && *direction == inverse)
+        {
+            return Arc::clone(plan);
+        }
+    }
+
+    let built = Arc::new(BluesteinPlan::new(n, inverse));
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some((_, plan)) = guard
+        .iter()
+        .find(|((len, direction), _)| *len == n && *direction == inverse)
+    {
+        return Arc::clone(plan);
+    }
+    if guard.len() >= FFT_PLAN_CACHE_MAX_ENTRIES {
+        guard.remove(0);
+    }
+    guard.push(((n, inverse), Arc::clone(&built)));
+    built
 }
 
 /// Bluestein's algorithm (chirp-z transform): the length-`n` DFT for ARBITRARY
@@ -1332,9 +1442,9 @@ fn transform_batches_bluestein_vectorized(
 /// use mixed-radix (caching the roots table), and everything else uses a cached
 /// Bluestein plan.
 enum BatchFftPlan {
-    Pow2(Radix2Plan),
-    Mixed(Vec<(f64, f64)>),
-    Bluestein(BluesteinPlan),
+    Pow2(Arc<Radix2Plan>),
+    Mixed(Arc<Vec<(f64, f64)>>),
+    Bluestein(Arc<BluesteinPlan>),
 }
 
 impl BatchFftPlan {
@@ -1346,11 +1456,11 @@ impl BatchFftPlan {
             // bit-reversal on EVERY row (e.g. ~16K redundant `sin_cos` over a 2048x256
             // batch). `Radix2Plan` derives twiddles from the IDENTICAL first-order
             // recurrence, so `apply_into` is bit-for-bit equal to the per-row rebuild.
-            BatchFftPlan::Pow2(Radix2Plan::new(n.max(1), inverse))
+            BatchFftPlan::Pow2(cached_radix2_plan(n.max(1), inverse))
         } else if is_mixed_radix_smooth(n) {
-            BatchFftPlan::Mixed(precompute_twiddles(n, inverse))
+            BatchFftPlan::Mixed(cached_twiddles(n, inverse))
         } else {
-            BatchFftPlan::Bluestein(BluesteinPlan::new(n, inverse))
+            BatchFftPlan::Bluestein(cached_bluestein_plan(n, inverse))
         }
     }
 
@@ -1366,7 +1476,7 @@ impl BatchFftPlan {
     /// SoA kernel instead of rebuilding them.
     fn as_pow2(&self) -> Option<&Radix2Plan> {
         match self {
-            BatchFftPlan::Pow2(plan) => Some(plan),
+            BatchFftPlan::Pow2(plan) => Some(plan.as_ref()),
             _ => None,
         }
     }
@@ -1387,7 +1497,7 @@ impl BatchFftPlan {
                 plan.apply_into(input, output);
             }
             BatchFftPlan::Mixed(roots) => {
-                mixed_radix_into(input, roots, inverse, output, mixed_scratch)
+                mixed_radix_into(input, roots.as_ref(), inverse, output, mixed_scratch)
             }
             BatchFftPlan::Bluestein(plan) => plan.apply_into(input, scratch, output),
         }
@@ -1433,8 +1543,8 @@ fn transform_batches_dense(
         && !is_mixed_radix_smooth(n)
         && (2 * n - 1).next_power_of_two() <= BLUESTEIN_SOA_MAX_M
     {
-        let bplan = BluesteinPlan::new(n, inverse);
-        return transform_batches_bluestein_vectorized(&bplan, elements, n, batch_size);
+        let bplan = cached_bluestein_plan(n, inverse);
+        return transform_batches_bluestein_vectorized(bplan.as_ref(), elements, n, batch_size);
     }
 
     // Smooth-composite batches (e.g. 1000 = 2^3*5^3) are the remaining FFT gap:
@@ -1904,7 +2014,7 @@ fn transform_batches_pow2_vectorized(
     batch_size: usize,
     inverse: bool,
 ) -> Vec<(f64, f64)> {
-    let plan = Radix2Plan::new(n, inverse);
+    let plan = cached_radix2_plan(n, inverse);
     let total = batch_size * n;
     let mut out: Vec<(f64, f64)> = vec![(0.0, 0.0); total];
 
@@ -1919,12 +2029,12 @@ fn transform_batches_pow2_vectorized(
     };
 
     if threads <= 1 {
-        vectorized_pow2_tiled(&plan, elements, batch_size, n, inverse, &mut out);
+        vectorized_pow2_tiled(plan.as_ref(), elements, batch_size, n, inverse, &mut out);
         return out;
     }
 
     let rows_per = batch_size.div_ceil(threads);
-    let plan_ref = &plan;
+    let plan_ref = plan.as_ref();
     std::thread::scope(|scope| {
         let mut rest: &mut [(f64, f64)] = out.as_mut_slice();
         let mut row0 = 0usize;

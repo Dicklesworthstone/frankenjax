@@ -73,6 +73,47 @@ CPU x64 on the exact `sin(i*0.125)+1j*cos(i*0.25)` 2048x256 complex128 fixture m
 **0 wins / 2 losses / 0 neutral; 0 kept / 1 rejected**. Retry only with generated length-specialized
 radix plans, true SIMD/shuffle support, or a broader pocketfft-class backend route.
 
+UPDATE 2026-06-25 (ProudSalmon, `frankenjax-murmw` FFT BOLD-VERIFY): alien-graveyard /
+alien-artifact-coding / extreme-software-optimization route kept a bounded immutable FFT plan cache
+across repeated eval calls. This is the production version of the 2026-06-21 "only a plan-CACHED
+Bluestein could change this" note, generalized to radix-2, mixed-radix twiddle tables, and Bluestein
+plans with a 32-entry in-process cap. It changes no butterfly order and no output math; it only stops
+rebuilding `(length, inverse)` plans between calls.
+
+Evidence discipline:
+  - No unlanded measured worktree win was found: `/data/projects/frankenjax_poyvi1_pass188` was a
+    closed rejected QR/SVD candidate with no ledgered win; no FFT win was stranded off main.
+  - Fresh JAX comparator: `/data/projects/.scratch/jaxvenv/bin/python`, JAX/JAXLIB 0.10.2 CPU x64,
+    exact `sin(i*0.125)+1j*cos(i*0.25)` fixtures, warmed jit, 30 repeats.
+  - Fresh current-main RCH baseline (origin/main `e9c60ec0`, worker `hz2`):
+    `fft_1000_complex128` 34.928us, `fft_batch_256x1009_prime_complex128_dense_input` 4.0715ms,
+    `fft_batch_128x1000_complex128` 2.8376ms.
+  - Candidate RCH proof (rebased patch, worker `vmi1152480` before `origin/main` advanced; repeat
+    after rebase on `vmi1264463` went stale and was cancelled via RCH): `fft_1000_complex128`
+    21.314us, prime batch 4.4423ms, smooth batch 3.3131ms. Local warm-target Criterion also showed
+    large Rust-side drops for the same three rows: 21.020us / 4.7438ms / 2.6548ms.
+  - Correctness/quality: `cargo check -p fj-lax --all-targets` GREEN pre-rebase; `cargo test -p
+    fj-lax transform_batches_dense_dispatch_matches_dft_oracle --release --lib` GREEN; `cargo test
+    -p fj-conformance --release --test fft_oracle --test linalg_fft_oracle_parity` GREEN (27+1
+    tests); `cargo clippy -p fj-lax --all-targets -- -D warnings` GREEN; `rustfmt --edition 2024
+    --check crates/fj-lax/src/fft.rs` GREEN; `git diff --check` GREEN. Post-rebase check retries
+    were infra-blocked twice on `ovh-b` by `zerocopy v0.8.48` build-script SIGILL before reaching
+    `fj-lax`; no Rust diagnostic was emitted for this patch.
+
+Ratio-vs-JAX ledger:
+
+| workload | fj-lax candidate | JAX mean | Rust/JAX | verdict |
+|---|---:|---:|---:|---|
+| `eval/fft_1000_complex128` | 21.314 us | 8.800 us | 2.42x loss | KEEP: narrows current-main gap from ~3.97x to ~2.42x; production single-call plan setup was the lever |
+| `eval/fft_batch_256x1009_prime_complex128_dense_input` | 4.4423 ms | 0.341097 ms | 13.02x loss | no JAX win; batch row remains pocketfft/SIMD-bound and cross-worker before/after is noisy |
+| `eval/fft_batch_128x1000_complex128` | 3.3131 ms | 0.172758 ms | 19.18x loss | no JAX win; smooth-composite batch remains generated-kernel/quiesced-host territory |
+
+Scorecard: **0 JAX wins / 3 JAX losses / 1 material narrowing; 1 kept / 0 reverted**. Do not cite
+this as an FFT domination. The kept primitive is specifically a warmed repeated-eval plan-cache
+win that removes avoidable setup cost and narrows the singleton FFT JAX gap. The batch gaps remain
+the same frontier: pocketfft-class SIMD-within-FFT, generated length-specialized kernels, or a
+quiesced-host threading proof.
+
 CONFORMANCE STATUS (2026-06-21, verified HEAD): **ENTIRE WORKSPACE GREEN** — `cargo test --workspace
 --release` = 0 failures across all crates (fj-lax 1583/0 after the cholesky digest re-baseline
 7a0f165e + the erf_inv regression fix c1b9ef15; fj-conformance all-green; fj-ad/fj-interpreters/etc.
