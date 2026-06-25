@@ -13624,7 +13624,7 @@ fn rev_gather_into<T: Copy + Send + Sync>(
     let block_len = block_len.max(1);
     let outer_total = total / block_len;
     let threads = if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN && outer_total >= 2 {
-        crate::arithmetic::work_scaled_threads(total).min(outer_total)
+        bw_bound_threads(total).min(outer_total)
     } else {
         return false;
     };
