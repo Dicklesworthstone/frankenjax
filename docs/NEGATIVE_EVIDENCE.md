@@ -2,6 +2,51 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-25 - KEEP: Cholesky panel fan-out cap narrows the JAX LAPACK gap (ProudSalmon)
+
+BOLD-VERIFY land-or-dig pass: the scratch complex-select worktree commit
+`4940278b` was patch-equivalent to `origin/main` under landed commit `2c163dfd`;
+the only live patch-positive worktree was stale QR/SVD WIP `a00dc114` in
+`/data/projects/frankenjax_poyvi1_pass188`, with no bench/ledger ratio evidence.
+So this pass dug a different measured primitive: dense f64 Cholesky, previously
+documented as a LAPACK-backed JAX loss.
+
+Lever: raise the Cholesky panel-solve and Schur-update minimum rows per worker
+from 32 to 96. The existing blocked right-looking kernel spawned too many scoped
+workers for each panel; larger chunks preserve the algorithm and numeric order
+within each row while reducing repeated thread setup and tail fragmentation.
+
+Bench evidence used the requested warm target dir through `rch exec`; `cargo
+bench --release` is not accepted by this Cargo, so the optimized equivalent was
+`cargo bench -p fj-lax --profile release --bench lax_baseline --
+'linalg/cholesky_512x512_f64|linalg/cholesky_1024x1024_f64' --noplot`.
+RCH fell open locally for the two Criterion runs because no worker slots were
+admissible, but the command remained crate-scoped with
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b`.
+
+Ratio-vs-JAX ledger, exact benchmark fixtures, JAX/JAXLIB 0.10.2 CPU x64 with
+`JAX_ENABLE_X64=1`:
+
+| workload | main midpoint | candidate midpoint | Rust-side delta | JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `linalg/cholesky_512x512_f64` | 10.792 ms | 9.4650 ms | 1.14x faster / -12.3% | 1.441132 ms | 7.49x loss | 6.57x loss | KEEP: loss narrowed |
+| `linalg/cholesky_1024x1024_f64` | 46.550 ms | 36.201 ms | 1.29x faster / -22.2% | 6.682657 ms | 6.97x loss | 5.42x loss | KEEP: loss narrowed |
+
+Fresh JAX p50s were 1.398404 ms (512) and 6.606567 ms (1024); the conclusion is
+unchanged by p50 ratios. This is not a Rust-over-JAX flip, only a material
+thread-policy narrowing of the LAPACK gap. Next Cholesky retry should target the
+remaining BLAS/LAPACK structural gap, not another per-panel thread fan-out cap.
+
+Conformance and gates: `cargo test -p fj-lax cholesky --release --lib --
+--nocapture` passed 15/15 on RCH `hz2`; `cargo test -p fj-conformance --test
+linalg_oracle cholesky --release -- --nocapture` passed 10/10 on RCH `hz2`;
+`cargo check -p fj-lax --all-targets`, `cargo clippy -p fj-lax --all-targets --
+-D warnings`, and `cargo fmt -p fj-lax --check` all passed.
+UBS on `crates/fj-lax/src/linalg.rs docs/NEGATIVE_EVIDENCE.md` remained a
+file-wide inventory signal for existing `linalg.rs` test/helper panic/indexing
+surfaces (25 critical / 1875 warning) and reported fmt/clippy/check clean; the
+changed production diff is only the two Cholesky thread-policy constants.
+
 ## 2026-06-25 - KEEP: dense f64 full ReduceSum tree fold beats JAX on the 16M row (ProudSalmon)
 
 No measured worktree win was landable: the only positive scratch cherry found was the QR/SVD WIP

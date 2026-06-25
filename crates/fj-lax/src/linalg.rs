@@ -343,7 +343,7 @@ fn cholesky_real_scalar(m: usize, a: &[f64]) -> Vec<f64> {
 /// for scoped-thread fan-out.
 const CHOLESKY_SCHUR_PARALLEL_MIN_OPS: usize = 1 << 20;
 /// Keep enough rows per worker that thread spawn overhead stays amortized.
-const CHOLESKY_SCHUR_MIN_ROWS_PER_THREAD: usize = 32;
+const CHOLESKY_SCHUR_MIN_ROWS_PER_THREAD: usize = 96;
 
 /// Minimum scalar products before the Cholesky panel solve pays for scoped
 /// thread fan-out. Each row below the diagonal panel is independent once L11 has
@@ -351,7 +351,7 @@ const CHOLESKY_SCHUR_MIN_ROWS_PER_THREAD: usize = 32;
 /// order.
 const CHOLESKY_PANEL_PARALLEL_MIN_OPS: usize = 1 << 20;
 /// Keep enough panel rows per worker to amortize scoped-thread setup.
-const CHOLESKY_PANEL_MIN_ROWS_PER_THREAD: usize = 32;
+const CHOLESKY_PANEL_MIN_ROWS_PER_THREAD: usize = 96;
 
 fn cholesky_panel_solve(
     l11_source: &[f64],
