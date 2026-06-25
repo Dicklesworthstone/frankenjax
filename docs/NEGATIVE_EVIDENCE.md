@@ -2612,6 +2612,21 @@ TOLERANCE + relaxing the internal bit-exact matmul guard for the gemv path — a
 Downgraded `dedicated-gemv-h36uj` to very-low. LESSON: matmul's N-SIMD strategy makes N=1 (gemv) inherently
 scalar-K under bit-exactness; the gap is structural, not an oversight.
 
+## 2026-06-25 - cumsum 2D already DOMINATES JAX (not a loss); f64 leading-axis BW-bound (SlateHarrier)
+
+Probed cumsum as a different primitive. JAX CPU cumsum is slow (sequential): [4096,1024] f64 ax0 **20.85ms**,
+ax1 18.28ms; f32 ax0 6.93ms, ax1 2.96ms. fj-lax: f64 ax0 **13.34ms (1.56x WIN)**, ax1 3.60ms (5.1x), f32 ax0
+**1.04ms (6.7x WIN)**, ax1 1.03ms (2.9x). So cumsum is a DOMINATION across the board — not a JAX loss to close.
+The f64 leading-axis (axis0) path (`scan_leading_axis_to_vec`, single-thread, rows-sequential / cols-autovec)
+is the slow corner internally; SAME-BINARY A/B showed a hand-written direct f64 loop == the generic-closure
+version (**1.01x** — the closure is NOT the bottleneck; it is BW + the per-column f64 dependency chain).
+Threading it would only EXTEND a domination, and safe-Rust can't thread the leading-axis scan without an extra
+assembly pass (column-blocks write strided-disjoint columns of a row-major output — no safe split_at_mut) that
+eats the gain. NO-SHIP (probe reverted ~0-gain). FLAGGED for future profiling: f64 ax0 (13.34ms) is ~13x
+slower than f32 ax0 (1.04ms) for only 2x the bytes — an unexplained f64-specific dtype-perf anomaly in the
+leading-axis column scan (direct==generic rules out the closure), worth a `perf`-counter look if cumsum ever
+matters more. Do NOT re-probe cumsum as a JAX-loss lever (it wins).
+
 ## 2026-06-24 - GROUPED complex conv2d naive → per-group im2col+GEMM, 1.74x (bead 5xdr7) (SlateHarrier)
 
 The non-grouped complex conv (1d+2d) was already GEMM-routed via `rank2_complex_matmul`, but the
