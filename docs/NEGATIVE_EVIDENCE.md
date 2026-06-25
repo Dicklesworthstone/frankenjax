@@ -2824,6 +2824,17 @@ now reclaimed.) BROADER LEVER: this over-subscription likely affects OTHER BW-bo
 sweep + cap those (filed mentally; the convert win confirms the mechanism). LESSON: for BW-bound threaded ops
 on many-core hosts, all-cores OVER-subscribes; cap at the memory-saturating count (~cores/2).
 
+EXTENDED TO DATA-MOVEMENT (2026-06-25, SlateHarrier — follow-up SHIPPED): confirmed the over-subscription
+generalizes via a standalone parallel-copy sweep (16M f64 copy into fresh output, the exact broadcast/
+transpose/concat pattern): 8t 30.9ms / **16t 22.3ms** / 32t 33.3ms = **1.49x** (32→16). Renamed
+`bw_convert_threads`→`bw_bound_threads` and routed the uncapped data-movement copy/fill sites through it:
+transpose_2d_into, eval_broadcast_in_dim (both the scalar-fill `threaded_fill_into` and the replicate
+`broadcast_replicate_into` paths), eval_concatenate. Large broadcast/transpose/concat now use cores/2 (16)
+not all-cores (32) → the ~1.49x on the big-copy regime. Bit-identical (thread count only): full fj-lax lib
+1601/0 + clippy clean. NOTE: reciprocal/cheap-unary use `dense_unary_threads` which ALREADY caps at 16 at 16M
+(ELEMS_PER_THREAD=1<<20) — NOT over-subscribed; their residual gap stays the eval-model per-call alloc. The
+over-subscription fix is specific to the `work_scaled_threads` (ELEMS_PER_THREAD=1<<16 → all cores) callers.
+
 ## 2026-06-25 - full reductions: max/argmax BEAT JAX; sum/prod 1.5–2x LOSS, threaded-tree lever is a parity call (SlateHarrier)
 
 Measured full reductions vs JAX 0.10.2 (16M f64, `bench_full_reduce_vs_jax`):

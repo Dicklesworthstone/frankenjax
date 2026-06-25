@@ -834,7 +834,7 @@ fn transpose_2d_into<T: Copy + Send + Sync>(out: &mut [T], src: &[T], rows: usiz
     const BLOCK: usize = 64;
     let total = rows * cols;
     let threads = if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN && cols >= 2 {
-        crate::arithmetic::work_scaled_threads(total).min(cols)
+        bw_bound_threads(total).min(cols)
     } else {
         1
     };
@@ -1198,7 +1198,7 @@ pub(crate) fn eval_broadcast_in_dim(
             // calloc'd output + parallel write of the scalar, beating the serial page-fault
             // cliff (~2.5 GB/s). Bit-identical to `vec![v; total]`.
             let par_threads = if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
-                crate::arithmetic::work_scaled_threads(total)
+                bw_bound_threads(total)
             } else {
                 1
             };
@@ -1655,7 +1655,7 @@ fn broadcast_replicate_into<T: Copy + Send + Sync>(
     };
 
     let threads = if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN && outer_total >= 2 {
-        crate::arithmetic::work_scaled_threads(total).min(outer_total)
+        bw_bound_threads(total).min(outer_total)
     } else {
         1
     };
@@ -1920,7 +1920,7 @@ pub(crate) fn eval_concatenate(
         && total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
         && crate::arithmetic::work_scaled_threads(total) > 1
     {
-        let threads = crate::arithmetic::work_scaled_threads(total);
+        let threads = bw_bound_threads(total);
         if expected_dtype == DType::F64
             && let Some(srcs) = tensors
                 .iter()
@@ -5433,12 +5433,14 @@ fn convert_bool_source_dense(
 
 /// Threaded element-cast into a PRE-ALLOCATED `out` slice (caller allocates
 /// `vec![<concrete zero>; n]` = calloc'd zero pages). Splits into contiguous chunks on
-/// Thread count for bandwidth-bound dtype downcasts. `work_scaled_threads` caps at ALL cores, but a
-/// pure read+write convert saturates memory well below core count on many-core hosts, so using every
-/// core OVER-subscribes the memory + page-fault path. Measured f64->f32 16M on the 32-core bench host:
-/// 32t 17.2ms vs 16t 13.5ms = 1.27x. Cap at cores/2 (the memory-saturating sweet spot); only reduces
+/// Thread count for bandwidth-bound, fresh-output ops (dtype converts AND data movement —
+/// broadcast/transpose/concat: parallel `copy_from_slice` into a freshly-allocated buffer).
+/// `work_scaled_threads` caps at ALL cores, but a pure read+write op saturates memory well below
+/// core count on many-core hosts, so using every core OVER-subscribes the memory + page-fault path.
+/// Measured 16M on the 32-core bench host: f64->f32 32t 17.2ms vs 16t 13.5ms (1.27x); parallel-copy
+/// 32t 33.3ms vs 16t 22.3ms (1.49x). Cap at cores/2 (the memory-saturating sweet spot); only reduces
 /// the count on >2-core hosts where over-subscription actually occurs. Bit-identical (thread count only).
-fn bw_convert_threads(n: usize) -> usize {
+fn bw_bound_threads(n: usize) -> usize {
     let cores = std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(1);
@@ -5505,7 +5507,7 @@ pub(crate) fn eval_convert_element_type(
                 // output + parallel fill is bit-identical (per-element `v as f32`).
                 let n = values.len();
                 if target_dtype == DType::F32 && n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
-                    let threads = bw_convert_threads(n);
+                    let threads = bw_bound_threads(n);
                     if threads > 1 {
                         let mut out = vec![0.0f32; n];
                         threaded_convert_into(&mut out, values, threads, |v| v as f32);
@@ -5525,7 +5527,7 @@ pub(crate) fn eval_convert_element_type(
                 if matches!(target_dtype, DType::BF16 | DType::F16)
                     && n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
                 {
-                    let threads = bw_convert_threads(n);
+                    let threads = bw_bound_threads(n);
                     if threads > 1 {
                         let mut out = vec![0u16; n];
                         if target_dtype == DType::BF16 {
@@ -5598,7 +5600,7 @@ pub(crate) fn eval_convert_element_type(
                 // + parallel fill is bit-identical (per-element `f64::from(v)`).
                 let n = values.len();
                 if target_dtype == DType::F64 && n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
-                    let threads = bw_convert_threads(n);
+                    let threads = bw_bound_threads(n);
                     if threads > 1 {
                         let mut out = vec![0.0f64; n];
                         threaded_convert_into(&mut out, values, threads, f64::from);
@@ -14467,6 +14469,44 @@ mod tests {
             "AB column sort f64 [4096,4096] axis0: strided-1thread={s:.4}ms transpose-wrapper={w:.4}ms ({:.2}x) | JAX=2522ms",
             s / w
         );
+    }
+
+    // Parallel-copy-into-fresh-output thread sweep — the EXACT pattern of broadcast/transpose/concat
+    // (block copy_from_slice across scoped threads). Confirms whether all-cores over-subscribes the
+    // copy like it did for convert (so the cap should extend to these data-movement ops).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_parallel_copy_thread_sweep() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let src: Vec<f64> = (0..n).map(|i| i as f64 * 1e-3).collect();
+        for &t in &[8usize, 16, 32] {
+            let f = || {
+                let mut out = vec![0.0f64; n];
+                let per = n.div_ceil(t);
+                std::thread::scope(|scope| {
+                    let mut rest: &mut [f64] = out.as_mut_slice();
+                    let mut s0 = 0usize;
+                    while s0 < n {
+                        let len = per.min(n - s0);
+                        let (blk, tail) = rest.split_at_mut(len);
+                        rest = tail;
+                        let srcref = &src[s0..s0 + len];
+                        scope.spawn(move || blk.copy_from_slice(srcref));
+                        s0 += len;
+                    }
+                });
+                std::hint::black_box(&out);
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..6 {
+                let st = Instant::now();
+                f();
+                b = b.min(st.elapsed().as_secs_f64());
+            }
+            println!("parallel-copy 16M f64 threads={t}: {:.3}ms", b * 1e3);
+        }
     }
 
     // Dtype conversions vs JAX (16M, measured): JAX f64->f32 7.2ms / f32->f64 14.7ms / f64->bf16 4.6ms
