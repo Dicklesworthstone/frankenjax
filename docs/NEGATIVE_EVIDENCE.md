@@ -2612,6 +2612,22 @@ TOLERANCE + relaxing the internal bit-exact matmul guard for the gemv path — a
 Downgraded `dedicated-gemv-h36uj` to very-low. LESSON: matmul's N-SIMD strategy makes N=1 (gemv) inherently
 scalar-K under bit-exactness; the gap is structural, not an oversight.
 
+## 2026-06-26 - scatter-add binning lever CONFIRMED ALREADY DONE; non-fma surface empirically exhausted (SlateHarrier)
+
+Code-verified `scatter_reduce_range_partitioned` (the scatter-add ~1.25x-JAX path): it ALREADY does the
+2-phase stable-bin-then-apply (phase 1: each thread bins its input chunk into per-output-range buckets,
+order-preserving; phase 2: each output-range thread applies its buckets) — NOT an O(T·n) re-scan. Inputs are
+packed `idx<<32 | i` into u64 (halves bucket footprint, +1.06x over (usize,usize)). So the obvious "bin instead
+of re-scan" lever is DONE; the residual 1.25x is the phase-2 scattered `upd[i]` gather + `out[idx]` write
+latency (memory-bound — storing (idx,val) to skip the gather doubles the memory-bound phase-1 build, already
+rejected). Do NOT re-propose binning for scatter-add. CONSOLIDATION (this arc, all MEASURED not asserted):
+the obvious "dig past the ceiling" algorithmic levers were empirically tested and REGRESS — gather sort-scatter
+0.07x, leading-cumsum transpose 0.22x, complex-cumsum threading 0.95x; the transpose/threading trick wins ONLY
+for compute-bound strided ops (sort 4.64x, reduce_window 4.24x/3.21x, half cumsum 4.47x — all shipped), which
+are now mined; scatter-add binned, gather HW-optimal. The non-fma/on-host/unowned surface is exhausted; every
+remaining JAX LOSS routes to `cntiy` (+fma maintainer decision) or owned multi-session (eigh/SVD LAPACK-gap,
+so4wo compiled-jaxpr). sort/cumsum/einsum DOMINATE JAX (CPU-sort/scan catastrophe).
+
 ## 2026-06-26 - gather sort-gather-scatter EMPIRICALLY REJECTED — 0.07x (random gather is HW-optimal) (SlateHarrier)
 
 The scorecard frames gather's ~15x JAX gap as the "Zen3 vgather ceiling" — but that was the SIMD approach.
