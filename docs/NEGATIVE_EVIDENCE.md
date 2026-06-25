@@ -2807,6 +2807,25 @@ add/mul — fj-lax allocs+faults a fresh output per eval, JAX reuses). The TWO r
 ARCHITECTURAL/gated: **+fma (`cntiy`)** and an **output-buffer-reuse eval model**. No contained per-op kernel
 lever remains on this host.
 
+## 2026-06-25 - full reductions: max/argmax BEAT JAX; sum/prod 1.5–2x LOSS, threaded-tree lever is a parity call (SlateHarrier)
+
+Measured full reductions vs JAX 0.10.2 (16M f64, `bench_full_reduce_vs_jax`):
+  • max  fj-lax **2.64ms** vs JAX 6.69ms — fj-lax **WINS 2.5x** (already threaded `threaded_reduce_minmax_f64`)
+  • argmax fj-lax **9.11ms** vs JAX 25.2ms — fj-lax **WINS 2.8x**
+  • sum  fj-lax **13.31ms** vs JAX 6.52ms — fj-lax **LOSES 2.05x**
+  • prod fj-lax **13.30ms** vs JAX 8.55ms — fj-lax **LOSES 1.56x**
+sum/prod are SCALAR SINGLE-THREAD folds (non-associative); max/min already thread (associative → bit-
+identical). A threaded TREE sum (each thread folds its contiguous chunk, partials combined) would run like
+max (~2.6ms) → **BEAT JAX ~5x** (13.3→2.6). BUT it changes the bits and breaks the committed bit-exact-
+sequential semantics — test `dense_f64_reduce_sum_full_fast_path_bit_identical_to_literal_path` + the code
+comment "Sum/Prod stay on the scalar fold — bit-exact order matters". KEY: fj-lax's sequential sum CANNOT
+bit-match JAX's sum anyway (XLA tree-reduces — different order), so float-sum parity vs JAX is necessarily
+TOLERANCE; the bit-exact-sequential lock is a SELF-IMPOSED internal commitment, not a JAX requirement.
+Relaxing float sum/prod to a tolerance contract (enabling a threaded tree reduce) is a PARITY-POLICY/scope
+call (same class as the gemv `h36uj` bit-identity block). Filed bead `frankenjax-tree-sum-reduce`; NOT pursued
+unilaterally (changing reduction semantics + relaxing a bit-exact test is a maintainer decision). `bench_full_
+reduce_vs_jax` left as evidence.
+
 ## 2026-06-26 - scatter-add binning lever CONFIRMED ALREADY DONE; non-fma surface empirically exhausted (SlateHarrier)
 
 Code-verified `scatter_reduce_range_partitioned` (the scatter-add ~1.25x-JAX path): it ALREADY does the

@@ -4560,6 +4560,44 @@ mod tests {
         );
     }
 
+    // BOLD-VERIFY: full reductions vs JAX (16M f64, measured): sum 6.5ms / max 6.7ms / argmax 25.2ms.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_full_reduce_vs_jax() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let data: Vec<f64> = (0..n).map(|i| 0.5 + (i % 9973) as f64 * 1e-4).collect();
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([("axes".to_owned(), "0".to_owned())]);
+        let bench = |label: &str, prim: Primitive| {
+            let f = || {
+                std::hint::black_box(
+                    crate::eval_primitive(prim, std::slice::from_ref(&input), &p).unwrap(),
+                );
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..8 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("fj-lax {label} f64 16M: {:.3}ms", b * 1e3);
+        };
+        bench("sum", Primitive::ReduceSum);
+        bench("max", Primitive::ReduceMax);
+        bench("prod", Primitive::ReduceProd);
+        bench("argmax", Primitive::Argmax);
+    }
+
     // BOLD-VERIFY: max-reduce 2D vs JAX (f32 ax0 1.67 ax1 0.65ms; f64 ax0 10.36 ax1 3.13ms).
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
