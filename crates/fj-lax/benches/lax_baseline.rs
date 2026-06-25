@@ -2958,6 +2958,48 @@ fn bench_cumsum_16k_x_1k_f32_axis1(c: &mut Criterion) {
     });
 }
 
+fn bench_cummax_4096x1024_f32_axis1(c: &mut Criterion) {
+    let (rows, cols) = (4_096usize, 1_024usize);
+    let data: Vec<f32> = (0..rows * cols)
+        .map(|i| ((i % 997) as f32 - 498.0) * 1e-3)
+        .collect();
+    let input = Value::Tensor(
+        TensorValue::new_f32_values(
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            data,
+        )
+        .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("axis".to_owned(), "1".to_owned());
+    c.bench_function("eval/cummax_4096x1024_f32_axis1", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Cummax, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_cummin_4096x1024_f32_axis1(c: &mut Criterion) {
+    let (rows, cols) = (4_096usize, 1_024usize);
+    let data: Vec<f32> = (0..rows * cols)
+        .map(|i| ((i % 997) as f32 - 498.0) * 1e-3)
+        .collect();
+    let input = Value::Tensor(
+        TensorValue::new_f32_values(
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            data,
+        )
+        .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("axis".to_owned(), "1".to_owned());
+    c.bench_function("eval/cummin_4096x1024_f32_axis1", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Cummin, std::slice::from_ref(&input), &p))
+    });
+}
+
 // 16384x1024 f64 Cumsum along axis 0 (leading/strided): 1024 independent columns,
 // each a 16384-deep scan read at stride 1024 by the current serial strided path.
 // Measures the leading-axis cumulative gap vs JAX (head-to-head:
@@ -7078,6 +7120,8 @@ criterion_group!(
     bench_argmax_16k_x_1k_axis1_i64,
     bench_argmax_16k_x_1k_axis0_i64,
     bench_cumsum_16k_x_1k_f32_axis1,
+    bench_cummax_4096x1024_f32_axis1,
+    bench_cummin_4096x1024_f32_axis1,
     bench_cumsum_16k_x_1k_f64_axis0,
     bench_reduce_sum_64k_i64_literal_reference,
     bench_reduce_sum_64k_f32_dense,

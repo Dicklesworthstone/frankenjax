@@ -2924,6 +2924,28 @@ prefix scan. Filed `cummax-scan-max-cost-rekyb` (faster NaN-propagating max in t
 matching the total_cmp-fixed parity) — LOW priority (only f32-trailing is ~parity; jax_max is a parity
 hazard). Scan family (cumsum + cummax/cummin) is otherwise a confirmed XLA-size-cliff DOMINATION.
 
+UPDATE 2026-06-25 (ProudSalmon/Codex): BOLD-VERIFY f32 trailing cummax/cummin on `[4096,1024]` and
+tried the obvious f32-native extrema scan lever. The attempted change routed dense f32 contiguous
+`Cummax`/`Cummin` through `scan_contiguous_lines_to_vec::<f32>` with f32 NaN-propagating max/min,
+leaving cumsum/cumprod and strided scans on the existing f64-accumulator path. Semantic guard passed:
+`rch exec -- cargo test -p fj-lax dense_f32_cumulative_bit_identical_to_literal_path -- --nocapture`
+on `vmi1227854` passed 1/1. Performance did not: changed-tree `rch exec -- cargo bench --profile
+release -p fj-lax --bench lax_baseline -- 'cum(max|min)_4096x1024_f32_axis1' --sample-size 10
+--warm-up-time 1 --measurement-time 2` fell open locally and reported `cummax` 5.3356ms midpoint
+and `cummin` 4.9890ms midpoint, with Criterion's change report showing +61.7% and +25.3% regression.
+The source lever was REVERTED.
+
+Reverted/main behavior with the added measurement rows, same command on RCH worker `vmi1152480`:
+
+| primitive | fj-lax midpoint | JAX CPU p50 | Rust/JAX ratio | verdict |
+| --- | ---: | ---: | ---: | --- |
+| f32 cummax axis=1 `[4096,1024]` | 3.9409ms | 3.967491ms | 0.993x | parity, not a meaningful new win |
+| f32 cummin axis=1 `[4096,1024]` | 3.5937ms | 4.3833035ms | 0.820x | existing fj-lax 1.22x win |
+
+The f32-native scan variant is a no-ship. Keep the bench rows as measurement infra, but do not re-try
+the "f32 max/min instead of f64 accumulator" lever; the remaining frontier, if any, needs a different
+primitive or a genuinely different scan kernel.
+
 cumprod 2D (SlateHarrier): JAX size-cliff-slow too (f64 ax0 20.93 ax1 15.69ms, f32 ax0 6.96 ax1 2.65ms).
 fj-lax cumprod [4096,1024]: f64 ax0 8.73 (**2.4x**), ax1 9.10 (**1.72x**), f32 ax0 1.22 (**5.7x**), ax1
 1.27ms (**2.08x**) — DOMINATES all. The FULL scan family (cumsum/cummax/cummin/cumprod, 1D+2D) dominates
