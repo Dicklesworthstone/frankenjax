@@ -2612,6 +2612,19 @@ TOLERANCE + relaxing the internal bit-exact matmul guard for the gemv path — a
 Downgraded `dedicated-gemv-h36uj` to very-low. LESSON: matmul's N-SIMD strategy makes N=1 (gemv) inherently
 scalar-K under bit-exactness; the gap is structural, not an oversight.
 
+## 2026-06-24 - GROUPED complex conv2d naive → per-group im2col+GEMM, 1.74x (bead 5xdr7) (SlateHarrier)
+
+The non-grouped complex conv (1d+2d) was already GEMM-routed via `rank2_complex_matmul`, but the
+GROUPED/depthwise complex conv2d (`eval_conv_2d_grouped`) was still a naive boxed loop. Routed it per-group
+through im2col + `rank2_complex_matmul`: each group g builds an im2col of its input channels
+`[g·rhs_c_in, ·)` and strided-gathers the kernel's output-column slice `[g·cout_per_group, ·)` (kernel flat
+== `kidx·c_out + co`), matmuls, and scatters into the output. SAME-BINARY A/B [8,32,32,16]*[3,3,4,32] G=4
+SAME: naive **15.20ms → GEMM 8.72ms = 1.74x** (vs JAX complex64 7.29ms: 2.08x loss → 1.20x). Bit-identical
+(`rank2_complex_matmul_matches_generic` + same ascending (kh,kw,ci) order + 0-padded OOB):
+`conv2d_grouped_complex_gemm_matches_naive` (sized > CONV_IM2COL_MIN_OPS so the GEMM path runs, vs a direct
+naive reference) + full lib 1596/0 + clippy clean. Tiny convs stay on the naive fallback. The remaining
+naive complex path is conv1d GROUPED (extremely niche: complex+grouped+1d) — bead 5xdr7 stays open for it.
+
 ## 2026-06-23 - bf16 MAX/MIN-reduce 27x loss → 2.7x (f64x4-widen → f32-native + threaded), 10x faster (SlateHarrier)
 
 bf16 max-reduce [4096,4096] was CATASTROPHIC: ax0 **10.27ms vs JAX 0.378 = 27x**, ax1 2.17 vs 0.167 = 13x.

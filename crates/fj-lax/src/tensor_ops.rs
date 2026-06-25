@@ -12141,6 +12141,79 @@ fn eval_conv_2d_grouped(
     }
 
     if matches!(out_dtype, DType::Complex64 | DType::Complex128) {
+        // im2col + per-group complex GEMM (mirrors the non-grouped complex conv2d + the real
+        // grouped path): each group g convolves input channels [g·rhs_c_in, ·) with the kernel's
+        // output-channel slice [g·cout_per_group, ·). BIT-IDENTICAL to the naive direct loop —
+        // `rank2_complex_matmul` accumulates in the SAME ascending (kh,kw,ci) order
+        // (`rank2_complex_matmul_matches_generic`), and zero-filled OOB taps contribute 0·w just
+        // like the direct loop's bounds skip. Routes the large convs; tiny ones fall to the loop.
+        let kdim_g = kernel_h * kernel_w * rhs_c_in;
+        let conv_ops = total.saturating_mul(kdim_g).saturating_mul(4);
+        let rows = batch * out_h * out_w;
+        if conv_ops >= CONV_IM2COL_MIN_OPS
+            && kdim_g > 0
+            && rows > 0
+            && let (Some(lhs_src), Some(rhs_src)) = (
+                lhs.elements.as_complex_slice(),
+                rhs.elements.as_complex_slice(),
+            )
+        {
+            let kw_rhs_c_in = kernel_w * rhs_c_in;
+            let mut out_full = vec![(0.0_f64, 0.0_f64); rows * c_out];
+            for g in 0..group_count {
+                let ch_base = g * rhs_c_in;
+                let mut col = vec![(0.0_f64, 0.0_f64); rows * kdim_g];
+                for n in 0..batch {
+                    let n_off = n * height_width_c_in;
+                    for oh in 0..out_h {
+                        for ow in 0..out_w {
+                            let row_base = ((n * out_h + oh) * out_w + ow) * kdim_g;
+                            for kh in 0..kernel_h {
+                                let in_h = (oh * stride_h + kh * dil_h) as isize - pad_top as isize;
+                                if in_h < 0 || (in_h as usize) >= height {
+                                    continue;
+                                }
+                                let h_off = (in_h as usize) * width_c_in;
+                                for kw in 0..kernel_w {
+                                    let in_w =
+                                        (ow * stride_w + kw * dil_w) as isize - pad_left as isize;
+                                    if in_w < 0 || (in_w as usize) >= width {
+                                        continue;
+                                    }
+                                    let src = n_off + h_off + (in_w as usize) * c_in + ch_base;
+                                    let cb = row_base + kh * kw_rhs_c_in + kw * rhs_c_in;
+                                    col[cb..cb + rhs_c_in]
+                                        .copy_from_slice(&lhs_src[src..src + rhs_c_in]);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Kernel slice for group g's output columns: rhs flat == kidx·c_out + co, so the
+                // group's cols are a strided gather of width cout_per_group.
+                let mut rhs_g = vec![(0.0_f64, 0.0_f64); kdim_g * cout_per_group];
+                for kidx in 0..kdim_g {
+                    let s = kidx * c_out + g * cout_per_group;
+                    rhs_g[kidx * cout_per_group..(kidx + 1) * cout_per_group]
+                        .copy_from_slice(&rhs_src[s..s + cout_per_group]);
+                }
+                let out_g = rank2_complex_matmul(&col, rows, kdim_g, &rhs_g, cout_per_group);
+                for row in 0..rows {
+                    let d = row * c_out + g * cout_per_group;
+                    out_full[d..d + cout_per_group]
+                        .copy_from_slice(&out_g[row * cout_per_group..(row + 1) * cout_per_group]);
+                }
+            }
+            let elements: Vec<Literal> = out_full
+                .iter()
+                .map(|&(re, im)| conv_literal_from_complex(out_dtype, re, im))
+                .collect();
+            return Ok(Value::Tensor(TensorValue::new(
+                out_dtype,
+                Shape { dims: out_dims },
+                elements,
+            )?));
+        }
         let mut elements = Vec::with_capacity(total);
         for n in 0..batch {
             let n_off = n * height_width_c_in;
@@ -16420,6 +16493,201 @@ mod tests {
                 }
             }
         }
+    }
+
+    // The im2col + per-group rank2_complex_matmul path for GROUPED complex conv2d must be
+    // bit-identical to the direct naive complex loop. Sized above CONV_IM2COL_MIN_OPS so the GEMM
+    // path (not the small-conv naive fallback) is exercised.
+    #[test]
+    fn conv2d_grouped_complex_gemm_matches_naive() {
+        let (h, w, c_in, c_out, kh, kw, g) = (12usize, 12, 8, 12, 3, 3, 4);
+        let rhs_c_in = c_in / g;
+        let cpg = c_out / g;
+        let lhs_c: Vec<(f64, f64)> = (0..h * w * c_in)
+            .map(|i| ((i as f64 * 0.013).sin(), (i as f64 * 0.019).cos() - 0.3))
+            .collect();
+        let rhs_c: Vec<(f64, f64)> = (0..kh * kw * rhs_c_in * c_out)
+            .map(|i| {
+                (
+                    (i as f64 * 0.017).cos() * 0.5,
+                    (i as f64 * 0.011).sin() * 0.4,
+                )
+            })
+            .collect();
+        let lhs = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![1, h as u32, w as u32, c_in as u32],
+                },
+                lhs_c.clone(),
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![kh as u32, kw as u32, rhs_c_in as u32, c_out as u32],
+                },
+                rhs_c.clone(),
+            )
+            .unwrap(),
+        );
+        let out = eval_conv(
+            Primitive::Conv,
+            &[lhs, rhs],
+            &params(&[
+                ("padding", "valid"),
+                ("strides", "1"),
+                ("feature_group_count", &g.to_string()),
+            ]),
+        )
+        .unwrap();
+        let (out_h, out_w) = (h - kh + 1, w - kw + 1);
+        let t = out.as_tensor().unwrap();
+        assert_eq!(
+            t.shape.dims,
+            vec![1, out_h as u32, out_w as u32, c_out as u32]
+        );
+        let got: Vec<(u64, u64)> = t
+            .elements
+            .iter()
+            .map(|l| {
+                let (re, im) = literal_as_complex(l);
+                (re.to_bits(), im.to_bits())
+            })
+            .collect();
+        let mut want = Vec::new();
+        for oh in 0..out_h {
+            for ow in 0..out_w {
+                for co in 0..c_out {
+                    let in_ch_base = (co / cpg) * rhs_c_in;
+                    let (mut ar, mut ai) = (0.0f64, 0.0f64);
+                    for a in 0..kh {
+                        for b in 0..kw {
+                            for ci in 0..rhs_c_in {
+                                let (lre, lim) =
+                                    lhs_c[((oh + a) * w + (ow + b)) * c_in + in_ch_base + ci];
+                                let (rre, rim) = rhs_c[((a * kw + b) * rhs_c_in + ci) * c_out + co];
+                                ar += lre * rre - lim * rim;
+                                ai += lre * rim + lim * rre;
+                            }
+                        }
+                    }
+                    want.push((ar.to_bits(), ai.to_bits()));
+                }
+            }
+        }
+        assert_eq!(
+            got, want,
+            "grouped complex conv GEMM path must be bit-identical to the naive loop (G={g})"
+        );
+    }
+
+    // Same-binary A/B: GROUPED complex conv2d, GEMM path (eval_conv) vs the direct naive loop, on
+    // the JAX-measured shape [8,32,32,16]*[3,3,4,32] G=4 (JAX complex64 = 7.29ms).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_grouped_complex_conv2d_ab() {
+        use std::time::Instant;
+        let (nb, h, w, c_in, c_out, kh, kw, g) = (8usize, 32, 32, 16, 32, 3, 3, 4);
+        let rhs_c_in = c_in / g;
+        let cpg = c_out / g;
+        let lhs_c: Vec<(f64, f64)> = (0..nb * h * w * c_in)
+            .map(|i| ((i as f64 * 0.013).sin(), (i as f64 * 0.019).cos() - 0.3))
+            .collect();
+        let rhs_c: Vec<(f64, f64)> = (0..kh * kw * rhs_c_in * c_out)
+            .map(|i| {
+                (
+                    (i as f64 * 0.017).cos() * 0.5,
+                    (i as f64 * 0.011).sin() * 0.4,
+                )
+            })
+            .collect();
+        let lhs = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex64,
+                Shape {
+                    dims: vec![nb as u32, h as u32, w as u32, c_in as u32],
+                },
+                lhs_c.clone(),
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex64,
+                Shape {
+                    dims: vec![kh as u32, kw as u32, rhs_c_in as u32, c_out as u32],
+                },
+                rhs_c.clone(),
+            )
+            .unwrap(),
+        );
+        let p = params(&[
+            ("padding", "same"),
+            ("strides", "1"),
+            ("feature_group_count", &g.to_string()),
+        ]);
+        let bench = |f: &dyn Fn()| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..8 {
+                let t = Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b * 1e3
+        };
+        let inp = [lhs, rhs];
+        let gemm = bench(&|| {
+            std::hint::black_box(eval_conv(Primitive::Conv, &inp, &p).unwrap());
+        });
+        let (out_h, out_w) = (h, w);
+        let pt = (kh - 1) / 2;
+        let pl = (kw - 1) / 2;
+        let naive = bench(&|| {
+            let mut acc_out = vec![(0.0f64, 0.0f64); nb * out_h * out_w * c_out];
+            for n in 0..nb {
+                for oh in 0..out_h {
+                    for ow in 0..out_w {
+                        for co in 0..c_out {
+                            let icb = (co / cpg) * rhs_c_in;
+                            let (mut ar, mut ai) = (0.0f64, 0.0f64);
+                            for a in 0..kh {
+                                let ih = oh as isize + a as isize - pt as isize;
+                                if ih < 0 || ih as usize >= h {
+                                    continue;
+                                }
+                                for b in 0..kw {
+                                    let iw = ow as isize + b as isize - pl as isize;
+                                    if iw < 0 || iw as usize >= w {
+                                        continue;
+                                    }
+                                    for ci in 0..rhs_c_in {
+                                        let (lre, lim) =
+                                            lhs_c[((n * h + ih as usize) * w + iw as usize) * c_in
+                                                + icb
+                                                + ci];
+                                        let (rre, rim) =
+                                            rhs_c[((a * kw + b) * rhs_c_in + ci) * c_out + co];
+                                        ar += lre * rre - lim * rim;
+                                        ai += lre * rim + lim * rre;
+                                    }
+                                }
+                            }
+                            acc_out[((n * out_h + oh) * out_w + ow) * c_out + co] = (ar, ai);
+                        }
+                    }
+                }
+            }
+            std::hint::black_box(&acc_out);
+        });
+        println!(
+            "AB grouped complex64 conv2d [8,32,32,16]*[3,3,4,32] G=4 SAME: naive={naive:.4}ms gemm={gemm:.4}ms ({:.2}x) | JAX=7.29ms",
+            naive / gemm
+        );
     }
 
     #[test]
