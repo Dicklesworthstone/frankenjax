@@ -2921,7 +2921,19 @@ add/mul — fj-lax allocs+faults a fresh output per eval, JAX reuses). The TWO r
 ARCHITECTURAL/gated: **+fma (`cntiy`)** and an **output-buffer-reuse eval model**. No contained per-op kernel
 lever remains on this host.
 
-## 2026-06-25 - CONVERT thread over-subscription FIXED — cap BW-bound downcast threads at cores/2 (1.2–1.7x) (SlateHarrier)
+## 2026-06-25 - embedding gather 1.11x JAX loss; cores/2 cap REGRESSES (gather is latency-bound) (SlateHarrier)
+
+Probed embedding/row gather (`bench_embedding_gather_vs_jax`): gather 2M rows from a [200000,128] f32 table —
+JAX 158.6ms vs fj-lax **175.6ms = 1.11x slower** (small; ~2GB traffic, eval-model output alloc + random row
+reads). Tried extending the over-subscription cap (cores/2) to the row/slice gather path. A standalone copy-
+sweep suggested it would help (32t 241.8ms vs 16t 160.3ms). But the PRODUCTION embedding gather REGRESSED:
+32t 175.6ms vs the cores/2 cap **212.4ms** — capping HURTS. REVERTED. LESSON: row/slice gather is
+LATENCY-bound on the random source-row reads (unlike the pure-copy data-movement ops), so all-cores wins —
+more threads hide the read latency. The over-subscription cap is ONLY for PURE-COPY fresh-output ops
+(convert/broadcast/transpose/concat/flip/pad), NOT random gather. METHOD LESSON: a synthetic copy-sweep
+mismodeled the production access pattern (showed 16<32; production is 32<16) — measure PRODUCTION, not a proxy.
+The residual 1.11x gather gap is eval-model (output alloc) + memory-latency, both arch (so4wo), no contained
+lever. Left a code NOTE at the gather site + kept the bench.
 
 A genuine CONTAINED, bit-identical win (the first non-gated kernel lever in many turns). Measured dtype
 conversions vs JAX 0.10.2 (16M) showed f64-source casts 2–3x SLOWER (f64->f32 19.3ms vs JAX 7.2, f32->f64

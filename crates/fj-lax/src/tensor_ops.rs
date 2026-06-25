@@ -3070,6 +3070,11 @@ fn gather_contiguous_into<T: Copy + Send + Sync>(
             }
         }
     }
+    // NOTE: do NOT cap at cores/2 here. Unlike the pure-copy data-movement ops, the row/slice gather
+    // is LATENCY-bound on the random source-row reads, so all-cores wins: measured production embedding
+    // gather (2M×128 from [200000,128]) 32t 175.6ms vs the cores/2 cap 212.4ms (cap REGRESSES, reverted
+    // 2026-06-25). A standalone copy-sweep mislead-ingly showed 16<32 — the production access pattern
+    // differs; measure production, not a synthetic proxy.
     let threads = crate::arithmetic::work_scaled_threads(out.len()).min(resolved.len());
     if threads <= 1 {
         return false;
@@ -28770,6 +28775,48 @@ mod tests {
             );
             assert_eq!(bits(&d), bits(&l), "f32 gather mode={mode}");
         }
+    }
+
+    // Embedding gather vs JAX (measured JAX 158.6ms): gather 2M rows from a [200000,128] f32 table.
+    // Inputs built once (no per-call operand clone) for a clean absolute timing.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_embedding_gather_vs_jax() {
+        use std::time::Instant;
+        let (vocab, dim) = (200_000usize, 128usize);
+        let n = 2_000_000usize;
+        let table: Vec<f32> = (0..vocab * dim)
+            .map(|i| (i % 1009) as f32 * 0.001 - 0.5)
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![vocab as u32, dim as u32],
+                },
+                table,
+            )
+            .unwrap(),
+        );
+        let idx: Vec<i64> = (0..n as i64)
+            .map(|i| i.wrapping_mul(2_654_435_761).rem_euclid(vocab as i64))
+            .collect();
+        let idx_v = Value::vector_i64(&idx).unwrap();
+        let inputs = vec![dense, idx_v];
+        let p = params(&[("slice_sizes", "1,128"), ("index_mode", "clip")]);
+        let f = || {
+            std::hint::black_box(super::eval_gather(&inputs, &p).unwrap());
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..6 {
+            let t = Instant::now();
+            f();
+            b = b.min(t.elapsed().as_secs_f64());
+        }
+        println!(
+            "fj-lax embedding gather f32 [2M,128] from [200000,128]: {:.3}ms | JAX=158.6ms",
+            b * 1e3
+        );
     }
 
     #[test]
