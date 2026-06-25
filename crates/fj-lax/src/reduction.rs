@@ -3992,6 +3992,9 @@ fn eval_cumulative_dense(
             return Ok(None);
         };
         let mut out: Vec<(f64, f64)> = src.to_vec();
+        // Single-thread: complex cumsum is MEMORY-bound (16-byte (f64,f64), cheap add), so threading
+        // REGRESSES (measured 0.95x at [512,4096]) — overhead with no BW headroom, unlike the
+        // compute-bound half-float scan (4.47x). Kept serial (see ledger 2026-06-25).
         for outer in 0..outer_count {
             let base = line_base(outer);
             let (mut acc_re, mut acc_im) = match cum_primitive {

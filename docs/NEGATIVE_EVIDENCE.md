@@ -2621,8 +2621,14 @@ scan into a closure and threaded over the independent lines (each line `out[oute
 disjoint block → safe `split_at_mut`, no `unsafe`). Bit-identical (sequential acc dependency WITHIN a line is
 preserved; lines independent). SAME-BINARY A/B bf16 [512,4096] axis1: **serial 7.14ms → threaded 1.60ms =
 4.47x**. Bit-identical: cumulative tests 48/0 + full lib 1599/0 + clippy clean. The cumulative-scan threading
-is now complete across dtypes for the trailing axis (f64/f32/i64/bf16/f16). NOTE: the COMPLEX cumulative
-branch is still single-thread (same pattern, sibling follow-up); leading-axis scans stay strided-output-blocked.
+is now complete across dtypes for the trailing axis (f64/f32/i64/bf16/f16). UPDATE 2026-06-26: tried the
+COMPLEX cumulative sibling — REGRESSES. SAME-BINARY A/B complex128 [512,4096] axis1: serial 20.01ms vs
+threaded **21.09ms = 0.95x**. Unlike the compute-bound half scan (decode+round per elem → 4.47x), complex
+cumsum is MEMORY-bound (16-byte (f64,f64), cheap add; the in-place scan reads+writes 32MB + the src.to_vec
+clone) — threading adds spawn/split overhead with no BW headroom. REVERTED; complex cumulative kept serial
+(annotated in code). LESSON: thread a scan ONLY when it is compute-bound per element (half-float decode/round,
+transcendentals); memory-bound scans (complex, plain f64) regress or break even. Leading-axis scans stay
+strided-output-blocked. Cumulative-scan threading is DONE (compute-bound dtypes threaded; memory-bound left serial).
 
 ## 2026-06-25 - generic dense_float reduce_window THREADED — 3.21x (sum + dilated max/min path) (SlateHarrier)
 
