@@ -2625,6 +2625,15 @@ Covers ALL dtypes + sort/argsort (the wrapper is dtype-agnostic, above the radix
 sort tests 27/0 + full lib 1599/0 + clippy clean. NOTE: JAX sort is a domination, not a loss — this is an
 internal single-thread-strided corner fixed (transpose reuses the dominating row-sort), not a JAX-gap close.
 
+TRANSPOSE-TRICK IS COMPUTE-BOUND-ONLY (2026-06-26, SlateHarrier): tried the same transpose→threaded-scan→
+transpose on the leading-axis (axis0) f64 CUMSUM. SAME-BINARY A/B [4096,1024] axis0: scan_leading (current,
+single-thread) 16.89ms vs transpose+threaded **77.36ms = 0.22x** — a 4.5x REGRESSION. cumsum is MEMORY-bound,
+so the 2 extra transpose passes (cache-hostile element scatter) swamp the threaded-scan benefit. REVERTED.
+RULE refined: the transpose→contiguous-fast-path trick wins ONLY for COMPUTE-bound strided ops (sort: 4.64x);
+for MEMORY-bound ops (cumsum, complex cumsum) it regresses — do NOT transpose-wrap memory-bound scans. This
+closes the leading-axis cumsum question (no safe-Rust lever: strided-output blocks direct threading, transpose
+regresses, SIMD/closure are ~1.0x; it's memory/structural — the `fgk6m` perf-counter lead).
+
 ## 2026-06-25 - half (bf16/f16) trailing cumsum/cumprod/cummax THREADED — 4.47x (dtype-threading gap) (SlateHarrier)
 
 The cumulative scan was threaded for F64/F32/I64 (scan_contiguous_lines) but the BF16/F16 branch of
