@@ -2911,6 +2911,11 @@ zero-fill parallel-copy path) and variance-sensitive → NOT pursued (~0-gain). 
 
 ## 2026-06-25 - full reductions: max/argmax BEAT JAX; sum/prod 1.5–2x LOSS, threaded-tree lever is a parity call (SlateHarrier)
 
+BOOL REDUCTIONS also a WIN (2026-06-25, `bench_any_gt_vs_jax`): any(x>0) 16M f64 = fj-lax 5.27ms vs JAX
+5.95ms = **fj-lax WINS 1.13x**. fj-lax's `ReduceOr`/`ReduceAnd` operate on the BIT-PACKED bool words (16M
+bools = 2MB) with a short-circuit `.any()`, so the reduce itself is negligible and the cost is the threaded
+`Gt` comparison's 128MB read — at/above parity with JAX. No lever; recorded as a win.
+
 Measured full reductions vs JAX 0.10.2 (16M f64, `bench_full_reduce_vs_jax`):
   • max  fj-lax **2.64ms** vs JAX 6.69ms — fj-lax **WINS 2.5x** (already threaded `threaded_reduce_minmax_f64`)
   • argmax fj-lax **9.11ms** vs JAX 25.2ms — fj-lax **WINS 2.8x**

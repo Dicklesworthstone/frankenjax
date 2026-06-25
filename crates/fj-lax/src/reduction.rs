@@ -4607,6 +4607,44 @@ mod tests {
         );
     }
 
+    // BOLD-VERIFY: any(x>0) vs JAX (16M f64, measured JAX 5.95ms). fj-lax composes Gt (128MB read ->
+    // packed-bool) + ReduceOr (reads only the 2MB packed words, short-circuit) — comparison-read-bound.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_any_gt_vs_jax() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let data: Vec<f64> = (0..n).map(|i| (i % 9973) as f64 * 0.01 - 1.0).collect();
+        let x = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let zero = Value::Scalar(Literal::F64Bits(0.0f64.to_bits()));
+        let p = BTreeMap::from([("axes".to_owned(), "0".to_owned())]);
+        let f = || {
+            let mask =
+                crate::eval_primitive(Primitive::Gt, &[x.clone(), zero.clone()], &BTreeMap::new())
+                    .unwrap();
+            std::hint::black_box(
+                crate::eval_primitive(Primitive::ReduceOr, std::slice::from_ref(&mask), &p)
+                    .unwrap(),
+            );
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..8 {
+            let s = Instant::now();
+            f();
+            b = b.min(s.elapsed().as_secs_f64());
+        }
+        println!("fj-lax any(x>0) f64 16M: {:.3}ms | JAX=5.95ms", b * 1e3);
+    }
+
     // BOLD-VERIFY: full reductions vs JAX (16M f64, measured): sum 6.5ms / max 6.7ms / argmax 25.2ms.
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
