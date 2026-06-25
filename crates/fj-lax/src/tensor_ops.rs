@@ -10225,6 +10225,84 @@ fn sort_multiple_along_axis(
         .iter()
         .map(|tensor| tensor.elements.to_vec())
         .collect();
+    // Inter-slice threaded fast-path for the contiguous (last-axis) multi-key sort: lines are
+    // independent and the per-line work (key-tuple extraction + stable comparison sort) is
+    // compute-bound. Each thread owns disjoint contiguous blocks of every operand's output vec
+    // (via per-operand chunks_mut) and reuses one `indexed` scratch. Bit-identical (same stable
+    // sort_by order). Non-last axes are transposed to last upstream, so axis_stride==1 is common.
+    let sort_threads = {
+        let hardware = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1);
+        if total >= SORT_PARALLEL_MIN_TOTAL_ELEMS {
+            hardware.min(total / SORT_PARALLEL_MIN_TOTAL_ELEMS).max(1)
+        } else {
+            1
+        }
+    };
+    if axis_stride == 1 && outer_count > 1 && sort_threads > 1 {
+        let threads = sort_threads.min(outer_count);
+        let per = outer_count.div_ceil(threads);
+        let mut op_iters: Vec<_> = result_elements
+            .iter_mut()
+            .map(|v| v.chunks_mut(per * axis_dim))
+            .collect();
+        let tensors_ref = tensors;
+        let results: Vec<Result<(), EvalError>> = std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            let mut start = 0usize;
+            while start < outer_count {
+                let cnt = per.min(outer_count - start);
+                let blocks: Vec<&mut [Literal]> =
+                    op_iters.iter_mut().map(|it| it.next().unwrap()).collect();
+                let s = start;
+                start += cnt;
+                handles.push(scope.spawn(move || -> Result<(), EvalError> {
+                    let mut blocks = blocks;
+                    let mut indexed: Vec<(usize, Vec<SortKey>)> = Vec::with_capacity(axis_dim);
+                    for j in 0..cnt {
+                        let base = (s + j) * axis_dim;
+                        indexed.clear();
+                        for i in 0..axis_dim {
+                            let mut keys = Vec::with_capacity(num_keys);
+                            for tensor in tensors_ref.iter().take(num_keys) {
+                                keys.push(sort_key(tensor.elements[base + i]).map_err(
+                                    |detail| EvalError::Unsupported { primitive, detail },
+                                )?);
+                            }
+                            indexed.push((i, keys));
+                        }
+                        if descending {
+                            indexed.sort_by(|a, b| compare_sort_key_tuples(&b.1, &a.1));
+                        } else {
+                            indexed.sort_by(|a, b| compare_sort_key_tuples(&a.1, &b.1));
+                        }
+                        for (out_pos, (orig_idx, _)) in indexed.iter().enumerate() {
+                            for (op, tensor) in tensors_ref.iter().enumerate() {
+                                blocks[op][j * axis_dim + out_pos] =
+                                    tensor.elements[base + *orig_idx];
+                            }
+                        }
+                    }
+                    Ok(())
+                }));
+            }
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for r in results {
+            r?;
+        }
+        return tensors
+            .iter()
+            .zip(result_elements)
+            .map(|(tensor, elements)| {
+                TensorValue::new(tensor.dtype, tensor.shape.clone(), elements)
+                    .map(Value::Tensor)
+                    .map_err(EvalError::InvalidTensor)
+            })
+            .collect();
+    }
+
     let mut indexed: Vec<(usize, Vec<SortKey>)> = Vec::with_capacity(axis_dim);
 
     for outer in 0..outer_count {
@@ -14366,6 +14444,72 @@ mod tests {
         println!(
             "AB column sort f64 [4096,4096] axis0: strided-1thread={s:.4}ms transpose-wrapper={w:.4}ms ({:.2}x) | JAX=2522ms",
             s / w
+        );
+    }
+
+    // A/B: multi-operand (key+value) sort — serial per-row reference vs the inter-slice threaded path.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_multi_sort_threaded_ab() {
+        use std::time::Instant;
+        let (rows, cols) = (2048usize, 2048usize);
+        let keys: Vec<f64> = (0..rows * cols)
+            .map(|i| ((i.wrapping_mul(2654435761) % 100003) as f64) * 0.01)
+            .collect();
+        let vals: Vec<i64> = (0..rows * cols).map(|i| i as i64).collect();
+        let shape = Shape {
+            dims: vec![rows as u32, cols as u32],
+        };
+        let inputs = vec![
+            Value::Tensor(TensorValue::new_f64_values(shape.clone(), keys.clone()).unwrap()),
+            Value::Tensor(TensorValue::new_i64_values(shape, vals.clone()).unwrap()),
+        ];
+        let p = BTreeMap::from([
+            ("axis".to_owned(), "1".to_owned()),
+            ("num_keys".to_owned(), "1".to_owned()),
+        ]);
+        let threaded = || {
+            std::hint::black_box(super::eval_sort_multi(Primitive::Sort, &inputs, &p).unwrap());
+        };
+        // Serial reference replicates eval_sort_multi's serial inner loop (per-element Vec<SortKey>
+        // + compare_sort_key_tuples) so the A/B isolates the threading, not the key machinery.
+        let key_lits: Vec<Literal> = match &inputs[0] {
+            Value::Tensor(t) => t.elements.as_slice().to_vec(),
+            _ => unreachable!(),
+        };
+        let serial = || {
+            let mut out_k = keys.clone();
+            let mut out_v = vals.clone();
+            let mut indexed: Vec<(usize, Vec<SortKey>)> = Vec::with_capacity(cols);
+            for r in 0..rows {
+                let base = r * cols;
+                indexed.clear();
+                for i in 0..cols {
+                    indexed.push((i, vec![super::sort_key(key_lits[base + i]).unwrap()]));
+                }
+                indexed.sort_by(|a, b| super::compare_sort_key_tuples(&a.1, &b.1));
+                for (pos, (oi, _)) in indexed.iter().enumerate() {
+                    out_k[base + pos] = keys[base + *oi];
+                    out_v[base + pos] = vals[base + *oi];
+                }
+            }
+            std::hint::black_box((&out_k, &out_v));
+        };
+        let bench = |f: &dyn Fn()| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            b * 1e3
+        };
+        let sref = bench(&serial);
+        let thr = bench(&threaded);
+        println!(
+            "AB multi-sort (key f64 + val i64) [2048,2048] axis1: serial-ref={sref:.4}ms threaded={thr:.4}ms ({:.2}x)",
+            sref / thr
         );
     }
 

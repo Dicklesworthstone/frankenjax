@@ -2638,8 +2638,17 @@ SAME-BINARY A/B `bench_complex_sort_threaded_ab` complex128 [2048,2048] axis1: s
 1599/0 + clippy clean). vs JAX 602ms the domination went 2.15x→4.4x. PITFALLS hit + fixed: (1) gated on
 `use_parallel_radix` first (that's INTRA-slice, outer_count==1 only) so threading never engaged — use the
 inter-slice `SORT_PARALLEL_MIN_TOTAL_ELEMS` gate; (2) allocating `indexed` per-line made it a net loss — reuse
-per-thread. The sort-threading family is now COMPLETE (radix dtypes + generic/complex, all axes via the
-transpose wrapper). This is the last contained compute-bound lever; remaining = `cntiy` +fma / owned.
+per-thread. UPDATE: also threaded the MULTI-operand sort (`sort_multiple_along_axis`, lax.sort/lexsort with
+key+value operands) the same way — inter-slice threading of the contiguous case, each thread owning disjoint
+contiguous blocks of every operand's output vec via per-operand `chunks_mut`, per-thread reused `indexed`.
+CLEAN SAME-BINARY A/B `bench_multi_sort_threaded_ab` (key f64 + val i64) [2048,2048] axis1, serial-ref
+replicates the eval serial inner loop (per-element `Vec<SortKey>` + compare_sort_key_tuples): serial-ref
+716ms vs threaded **422ms = 1.69x**. (NOTE: an alloc-free manual sort is ~150ms — the multi-sort path is
+ALLOC-BOUND on the per-element `Vec<SortKey>`, so threading only reaches 1.69x not ~2.6x; the residual lever
+is killing that per-element alloc, e.g. SmallVec/flat keys for small num_keys — deferred, larger change.)
+Bit-identical: sort tests 27/0 + full lib 1599/0 + clippy clean. The sort-threading family is now COMPLETE
+(radix dtypes + generic/complex single + MULTI-operand + top_k, all axes via the transpose wrapper). This is
+the last contained compute-bound lever; remaining = `cntiy` +fma / owned.
 
 ## 2026-06-26 - gather sort-gather-scatter EMPIRICALLY REJECTED — 0.07x (random gather is HW-optimal) (SlateHarrier)
 
