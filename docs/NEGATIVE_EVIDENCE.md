@@ -2787,6 +2787,14 @@ pure-BW op pays fj-lax's per-call alloc/fault that JAX amortizes. That is an eva
 in-place dispatch — architectural, akin to so4wo), NOT a contained per-op kernel lever. NOT pursued. (Good
 news: on compute-bearing unary ops fj-lax already MATCHES/BEATS XLA.)
 
+VECTORIZATION RULED OUT (2026-06-25, SlateHarrier — implemented + REVERTED): hypothesized the reciprocal gap
+was the scalar closure map failing to auto-vectorize the division (scalar `divsd` vs `vdivpd`). Built
+`eval_reciprocal` (explicit 8-wide `Simd::splat(1.0)/xv`, bit-identical, reciprocal tests 2/0) and routed the
+dispatch to it. SAME-BINARY A/B bounced **1.11x then 0.88x across two runs = ~0-gain (NOISE)** — both scalar
+and SIMD sit at the same ~25ms floor. So the division DOES vectorize enough; the residual gap is purely the
+eval-MODEL per-call output alloc/faults, NOT vectorization. REVERTED fully (lib.rs + arithmetic.rs == HEAD).
+The reciprocal/cheap-BW lever is confirmed so4wo-class (buffer reuse), with zero contained kernel headroom.
+
 EXTENDED SWEEP (2026-06-25, SlateHarrier — closes the binary/intpow class): measured more JAX 0.10.2 16M f64:
 intpow x³ 17.4ms / x⁸ 13.1ms, maximum 14.2ms, clip 11.6ms (all BW-bound → same eval-model alloc gap),
 remainder JAX 30.7ms vs fj-lax **37.2ms (~1.2x)** — scalar `fmod` (NO SIMD fmod on x86, both scalar) + the
