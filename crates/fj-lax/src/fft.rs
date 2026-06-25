@@ -40,10 +40,12 @@ const FFT_PLAN_CACHE_MAX_ENTRIES: usize = 32;
 type Radix2PlanCache = Vec<((usize, bool), Arc<Radix2Plan>)>;
 type TwiddlePlanCache = Vec<((usize, bool), Arc<Vec<(f64, f64)>>)>;
 type BluesteinPlanCache = Vec<((usize, bool), Arc<BluesteinPlan>)>;
+type RealRfftPower2PlanCache = Vec<(usize, Arc<RealRfftPower2Plan>)>;
 
 static RADIX2_PLAN_CACHE: OnceLock<Mutex<Radix2PlanCache>> = OnceLock::new();
 static TWIDDLE_PLAN_CACHE: OnceLock<Mutex<TwiddlePlanCache>> = OnceLock::new();
 static BLUESTEIN_PLAN_CACHE: OnceLock<Mutex<BluesteinPlanCache>> = OnceLock::new();
+static REAL_RFFT_POWER2_PLAN_CACHE: OnceLock<Mutex<RealRfftPower2PlanCache>> = OnceLock::new();
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -717,6 +719,33 @@ fn cached_bluestein_plan(n: usize, inverse: bool) -> Arc<BluesteinPlan> {
         guard.remove(0);
     }
     guard.push(((n, inverse), Arc::clone(&built)));
+    built
+}
+
+fn cached_real_rfft_power2_plan(fft_length: usize) -> Arc<RealRfftPower2Plan> {
+    let cache = REAL_RFFT_POWER2_PLAN_CACHE.get_or_init(|| Mutex::new(Vec::new()));
+    {
+        let guard = match cache.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some((_, plan)) = guard.iter().find(|(len, _)| *len == fft_length) {
+            return Arc::clone(plan);
+        }
+    }
+
+    let built = Arc::new(RealRfftPower2Plan::new(fft_length));
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some((_, plan)) = guard.iter().find(|(len, _)| *len == fft_length) {
+        return Arc::clone(plan);
+    }
+    if guard.len() >= FFT_PLAN_CACHE_MAX_ENTRIES {
+        guard.remove(0);
+    }
+    guard.push((fft_length, Arc::clone(&built)));
     built
 }
 
@@ -2207,7 +2236,7 @@ pub(crate) fn eval_rfft(
     let plan = (fft_length > 1 && !fft_length.is_power_of_two())
         .then(|| BatchFftPlan::new(fft_length, false));
     let real_plan = (fft_length >= 2 && fft_length.is_power_of_two())
-        .then(|| RealRfftPower2Plan::new(fft_length));
+        .then(|| cached_real_rfft_power2_plan(fft_length));
 
     // Dense complex output, one row-block per thread for large batches. Each row
     // is independent (pad -> transform -> keep Hermitian half), so this is
@@ -2231,7 +2260,7 @@ pub(crate) fn eval_rfft(
         rfft_rows_into(
             &elements,
             plan.as_ref(),
-            real_plan.as_ref(),
+            real_plan.as_deref(),
             fft_length,
             input_last,
             copy_len,
@@ -2246,7 +2275,7 @@ pub(crate) fn eval_rfft(
             rows_per += 1;
         }
         let plan_ref = plan.as_ref();
-        let real_plan_ref = real_plan.as_ref();
+        let real_plan_ref = real_plan.as_deref();
         let elements_ref = &elements;
         std::thread::scope(|scope| {
             let mut rest: &mut [(f64, f64)] = out_values.as_mut_slice();
@@ -5089,6 +5118,15 @@ mod tests {
             let expected = fft_1d(&padded);
             assert_complex_close(&actual, &expected[..fft_length / 2 + 1], 1e-9);
         }
+    }
+
+    #[test]
+    fn cached_real_rfft_power2_plan_reuses_immutable_plan() {
+        let first = cached_real_rfft_power2_plan(256);
+        let second = cached_real_rfft_power2_plan(256);
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.fft_length, 256);
     }
 
     /// Golden guard for the half-length real FFT path. The path intentionally

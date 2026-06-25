@@ -145,6 +145,41 @@ win that removes avoidable setup cost and narrows the singleton FFT JAX gap. The
 the same frontier: pocketfft-class SIMD-within-FFT, generated length-specialized kernels, or a
 quiesced-host threading proof.
 
+UPDATE 2026-06-25 (ProudSalmon, real `Rfft` power-of-two plan cache BOLD-VERIFY): a second bounded
+FFT plan-cache gap remained after the complex FFT cache landed. `eval_rfft` still rebuilt
+`RealRfftPower2Plan::new(fft_length)` on every eval call for power-of-two real FFTs, including the
+planned half-length radix-2 FFT and recombination twiddles. Shipped the same immutable 32-entry
+in-process cache discipline used by radix-2/Bluestein/twiddle plans, with no butterfly-order or
+numeric-path change.
+
+Evidence discipline:
+  - No unlanded measured worktree win was found before digging; this was a fresh lever from the
+    current `fj-lax` source.
+  - Benchmark command used the requested warm target plumbing and crate scope:
+    `AGENT_NAME=ProudSalmon RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo bench -p fj-lax --profile release --bench lax_baseline -- rfft_256_f64 --noplot`.
+  - Same-worker RCH `hz2` A/B on `eval/rfft_256_f64`: uncached current-main path **4.6887 us**
+    midpoint (`4.5852..4.8059 us`) vs cached candidate **2.3190 us** midpoint
+    (`2.2671..2.3846 us`), Criterion **-49.582%** mean change, p=0.00, **2.02x Rust-side speedup**.
+    A cross-worker `vmi1153651` candidate sample was ignored for proof because it was not comparable.
+  - Fresh live JAX comparator: `uv run --with 'jax[cpu]' --with numpy python`, JAX 0.10.2 CPU x64,
+    exact `sin(i*0.125)+cos(i*0.03125)` length-256 f64 fixture, warmed jit, 200 repeats:
+    **25.669 us p50 / 33.904 us mean / 50.606 us p95**.
+  - Correctness/quality: `cargo fmt --check -p fj-lax` GREEN; `cargo test -p fj-lax --lib rfft
+    --release -- --nocapture` GREEN (25 passed, 2 ignored); `cargo check -p fj-lax --all-targets`
+    GREEN; `cargo clippy -p fj-lax --all-targets -- -D warnings` GREEN; `cargo test -p
+    fj-conformance --release --test fft_oracle -- --nocapture` GREEN (27 passed); `cargo test -p
+    fj-conformance --release --test linalg_fft_oracle_parity -- --nocapture` GREEN (1 passed).
+
+Ratio-vs-JAX ledger:
+
+| workload | fj-lax candidate | JAX mean | Rust/JAX | verdict |
+|---|---:|---:|---:|---|
+| `eval/rfft_256_f64` | 2.319 us | 33.904 us | 0.068x / **14.62x fj-lax win** | KEEP: removes repeated real-plan setup; flips this warmed scalar RFFT row further into Rust-win territory |
+
+Scorecard: **1 JAX win / 0 JAX losses / 1 kept / 0 reverted**. Do not generalize this to FFT batch
+domination: the lever is specifically repeated-eval setup removal for power-of-two real RFFT. Batch
+FFT losses remain routed to pocketfft-class SIMD/generated-kernel work.
+
 CONFORMANCE STATUS (2026-06-21, verified HEAD): **ENTIRE WORKSPACE GREEN** — `cargo test --workspace
 --release` = 0 failures across all crates (fj-lax 1583/0 after the cholesky digest re-baseline
 7a0f165e + the erf_inv regression fix c1b9ef15; fj-conformance all-green; fj-ad/fj-interpreters/etc.
