@@ -62,6 +62,37 @@ primitive lever; not a Rust-over-JAX flip. Next retry must beat ~1.17ms with a
 lower-overhead thread policy or vectorized complex mux, not another boxed-mask
 avoidance pass.
 
+UPDATE 2026-06-25 (ProudSalmon, AGENT_NAME=ProudSalmon, cumprod/cummax SIMD-prefix
+BOLD-VERIFY NO-SHIP): no unlanded measured worktree win was found for this lane, so
+the next radical lever was the previously scoped Blelloch/Hillis-Steele primitive:
+specialize the 4M f64 one-line `cumprod`/`cummax` local blocked scan instead of
+reusing the generic closure scan. The candidate used an f64x8 lane-prefix product
+plus inlined min/max scan plumbing, left cumsum untouched, and was reverted after
+measurement.
+
+Same-worker RCH evidence (`RCH_WORKER=vmi1152480`,
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b`,
+`cargo bench -p fj-lax --bench lax_baseline` filtered to the 4M scan rows):
+
+| row | retained main p50 | candidate p50 | Criterion verdict |
+| --- | ---: | ---: | --- |
+| `eval/cumprod_4m_f64_1d` | 15.859ms | 15.538ms | no change, p=0.69, CI -5.88%..+11.44% |
+| `eval/cummax_4m_f64_1d` | 17.587ms | 16.231ms | no change, p=0.17, CI -9.95%..+1.16% |
+
+Fresh JAX comparator (`uv run --with jax --with jaxlib --with numpy`, JAX/JAXLIB
+0.10.2, CPU, `JAX_ENABLE_X64=1`, 10 warmed compiled runs on the exact 4M f64
+fixtures) measured `cumprod` p50 **43.061ms** and `cummax` p50 **38.828ms**.
+Retained Rust/JAX p50 ratios are therefore **0.37x** for `cumprod` (Rust 2.71x
+faster than JAX) and **0.45x** for `cummax` (Rust 2.21x faster than JAX). The
+candidate would have remained inside Criterion noise, so it is not a valid win
+despite the current retained rows already beating fresh JAX.
+
+Conformance while the candidate was present: RCH `cargo test -p fj-lax
+blocked_dense_f64_single_line_cumulative_matches_serial_reference --release --lib
+-- --nocapture` passed 1/1 on `ovh-a`. Final source diff was returned to empty;
+only this ledger entry is retained. Retry only with perf-counter or disassembly
+evidence for a new stall source, not another closure/SIMD-prefix variant.
+
 UPDATE 2026-06-22 (CrimsonOtter, `frankenjax-murmw` FFT BOLD-VERIFY): the radical FFT route from
 alien-graveyard/extreme-optimization was generated/vectorized radix-4 family specialization for the
 power-of-two batched kernel. Fresh same-binary A/B rejected the lever: radix-4 SoA butterflies were
