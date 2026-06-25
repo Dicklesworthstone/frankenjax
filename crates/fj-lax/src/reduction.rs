@@ -276,6 +276,47 @@ fn threaded_reduce_minmax_f64(values: &[f64], is_max: bool) -> f64 {
     m
 }
 
+fn threaded_tree_reduce_sum_f64(values: &[f64]) -> f64 {
+    let n = values.len();
+    let threads = crate::arithmetic::work_scaled_threads(n).min(8);
+    if n < crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN || threads <= 1 {
+        let mut acc = 0.0;
+        for &value in values {
+            acc += value;
+        }
+        return acc;
+    }
+
+    let chunk = n.div_ceil(threads);
+    let partials: Vec<f64> = std::thread::scope(|scope| {
+        let handles: Vec<_> = values
+            .chunks(chunk)
+            .map(|chunk_values| {
+                scope.spawn(move || {
+                    let mut acc = 0.0;
+                    for &value in chunk_values {
+                        acc += value;
+                    }
+                    acc
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| match handle.join() {
+                Ok(partial) => partial,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
+    });
+
+    let mut acc = 0.0;
+    for partial in partials {
+        acc += partial;
+    }
+    acc
+}
+
 /// f32 sibling of [`threaded_reduce_minmax_f64`].
 fn threaded_reduce_minmax_f32(values: &[f32], is_max: bool) -> f32 {
     let n = values.len();
@@ -1195,7 +1236,8 @@ fn eval_dense_float_full_reduce(
     // ReduceMax/ReduceMin SIMD path: the scalar `jax_max`/`jax_min` fold above can't
     // autovectorize (per-step NaN branch), so vectorize it explicitly. max/min are
     // associative+commutative, so this is bit-identical (see simd_reduce_minmax_f64).
-    // Sum/Prod stay on the scalar fold (non-associative — bit-exact order matters).
+    // Prod stays on the scalar fold. Large f64 ReduceSum follows the JAX/XLA
+    // tolerance contract instead of this module's older internal bit-order lock.
     let is_minmax = matches!(primitive, Primitive::ReduceMax | Primitive::ReduceMin);
     if is_minmax {
         let is_max = primitive == Primitive::ReduceMax;
@@ -1229,10 +1271,15 @@ fn eval_dense_float_full_reduce(
     match tensor.dtype {
         DType::F64 => {
             let values = tensor.elements.as_f64_slice()?;
-            let mut acc = float_init;
-            for &value in values {
-                acc = float_op(acc, value);
-            }
+            let acc = if primitive == Primitive::ReduceSum {
+                threaded_tree_reduce_sum_f64(values)
+            } else {
+                let mut acc = float_init;
+                for &value in values {
+                    acc = float_op(acc, value);
+                }
+                acc
+            };
             Some(Value::Scalar(reduce_real_literal(DType::F64, acc)))
         }
         DType::F32 => {
@@ -5208,6 +5255,40 @@ mod tests {
         assert_eq!(
             extract_f64_bits(&dense_result),
             extract_f64_bits(&literal_result)
+        );
+    }
+
+    #[test]
+    fn dense_f64_reduce_sum_large_tree_matches_sequential_with_tolerance() {
+        let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 1024;
+        let data: Vec<f64> = (0..n).map(|i| ((i as f64) * 1.1e-7).sin() * 3.0).collect();
+        let expected: f64 = data.iter().copied().sum();
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+
+        let result = eval_reduce(
+            Primitive::ReduceSum,
+            &[input],
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+        let got = extract_f64(&result);
+        let tolerance = expected.abs() * 1e-12 + 1e-9;
+
+        assert!(
+            (got - expected).abs() <= tolerance,
+            "large tree reduce_sum got {got}, sequential {expected}, diff {} > {tolerance}",
+            (got - expected).abs()
         );
     }
 

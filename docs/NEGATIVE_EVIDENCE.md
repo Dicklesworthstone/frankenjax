@@ -2,6 +2,32 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-25 - KEEP: dense f64 full ReduceSum tree fold beats JAX on the 16M row (ProudSalmon)
+
+No measured worktree win was landable: the only positive scratch cherry found was the QR/SVD WIP
+`a00dc114` in `/data/projects/frankenjax_poyvi1_pass188`, and it had no bench/ledger evidence on
+main. New lever shipped here: large dense f64 full `ReduceSum` now folds contiguous chunks on up
+to 8 worker threads and combines partials, while small vectors remain on the old sequential path.
+This intentionally relaxes the older self-imposed bit-order lock only for large f64 full sums;
+JAX/XLA already uses tolerance/tree semantics for floating reductions.
+
+Measured head-to-head row: `eval/reduce_sum_16m_f64_full` over the exact fixture
+`sin(i*1.1e-7)*3.0`, `JAX_ENABLE_X64=1`, CPU. RCH current-main baseline on `vmi1227854`:
+8.5162ms midpoint, retained as routing evidence. Same-worker proof on `ovh-a`: current main
+12.979ms midpoint vs candidate 3.2170ms midpoint, a 4.03x Rust-side speedup. Fresh local JAX
+0.10.2/jaxlib 0.10.2 comparator: 5.0331595ms p50, 5.3822536ms mean. Candidate/JAX ratio is
+0.639x by p50 and 0.598x by mean, so fj-lax is 1.56-1.67x faster on this row.
+
+Correctness scope: the existing small dense f64 full-sum bit-identity test stays green for inputs
+below the thread threshold; a new large-vector test checks the tree result against the sequential
+fold with a tight floating tolerance. Product and non-f64 sums stay on their prior scalar paths.
+Final gates: `cargo test -p fj-lax dense_f64_reduce_sum --release --lib -- --nocapture` 3/3,
+`cargo test -p fj-conformance --test reduce_sum_oracle --release -- --nocapture` 41/41,
+`cargo check -p fj-lax --all-targets`, `cargo clippy -p fj-lax --all-targets -- -D warnings`,
+`cargo fmt --check -p fj-lax`, and `git diff --check`. UBS remains a file-wide inventory gate for
+`reduction.rs` rather than a clean signal here: final scan still reports 42 critical / 1655 warning
+pre-existing findings in the large file, after removing the new thread-join `expect`.
+
 ## FRONTIER SCORECARD (2026-06-21, CrimsonOtter) — what still loses to JAX and why
 
 Consolidated from this session's measurements + the per-op entries below. The contained,
