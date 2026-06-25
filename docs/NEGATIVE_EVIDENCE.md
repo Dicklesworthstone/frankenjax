@@ -2760,6 +2760,17 @@ Boost coefficients) → ~15 div → ~30 mul/add + 1 div; (2) or SIMD-8-wide the 
 `frankenjax-special-fn-rational-3gsc5`. Bench `bench_special_fns_throughput` left in as the A/B baseline.
 NOTE: erf is cross-crate (excluded here).
 
+CORRECTION (2026-06-25, SlateHarrier — IMPLEMENTED + REVERTED): built `lgamma_simd8` (Lanczos divisions
+8-wide vdivpd, scalar `ln`s + scalar combine + scalar x<0.5 fixup), made it BIT-IDENTICAL to `lgamma_approx`
+(needed a SHARED `(z+0.5)*ln(t)-t` combine fn — separate compile sites fma-contracted differently → 1-ULP
+divergence at x=1.53; sharing the fn fixed it, lgamma tests 7/0). But SAME-BINARY A/B: scalar 55.56ms vs
+SIMD **65.81ms = 0.84x — a REGRESSION**. LESSON: my "divisions dominate" premise was WRONG — the **scalar
+`ln`s dominate** (8 div ≈ 1/3 of the work), and SIMD-ing only the divisions adds lane extract/reinsert +
+per-lane branch overhead that EXCEEDS the saved division time. The full ~2x parity needs SIMD `ln` — which is
+fma-gated (cf. SIMD-poly exp: 2.2x WITH fma / 0.79x WITHOUT). So the special-fn gap LARGELY FOLDS INTO `cntiy`
+(+fma), like matmul/conv/exp; the rational-Horner reform (8 div→1) is also `ln`-capped and won't reach parity
+alone. REVERTED to scalar (arithmetic.rs unchanged). Bead downgraded: needs +fma SIMD-ln, not a quick win.
+
 ## 2026-06-26 - scatter-add binning lever CONFIRMED ALREADY DONE; non-fma surface empirically exhausted (SlateHarrier)
 
 Code-verified `scatter_reduce_range_partitioned` (the scatter-add ~1.25x-JAX path): it ALREADY does the
