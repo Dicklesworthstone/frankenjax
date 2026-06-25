@@ -2921,6 +2921,19 @@ add/mul — fj-lax allocs+faults a fresh output per eval, JAX reuses). The TWO r
 ARCHITECTURAL/gated: **+fma (`cntiy`)** and an **output-buffer-reuse eval model**. No contained per-op kernel
 lever remains on this host.
 
+## 2026-06-25 - cummax 1.21x JAX LOSS — ASSOCIATIVE parallel-scan is a real contained lever (NEW) (SlateHarrier)
+
+`bench_cummax1d_vs_jax` (16M f64 single chain): fj-lax cummax **82.3ms vs JAX 68.1ms = 1.21x slower**; cummin
+75.1 vs 72.1ms = ~parity. KEY: fj-lax cummax is ~4x slower than its OWN cumsum (21ms) — the cost is the
+per-element NaN-aware `jax_max` (total_cmp branch), not the scan structure; and the 1-D chain is sequential
+(single-thread). UNLIKE cumsum (non-associative, tolerance-locked), **max/min ARE associative** — so a
+PARALLEL prefix-scan is BIT-IDENTICAL (2-pass chunked: per-thread local cummax + chunk-max, prefix-max the
+chunk carries, re-apply) and would parallelize the slow jax_max → beat JAX. A branchless total-order max is a
+second (sequential) lever. This is a GENUINE contained, non-fma, bit-identical lever (the first non-gated one
+in a while — distinct from cumsum's tolerance-lock and select's eval-model BW). Deferred to a focused turn
+(parallel-scan + jax_max-associativity accuracy verification — not to rush at depth). Recorded measured loss +
+the lever; kept `bench_cummax1d_vs_jax`. Bead-worthy follow-up: parallel associative scan for cummax/cummin.
+
 ## 2026-06-25 - RNG (random_uniform) is a ~3x fj-lax WIN vs JAX (SlateHarrier)
 
 `bench_random_uniform_vs_jax` (16M): fj-lax random_uniform **36.84ms (f64)** vs JAX random.uniform **112.0ms

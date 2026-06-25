@@ -4401,6 +4401,46 @@ mod tests {
     use fj_core::LiteralBuffer;
     use std::collections::BTreeMap;
 
+    // BOLD-VERIFY: 1-D cummax/cummin vs JAX (16M f64, measured JAX lax.cummax 68.1ms / cummin 72.1ms).
+    // max/min are associative (a parallel scan would be bit-identical) — but JAX doesn't fast-scan them
+    // on CPU, so fj-lax's sequential fold should still win.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_cummax1d_vs_jax() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let data: Vec<f64> = (0..n)
+            .map(|i| ((i.wrapping_mul(2654435761) % 100003) as f64) * 0.01 - 500.0)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([("axis".to_owned(), "0".to_owned())]);
+        let bench = |label: &str, prim: Primitive| {
+            let f = || {
+                std::hint::black_box(
+                    crate::eval_primitive(prim, std::slice::from_ref(&x), &p).unwrap(),
+                );
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..6 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("fj-lax {label} f64 16M: {:.3}ms", b * 1e3);
+        };
+        bench("cummax1d", Primitive::Cummax);
+        bench("cummin1d", Primitive::Cummin);
+    }
+
     // BOLD-VERIFY: 1-D cumsum/cumprod vs JAX (16M f64, measured JAX cumsum 95.0ms / cumprod 94.2ms — XLA
     // has no fast single-chain scan). fj-lax does a sequential latency-bound fold; this checks the ratio.
     #[test]
