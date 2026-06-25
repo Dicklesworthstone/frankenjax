@@ -9918,6 +9918,30 @@ fn sort_along_axis(
         ));
     }
 
+    // NON-LAST-AXIS sort: the dtype radix paths only THREAD the contiguous (axis_stride==1) case;
+    // a non-last axis falls to a SINGLE-THREAD strided radix (cache-hostile). Transpose the sort
+    // axis to last (contiguous) → recurse into the threaded contiguous fast path → transpose back.
+    // Bit-identical: sort is exact, transpose is exact data movement, and the swap permutation is
+    // its own inverse; argsort indices are positions along the sort axis, preserved by the transpose.
+    if rank >= 2 && axis != rank - 1 {
+        let mut perm: Vec<usize> = (0..rank).collect();
+        perm.swap(axis, rank - 1);
+        let perm_str = perm
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let tp = BTreeMap::from([("permutation".to_owned(), perm_str)]);
+        let transposed = eval_transpose(std::slice::from_ref(&Value::Tensor(tensor.clone())), &tp)?;
+        let sorted = match transposed {
+            Value::Tensor(tt) => {
+                sort_along_axis(primitive, &tt, rank - 1, descending, return_indices)?
+            }
+            other => return Ok(other),
+        };
+        return eval_transpose(std::slice::from_ref(&sorted), &tp);
+    }
+
     // Radix fast paths (no Literal machinery), for both ascending and descending:
     // descending uses the complement key (ascending radix of `!key` == stable
     // descending). Each returns None for wrong-dtype / non-dense / short axes ->
@@ -14225,6 +14249,56 @@ mod tests {
 
     // BOLD-VERIFY: 2D per-row sort vs JAX (CATASTROPHICALLY slow: f32/f64 [4096,4096] ax1 ~2200ms,
     // XLA bitonic network). fj-lax radix/pdqsort threaded across rows should DOMINATE hugely.
+    // A/B: column sort (axis 0) — OLD single-thread strided radix (sort_along_axis_dense_f64 direct)
+    // vs the NEW transpose→threaded-row-sort→transpose wrapper (eval_primitive routes through it).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_column_sort_transpose_ab() {
+        use std::time::Instant;
+        let (rows, cols) = (4096usize, 4096usize);
+        let d: Vec<f64> = (0..rows * cols)
+            .map(|i| ((i.wrapping_mul(2654435761) % 100003) as f64) * 0.01 - 500.0)
+            .collect();
+        let shape = Shape {
+            dims: vec![rows as u32, cols as u32],
+        };
+        let t = Value::Tensor(TensorValue::new_f64_values(shape, d).unwrap());
+        let tref = match &t {
+            Value::Tensor(tt) => tt,
+            _ => unreachable!(),
+        };
+        let strided = || {
+            // axis=0 hits the strided (non-last) radix branch directly in the dtype fn.
+            std::hint::black_box(
+                super::sort_along_axis_dense_f64(tref, 0, false, false)
+                    .unwrap()
+                    .unwrap(),
+            );
+        };
+        let p = BTreeMap::from([("axis".to_owned(), "0".to_owned())]);
+        let wrapper = || {
+            std::hint::black_box(
+                crate::eval_primitive(Primitive::Sort, std::slice::from_ref(&t), &p).unwrap(),
+            );
+        };
+        let bench = |f: &dyn Fn()| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..6 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            b * 1e3
+        };
+        let s = bench(&strided);
+        let w = bench(&wrapper);
+        println!(
+            "AB column sort f64 [4096,4096] axis0: strided-1thread={s:.4}ms transpose-wrapper={w:.4}ms ({:.2}x) | JAX=2522ms",
+            s / w
+        );
+    }
+
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_sort2d() {

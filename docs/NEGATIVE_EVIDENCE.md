@@ -2612,6 +2612,19 @@ TOLERANCE + relaxing the internal bit-exact matmul guard for the gemv path — a
 Downgraded `dedicated-gemv-h36uj` to very-low. LESSON: matmul's N-SIMD strategy makes N=1 (gemv) inherently
 scalar-K under bit-exactness; the gap is structural, not an oversight.
 
+## 2026-06-26 - non-last-axis SORT via transpose→threaded-row-sort→transpose — 4.64x (SlateHarrier)
+
+The radix sort threads only the contiguous (last-axis) case; a NON-last axis (e.g. column sort, axis 0)
+fell to a SINGLE-THREAD strided radix (cache-hostile per-line strided gather). Added a `sort_along_axis`
+wrapper: if `axis != rank-1`, transpose the sort axis to last → recurse into the threaded contiguous fast
+path → transpose back (the swap permutation is its own inverse). Bit-identical (sort exact, transpose exact
+data movement; argsort indices are positions along the sort axis, preserved by the transpose). SAME-BINARY
+A/B column sort f64 [4096,4096] axis0: **strided-1thread 513.64ms → transpose-wrapper 110.76ms = 4.64x**.
+(JAX CPU sort is catastrophically slow — axis0 **2522ms** — so fj-lax already dominated 4.9x; now 22.8x.)
+Covers ALL dtypes + sort/argsort (the wrapper is dtype-agnostic, above the radix dispatch). Bit-identical:
+sort tests 27/0 + full lib 1599/0 + clippy clean. NOTE: JAX sort is a domination, not a loss — this is an
+internal single-thread-strided corner fixed (transpose reuses the dominating row-sort), not a JAX-gap close.
+
 ## 2026-06-25 - half (bf16/f16) trailing cumsum/cumprod/cummax THREADED — 4.47x (dtype-threading gap) (SlateHarrier)
 
 The cumulative scan was threaded for F64/F32/I64 (scan_contiguous_lines) but the BF16/F16 branch of
