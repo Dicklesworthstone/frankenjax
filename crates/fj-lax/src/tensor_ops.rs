@@ -2175,7 +2175,7 @@ pub(crate) fn eval_pad(
             concat_contiguous_into(
                 &mut out[operand_off..operand_off + in_total],
                 &[src],
-                crate::arithmetic::work_scaled_threads(in_total),
+                bw_bound_threads(in_total),
             );
             return Ok(Value::Tensor(TensorValue::new_f64_values(
                 Shape { dims: out_dims },
@@ -2239,7 +2239,7 @@ pub(crate) fn eval_pad(
             concat_contiguous_into(
                 &mut out[operand_off..operand_off + in_total],
                 &[src],
-                crate::arithmetic::work_scaled_threads(in_total),
+                bw_bound_threads(in_total),
             );
             return Ok(Value::Tensor(TensorValue::new_f32_values(
                 Shape { dims: out_dims },
@@ -2274,7 +2274,7 @@ pub(crate) fn eval_pad(
             concat_contiguous_into(
                 &mut out[operand_off..operand_off + in_total],
                 &[src],
-                crate::arithmetic::work_scaled_threads(in_total),
+                bw_bound_threads(in_total),
             );
             return Ok(Value::Tensor(TensorValue::new_half_float_values(
                 operand.dtype,

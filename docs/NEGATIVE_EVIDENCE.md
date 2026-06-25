@@ -2829,8 +2829,8 @@ generalizes via a standalone parallel-copy sweep (16M f64 copy into fresh output
 transpose/concat pattern): 8t 30.9ms / **16t 22.3ms** / 32t 33.3ms = **1.49x** (32→16). Renamed
 `bw_convert_threads`→`bw_bound_threads` and routed the uncapped data-movement copy/fill sites through it:
 transpose_2d_into, eval_broadcast_in_dim (both the scalar-fill `threaded_fill_into` and the replicate
-`broadcast_replicate_into` paths), eval_concatenate, and `rev_gather_into` (flip/reverse block-copy — added
-2026-06-25). Large broadcast/transpose/concat/flip now use cores/2 (16)
+`broadcast_replicate_into` paths), eval_concatenate, `rev_gather_into` (flip/reverse block-copy), and
+`eval_pad` (3 threaded fill/row-copy sites — added 2026-06-25). Large broadcast/transpose/concat/flip/pad now use cores/2 (16)
 not all-cores (32) → the ~1.49x on the big-copy regime. Bit-identical (thread count only): full fj-lax lib
 1601/0 + clippy clean. NOTE: reciprocal/cheap-unary use `dense_unary_threads` which ALREADY caps at 16 at 16M
 (ELEMS_PER_THREAD=1<<20) — NOT over-subscribed; their residual gap stays the eval-model per-call alloc. The
