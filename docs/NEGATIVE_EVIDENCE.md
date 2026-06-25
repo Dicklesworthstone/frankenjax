@@ -2624,8 +2624,12 @@ Threading it would only EXTEND a domination, and safe-Rust can't thread the lead
 assembly pass (column-blocks write strided-disjoint columns of a row-major output — no safe split_at_mut) that
 eats the gain. NO-SHIP (probe reverted ~0-gain). FLAGGED for future profiling: f64 ax0 (13.34ms) is ~13x
 slower than f32 ax0 (1.04ms) for only 2x the bytes — an unexplained f64-specific dtype-perf anomaly in the
-leading-axis column scan (direct==generic rules out the closure), worth a `perf`-counter look if cumsum ever
-matters more. Do NOT re-probe cumsum as a JAX-loss lever (it wins).
+leading-axis column scan, worth a `perf`-counter look if cumsum ever matters more. UPDATE: also A/B'd
+explicit `Simd<f64,8>` vs the scalar zip — **1.01x** (no SIMD lever either). So THREE measured negatives
+(closure-vs-direct, scalar-vs-explicit-SIMD) confirm the f64 column scan is NOT autovec/closure-bound; it runs
+at ~3.4 GB/s (vs f32 ~30 GB/s) — a structural memory-pattern anomaly that neither closure-removal nor explicit
+SIMD touches. Needs perf-counter cache/TLB profiling, not a kernel rewrite. Do NOT re-probe cumsum as a
+JAX-loss lever (it wins) or with SIMD (1.01x).
 
 ## 2026-06-24 - GROUPED complex conv2d naive → per-group im2col+GEMM, 1.74x (bead 5xdr7) (SlateHarrier)
 
