@@ -2612,6 +2612,18 @@ TOLERANCE + relaxing the internal bit-exact matmul guard for the gemv path — a
 Downgraded `dedicated-gemv-h36uj` to very-low. LESSON: matmul's N-SIMD strategy makes N=1 (gemv) inherently
 scalar-K under bit-exactness; the gap is structural, not an oversight.
 
+## 2026-06-26 - gather sort-gather-scatter EMPIRICALLY REJECTED — 0.07x (random gather is HW-optimal) (SlateHarrier)
+
+The scorecard frames gather's ~15x JAX gap as the "Zen3 vgather ceiling" — but that was the SIMD approach.
+Tested the obvious NON-SIMD algorithmic dig: sort the gather indices so the input reads become SEQUENTIAL
+(the 128MB random-read stream looked like the bottleneck), then scatter-back to the output. SAME-BINARY A/B
+f64 [4M from 16M, random idx, input 128MB > L3]: **direct random-read 9.03ms vs sort-gather-scatter 127.32ms
+= 0.07x — a 14x REGRESSION.** The radix sort (4M pairs) + the random scatter-WRITE-back vastly exceed the
+direct random-READ cost: Zen3's OOO + hardware prefetch already service random reads at ~2.25 ns each, so the
+direct `gather_single_dense` is NEAR-OPTIMAL. The JAX gap is genuinely the hardware `vgather`/prefetch
+microarchitecture (XLA emits it), NOT a missing algorithmic lever — and `gather_or` SIMD was already a no-win
+(olm4p). Probe reverted. Do NOT re-attempt sort-gather-scatter (or SIMD) for random gather — measured dead.
+
 ## 2026-06-26 - non-last-axis SORT via transpose→threaded-row-sort→transpose — 4.64x (SlateHarrier)
 
 The radix sort threads only the contiguous (last-axis) case; a NON-last axis (e.g. column sort, axis 0)
