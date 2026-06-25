@@ -14299,6 +14299,47 @@ mod tests {
         );
     }
 
+    // Decide whether complex sort is a JAX LOSS (worth threading) or a domination. JAX complex128
+    // sort [2048,2048] axis1 = 602ms (measured). This times the fj-lax single-thread generic
+    // (tuple-key) complex sort for the same shape.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_complex_sort_single_thread() {
+        use std::time::Instant;
+        let (rows, cols) = (2048usize, 2048usize);
+        let data: Vec<(f64, f64)> = (0..rows * cols)
+            .map(|i| {
+                (
+                    ((i.wrapping_mul(2654435761) % 100003) as f64) * 0.01 - 500.0,
+                    ((i.wrapping_mul(40503) % 99991) as f64) * 0.01 - 500.0,
+                )
+            })
+            .collect();
+        let t = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([("axis".to_owned(), "1".to_owned())]);
+        let run = || crate::eval_primitive(Primitive::Sort, std::slice::from_ref(&t), &p).unwrap();
+        run();
+        let mut best = f64::MAX;
+        for _ in 0..5 {
+            let s = Instant::now();
+            std::hint::black_box(run());
+            best = best.min(s.elapsed().as_secs_f64());
+        }
+        println!(
+            "BENCH complex128 sort [2048,2048] axis1 single-thread: fj-lax={:.4}ms | JAX=602ms",
+            best * 1e3
+        );
+    }
+
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_sort2d() {

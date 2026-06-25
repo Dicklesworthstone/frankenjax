@@ -2626,7 +2626,11 @@ the obvious "dig past the ceiling" algorithmic levers were empirically tested an
 for compute-bound strided ops (sort 4.64x, reduce_window 4.24x/3.21x, half cumsum 4.47x — all shipped), which
 are now mined; scatter-add binned, gather HW-optimal. The non-fma/on-host/unowned surface is exhausted; every
 remaining JAX LOSS routes to `cntiy` (+fma maintainer decision) or owned multi-session (eigh/SVD LAPACK-gap,
-so4wo compiled-jaxpr). sort/cumsum/einsum DOMINATE JAX (CPU-sort/scan catastrophe).
+so4wo compiled-jaxpr). sort/cumsum/einsum DOMINATE JAX (CPU-sort/scan catastrophe). UPDATE: even COMPLEX
+sort is a domination — `bench_complex_sort_single_thread` measures fj-lax single-thread complex128 sort
+[2048,2048] axis1 = **280ms vs JAX 602ms = 2.15x WIN** (single-thread, before any threading). So threading the
+generic/complex sort fallback (the last remaining clean compute-bound code lever) would only EXTEND a
+domination (280→~50ms internally), not close a JAX loss — declined as domination-extending niche churn.
 
 ## 2026-06-26 - gather sort-gather-scatter EMPIRICALLY REJECTED — 0.07x (random gather is HW-optimal) (SlateHarrier)
 
