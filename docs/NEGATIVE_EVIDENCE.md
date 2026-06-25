@@ -2929,10 +2929,13 @@ select_f64 reads 3 arrays (cond/t/f) + writes 1 fresh output (~386MB). Two lever
 (unlike the 2-array convert/data-movement copies where the cap won) — reverted.
 (2) branchless bit-blend (`(c as u64).wrapping_neg()` mask instead of `if c {t} else {f}`) → **~0-gain
 28→31ms** (LLVM already cmov's the branch; the bit-ops add work) — reverted, select tests 38/0.
-The residual 1.90x is the threaded **index-closure not vectorizing** (per-element bounds-checked
-`conds[i]/t[i]/f[i]` + `threaded_index_fill_into`'s `|i|` form) vs JAX's vectorized SIMD blend. The real fix is
-a zip-based threaded SIMD-blend loop (no bounds checks) — a refactor of the select fast path, deferred (and
-std::simd masks DRIFT across nightlies, raising the risk). Kept `bench_select_vs_jax` as evidence. PIVOT.
+(3) UPDATE — the proposed fix (zip-based threaded branchless bit-blend, no bounds checks, all-cores) was
+IMPLEMENTED + MEASURED: **~0-gain, 28→27.3ms** (still 1.85x behind JAX). Reverted. So it is NOT a
+vectorization/bounds-check problem — fj-lax select hits ~14.3 GB/s vs JAX's ~27 GB/s on the SAME ~386MB
+traffic. The residual 1.90x is the **eval-model / BW-saturation gap** (per-call output alloc + first-touch
+faults + 3-array read not reaching multi-channel BW) — the SAME class as reciprocal, ARCHITECTURAL (so4wo
+buffer-reuse), NOT a contained kernel lever. (Corrects last turn's "actionable SIMD-blend lever" hypothesis —
+all three contained attempts (cap / branchless / zip-blend) measured failed.) Kept `bench_select_vs_jax`. PIVOT.
 
 ## 2026-06-25 - embedding gather 1.11x JAX loss; cores/2 cap REGRESSES (gather is latency-bound) (SlateHarrier)
 
