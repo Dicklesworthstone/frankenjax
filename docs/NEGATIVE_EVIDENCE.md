@@ -4927,3 +4927,12 @@ part-copies) — helps split + ANY concat-view consume. NOT shipped here: it's i
 storage — broader blast radius); split's lazy view is also a deliberate optimization for workloads that don't
 materialize all pieces. Recorded measured loss + lever; kept the (materialized) bench. LESSON: a lazy-view op
 can look like a huge win on the op-alone bench while being a loss once materialized — always force the read.
+
+## 2026-06-26 - dynamic_update_slice already threaded — 1.16x WIN vs JAX (no lever) (SlateHarrier)
+
+`bench_dus_vs_jax` (f64 [4096,4096] upd[256,4096]): fj-lax **23.38ms vs JAX 27.2 = 1.16x WIN**. NO lever —
+the dense DUS path ALREADY threads the (large) operand copy (`concat_contiguous_into` with
+`work_scaled_threads`, calloc'd output -> parallel first-touch faults) then applies the small update region.
+This is the same fresh-output-thread fix already in place (KV-cache write hot path). Confirms the vein is
+applied to DUS; recorded the win + kept the bench. (tile/dynamic_slice I threaded this run; DUS was already
+done.)

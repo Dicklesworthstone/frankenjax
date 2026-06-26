@@ -15069,6 +15069,58 @@ mod tests {
         );
     }
 
+    // dynamic_update_slice vs JAX (measured JAX f64 [4096,4096] upd[256,4096] = 27.2ms).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_dus_vs_jax() {
+        use std::time::Instant;
+        let n = 4096usize;
+        let op_data: Vec<f64> = (0..n * n).map(|i| i as f64).collect();
+        let operand = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                op_data,
+            )
+            .unwrap(),
+        );
+        let upd_data: Vec<f64> = (0..256 * n).map(|i| -(i as f64)).collect();
+        let update = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![256, n as u32],
+                },
+                upd_data,
+            )
+            .unwrap(),
+        );
+        let s0 = Value::Scalar(Literal::I64(1000));
+        let s1 = Value::Scalar(Literal::I64(0));
+        let p = BTreeMap::new();
+        let f = || {
+            std::hint::black_box(
+                crate::eval_primitive(
+                    Primitive::DynamicUpdateSlice,
+                    &[operand.clone(), update.clone(), s0.clone(), s1.clone()],
+                    &p,
+                )
+                .unwrap(),
+            );
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..6 {
+            let st = Instant::now();
+            f();
+            b = b.min(st.elapsed().as_secs_f64());
+        }
+        println!(
+            "fj-lax dynamic_update_slice f64 [4096,4096] upd[256,4096]: {:.3}ms | JAX=27.2ms",
+            b * 1e3
+        );
+    }
+
     // split vs JAX (measured JAX f64 [4096,4096] into 4 axis1 = 22.9ms). eval_split_multi uses
     // LiteralBuffer::from_concat_slices per section (single-threaded strided gather).
     #[test]
