@@ -3036,6 +3036,21 @@ parallel-scan lever now covers f64+f32 single-chain cummax/cummin.
 already competitive — NOT a loss, no lever; threading the ~2.5ms gap isn't worth it). cummax FAMILY COMPLETE:
 1-D f64/f32 (parallel-scan, landed 2.3-2.6x), 2-D rows (threaded win), 2-D columns (streaming parity).
 
+## 2026-06-25 - f32 1-D cumsum/cumprod 1.28x JAX LOSS — lever is parity-policy-gated (NOT shipped) (SlateHarrier)
+
+`bench_cumsum1d_f32_vs_jax` (16M): fj-lax cumsum **49.8ms vs JAX 39.0ms = 1.28x**, cumprod **45.8 vs 35.9 =
+1.28x**. Root cause: f64 1-D cumsum uses the blocked parallel prefix scan (`blocked_prefix_scan_to_vec`, ~21ms,
+TOLERANCE-legal reassociation) but the f32 path (`scan_contiguous_f32_lines_to_vec`) only threads when
+outer>1, so f32 single-chain is SEQUENTIAL. UNLIKE cummax/cummin (associative → bit-identical parallel scan,
+SHIPPED), **cumsum/cumprod are NON-associative** — a parallel scan CHANGES bits, so this is a tolerance/parity-
+policy call. Two implementations: (a) widen f32→f64 + reuse the accepted f64 blocked scan + round → SAFEST
+(matches the shipped f64 precedent exactly) but the widen/round passes make it ~parity (~36-39ms, marginal);
+(b) direct rescan parallel f32 (pass1 chunk-sums, prefix, pass3 cumsum-from-carry) → ~15ms WIN but the carry
+reassociation needs CONFORMANCE verification (large-input goldens), which the small cum unit-tests (sequential
+path, <1M) do NOT cover. NOT shipped: won't risk RED main on an unverified f32 cumsum reassociation at depth.
+The f64-blocked precedent makes (b) defensible — bead'd for a focused turn that runs `-p fj-conformance`
+cumsum goldens first. Recorded measured loss + the lever + the gate; kept `bench_cumsum1d_f32_vs_jax`.
+
 ## 2026-06-25 - argsort is a ~35x fj-lax WIN vs JAX (SlateHarrier)
 
 `bench_argsort2d_vs_jax`: argsort f64 [2048,2048] axis1 — fj-lax **17.4ms vs JAX 616.8ms = ~35x WIN**.
