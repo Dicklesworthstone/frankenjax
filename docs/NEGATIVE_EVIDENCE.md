@@ -4617,3 +4617,14 @@ guard (is_finite scan, fall back to naive on inf/nan) + confirm no other bit-exa
 OR (b) a maintainer decision to relax reduce_window-sum parity to tolerance (same class as tree-sum jfd2c).
 Bead frankenjax-reduce-window-sum-separable downgraded to parity-gated. The loss (177-363x) + the verified
 8ms separable + the exact parity constraint are all recorded.
+
+RESOLVED + SHIPPED (2026-06-25). The parity-block is fixed: extracted `separable_reduce_window_sum_f64`
+(Option-returning, let-else guards) that (a) MATERIALIZES the zero-padded input for pad>0 (reads `src`
+directly for VALID) so same-padding and valid-on-padded run the SAME separable -> bit-identical to each other
+(the metamorphic test passes), and (b) FINITE-GUARDS (falls back to naive on inf/nan, dodging inf-inf=NaN).
+**f64 [2048,2048]: win31x31 12808→10.15ms = 3.5x WIN vs JAX 35.3 (1260x over old fj-lax); win11x11 1447→9.94ms
+≈ JAX (145x over old).** O(input), constant in window. VERIFIED: 47/0 reduce_window tests incl the bit-exact
+metamorphic `..._same_padding_zero_pads_like_valid_on_padded_input` + new tolerance test
+`reduce_window_sum_separable_matches_naive` (<1e-9); clippy clean. Bead
+frankenjax-reduce-window-sum-separable RESOLVED. The worst gap found this session (177-363x loss) is now a
+win/parity. (f32/strided/non-rank-2 sum pooling still naive — follow-on.)

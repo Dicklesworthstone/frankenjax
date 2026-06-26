@@ -3662,6 +3662,96 @@ fn eval_reduce_window_rank2_f64_sum_3x3_same(
     ))
 }
 
+// Separable O(input) running-sum for LARGE-window rank-2 f64 SUM pooling (stride 1, finite inputs).
+// Returns None when not applicable -> caller falls back to the naive O(out*wr*wc) fold. SUM is separable,
+// so two running-sum passes replace the nested per-window fold (177-363x slower than JAX at 11/31). It
+// materializes the zero-padded input for pad>0 (matching naive OOB=0), so same-padding and valid-on-padded
+// produce the SAME padded array -> bit-identical to each other (preserving the metamorphic invariant). The
+// running subtract-old would do inf-inf=NaN, hence the finite-input guard (falls back to naive on inf/nan).
+// Reassociates vs the flat fold (tolerance ~1e-13 f64); no test compares large-window sum-pool bit-exactly
+// to the naive — only the same-vs-valid metamorphic equality, which this preserves.
+#[allow(clippy::too_many_arguments)]
+fn separable_reduce_window_sum_f64(
+    tensor: &TensorValue,
+    input_rows: usize,
+    input_cols: usize,
+    out_rows: usize,
+    out_cols: usize,
+    window_rows: usize,
+    window_cols: usize,
+    stride_rows: usize,
+    stride_cols: usize,
+    pad_rows: usize,
+    pad_cols: usize,
+) -> Option<Vec<f64>> {
+    if stride_rows != 1
+        || stride_cols != 1
+        || window_rows < 2
+        || window_cols < 2
+        || window_rows.saturating_mul(window_cols) < 25
+    {
+        return None;
+    }
+    let padded_rows = out_rows + window_rows - 1;
+    let padded_cols = out_cols + window_cols - 1;
+    if pad_rows + input_rows > padded_rows || pad_cols + input_cols > padded_cols {
+        return None;
+    }
+    let src = tensor.elements.as_f64_slice()?;
+    if src.len() != input_rows.saturating_mul(input_cols) || !src.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    // VALID (pad 0) reads `src` directly; padded cases materialize a zero-bordered copy.
+    let owned_padded: Vec<f64>;
+    let (data, d_cols): (&[f64], usize) = if pad_rows == 0 && pad_cols == 0 {
+        (src, input_cols)
+    } else {
+        let mut padded = vec![0.0f64; padded_rows * padded_cols];
+        for r in 0..input_rows {
+            let dst_base = (pad_rows + r) * padded_cols + pad_cols;
+            padded[dst_base..dst_base + input_cols]
+                .copy_from_slice(&src[r * input_cols..(r + 1) * input_cols]);
+        }
+        owned_padded = padded;
+        (&owned_padded, padded_cols)
+    };
+    let d_rows = padded_rows;
+    // Phase 1: per-row horizontal running window-sum -> hsum[d_rows * out_cols].
+    let mut hsum = vec![0.0f64; d_rows * out_cols];
+    for r in 0..d_rows {
+        let row = &data[r * d_cols..(r + 1) * d_cols];
+        let hr = &mut hsum[r * out_cols..(r + 1) * out_cols];
+        let mut s = 0.0;
+        for &v in &row[0..window_cols] {
+            s += v;
+        }
+        hr[0] = s;
+        for oc in 1..out_cols {
+            s += row[oc + window_cols - 1] - row[oc - 1];
+            hr[oc] = s;
+        }
+    }
+    // Phase 2: vertical cols-wide running window-sum over rows -> output[out_rows * out_cols].
+    let mut output = vec![0.0f64; out_rows * out_cols];
+    let mut vsum = vec![0.0f64; out_cols];
+    for wr in 0..window_rows {
+        let hrow = &hsum[wr * out_cols..(wr + 1) * out_cols];
+        for (v, &h) in vsum.iter_mut().zip(hrow) {
+            *v += h;
+        }
+    }
+    output[0..out_cols].copy_from_slice(&vsum);
+    for or in 1..out_rows {
+        let add = &hsum[(or + window_rows - 1) * out_cols..(or + window_rows) * out_cols];
+        let sub = &hsum[(or - 1) * out_cols..or * out_cols];
+        for ((v, &a), &s) in vsum.iter_mut().zip(add).zip(sub) {
+            *v += a - s;
+        }
+        output[or * out_cols..(or + 1) * out_cols].copy_from_slice(&vsum);
+    }
+    Some(output)
+}
+
 fn eval_reduce_window_rank2_f64_sum(
     primitive: Primitive,
     tensor: &TensorValue,
@@ -3693,6 +3783,38 @@ fn eval_reduce_window_rank2_f64_sum(
         && input_rows.checked_mul(input_cols) == Some(tensor.elements.len())
     {
         return eval_reduce_window_rank2_f64_sum_3x3_same(tensor, out_dims, total_output);
+    }
+
+    // Separable running-sum fast path for LARGE windows (stride 1, FINITE inputs): SUM is separable, so two
+    // O(input) running-sum passes replace the naive O(out*wr*wc) fold (177-363x slower than JAX at 11/31).
+    // It materializes the zero-padded input (matching the naive OOB=0 semantics for ANY pad_low), so
+    // same-padding and valid-on-zero-padded produce the SAME padded array -> bit-identical to each other
+    // (the metamorphic invariant holds within the separable). The running-sum subtract-old would do
+    // inf-inf=NaN, so a finite-input guard falls back to the naive fold on inf/nan. The result reassociates
+    // vs the flat fold (tolerance, ~1e-13 f64) but no test compares large-window sum-pool to a bit-exact
+    // naive value — only the same-vs-valid metamorphic equality, which this preserves.
+    if let Some(output) = separable_reduce_window_sum_f64(
+        tensor,
+        input_rows,
+        input_cols,
+        out_rows,
+        out_cols,
+        window_rows,
+        window_cols,
+        stride_rows,
+        stride_cols,
+        pad_rows,
+        pad_cols,
+    ) {
+        return Ok(Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: out_dims.to_vec(),
+                },
+                output,
+            )
+            .map_err(EvalError::InvalidTensor)?,
+        ));
     }
 
     // Dense fast path: read the operand straight from its contiguous f64 backing
@@ -8410,6 +8532,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    // Parity gate for the separable running-sum sum-pooling fast path: at a window large enough to trigger
+    // it (11x11, VALID, stride 1) the separable result must match the naive nested-fold reference within
+    // tolerance (running-sum reassociation, ~1e-14 relative for f64).
+    #[test]
+    fn reduce_window_sum_separable_matches_naive() {
+        let (rows, cols, w) = (256usize, 256usize, 11usize);
+        let data: Vec<f64> = (0..rows * cols)
+            .map(|i| ((i % 9973) as f64) * 1e-2 - 50.0)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let mut p = BTreeMap::new();
+        p.insert("reduce_op".to_owned(), "sum".to_owned());
+        p.insert("window_dimensions".to_owned(), format!("{w},{w}"));
+        p.insert("window_strides".to_owned(), "1,1".to_owned());
+        let Value::Tensor(out) =
+            eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&x), &p).unwrap()
+        else {
+            panic!("tensor");
+        };
+        let got = out.elements.as_f64_slice().expect("dense f64");
+        let (orow, ocol) = (rows - w + 1, cols - w + 1);
+        assert_eq!(got.len(), orow * ocol);
+        let mut max_rel = 0.0f64;
+        for r in 0..orow {
+            for c in 0..ocol {
+                let mut accum = 0.0;
+                for wr in 0..w {
+                    for wc in 0..w {
+                        accum += data[(r + wr) * cols + (c + wc)];
+                    }
+                }
+                let g = got[r * ocol + c];
+                let denom = accum.abs().max(1.0);
+                max_rel = max_rel.max((g - accum).abs() / denom);
+            }
+        }
+        assert!(
+            max_rel < 1e-9,
+            "separable sum-pool drifted: max relative error {max_rel:e}"
+        );
     }
 
     // Large-window SUM pooling vs JAX (measured JAX f64 [2048,2048] VALID: win11x11 8.18ms, win31x31
