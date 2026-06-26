@@ -2,6 +2,47 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-26 - REJECT: general attention einsum batched-GEMM route regresses vs JAX (ProudSalmon)
+
+BOLD-VERIFY land-or-dig pass after `fcf6077d`: worktree scan found no landable
+measured win. The off-main `4940278b` complex boolword select head is
+patch-equivalent to `origin/main`; the rank-3 sumpool scratch head is a ledgered
+reject/loss; the stale QR/SVD WIP head has no measured ratio ledger. New lever
+attempted here: route `try_einsum2_matmul_general`'s canonical
+`[batch, M, K] x [batch, K, N]` contraction through the existing
+`batched_matmul_2d` kernel instead of looping over `matmul_2d` once per canonical
+batch slice. This targeted the small-batched-GEMM follow-on called out for
+attention `bqhd,bkhd->bhqk`.
+
+Bench command note: this Cargo rejects `cargo bench --release`, so the valid
+crate-scoped optimized equivalent was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec
+-- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b
+AGENT_NAME=ProudSalmon cargo bench -p fj-lax --profile release --bench
+lax_baseline -- 'eval/einsum2_general_bqhd_bkhd_bhqk_f64' --noplot`. RCH had no
+admissible worker and fell open locally for both baseline and candidate, so the
+Rust comparison is same-host/same-target but not remote.
+
+Measured rows:
+
+| workload | main midpoint | candidate midpoint | Rust delta | JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `eval/einsum2_general_bqhd_bkhd_bhqk_f64` | 1.7633 ms | 2.5855 ms | +47.8% regression | 0.3168 ms | 5.57x loss | 8.16x loss | REVERT |
+
+Fresh JAX comparator used `/data/projects/frankenjax/benchmarks/jax_comparison/.venv/bin/python`,
+JAX/JAXLIB 0.10.1 CPU x64, exact `lax_baseline.rs` fixture
+`bsz=4,q=64,h=8,d=64,k=64`, warmed `jax.jit(lambda x,y:
+jnp.einsum("bqhd,bkhd->bhqk", x, y))`, 50 hot runs. JAX measured best
+**0.1884 ms**, p50 **0.2771 ms**, mean **0.3168 ms**, p95 **0.4822 ms**.
+The candidate passed `cargo test -p fj-lax
+einsum2_general_matmul_bit_identical_to_naive --profile release --lib -- --nocapture`
+before measurement, but the production route regressed and was fully reverted
+(`crates/fj-lax/src/einsum.rs` restored to HEAD). Do not retry this exact
+batched-kernel swap; the existing per-slice `matmul_2d` route is faster for this
+small attention shape despite repeated setup. A credible retry needs a genuinely
+small-batch-specialized kernel or a fused permute+microkernel that removes
+intermediate movement, not a call-level routing swap.
+
 ## 2026-06-26 - REJECT: direct LU Schur subtract is under-threshold noise (ProudSalmon)
 
 BOLD-VERIFY land-or-dig pass after `b252d6fc`: live worktree scan found no
