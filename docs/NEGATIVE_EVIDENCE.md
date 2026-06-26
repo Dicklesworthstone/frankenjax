@@ -43,6 +43,49 @@ small attention shape despite repeated setup. A credible retry needs a genuinely
 small-batch-specialized kernel or a fused permute+microkernel that removes
 intermediate movement, not a call-level routing swap.
 
+## 2026-06-26 - REJECT: rank-3 generated sum-pool tap kernel is noisy and does not narrow JAX enough (ProudSalmon)
+
+BOLD-VERIFY land-or-dig pass after `fcf6077d`: refreshed the visible
+ProudSalmon scratch/worktree heads. The apparent f32 cummax/cummin and
+reverse-bitcast wins (`b6505be6`, `de8d462b`, `dce02a09`, `adb409bc`) are already
+ancestors of `origin/main`; stale QR/SVD WIP `a00dc114` still has no ratio
+ledger. New lever attempted here: replace the dynamic dense-float odometer for
+rank-3 f64 `reduce_window(sum)` with a generated VALID/unit-stride 3-D tap
+kernel that preserves the exact row-major tap order while using contiguous
+last-axis slices. After an initial mixed win5/win9 read, the gate was narrowed to
+large cubic windows (`>=9`) to avoid the already-competitive win5 row.
+
+Bench command note: this Cargo rejects `cargo bench --release`, so the valid
+crate-scoped optimized equivalent was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec
+-- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a
+AGENT_NAME=ProudSalmon cargo bench -p fj-lax --profile release --bench
+lax_baseline -- 'eval/sumpool_96x96x96_win(5|9)_f64_vec' --noplot`. RCH alternated
+between local fallback and `ovh-a` with worker-scoped target-dir rewriting, so
+only like-for-like local fallback rows were used for the verdict; the `ovh-a`
+candidate row is routing-only.
+
+Measured rows:
+
+| workload | main midpoint | final candidate midpoint | Rust delta | fresh JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `eval/sumpool_96x96x96_win5_f64_vec` | 14.463 ms local repeat; prior same tree also saw 6.2693 ms | 8.7858 ms | noisy/mixed; final Criterion reports +30.2% vs saved history | 2.096533 ms | 6.90x loss on local repeat | 4.19x loss | REVERT: gate intended to avoid this row, but final full filter still did not produce a stable no-regression story |
+| `eval/sumpool_96x96x96_win9_f64_vec` | 25.343 ms local repeat | 26.335 ms | +3.9% slower | 11.195246 ms | 2.26x loss | 2.35x loss | REVERT |
+
+Fresh JAX comparator used `/data/projects/frankenjax/benchmarks/jax_comparison/.venv/bin/python`,
+JAX/JAXLIB CPU x64, exact dense f64 fixture from `lax_baseline.rs`
+(`sin(arange(96^3) * 0.00123) * 10.0`), warmed jit, 20 runs. JAX means:
+win5 **2.096533 ms**, win9 **11.195246 ms**.
+
+Correctness gates before revert were green: focused
+`reduce_window_rank3_f64_sum_valid_unit_matches_literal_generic` passed locally
+and on `ovh-a`; `cargo test -p fj-lax reduce_window --profile release` passed
+49/0 with 15 ignored. Code was reverted to zero diff. Scorecard:
+**0 JAX wins / 1 noisy mixed row / 1 measured loss / 0 kept / code reverted**.
+Do not retry rank-3 sum-pool by only removing dynamic tap-coordinate overhead;
+the residual needs real SIMD/window-vectorization or a different lowering, not a
+generated scalar tap loop.
+
 ## 2026-06-26 - REJECT: direct LU Schur subtract is under-threshold noise (ProudSalmon)
 
 BOLD-VERIFY land-or-dig pass after `b252d6fc`: live worktree scan found no
