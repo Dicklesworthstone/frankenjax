@@ -5001,3 +5001,14 @@ unsafe = blocked by the workspace forbid-unsafe policy. CONCLUSION (measured, no
 read gap has NO contained safe-Rust lever — already mined (pre-pass fusion 1.86x + interleaved loads). Do NOT
 re-attempt bucketing/sorting. fj-lax's decisive territory is the opposite: sort/selection/scan where XLA-CPU
 is catastrophic (top_k ~200x, sort/argsort 35x, scans 2.4x).
+
+## 2026-06-26 - sort_key_val (variadic) 3.4x WIN vs JAX, but 13x slower than key-only sort — lever bead'd (SlateHarrier)
+
+`bench_sort_key_val_vs_jax` (f64 [4096,4096] axis1, num_keys=1): fj-lax **795ms vs JAX 2739ms = 3.4x WIN**
+(XLA-CPU full per-row sort of both arrays). BUT fj-lax's variadic path is ~13x slower than a KEY-ONLY sort of
+the same shape (~60ms) — eval_sort_multi carries the value payload through a slow comparison sort instead of
+the fast key-sort path. LEVER (bead frankenjax-sortkeyval-argsort-permute): argsort the keys via the fast path
+-> permutation, then gather keys+values by it (~argsort + 2 row-permutes ~120ms -> ~23x vs JAX). A real win
+landed; the bigger win is the internal lever (not shipped here — eval_sort_multi rework with num_keys/stability/
+NaN semantics, deferred at context depth). Another datapoint that JAX-CPU sort-lowering is catastrophic (cf
+top_k ~200x, single sort 35x).

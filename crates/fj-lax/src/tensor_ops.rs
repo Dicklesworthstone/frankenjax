@@ -15804,6 +15804,41 @@ mod tests {
         );
     }
 
+    // sort_key_val (variadic: sort keys, permute values) vs JAX (measured JAX f64 [4096,4096] axis1 = 2739ms
+    // — XLA-CPU full per-row sort of both arrays).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_sort_key_val_vs_jax() {
+        use std::time::Instant;
+        let (rows, cols) = (4096usize, 4096usize);
+        let shape = Shape {
+            dims: vec![rows as u32, cols as u32],
+        };
+        let keys: Vec<f64> = (0..rows * cols)
+            .map(|i| ((i.wrapping_mul(2654435761) % 100003) as f64) * 0.01 - 500.0)
+            .collect();
+        let vals: Vec<f64> = (0..rows * cols).map(|i| i as f64).collect();
+        let k = Value::Tensor(TensorValue::new_f64_values(shape.clone(), keys).unwrap());
+        let v = Value::Tensor(TensorValue::new_f64_values(shape, vals).unwrap());
+        let p = BTreeMap::from([
+            ("axis".to_owned(), "1".to_owned()),
+            ("num_keys".to_owned(), "1".to_owned()),
+        ]);
+        let run = || eval_sort_multi(Primitive::Sort, &[k.clone(), v.clone()], &p).unwrap();
+        let _ = run();
+        let mut b = f64::MAX;
+        for _ in 0..6 {
+            let s = Instant::now();
+            let r = run();
+            b = b.min(s.elapsed().as_secs_f64());
+            std::hint::black_box(&r);
+        }
+        println!(
+            "fj-lax sort_key_val f64 [4096,4096] axis1: {:.3}ms | JAX=2739ms",
+            b * 1e3
+        );
+    }
+
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_sort2d() {
