@@ -3022,6 +3022,11 @@ round-trip f32→f64→f32 is lossless): **f32 cummax 42.7→15.74ms (2.42x WIN 
 (2.36x WIN)**, cum tests 48/0. Both flipped a 1.12x loss to a 2.4x win on JAX's default dtype. The associative
 parallel-scan lever now covers f64+f32 single-chain cummax/cummin.
 
+2-D cummax map (`bench_cummax2d_vs_jax`, f32 [4096,4096]): **axis1 (rows) 13.07ms vs JAX 31ms = 2.37x WIN**
+(already row-threaded); **axis0 (columns) 46.83ms vs JAX 49.3ms = parity** (the streaming leading-axis path is
+already competitive — NOT a loss, no lever; threading the ~2.5ms gap isn't worth it). cummax FAMILY COMPLETE:
+1-D f64/f32 (parallel-scan, landed 2.3-2.6x), 2-D rows (threaded win), 2-D columns (streaming parity).
+
 ## 2026-06-25 - argsort is a ~35x fj-lax WIN vs JAX (SlateHarrier)
 
 `bench_argsort2d_vs_jax`: argsort f64 [2048,2048] axis1 — fj-lax **17.4ms vs JAX 616.8ms = ~35x WIN**.

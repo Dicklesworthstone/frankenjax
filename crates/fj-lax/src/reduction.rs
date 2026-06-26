@@ -4723,6 +4723,49 @@ mod tests {
         bench("cummin1d", Primitive::Cummin);
     }
 
+    // 2-D cummax along each axis (measured JAX f32 [4096,4096]: axis0=49.3ms, axis1=31.0ms). axis1 (rows)
+    // threads bit-identically; axis0 (columns) uses the streaming leading-axis path — check if it needs
+    // column-parallelism.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_cummax2d_vs_jax() {
+        use std::time::Instant;
+        let (rows, cols) = (4096usize, 4096usize);
+        let data: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i.wrapping_mul(2654435761) % 100003) as f32) * 0.01 - 500.0)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let bench = |axis: &str, jax: f64| {
+            let p = BTreeMap::from([("axis".to_owned(), axis.to_owned())]);
+            let f = || {
+                std::hint::black_box(
+                    crate::eval_primitive(Primitive::Cummax, std::slice::from_ref(&x), &p).unwrap(),
+                );
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..6 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!(
+                "fj-lax cummax f32 [4096,4096] axis{axis}: {:.3}ms | JAX={jax}ms",
+                b * 1e3
+            );
+        };
+        bench("0", 49.3);
+        bench("1", 31.0);
+    }
+
     // BOLD-VERIFY: 1-D cumsum/cumprod vs JAX (16M f64, measured JAX cumsum 95.0ms / cumprod 94.2ms — XLA
     // has no fast single-chain scan). fj-lax does a sequential latency-bound fold; this checks the ratio.
     #[test]
