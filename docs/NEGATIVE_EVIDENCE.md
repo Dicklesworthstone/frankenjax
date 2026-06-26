@@ -3227,6 +3227,15 @@ parity is not a loss + the cols-wide generic rescan is moderately complex (gener
 rush at session depth. Bead frankenjax-leading-axis-scan-thread. The 1-D cumulative campaign (10 shipped wins,
 all dtypes × directions) is the completed deliverable; this 2-D case is the documented follow-on.
 
+SHIPPED (2026-06-25). `scan_leading_axis_to_vec_threaded` (row-slab parallel prefix, cols-wide carry, forward
++reverse, generic S/T) wired into the f64+f32 leading-axis branches (gated rows≥2·threads && total≥1<<20).
+**cummax f32 [4096,4096] axis0: 46.8→17.92ms = 2.75x WIN vs JAX 49.3** (was parity). VERIFIED:
+`threaded_leading_axis_scan_matches_sequential` (2048×1024, both directions) — cummax BIT-IDENTICAL to the
+single-threaded cols-wide stream, cumsum <1e-5; conformance cumulative 28/0 + cummax 45/0; tests 51/0, clippy
+clean. Bead frankenjax-leading-axis-scan-thread RESOLVED. The 2-D leading-axis (columns) now WINS, not just
+parity — the cumulative-scan family is complete in 1-D (all dtypes×directions) AND 2-D (rows threaded +
+columns row-slab-threaded).
+
 ## 2026-06-25 - argsort is a ~35x fj-lax WIN vs JAX (SlateHarrier)
 
 `bench_argsort2d_vs_jax`: argsort f64 [2048,2048] axis1 — fj-lax **17.4ms vs JAX 616.8ms = ~35x WIN**.

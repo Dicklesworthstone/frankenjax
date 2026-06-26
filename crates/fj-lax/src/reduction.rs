@@ -3632,6 +3632,111 @@ fn scan_leading_axis_to_vec<S: Copy, T: Copy>(
     out
 }
 
+// Threaded leading-axis (axis=0) scan: the single-threaded `scan_leading_axis_to_vec` is COMPUTE-bound
+// (per-element op over rows*cols, one cols-wide f64 acc). The leading axis is blocked into CONTIGUOUS row
+// slabs (rows r0..r1 = the contiguous slice r0*cols..r1*cols in row-major — safe split_at_mut, no striding),
+// and each column's scan is an independent prefix over rows, so a 2-pass prefix scan with a COLS-WIDE carry
+// is BIT-IDENTICAL for associative ops (cummax/cummin, integer cumsum) and tolerance-legal for float
+// cumsum/cumprod (only the inter-slab carry reassociates — same policy as the 1-D blocked scan). pass1:
+// per-slab cols-wide column-totals; pass2: directional cols-wide prefix -> per-slab carry; pass3: each slab
+// re-scans from its carry.
+#[allow(clippy::too_many_arguments)]
+fn scan_leading_axis_to_vec_threaded<S, T>(
+    src: &[S],
+    rows: usize,
+    cols: usize,
+    reverse: bool,
+    init: f64,
+    widen: impl Fn(S) -> f64 + Sync,
+    narrow: impl Fn(f64) -> T + Sync,
+    fill: T,
+    op: impl Fn(f64, f64) -> f64 + Sync,
+    threads: usize,
+) -> Vec<T>
+where
+    S: Copy + Sync,
+    T: Copy + Send + Sync,
+{
+    let rows_per = rows.div_ceil(threads.max(1)).max(1);
+    let nblocks = rows.div_ceil(rows_per);
+    let widen = &widen;
+    let narrow = &narrow;
+    let op = &op;
+    // Pass 1: per-slab cols-wide column-totals (op-reduction over the slab's rows; order-independent).
+    let totals: Vec<Vec<f64>> = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for b in 0..nblocks {
+            let r0 = b * rows_per;
+            let r1 = (r0 + rows_per).min(rows);
+            let blk = &src[r0 * cols..r1 * cols];
+            handles.push(scope.spawn(move || {
+                let mut acc = vec![init; cols];
+                for k in 0..(r1 - r0) {
+                    let row = &blk[k * cols..(k + 1) * cols];
+                    for (a, &s) in acc.iter_mut().zip(row) {
+                        *a = op(*a, widen(s));
+                    }
+                }
+                acc
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    // Pass 2: directional cols-wide exclusive prefix of the slab totals -> per-slab cols-wide carry.
+    let mut carries = vec![vec![init; cols]; nblocks];
+    let mut running = vec![init; cols];
+    if reverse {
+        for b in (0..nblocks).rev() {
+            carries[b].clone_from(&running);
+            for (r, &t) in running.iter_mut().zip(&totals[b]) {
+                *r = op(*r, t);
+            }
+        }
+    } else {
+        for b in 0..nblocks {
+            carries[b].clone_from(&running);
+            for (r, &t) in running.iter_mut().zip(&totals[b]) {
+                *r = op(*r, t);
+            }
+        }
+    }
+    // Pass 3: each slab re-scans DIRECTIONALLY from its cols-wide carry, writing its contiguous output slab.
+    let mut out = vec![fill; rows * cols];
+    std::thread::scope(|scope| {
+        let mut rest: &mut [T] = out.as_mut_slice();
+        for (b, carry) in carries.iter().enumerate() {
+            let r0 = b * rows_per;
+            let r1 = (r0 + rows_per).min(rows);
+            let len = (r1 - r0) * cols;
+            let (oblk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let sblk = &src[r0 * cols..r1 * cols];
+            let blkrows = r1 - r0;
+            scope.spawn(move || {
+                let mut acc = carry.clone();
+                let scan_one = |k: usize, acc: &mut [f64], oblk: &mut [T]| {
+                    let srow = &sblk[k * cols..(k + 1) * cols];
+                    let orow = &mut oblk[k * cols..(k + 1) * cols];
+                    for ((a, &s), o) in acc.iter_mut().zip(srow).zip(orow.iter_mut()) {
+                        *a = op(*a, widen(s));
+                        *o = narrow(*a);
+                    }
+                };
+                if reverse {
+                    for k in (0..blkrows).rev() {
+                        scan_one(k, &mut acc, oblk);
+                    }
+                } else {
+                    for k in 0..blkrows {
+                        scan_one(k, &mut acc, oblk);
+                    }
+                }
+            });
+        }
+    });
+    out
+}
+
 // Below this a single-line scan stays sequential — the 2-pass blocked overhead (init pass + two
 // thread fan-outs) isn't worth it.
 const CUMSUM_BLOCKED_MIN_ELEMS: usize = 1 << 20; // 1,048,576
@@ -4170,21 +4275,40 @@ fn eval_cumulative_dense(
             scan_contiguous_lines_in_place(&mut out, axis_dim, reverse, float_init, float_op);
             out
         } else if axis == 0 && outer_count > 1 {
-            // Leading-axis (cumsum/cumprod/cummax/cummin DOWN the columns): the serial branch
-            // below re-reads each column at stride `axis_stride == outer_count`
-            // (cache-hostile). Stream k-outer/column-inner instead (contiguous
-            // reads+writes, per-column f64 acc in L1) — bit-identical.
-            scan_leading_axis_to_vec(
-                src,
-                axis_dim,
-                outer_count,
-                reverse,
-                float_init,
-                |x| x,
-                |a| a,
-                float_init,
-                float_op,
-            )
+            // Leading-axis (cumsum/cumprod/cummax/cummin DOWN the columns): stream k-outer/column-inner
+            // (contiguous, per-column f64 acc in L1). Single-threaded is compute-bound, so block the leading
+            // axis into contiguous row-slabs + parallel-prefix with a cols-wide carry when large.
+            let lead_threads = (total / (1 << 18)).clamp(2, {
+                std::thread::available_parallelism()
+                    .map(|c| c.get())
+                    .unwrap_or(8)
+            });
+            if axis_dim >= 2 * lead_threads && total >= CUMSUM_BLOCKED_MIN_ELEMS {
+                scan_leading_axis_to_vec_threaded(
+                    src,
+                    axis_dim,
+                    outer_count,
+                    reverse,
+                    float_init,
+                    |x| x,
+                    |a| a,
+                    float_init,
+                    float_op,
+                    lead_threads,
+                )
+            } else {
+                scan_leading_axis_to_vec(
+                    src,
+                    axis_dim,
+                    outer_count,
+                    reverse,
+                    float_init,
+                    |x| x,
+                    |a| a,
+                    float_init,
+                    float_op,
+                )
+            }
         } else {
             let mut out = src.to_vec();
             for outer in 0..outer_count {
@@ -4247,20 +4371,40 @@ fn eval_cumulative_dense(
                 scan_contiguous_f32_lines_to_vec(src, axis_dim, reverse, float_init, float_op)
             }
         } else if axis == 0 && outer_count > 1 {
-            // Leading-axis f32 (cumsum DOWN the columns): stream k-outer/column-inner
-            // (contiguous), f64 acc rounded to f32 per step — bit-identical to the
-            // serial strided scan below.
-            scan_leading_axis_to_vec(
-                src,
-                axis_dim,
-                outer_count,
-                reverse,
-                float_init,
-                f64::from,
-                |a| a as f32,
-                0.0f32,
-                float_op,
-            )
+            // Leading-axis f32 (cumsum DOWN the columns): stream k-outer/column-inner (f64 acc rounded to
+            // f32 per step). Single-threaded is compute-bound -> block the leading axis into contiguous
+            // row-slabs + parallel-prefix with a cols-wide carry when large.
+            let lead_threads = (total / (1 << 18)).clamp(2, {
+                std::thread::available_parallelism()
+                    .map(|c| c.get())
+                    .unwrap_or(8)
+            });
+            if axis_dim >= 2 * lead_threads && total >= CUMSUM_BLOCKED_MIN_ELEMS {
+                scan_leading_axis_to_vec_threaded(
+                    src,
+                    axis_dim,
+                    outer_count,
+                    reverse,
+                    float_init,
+                    f64::from,
+                    |a| a as f32,
+                    0.0f32,
+                    float_op,
+                    lead_threads,
+                )
+            } else {
+                scan_leading_axis_to_vec(
+                    src,
+                    axis_dim,
+                    outer_count,
+                    reverse,
+                    float_init,
+                    f64::from,
+                    |a| a as f32,
+                    0.0f32,
+                    float_op,
+                )
+            }
         } else {
             let mut out = vec![0.0f32; total];
             for outer in 0..outer_count {
@@ -5348,6 +5492,83 @@ mod tests {
                 gotm,
                 refm.as_slice(),
                 "i64 cummax reverse={reverse} not bit-equal"
+            );
+        }
+    }
+
+    // Parity gate for the THREADED leading-axis scan (scan_leading_axis_to_vec_threaded): a 2-D axis=0
+    // scan large enough to trigger the row-slab parallel-prefix path must match the single-threaded
+    // cols-wide stream — cummax BIT-IDENTICAL (associative), cumsum within 1e-5 (inter-slab carry only).
+    #[test]
+    fn threaded_leading_axis_scan_matches_sequential() {
+        let (rows, cols) = (2048usize, 1024usize); // 2M > 1<<20, rows >> 2*threads -> threaded path
+        let data: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i % 9973) as f32) * 1e-3 - 5.0)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        for &reverse in &[false, true] {
+            let p = BTreeMap::from([
+                ("axis".to_owned(), "0".to_owned()),
+                ("reverse".to_owned(), reverse.to_string()),
+            ]);
+            let row_order: Vec<usize> = if reverse {
+                (0..rows).rev().collect()
+            } else {
+                (0..rows).collect()
+            };
+            // cummax (bit-identical).
+            let Value::Tensor(cm) =
+                crate::eval_primitive(Primitive::Cummax, std::slice::from_ref(&x), &p).unwrap()
+            else {
+                panic!("tensor");
+            };
+            let gm = cm.elements.as_f32_slice().expect("f32");
+            let mut acc = vec![f64::NEG_INFINITY; cols];
+            let mut refm = vec![0.0f32; rows * cols];
+            for &k in &row_order {
+                for c in 0..cols {
+                    acc[c] = jax_minmax_scalar(acc[c], f64::from(data[k * cols + c]), true);
+                    refm[k * cols + c] = acc[c] as f32;
+                }
+            }
+            let mism = gm
+                .iter()
+                .zip(&refm)
+                .filter(|(g, r)| g.to_bits() != r.to_bits())
+                .count();
+            assert_eq!(
+                mism, 0,
+                "threaded leading cummax reverse={reverse} not bit-identical"
+            );
+            // cumsum (tolerance).
+            let Value::Tensor(cs) =
+                crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(&x), &p).unwrap()
+            else {
+                panic!("tensor");
+            };
+            let gs = cs.elements.as_f32_slice().expect("f32");
+            let mut acc = vec![0.0f64; cols];
+            let mut max_rel = 0.0f64;
+            for &k in &row_order {
+                for c in 0..cols {
+                    acc[c] += f64::from(data[k * cols + c]);
+                    let r = acc[c] as f32;
+                    let denom = f64::from(r).abs().max(1.0);
+                    max_rel =
+                        max_rel.max((f64::from(gs[k * cols + c]) - f64::from(r)).abs() / denom);
+                }
+            }
+            assert!(
+                max_rel < 1e-5,
+                "threaded leading cumsum reverse={reverse}: {max_rel:e}"
             );
         }
     }
