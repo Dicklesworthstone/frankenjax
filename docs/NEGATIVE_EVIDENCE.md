@@ -47,6 +47,38 @@ file-wide inventory signal for existing `linalg.rs` test/helper panic/indexing
 surfaces (25 critical / 1875 warning) and reported fmt/clippy/check clean; the
 changed production diff is only the two Cholesky thread-policy constants.
 
+## 2026-06-25 - KEEP: f64 gather AMAC-style load interleaving narrows JAX gap (ProudSalmon)
+
+No measured scratch/worktree win was landable: `/data/projects/.scratch/frankenjax-proudsalmon-boldverify-20260625`
+was patch-equivalent to main, and `/data/projects/frankenjax_poyvi1_pass188` only contained the stale
+`a00dc114` QR/SVD WIP without a ledgered JAX win. New lever shipped here: scattered single-element
+f64 gather now uses an 8-lane load-then-store interleaved helper inside each existing output shard.
+This keeps the same pre-resolved `idx` values and the same `src[idx]` reads, but exposes a batch of
+independent random loads before the stores instead of relying on the iterator loop shape. Other dtypes
+continue to use the previous generic `gather_single_dense` path.
+
+Bench command note: this Cargo rejects `cargo bench --release` for benches (`unexpected argument
+'--release'`), so the package-scoped optimized equivalent was used:
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo bench -p fj-lax
+--profile release --bench lax_baseline -- eval/gather_scatter_1m_f64 --noplot`.
+
+Measured head-to-head row: `eval/gather_scatter_1m_f64`, 1M pseudo-random f64 gathers from a 4M f64
+operand, exact fixture from `crates/fj-lax/benches/lax_baseline.rs`. Same-worker RCH proof on `hz2`:
+current main restored baseline **12.584 ms** midpoint vs candidate **6.1367 ms** midpoint, a **2.05x**
+Rust-side speedup. Fresh exact-fixture JAX comparator (`uv run --with 'jax[cpu]' --with numpy`,
+JAX/JAXLIB 0.10.2, `JAX_ENABLE_X64=1`, CPU, 20 runs x 10 inner) measured best **3.3149 ms**,
+p50 **3.8617 ms**, mean **3.8551 ms**. Candidate/JAX ratio remains a **1.59x Rust/JAX loss** by
+mean/p50, narrowed from the same-worker restored-main ratio of **3.26x** against that JAX mean.
+
+Correctness scope: f64 single-element gather only; index resolution, OOB policy, dtype construction,
+and all non-f64 paths are unchanged. GREEN: `cargo test -p fj-lax --profile release --lib gather
+-- --nocapture` 23/0 with 8 ignored perf probes; `cargo test -p fj-conformance --profile release
+--test gather_scatter_oracle -- --nocapture` 59/0; `cargo fmt -p fj-lax --check`; `cargo check
+-p fj-lax --all-targets`; `cargo clippy -p fj-lax --all-targets -- -D warnings`; `git diff --check`.
+Targeted `ubs crates/fj-lax/src/tensor_ops.rs docs/NEGATIVE_EVIDENCE.md` remains a broad inventory
+signal for the existing large Rust file (246 critical / 5541 warning / 2129 info), with no new
+unsafe blocks and clippy/fmt/build/test clean.
+
 ## 2026-06-25 - KEEP: dense f64 full ReduceSum tree fold beats JAX on the 16M row (ProudSalmon)
 
 No measured worktree win was landable: the only positive scratch cherry found was the QR/SVD WIP

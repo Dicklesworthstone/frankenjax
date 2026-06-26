@@ -3037,6 +3037,65 @@ fn gather_single_dense<T: Copy + Send + Sync>(out: &mut [T], src: &[T], idx: &[u
     });
 }
 
+fn gather_single_dense_f64(out: &mut [f64], src: &[f64], idx: &[usize]) {
+    debug_assert_eq!(out.len(), idx.len());
+    let threads = crate::arithmetic::work_scaled_threads(out.len()).min(idx.len().max(1));
+    if threads <= 1 {
+        gather_single_dense_f64_interleaved(out, src, idx);
+        return;
+    }
+    let per = out.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut o_rest: &mut [f64] = out;
+        let mut i_rest: &[usize] = idx;
+        while !o_rest.is_empty() {
+            let take = per.min(o_rest.len());
+            let (ob, ot) = o_rest.split_at_mut(take);
+            let (ib, it) = i_rest.split_at(take);
+            o_rest = ot;
+            i_rest = it;
+            scope.spawn(move || gather_single_dense_f64_interleaved(ob, src, ib));
+        }
+    });
+}
+
+fn gather_single_dense_f64_interleaved(out: &mut [f64], src: &[f64], idx: &[usize]) {
+    debug_assert_eq!(out.len(), idx.len());
+    let mut pos = 0;
+    while pos + 8 <= out.len() {
+        let i0 = idx[pos];
+        let i1 = idx[pos + 1];
+        let i2 = idx[pos + 2];
+        let i3 = idx[pos + 3];
+        let i4 = idx[pos + 4];
+        let i5 = idx[pos + 5];
+        let i6 = idx[pos + 6];
+        let i7 = idx[pos + 7];
+
+        let v0 = src[i0];
+        let v1 = src[i1];
+        let v2 = src[i2];
+        let v3 = src[i3];
+        let v4 = src[i4];
+        let v5 = src[i5];
+        let v6 = src[i6];
+        let v7 = src[i7];
+
+        out[pos] = v0;
+        out[pos + 1] = v1;
+        out[pos + 2] = v2;
+        out[pos + 3] = v3;
+        out[pos + 4] = v4;
+        out[pos + 5] = v5;
+        out[pos + 6] = v6;
+        out[pos + 7] = v7;
+        pos += 8;
+    }
+    for (o, &i) in out[pos..].iter_mut().zip(&idx[pos..]) {
+        *o = src[i];
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Threaded contiguous-row gather (embedding lookup) into a PRE-ALLOCATED `out` (caller
 /// allocates `vec![<concrete zero>; total]` = calloc'd zero pages; every element is then
@@ -3374,7 +3433,7 @@ pub(crate) fn eval_gather(
             // Scattered single-element gather (MLP-friendly branchless path).
             if let Some(ref sidx) = single_idx {
                 let mut out = vec![0.0f64; total];
-                gather_single_dense(&mut out, src, sidx);
+                gather_single_dense_f64(&mut out, src, sidx);
                 return Ok(Value::Tensor(TensorValue::new_f64_values(
                     Shape { dims: out_dims },
                     out,
