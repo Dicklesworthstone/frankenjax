@@ -5108,3 +5108,15 @@ done for middle axes (no strided regression like cumsum/argmax had). MIDDLE-AXIS
 for the [B,S,D] seq-axis pattern: cumsum/cumprod/cummax/cummin = ~2.8x WIN (fixed this session), argmax/argmin
 f64/f32 = ~1.3x WIN (fixed this session), sum = ~2.4x WIN (already), max/min = parity (compare-bound). Remaining
 strided middle paths: i64 argmax/argmin (needs exact-int cols-wide block — bead, low priority/niche).
+
+## 2026-06-26 - sort 3D MIDDLE-axis ~6.1x WIN vs JAX, but transpose-bound (lever bead'd) (SlateHarrier)
+
+`bench_sort3d_mid_vs_jax` (f64 [256,1024,64] axis1): fj-lax **322ms vs JAX 1974ms = ~6.1x WIN** (XLA-CPU full
+per-seq sort). BUT ~9x slower than fj-lax's own LAST-axis sort of similar size (~35ms): sort_along_axis sorts a
+non-last axis by transposing the sort axis to last on the FULL tensor (eval_transpose, cache-hostile ~128MB) ->
+radix -> transpose back; the 2 full transposes are ~287ms of the 322ms. LEVER (bead frankenjax-sort-midaxis-
+blocked-transpose): a middle axis is `before` contiguous [m, inner] sub-blocks; sort each along axis 0 with
+CACHE-RESIDENT per-block transposes (block ~512KB, L2) instead of one cache-hostile full transpose -> est.
+322->~80-120ms (~16-24x vs JAX). Not shipped here: moderate restructure + recursion, and eval_transpose is
+"near-optimal/tiling-regresses" for 2-D so the gain is in the cache-residency not the transpose kernel —
+needs measurement. Win recorded; lever pinned. (3rd transpose-bound find; cf rev axis0 / so4wo residuals.)

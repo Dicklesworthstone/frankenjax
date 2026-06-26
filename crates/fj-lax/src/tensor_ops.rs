@@ -16507,6 +16507,40 @@ mod tests {
         );
     }
 
+    // sort 3D middle axis vs JAX (measured JAX f64 [256,1024,64] axis1 = 1974ms).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_sort3d_mid_vs_jax() {
+        use std::time::Instant;
+        let (b, s, d) = (256usize, 1024usize, 64usize);
+        let data: Vec<f64> = (0..b * s * d)
+            .map(|i| (i.wrapping_mul(2654435761) % 1_000_003) as f64)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![b as u32, s as u32, d as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([("axis".to_owned(), "1".to_owned())]);
+        let run = || eval_sort(Primitive::Sort, std::slice::from_ref(&x), &p).unwrap();
+        let _ = run();
+        let mut bst = f64::MAX;
+        for _ in 0..6 {
+            let t = Instant::now();
+            let r = run();
+            bst = bst.min(t.elapsed().as_secs_f64());
+            std::hint::black_box(&r);
+        }
+        println!(
+            "fj-lax sort 3D [256,1024,64] axis1(mid): {:.3}ms | JAX=1974ms",
+            bst * 1e3
+        );
+    }
+
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_sort2d() {
