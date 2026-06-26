@@ -78,6 +78,11 @@ shape; it destroys locality/thread balance for win5 and still loses win9. A real
 lever needs either last-axis horizontal reuse without extra full-array copies or
 a generated tap kernel that preserves the existing generic path's cache behavior.
 
+Follow-up landing verification while rebasing this evidence onto current main
+used the requested `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a`
+and reran the retained rows successfully: win5 midpoint **7.6623 ms**, win9
+midpoint **22.919 ms**.
+
 ## 2026-06-26 - REJECT: radix-4 production dispatch for pow4 FFT is mixed/under-threshold (ProudSalmon)
 
 BOLD-VERIFY land-or-dig pass: live worktree scan found no unlanded measured win.
