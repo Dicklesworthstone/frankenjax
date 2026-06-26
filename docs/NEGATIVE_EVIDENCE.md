@@ -40,6 +40,44 @@ under-threshold Rust-only delta / 0 kept / code reverted**. Do not retry this
 allocation-removal shape unless the direct subtract path can be fused into a
 larger LU restructuring with at least a 1.15x same-host or same-worker win.
 
+## 2026-06-26 - REJECT: rank-3 row-specialized sum-pool is a cache/threading loss vs JAX (ProudSalmon)
+
+BOLD-VERIFY land-or-dig pass: scanned `.scratch/.worktrees` and live scratch
+worktrees for measured wins not on main. The only `.scratch` win head found
+(`4940278b` complex boolword select) is patch-equivalent to `origin/main`
+(`2c163dfd`), so no worktree win was available to land. New lever attempted:
+specialize dense rank-3 `reduce_window(sum)` for VALID, unit-stride,
+unit-dilation f64 `[96,96,96]` by replacing `eval_reduce_window_dense_float`'s
+generic output odometer with a direct `(z,y)` row kernel and contiguous last-axis
+tap loop.
+
+Bench command note: this Cargo rejects `cargo bench --release`, so the valid
+crate-scoped optimized equivalent was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec
+-- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b
+AGENT_NAME=ProudSalmon cargo bench -p fj-lax --profile release --bench
+lax_baseline -- 'eval/sumpool_96x96x96_win(5|9)_f64_vec' --noplot`. RCH had no
+admissible worker and fell open locally for both baseline and candidate, so the
+Rust comparison is same-host/same-target but not remote.
+
+Measured rows:
+
+| workload | main midpoint | candidate midpoint | Rust delta | JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `eval/sumpool_96x96x96_win5_f64_vec` | 8.1391 ms | 520.63 ms | 63.97x slower | 1.753 ms | 4.64x loss | 296.91x loss | REVERT |
+| `eval/sumpool_96x96x96_win9_f64_vec` | 33.585 ms | 85.739 ms | 2.55x slower | 12.977 ms | 2.59x loss | 6.61x loss | REVERT |
+
+Fresh JAX comparator used `uv run --with 'jax[cpu]' --with numpy python`, JAX
+0.10.2/JAXLIB 0.10.2 CPU x64, exact dense f64 fixture
+`sin(arange(96^3) * 0.00123) * 10.0`, warmed jit, 20 runs. JAX means:
+win5³ **1.753 ms**, win9³ **12.977 ms**. Candidate parity test passed before
+measurement, but the kernel was rejected and production code reverted
+(`crates/fj-lax/src/lib.rs` restored to HEAD). Kept only the benchmark rows so
+future digs can compare this 3-D gap directly. Do not retry the same row-kernel
+shape; it destroys locality/thread balance for win5 and still loses win9. A real
+lever needs either last-axis horizontal reuse without extra full-array copies or
+a generated tap kernel that preserves the existing generic path's cache behavior.
+
 ## 2026-06-26 - REJECT: radix-4 production dispatch for pow4 FFT is mixed/under-threshold (ProudSalmon)
 
 BOLD-VERIFY land-or-dig pass: live worktree scan found no unlanded measured win.

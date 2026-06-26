@@ -4518,6 +4518,34 @@ fn sumpool_params() -> BTreeMap<String, String> {
     p
 }
 
+fn sumpool3d_params(window: usize) -> BTreeMap<String, String> {
+    let mut p = BTreeMap::new();
+    p.insert("reduce_op".to_owned(), "sum".to_owned());
+    p.insert(
+        "window_dimensions".to_owned(),
+        format!("{window},{window},{window}"),
+    );
+    p.insert("window_strides".to_owned(), "1,1,1".to_owned());
+    p.insert("padding".to_owned(), "VALID".to_owned());
+    p
+}
+
+fn sumpool3d_96_f64_input() -> Value {
+    let n = 96usize;
+    let data: Vec<f64> = (0..n * n * n)
+        .map(|i| ((i as f64) * 0.00123).sin() * 10.0)
+        .collect();
+    Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, n as u32, n as u32],
+            },
+            data,
+        )
+        .unwrap(),
+    )
+}
+
 fn bench_sumpool_256x256_f64_vec(c: &mut Criterion) {
     let n = 256usize;
     let data: Vec<f64> = (0..n * n)
@@ -4555,6 +4583,22 @@ fn bench_sumpool_256x256_f64_literal_reference(c: &mut Criterion) {
     );
     let p = sumpool_params();
     c.bench_function("eval/sumpool_256x256_f64_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_sumpool_96x96x96_win5_f64_vec(c: &mut Criterion) {
+    let input = sumpool3d_96_f64_input();
+    let p = sumpool3d_params(5);
+    c.bench_function("eval/sumpool_96x96x96_win5_f64_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_sumpool_96x96x96_win9_f64_vec(c: &mut Criterion) {
+    let input = sumpool3d_96_f64_input();
+    let p = sumpool3d_params(9);
+    c.bench_function("eval/sumpool_96x96x96_win9_f64_vec", |bencher| {
         bencher.iter(|| eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&input), &p))
     });
 }
@@ -7193,6 +7237,8 @@ criterion_group!(
     bench_maxpool_large_separable,
     bench_sumpool_256x256_f64_vec,
     bench_sumpool_256x256_f64_literal_reference,
+    bench_sumpool_96x96x96_win5_f64_vec,
+    bench_sumpool_96x96x96_win9_f64_vec,
     bench_sin_1k,
     bench_sin_64k,
     bench_exp_1k,
