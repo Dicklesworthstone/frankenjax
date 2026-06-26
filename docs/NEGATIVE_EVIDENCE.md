@@ -4978,3 +4978,11 @@ reverse-ORDER contiguous block copies — backward row read; left as a follow-on
 Recorded the confirmed win + kept the bench. The remaining data-movement residuals (rev axis0 1.57x, concat
 strided 1.3x, pad ~1.1x) are the so4wo fresh-output fault floor; the biggest open algorithmic gap is gather
 (~7.5x, actively worked).
+
+## 2026-06-26 - top_k — ~200x WIN vs JAX (XLA-CPU does a full per-row sort) (SlateHarrier)
+
+`bench_topk_vs_jax` (f64 [4096,4096], k=64, last axis): fj-lax **12.2ms vs JAX 2440ms = ~200x WIN**. JAX
+lax.top_k on CPU is catastrophic (2.44 SECONDS — it sorts every row in full; even k=1 takes 2437ms); fj-lax
+does a proper bounded partial selection per row. No lever needed — recorded the (huge) confirmed win + kept the
+bench. This is the largest fj-lax-vs-JAX margin found this campaign, alongside sort/argsort (35x) — JAX-CPU's
+sequential/selection ops are fj-lax's strongest territory.

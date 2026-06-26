@@ -15401,6 +15401,43 @@ mod tests {
 
     // pad vs JAX (measured JAX f64 [4096,4096]->[4224,4224] = 27.6ms). fj-lax pad uses bw_bound_threads
     // (cores/2 cap); the fresh-output fault floor may favor all-cores.
+    // top_k vs JAX (measured JAX f64 [4096,4096] k=64 last axis = 2440ms — XLA-CPU does a full per-row sort).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_topk_vs_jax() {
+        use std::time::Instant;
+        let (rows, cols) = (4096usize, 4096usize);
+        let data: Vec<f64> = (0..rows * cols)
+            .map(|i| ((i.wrapping_mul(2654435761) % 100003) as f64) * 0.01 - 500.0)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([("k".to_owned(), "64".to_owned())]);
+        let f = || {
+            std::hint::black_box(
+                crate::eval_primitive(Primitive::TopK, std::slice::from_ref(&x), &p).unwrap(),
+            );
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..6 {
+            let st = Instant::now();
+            f();
+            b = b.min(st.elapsed().as_secs_f64());
+        }
+        println!(
+            "fj-lax top_k k=64 f64 [4096,4096] last axis: {:.3}ms | JAX=2440ms",
+            b * 1e3
+        );
+    }
+
     // rev/flip vs JAX (measured JAX f64 [4096,4096]: axis0 23.6ms, axis1 23.4ms).
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
