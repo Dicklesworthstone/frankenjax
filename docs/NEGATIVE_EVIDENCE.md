@@ -4602,3 +4602,18 @@ stride-1 + VALID doesn't touch them). Deferred (1 turn): the running-sum is tole
 naive within tolerance + conformance) — not to rush buggy at session depth. Bead
 frankenjax-reduce-window-sum-separable. Recorded measured loss + lever + bench `bench_reduce_window_sum_vs_jax`.
 NOTE: max/min pooling already has the separable/deque fast path; only SUM was left naive.
+
+UPDATE (2026-06-25) — implemented + measured + REVERTED (parity-block). The separable 2-pass running-sum
+WORKS: f64 [2048,2048] win31x31 12808→**8.04ms = 4.4x WIN** vs JAX 35.3 (win11 8.30ms ≈ parity; O(input) now,
+constant in window). A new tolerance test (separable vs naive nested fold) passed (rel <1e-9). BUT it broke a
+PRE-EXISTING bit-exact test `reduce_window_sum_same_padding_zero_pads_like_valid_on_padded_input` — two
+distinct issues: (1) the running-sum subtract-old does `inf - inf = NaN` (the naive re-fold keeps inf), and
+(2) more fundamentally the separable REASSOCIATES (row-then-col / running-sum order ≠ the flat row-major
+fold), so it is NOT bit-identical, and that metamorphic test asserts bit-identity (same-padding == valid on
+zero-padded input). So reduce_window SUM is BIT-EXACT-LOCKED (stricter than cumsum's tolerance oracle).
+REVERTED (lib.rs == HEAD). The 4.4x win is real but parity-policy-gated: to ship it would need EITHER
+(a) extend the separable to handle padding so BOTH metamorphic sides use it consistently + a finite-input
+guard (is_finite scan, fall back to naive on inf/nan) + confirm no other bit-exact reduce_window test breaks,
+OR (b) a maintainer decision to relax reduce_window-sum parity to tolerance (same class as tree-sum jfd2c).
+Bead frankenjax-reduce-window-sum-separable downgraded to parity-gated. The loss (177-363x) + the verified
+8ms separable + the exact parity constraint are all recorded.
