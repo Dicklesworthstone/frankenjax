@@ -3757,6 +3757,74 @@ fn parallel_cummax_f32(src: &[f32], init: f64, is_max: bool) -> Vec<f32> {
     out
 }
 
+// Parallel prefix scan for ONE long f32 cumsum/cumprod line (forward). cumsum/cumprod are NON-associative,
+// but their reassociation is TOLERANCE-legal — the SAME accepted policy as the f64 `blocked_prefix_scan_to_vec`
+// (the cumsum/cumprod oracle is abs<1e-10, not bit-exact). 3-pass rescan keeps a full f64 accumulator per
+// chunk (single round per output, like the sequential f32 contract): pass1 per-chunk op-reduction, pass2
+// exclusive op-prefix of the chunk totals (the carries), pass3 re-scan each chunk from its carry. Only the
+// inter-chunk carry is reassociated (chunk-grouped vs element-sequential) — identical structure to the f64
+// blocked scan. Profiled 16M: 49.8→~15ms vs JAX 39ms.
+fn parallel_assoc_scan_f32<F>(src: &[f32], init: f64, op: &F) -> Vec<f32>
+where
+    F: Fn(f64, f64) -> f64 + Sync,
+{
+    let n = src.len();
+    let cores = std::thread::available_parallelism()
+        .map(|c| c.get())
+        .unwrap_or(8);
+    let threads = (n / (1 << 18)).clamp(2, cores);
+    let block = n.div_ceil(threads);
+    // Pass 1: per-chunk op-reduction from init (the chunk's total), in parallel.
+    let totals: Vec<f64> = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut s_rest = src;
+        while !s_rest.is_empty() {
+            let take = block.min(s_rest.len());
+            let (s, st) = s_rest.split_at(take);
+            s_rest = st;
+            handles.push(scope.spawn(move || {
+                let mut acc = init;
+                for &v in s {
+                    acc = op(acc, f64::from(v));
+                }
+                acc
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    // Pass 2: exclusive op-prefix of the chunk totals -> per-chunk carry (sequential, ~#threads elems).
+    let mut carries = vec![init; totals.len()];
+    let mut acc = init;
+    for (k, &t) in totals.iter().enumerate() {
+        carries[k] = acc;
+        acc = op(acc, t);
+    }
+    // Pass 3: re-scan each chunk from its carry (full f64 acc, single round per output element).
+    let mut out = vec![0.0f32; n];
+    std::thread::scope(|scope| {
+        let mut s_rest = src;
+        let mut o_rest: &mut [f32] = out.as_mut_slice();
+        let mut k = 0usize;
+        while !s_rest.is_empty() {
+            let take = block.min(s_rest.len());
+            let (s, st) = s_rest.split_at(take);
+            let (o, ot) = o_rest.split_at_mut(take);
+            s_rest = st;
+            o_rest = ot;
+            let carry = carries[k];
+            scope.spawn(move || {
+                let mut acc = carry;
+                for (slot, &v) in o.iter_mut().zip(s) {
+                    acc = op(acc, f64::from(v));
+                    *slot = acc as f32;
+                }
+            });
+            k += 1;
+        }
+    });
+    out
+}
+
 // Blocked parallel prefix-scan for ONE long contiguous f64 line (outer_count == 1, forward).
 // The sequential single-line scan is f64 dependency-chain-bound (~30ms at 4M; JAX reassociates to
 // ~14ms). Since the cumsum/cumprod oracle is TOLERANCE (abs<1e-10, NOT bit-exact) and `init` is the
@@ -3954,16 +4022,16 @@ fn eval_cumulative_dense(
         // thread the scan over the outer/line dimension bit-identically. Strided
         // inputs keep the serial per-line gather below.
         let out = if axis_stride == 1 {
-            // Single long f32 line + associative op: scan_contiguous_f32_lines_to_vec stays sequential
-            // (it only threads when outer>1). cummax/cummin are associative (max/min of f32 is exact, so
-            // the widen-to-f64 accumulate + round-to-f32 is bit-identical under any grouping) → parallel
-            // prefix scan. cumsum/cumprod (non-associative) keep the sequential line scan.
-            if matches!(cum_primitive, Primitive::Cummax | Primitive::Cummin)
-                && outer_count == 1
-                && !reverse
-                && total >= CUMSUM_BLOCKED_MIN_ELEMS
-            {
-                parallel_cummax_f32(src, float_init, matches!(cum_primitive, Primitive::Cummax))
+            // Single long f32 line: scan_contiguous_f32_lines_to_vec stays sequential (it only threads
+            // when outer>1). cummax/cummin are associative (max/min of f32 is exact → bit-identical
+            // parallel scan). cumsum/cumprod are non-associative but their reassociation is TOLERANCE-legal
+            // (same accepted policy as the f64 blocked_prefix_scan_to_vec) → parallel rescan.
+            if outer_count == 1 && !reverse && total >= CUMSUM_BLOCKED_MIN_ELEMS {
+                if matches!(cum_primitive, Primitive::Cummax | Primitive::Cummin) {
+                    parallel_cummax_f32(src, float_init, matches!(cum_primitive, Primitive::Cummax))
+                } else {
+                    parallel_assoc_scan_f32(src, float_init, float_op)
+                }
             } else {
                 scan_contiguous_f32_lines_to_vec(src, axis_dim, reverse, float_init, float_op)
             }
@@ -4801,6 +4869,46 @@ mod tests {
         };
         bench("cumsum1d", Primitive::Cumsum);
         bench("cumprod1d", Primitive::Cumprod);
+    }
+
+    // Parity gate for the parallel f32 cumsum reassociation (parallel_assoc_scan_f32): at 16M (>= the
+    // blocked threshold) the parallel scan must stay within tolerance of the sequential f64-accumulate
+    // reference. The reassociation is only inter-chunk (chunk-grouped sums) — same structure/policy as the
+    // shipped f64 blocked scan. Asserts max relative error is tiny (well under any cumsum oracle tolerance).
+    #[test]
+    fn parallel_f32_cumsum_within_tolerance() {
+        let n = 4_000_000usize; // > CUMSUM_BLOCKED_MIN_ELEMS (1<<20) -> exercises the parallel path
+        let data: Vec<f32> = (0..n).map(|i| 0.25 + (i % 9973) as f32 * 1e-5).collect();
+        let x = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([("axis".to_owned(), "0".to_owned())]);
+        let Value::Tensor(out) =
+            crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(&x), &p).unwrap()
+        else {
+            panic!("expected tensor");
+        };
+        let got = out.elements.as_f32_slice().expect("dense f32");
+        // Sequential f64-accumulate reference (the contract scan_contiguous_f32_lines_from implements).
+        let mut acc = 0.0f64;
+        let mut max_rel = 0.0f64;
+        for (i, &v) in data.iter().enumerate() {
+            acc += f64::from(v);
+            let reference = acc as f32;
+            let g = got[i];
+            let denom = (f64::from(reference)).abs().max(1.0);
+            max_rel = max_rel.max((f64::from(g) - f64::from(reference)).abs() / denom);
+        }
+        assert!(
+            max_rel < 1e-5,
+            "parallel f32 cumsum reassociation drifted: max relative error {max_rel:e}"
+        );
     }
 
     // f32 cumsum/cumprod 1-D (JAX's default dtype; measured JAX cumsum 39.0ms / cumprod 35.9ms). f64 1-D

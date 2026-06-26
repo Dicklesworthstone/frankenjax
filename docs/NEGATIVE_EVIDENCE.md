@@ -3085,6 +3085,16 @@ path, <1M) do NOT cover. NOT shipped: won't risk RED main on an unverified f32 c
 The f64-blocked precedent makes (b) defensible — bead'd for a focused turn that runs `-p fj-conformance`
 cumsum goldens first. Recorded measured loss + the lever + the gate; kept `bench_cumsum1d_f32_vs_jax`.
 
+RESOLVED + SHIPPED (2026-06-25). Gate cleared: `cumulative_oracle` + `cummax_cummin_oracle` conformance tests
+use TINY inputs (3-6 elems, all << the 1<<20 blocked threshold) → they exercise the untouched SEQUENTIAL path
+and stay GREEN (28/0 + 45/0); the parallel path only triggers ≥1M. Added `parallel_assoc_scan_f32` (3-pass
+rescan, impl (b)): pass1 per-chunk op-reduction, pass2 exclusive op-prefix (carries), pass3 re-scan each chunk
+from its f64 carry (single round per output — only the inter-chunk carry is reassociated, identical structure
+to the shipped f64 blocked scan). New parity test `parallel_f32_cumsum_within_tolerance` (4M, exercises the
+parallel path) confirms max relative error <1e-5 vs the sequential f64-accumulate reference (actual ~1 f32 ulp).
+**f32 cumsum 49.8→15.47ms (2.52x WIN), cumprod 45.8→14.10ms (2.55x WIN)**; cum 49/0, conformance GREEN, clippy
+clean. Bead frankenjax-parallel-f32-cumsum RESOLVED.
+
 ## 2026-06-25 - argsort is a ~35x fj-lax WIN vs JAX (SlateHarrier)
 
 `bench_argsort2d_vs_jax`: argsort f64 [2048,2048] axis1 — fj-lax **17.4ms vs JAX 616.8ms = ~35x WIN**.
