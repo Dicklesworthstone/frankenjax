@@ -14119,6 +14119,64 @@ fn rev_gather_into<T: Copy + Send + Sync>(
 ) -> bool {
     let rank = dims.len();
     let total = out.len();
+
+    // Reversed LAST axis: the generic block scan degenerates to block_len==1 (a per-element odometer that
+    // re-decodes every element with a division). Instead reverse each contiguous last-axis row: hoist the
+    // outer decode to once-per-row (total -> outer_total decodes) and reverse-copy the row. Threaded by rows
+    // for parallel first-touch faults. Bit-identical. (~2.2x faster on a 2-D last-axis flip vs the odometer.)
+    if rank >= 1 && reversed[rank - 1] && total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+        let last = rank - 1;
+        let last_dim = dims[last] as usize;
+        let last_stride = strides[last];
+        if last_dim >= 2 {
+            let outer_total = total / last_dim;
+            if outer_total >= 2 && crate::arithmetic::work_scaled_threads(total) > 1 {
+                let threads = bw_bound_threads(total).min(outer_total);
+                let row_base = |o: usize| -> usize {
+                    let mut rem = o;
+                    let mut base = 0usize;
+                    for ax in (0..last).rev() {
+                        let d = dims[ax] as usize;
+                        let coord = rem % d;
+                        rem /= d;
+                        let c = if reversed[ax] { d - 1 - coord } else { coord };
+                        base += c * strides[ax];
+                    }
+                    base
+                };
+                let row_base = &row_base;
+                let outer_per = outer_total.div_ceil(threads);
+                std::thread::scope(|scope| {
+                    let mut rest: &mut [T] = out;
+                    let mut o0 = 0usize;
+                    while o0 < outer_total {
+                        let o1 = (o0 + outer_per).min(outer_total);
+                        let (blk, tail) = rest.split_at_mut((o1 - o0) * last_dim);
+                        rest = tail;
+                        scope.spawn(move || {
+                            for (k, o) in (o0..o1).enumerate() {
+                                let base = row_base(o);
+                                let dst = &mut blk[k * last_dim..k * last_dim + last_dim];
+                                if last_stride == 1 {
+                                    // Forward memcpy of the contiguous row + optimized slice reverse
+                                    // (vectorized swaps) — beats a backward scalar gather.
+                                    dst.copy_from_slice(&src[base..base + last_dim]);
+                                    dst.reverse();
+                                } else {
+                                    for (c, d) in dst.iter_mut().enumerate() {
+                                        *d = src[base + (last_dim - 1 - c) * last_stride];
+                                    }
+                                }
+                            }
+                        });
+                        o0 = o1;
+                    }
+                });
+                return true;
+            }
+        }
+    }
+
     let mut block_len = 1_usize;
     let mut block_start = rank;
     for ax in (0..rank).rev() {
@@ -15343,6 +15401,43 @@ mod tests {
 
     // pad vs JAX (measured JAX f64 [4096,4096]->[4224,4224] = 27.6ms). fj-lax pad uses bw_bound_threads
     // (cores/2 cap); the fresh-output fault floor may favor all-cores.
+    // rev/flip vs JAX (measured JAX f64 [4096,4096]: axis0 23.6ms, axis1 23.4ms).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_rev_vs_jax() {
+        use std::time::Instant;
+        let n = 4096usize;
+        let data: Vec<f64> = (0..n * n).map(|i| i as f64).collect();
+        let x = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        for (label, axes, jax) in [("axis0", "0", 23.6), ("axis1", "1", 23.4)] {
+            let p = BTreeMap::from([("axes".to_owned(), axes.to_owned())]);
+            let f = || {
+                std::hint::black_box(
+                    crate::eval_primitive(Primitive::Rev, std::slice::from_ref(&x), &p).unwrap(),
+                );
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..6 {
+                let st = Instant::now();
+                f();
+                b = b.min(st.elapsed().as_secs_f64());
+            }
+            println!(
+                "fj-lax rev f64 [4096,4096] {label}: {:.3}ms | JAX={jax}ms",
+                b * 1e3
+            );
+        }
+    }
+
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_pad_vs_jax() {

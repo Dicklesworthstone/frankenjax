@@ -4958,3 +4958,14 @@ the input segment exactly once — no double-write; pad rows fill) wired via a p
 pure pads. Bit-identical (pad 31/0, clippy clean). Result: **41.0 → ~30-31.6ms = 1.37x internal**, narrowing the
 loss from 1.49x to **~1.1x (near-parity)** vs JAX 27.6. Residual is the fresh-output fault floor (so4wo) on the
 147MB write (~4.9 vs 5.3 GB/s). Rank-2 only; N-D (4D conv NHWC) extension bead'd (frankenjax-pad-nd-thread).
+
+## 2026-06-26 - rev/flip reversed-LAST-axis per-row reverse — 50→~28ms, 2.2x loss narrowed to ~1.2x (SlateHarrier)
+
+`bench_rev_vs_jax` (f64 [4096,4096]). axis1 (reverse the LAST axis) hit the generic rev_gather_into block scan
+which degenerates to block_len==1 — a per-element odometer that re-decodes EVERY element with a division (16M
+decodes) = 50.8ms vs JAX 23.4 = **2.2x SLOWER**. Added a reversed-last-axis branch: hoist the outer decode to
+once-per-row (16M -> 4096 decodes) and reverse each contiguous row via forward copy_from_slice + slice::reverse
+(vectorized swaps, beats a backward scalar gather), threaded by rows. Bit-identical (rev 17/0, clippy clean).
+**Result: 50.8 -> ~28ms (best; high host variance) = ~1.8x internal, 2.2x loss -> ~1.2x vs JAX 23.4.** Residual
+is the reverse read/so4wo fault floor. axis0 (reverse a NON-last axis) is unchanged (~36ms/1.57x, the
+reverse-ORDER contiguous block copies — backward row read; left as a follow-on, harder than the per-row case).
