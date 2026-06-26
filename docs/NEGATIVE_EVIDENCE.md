@@ -3016,6 +3016,12 @@ cummin 72.1): **cummax 2.34x WIN, cummin 2.62x WIN** — a 1.21x loss flipped to
 LESSON: when a fast-path gate silently never fires, print-probe the branch — a shadowed/rebound variable reads
 fine in static analysis but is a different value at runtime; the "28↔70 contradiction" was this all along.
 
+EXTENDED to f32 (the COMMON dtype — JAX default). `parallel_cummax_f32` (widen-to-f64 accumulate + round-to-f32,
+matching `scan_contiguous_f32_lines_from`'s contract; bit-identical because max/min of f32 is EXACT and the
+round-trip f32→f64→f32 is lossless): **f32 cummax 42.7→15.74ms (2.42x WIN vs JAX 38.1), cummin 42.9→16.17ms
+(2.36x WIN)**, cum tests 48/0. Both flipped a 1.12x loss to a 2.4x win on JAX's default dtype. The associative
+parallel-scan lever now covers f64+f32 single-chain cummax/cummin.
+
 ## 2026-06-25 - argsort is a ~35x fj-lax WIN vs JAX (SlateHarrier)
 
 `bench_argsort2d_vs_jax`: argsort f64 [2048,2048] axis1 — fj-lax **17.4ms vs JAX 616.8ms = ~35x WIN**.

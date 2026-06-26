@@ -3697,6 +3697,66 @@ fn parallel_cummax_f64(src: &[f64], init: f64, is_max: bool) -> Vec<f64> {
     out
 }
 
+// f32 sibling of `parallel_cummax_f64` (f32 is JAX's default dtype). Matches the sequential f32 contract
+// (`scan_contiguous_f32_lines_from`): accumulate in f64 (widen each element), store each step rounded to
+// f32. BIT-IDENTICAL under chunking because max/min of f32 values is EXACT (the f64 running extremum is a
+// widened f32; round-trip f32→f64→f32 is lossless), incl NaN propagation. Profiled 16M: 42→~27ms vs JAX 38.
+fn parallel_cummax_f32(src: &[f32], init: f64, is_max: bool) -> Vec<f32> {
+    let n = src.len();
+    let cores = std::thread::available_parallelism()
+        .map(|c| c.get())
+        .unwrap_or(8);
+    let threads = (n / (1 << 18)).clamp(2, cores);
+    let block = n.div_ceil(threads);
+    let mut out = vec![0.0f32; n];
+    let ext: Vec<f64> = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut s_rest = src;
+        let mut o_rest: &mut [f32] = out.as_mut_slice();
+        while !s_rest.is_empty() {
+            let take = block.min(s_rest.len());
+            let (s, st) = s_rest.split_at(take);
+            let (o, ot) = o_rest.split_at_mut(take);
+            s_rest = st;
+            o_rest = ot;
+            handles.push(scope.spawn(move || {
+                let mut acc = init;
+                for (slot, &v) in o.iter_mut().zip(s) {
+                    acc = jax_minmax_scalar(acc, f64::from(v), is_max);
+                    *slot = acc as f32;
+                }
+                acc
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut carries = vec![init; ext.len()];
+    let mut acc = init;
+    for (k, &e) in ext.iter().enumerate() {
+        carries[k] = acc;
+        acc = jax_minmax_scalar(acc, e, is_max);
+    }
+    std::thread::scope(|scope| {
+        let mut o_rest: &mut [f32] = out.as_mut_slice();
+        let mut k = 0usize;
+        while !o_rest.is_empty() {
+            let take = block.min(o_rest.len());
+            let (o, ot) = o_rest.split_at_mut(take);
+            o_rest = ot;
+            let carry = carries[k];
+            if k > 0 {
+                scope.spawn(move || {
+                    for slot in o.iter_mut() {
+                        *slot = jax_minmax_scalar(carry, f64::from(*slot), is_max) as f32;
+                    }
+                });
+            }
+            k += 1;
+        }
+    });
+    out
+}
+
 // Blocked parallel prefix-scan for ONE long contiguous f64 line (outer_count == 1, forward).
 // The sequential single-line scan is f64 dependency-chain-bound (~30ms at 4M; JAX reassociates to
 // ~14ms). Since the cumsum/cumprod oracle is TOLERANCE (abs<1e-10, NOT bit-exact) and `init` is the
@@ -3894,7 +3954,19 @@ fn eval_cumulative_dense(
         // thread the scan over the outer/line dimension bit-identically. Strided
         // inputs keep the serial per-line gather below.
         let out = if axis_stride == 1 {
-            scan_contiguous_f32_lines_to_vec(src, axis_dim, reverse, float_init, float_op)
+            // Single long f32 line + associative op: scan_contiguous_f32_lines_to_vec stays sequential
+            // (it only threads when outer>1). cummax/cummin are associative (max/min of f32 is exact, so
+            // the widen-to-f64 accumulate + round-to-f32 is bit-identical under any grouping) → parallel
+            // prefix scan. cumsum/cumprod (non-associative) keep the sequential line scan.
+            if matches!(cum_primitive, Primitive::Cummax | Primitive::Cummin)
+                && outer_count == 1
+                && !reverse
+                && total >= CUMSUM_BLOCKED_MIN_ELEMS
+            {
+                parallel_cummax_f32(src, float_init, matches!(cum_primitive, Primitive::Cummax))
+            } else {
+                scan_contiguous_f32_lines_to_vec(src, axis_dim, reverse, float_init, float_op)
+            }
         } else if axis == 0 && outer_count > 1 {
             // Leading-axis f32 (cumsum DOWN the columns): stream k-outer/column-inner
             // (contiguous), f64 acc rounded to f32 per step — bit-identical to the
@@ -4606,6 +4678,46 @@ mod tests {
                 b = b.min(s.elapsed().as_secs_f64());
             }
             println!("fj-lax {label} f64 16M: {:.3}ms", b * 1e3);
+        };
+        bench("cummax1d", Primitive::Cummax);
+        bench("cummin1d", Primitive::Cummin);
+    }
+
+    // f32 is JAX's DEFAULT dtype, so f32 cummax/cummin is the common case (measured JAX 38.1ms each). The
+    // f32 cumulative path is separate (widen-to-f64 accumulate + round); check whether it needs the same
+    // parallel associative scan.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_cummax1d_f32_vs_jax() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let data: Vec<f32> = (0..n)
+            .map(|i| ((i.wrapping_mul(2654435761) % 100003) as f32) * 0.01 - 500.0)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([("axis".to_owned(), "0".to_owned())]);
+        let bench = |label: &str, prim: Primitive| {
+            let f = || {
+                std::hint::black_box(
+                    crate::eval_primitive(prim, std::slice::from_ref(&x), &p).unwrap(),
+                );
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..6 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("fj-lax {label} f32 16M: {:.3}ms | JAX=38.1ms", b * 1e3);
         };
         bench("cummax1d", Primitive::Cummax);
         bench("cummin1d", Primitive::Cummin);
