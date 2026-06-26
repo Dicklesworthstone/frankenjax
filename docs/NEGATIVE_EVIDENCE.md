@@ -4690,3 +4690,27 @@ loses to JAX. The separable only wins when O(out·window) ≫ O(input) (large 2-
 for 3-D typical windows it loses. LESSON: a separable/asymptotic win is NOT universal — cache-friendliness +
 the competitor's vectorization decide it; JAX vectorizes its naive. The real 3-D lever is VECTORIZING fj-lax's
 naive `eval_reduce_window_dense_float` (match JAX's ~50 GFLOPs), NOT separating. Bead re-scoped accordingly.
+
+## 2026-06-26 - FRONTIER STATE: contained non-gated surface comprehensively mined this session (SlateHarrier)
+
+After an exhaustive multi-turn search, the contained, non-gated, safe-Rust surface is worked out. Latest dig:
+`jnp.roll` is NOT a fj-lax primitive (composite/unimplemented; JAX roll 16M = 49ms is itself slow) — no
+single-op lever. Recent digs all resolve to one of: already-optimal (i64 sum-pool integral image), routed+
+fma-gated (attention/batched einsum, 482x over naive then the fma ceiling), parity (scatter-add, gather),
+failed-lever (N-D separable sum loses to JAX's vectorized naive), or not-a-primitive (roll, unique, bincount,
+searchsorted).
+
+SHIPPED THIS SESSION (vs JAX): cumulative-scan family ~10 wins (cummax/cummin/cumsum/cumprod × f64/f32/i64 ×
+forward/reverse × 1-D + 2-D, 1.9-2.6x); 2-D sum-pooling separable f64+f32 (3.4-3.5x, fixing the 177-363x worst
+gap); over-subscription data-movement family (convert/broadcast/transpose/concat/flip/pad, 1.2-1.7x); plus the
+broad map (fj-lax DOMINATES sort/argsort 35x, RNG 3x; PARITY on scatter/gather/reductions/elementwise).
+
+REMAINING LEVERS (all gated/owned/bead'd — NOT clean contained 60-min wins):
+- maintainer-GATED: +fma policy (cntiy) → GEMM/conv/transcendentals + attention's ~2x; tree-sum tolerance
+  (jfd2c) → float sum/prod ~5x.
+- OWNED / multi-session: FFT kernel (murmw, 7-43x), linalg (codex zone).
+- bead'd CONTAINED follow-ons (complex/risky): 3-D vectorize-naive sum-pool (parity-sensitive, must materialize
+  padded for same==valid consistency + SIMD window fold); small-batched-GEMM un-packed microkernel (attention
+  ~1.7x below fma ceiling, codex-zone GEMM internals).
+No further clean, safe, contained, non-gated lever is available to ship in 60m; progress now needs a maintainer
+decision (fma / tree-sum tolerance), multi-session work (FFT/linalg), or the bead'd complex follow-ons.
