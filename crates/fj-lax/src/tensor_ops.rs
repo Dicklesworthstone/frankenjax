@@ -1838,6 +1838,60 @@ fn concat_contiguous_into<T: Copy + Send + Sync>(out: &mut [T], srcs: &[&[T]], t
     });
 }
 
+// Threaded STRIDED concatenate (outer > 1, e.g. concat along a non-leading axis): the output is `outer`
+// interleaved blocks, each the operands' per-outer axis-segments concatenated. The serial lazy
+// `from_concat_slices` materialization is single-threaded (page-fault + gather bound); copy the segments in
+// PARALLEL over the outer blocks (parallel first-touch faults), backed by lazy-calloc. Bit-identical (same
+// segments, same order). `op_blocks[i]` = operand i's per-outer block length; `out_block` = their sum.
+fn concat_strided_threaded<T: Copy + Send + Sync>(
+    srcs: &[&[T]],
+    op_blocks: &[usize],
+    out_block: usize,
+    outer: usize,
+    zero: T,
+) -> Vec<T> {
+    let total = outer * out_block;
+    let mut out = vec![zero; total];
+    // operand offsets within one out-block
+    let mut op_off = Vec::with_capacity(op_blocks.len());
+    let mut acc = 0usize;
+    for &b in op_blocks {
+        op_off.push(acc);
+        acc += b;
+    }
+    let cores = std::thread::available_parallelism()
+        .map(|c| c.get())
+        .unwrap_or(8);
+    let threads = (total / (1 << 18)).clamp(1, cores).min(outer.max(1));
+    let copy_block = |o_lo: usize, blk: &mut [T]| {
+        for (ro, out_slot) in blk.chunks_mut(out_block).enumerate() {
+            let o = o_lo + ro;
+            for (i, src) in srcs.iter().enumerate() {
+                let ob = op_blocks[i];
+                out_slot[op_off[i]..op_off[i] + ob].copy_from_slice(&src[o * ob..o * ob + ob]);
+            }
+        }
+    };
+    if threads <= 1 {
+        copy_block(0, &mut out);
+        return out;
+    }
+    let outer_per = outer.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [T] = out.as_mut_slice();
+        let mut o0 = 0usize;
+        while o0 < outer {
+            let cnt = outer_per.min(outer - o0);
+            let (blk, tail) = rest.split_at_mut(cnt * out_block);
+            rest = tail;
+            let start_o = o0;
+            o0 += cnt;
+            scope.spawn(move || copy_block(start_o, blk));
+        }
+    });
+    out
+}
+
 pub(crate) fn eval_concatenate(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -1993,6 +2047,57 @@ pub(crate) fn eval_concatenate(
         {
             let mut out = vec![0u16; total];
             concat_contiguous_into(&mut out, &srcs, threads);
+            return Ok(Value::Tensor(TensorValue::new_half_float_values(
+                expected_dtype,
+                Shape { dims: out_dims },
+                out,
+            )?));
+        }
+    }
+
+    // Threaded STRIDED fast path (outer > 1: concat along a non-leading axis) on f64/f32/half — the lazy
+    // from_concat_slices materialization below is single-threaded (~3.5x slower than JAX). Parallel
+    // interleaved copy over the outer blocks. Bit-identical.
+    if outer > 1
+        && total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+        && crate::arithmetic::work_scaled_threads(total) > 1
+    {
+        let op_blocks: Vec<usize> = tensors
+            .iter()
+            .map(|t| t.shape.dims[axis] as usize * inner)
+            .collect();
+        let out_block: usize = op_blocks.iter().sum();
+        if expected_dtype == DType::F64
+            && let Some(srcs) = tensors
+                .iter()
+                .map(|t| t.elements.as_f64_slice())
+                .collect::<Option<Vec<_>>>()
+        {
+            let out = concat_strided_threaded(&srcs, &op_blocks, out_block, outer, 0.0f64);
+            return Ok(Value::Tensor(TensorValue::new_f64_values(
+                Shape { dims: out_dims },
+                out,
+            )?));
+        }
+        if expected_dtype == DType::F32
+            && let Some(srcs) = tensors
+                .iter()
+                .map(|t| t.elements.as_f32_slice())
+                .collect::<Option<Vec<_>>>()
+        {
+            let out = concat_strided_threaded(&srcs, &op_blocks, out_block, outer, 0.0f32);
+            return Ok(Value::Tensor(TensorValue::new_f32_values(
+                Shape { dims: out_dims },
+                out,
+            )?));
+        }
+        if matches!(expected_dtype, DType::BF16 | DType::F16)
+            && let Some(srcs) = tensors
+                .iter()
+                .map(|t| t.elements.as_half_float_slice())
+                .collect::<Option<Vec<_>>>()
+        {
+            let out = concat_strided_threaded(&srcs, &op_blocks, out_block, outer, 0u16);
             return Ok(Value::Tensor(TensorValue::new_half_float_values(
                 expected_dtype,
                 Shape { dims: out_dims },
@@ -15069,6 +15174,80 @@ mod tests {
         );
     }
 
+    // concatenate vs JAX (measured JAX f64 [4096,4096]: axis0 79.3ms, axis1 23.2ms). axis0 (contiguous) hits
+    // the threaded fast path; axis1 (strided, outer>1) falls to the lazy from_concat_slices. Materialized.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_concat_vs_jax() {
+        use std::time::Instant;
+        let materialize = |v: &Value| -> f64 {
+            if let Value::Tensor(t) = v {
+                t.elements
+                    .as_f64_slice()
+                    .and_then(|s| s.first().copied())
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            }
+        };
+        // axis 0 (contiguous): 4 x [1024,4096] -> [4096,4096]
+        let mk = |rows: usize| {
+            Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![rows as u32, 4096],
+                    },
+                    (0..rows * 4096).map(|i| i as f64).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        for (label, dim, parts, jax) in [
+            (
+                "axis0",
+                "0",
+                vec![mk(1024), mk(1024), mk(1024), mk(1024)],
+                79.3,
+            ),
+            (
+                "axis1",
+                "1",
+                {
+                    let m = |c: usize| {
+                        Value::Tensor(
+                            TensorValue::new_f64_values(
+                                Shape {
+                                    dims: vec![4096, c as u32],
+                                },
+                                (0..4096 * c).map(|i| i as f64).collect(),
+                            )
+                            .unwrap(),
+                        )
+                    };
+                    vec![m(1024), m(1024), m(1024), m(1024)]
+                },
+                23.2,
+            ),
+        ] {
+            let p = BTreeMap::from([("dimension".to_owned(), dim.to_owned())]);
+            let f = || {
+                let r = crate::eval_primitive(Primitive::Concatenate, &parts, &p).unwrap();
+                std::hint::black_box(materialize(&r));
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..6 {
+                let st = Instant::now();
+                f();
+                b = b.min(st.elapsed().as_secs_f64());
+            }
+            println!(
+                "fj-lax concat (materialized) f64 4x->[4096,4096] {label}: {:.3}ms | JAX={jax}ms",
+                b * 1e3
+            );
+        }
+    }
+
     // dynamic_update_slice vs JAX (measured JAX f64 [4096,4096] upd[256,4096] = 27.2ms).
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
@@ -15148,10 +15327,10 @@ mod tests {
             let pieces = eval_split_multi(std::slice::from_ref(&x), &p).unwrap();
             let mut acc = 0.0f64;
             for pv in &pieces {
-                if let Value::Tensor(t) = pv {
-                    if let Some(s) = t.elements.as_f64_slice() {
-                        acc += s.first().copied().unwrap_or(0.0);
-                    }
+                if let Value::Tensor(t) = pv
+                    && let Some(s) = t.elements.as_f64_slice()
+                {
+                    acc += s.first().copied().unwrap_or(0.0);
                 }
             }
             std::hint::black_box(acc);

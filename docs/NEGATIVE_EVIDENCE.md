@@ -4936,3 +4936,15 @@ the dense DUS path ALREADY threads the (large) operand copy (`concat_contiguous_
 This is the same fresh-output-thread fix already in place (KV-cache write hot path). Confirms the vein is
 applied to DUS; recorded the win + kept the bench. (tile/dynamic_slice I threaded this run; DUS was already
 done.)
+
+## 2026-06-26 - concatenate: axis0 ~2.6x WIN (threaded); strided axis1 threaded 80→~30ms (3.47x loss narrowed to ~1.3x) (SlateHarrier)
+
+`bench_concat_vs_jax` (f64 4x->[4096,4096], materialized). AXIS0 (contiguous, outer==1): fj-lax ~26-46ms vs
+JAX 79.3 = **~2.2-3.1x WIN** (already on the threaded concat_contiguous_into path; confirmed). AXIS1 (strided,
+outer>1) was the lazy `from_concat_slices` (single-threaded) = 80.6ms vs JAX 23.2 = **3.47x LOSS**. Added
+`concat_strided_threaded` (parallel interleaved copy over the outer blocks, lazy-calloc backing, f64/f32/half)
+for the outer>1 case — consistent with the already-eager outer==1 path. Bit-identical (concat 10/0, clippy
+clean). Result: **80.6 → ~28-32ms = 2.5x internal**, narrowing the loss from 3.47x to **~1.3x** vs JAX 23.2.
+Residual is the interleaved 8KB-segment copy granularity + the fresh-output fault floor (so4wo) — a real
+2.5x improvement on a common op, not yet a JAX win (recorded honestly, not framed away). (Also fixed a
+pre-existing collapsible_if in the split bench caught by clippy --tests.)
