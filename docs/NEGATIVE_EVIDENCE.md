@@ -3176,6 +3176,19 @@ parallel path) confirms max relative error <1e-5 vs the sequential f64-accumulat
 **f32 cumsum 49.8→15.47ms (2.52x WIN), cumprod 45.8→14.10ms (2.55x WIN)**; cum 49/0, conformance GREEN, clippy
 clean. Bead frankenjax-parallel-f32-cumsum RESOLVED.
 
+## 2026-06-25 - REVERSE f32 cumsum/cummax parallel scans — 2x WIN vs JAX (SlateHarrier)
+
+Reverse 1-D scans (common: attention backward) were gated out of the parallel path (`!reverse`) → sequential
+LOSS: cumsum_rev **48.8ms vs JAX 28.4 = 1.72x**, cummax_rev **58.7ms vs JAX 30.0 = 1.96x**. Extended
+`parallel_cummax_f32` + `parallel_assoc_scan_f32` with a `reverse` param: pass1 local DIRECTIONAL scan / chunk
+reduction, pass2 directional carries (forward = op of EARLIER chunks; reverse = op of LATER chunks, via a
+reverse prefix loop), pass3 directional rescan from carry. Dropped `!reverse` from the f32 caller gate.
+**reverse cumsum 48.8→13.32ms (2.13x WIN), reverse cummax 58.7→15.08ms (1.99x WIN)**. VERIFIED: new test
+`parallel_f32_reverse_scans_match_sequential` (4M) — reverse cummax BIT-IDENTICAL to sequential, reverse
+cumsum within 1e-5; conformance cumulative 28/0 + cummax 45/0 (small reverse tests <1M still use the
+sequential path); cum 49/0, clippy clean. cumulative-scan family now covers f32 forward+reverse,
+cummax+cumsum/cumprod.
+
 ## 2026-06-25 - argsort is a ~35x fj-lax WIN vs JAX (SlateHarrier)
 
 `bench_argsort2d_vs_jax`: argsort f64 [2048,2048] axis1 — fj-lax **17.4ms vs JAX 616.8ms = ~35x WIN**.

@@ -3701,7 +3701,7 @@ fn parallel_cummax_f64(src: &[f64], init: f64, is_max: bool) -> Vec<f64> {
 // (`scan_contiguous_f32_lines_from`): accumulate in f64 (widen each element), store each step rounded to
 // f32. BIT-IDENTICAL under chunking because max/min of f32 values is EXACT (the f64 running extremum is a
 // widened f32; round-trip f32→f64→f32 is lossless), incl NaN propagation. Profiled 16M: 42→~27ms vs JAX 38.
-fn parallel_cummax_f32(src: &[f32], init: f64, is_max: bool) -> Vec<f32> {
+fn parallel_cummax_f32(src: &[f32], init: f64, is_max: bool, reverse: bool) -> Vec<f32> {
     let n = src.len();
     let cores = std::thread::available_parallelism()
         .map(|c| c.get())
@@ -3709,6 +3709,7 @@ fn parallel_cummax_f32(src: &[f32], init: f64, is_max: bool) -> Vec<f32> {
     let threads = (n / (1 << 18)).clamp(2, cores);
     let block = n.div_ceil(threads);
     let mut out = vec![0.0f32; n];
+    // Pass 1: per-chunk local DIRECTIONAL cummax; return each chunk's extremum (direction-independent).
     let ext: Vec<f64> = std::thread::scope(|scope| {
         let mut handles = Vec::new();
         let mut s_rest = src;
@@ -3721,21 +3722,39 @@ fn parallel_cummax_f32(src: &[f32], init: f64, is_max: bool) -> Vec<f32> {
             o_rest = ot;
             handles.push(scope.spawn(move || {
                 let mut acc = init;
-                for (slot, &v) in o.iter_mut().zip(s) {
-                    acc = jax_minmax_scalar(acc, f64::from(v), is_max);
-                    *slot = acc as f32;
+                if reverse {
+                    for (slot, &v) in o.iter_mut().rev().zip(s.iter().rev()) {
+                        acc = jax_minmax_scalar(acc, f64::from(v), is_max);
+                        *slot = acc as f32;
+                    }
+                } else {
+                    for (slot, &v) in o.iter_mut().zip(s) {
+                        acc = jax_minmax_scalar(acc, f64::from(v), is_max);
+                        *slot = acc as f32;
+                    }
                 }
                 acc
             }));
         }
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
+    // Pass 2: directional exclusive prefix of the chunk extrema -> per-chunk carry. Forward = max of
+    // EARLIER chunks; reverse = max of LATER chunks.
     let mut carries = vec![init; ext.len()];
     let mut acc = init;
-    for (k, &e) in ext.iter().enumerate() {
-        carries[k] = acc;
-        acc = jax_minmax_scalar(acc, e, is_max);
+    if reverse {
+        for k in (0..ext.len()).rev() {
+            carries[k] = acc;
+            acc = jax_minmax_scalar(acc, ext[k], is_max);
+        }
+    } else {
+        for (k, &e) in ext.iter().enumerate() {
+            carries[k] = acc;
+            acc = jax_minmax_scalar(acc, e, is_max);
+        }
     }
+    // Pass 3: fold each chunk's carry into its (already locally-scanned) outputs. carry == init is the op
+    // identity -> a no-op, so skip it (the boundary chunk: first for forward, last for reverse).
     std::thread::scope(|scope| {
         let mut o_rest: &mut [f32] = out.as_mut_slice();
         let mut k = 0usize;
@@ -3744,7 +3763,7 @@ fn parallel_cummax_f32(src: &[f32], init: f64, is_max: bool) -> Vec<f32> {
             let (o, ot) = o_rest.split_at_mut(take);
             o_rest = ot;
             let carry = carries[k];
-            if k > 0 {
+            if carry != init {
                 scope.spawn(move || {
                     for slot in o.iter_mut() {
                         *slot = jax_minmax_scalar(carry, f64::from(*slot), is_max) as f32;
@@ -3764,7 +3783,7 @@ fn parallel_cummax_f32(src: &[f32], init: f64, is_max: bool) -> Vec<f32> {
 // exclusive op-prefix of the chunk totals (the carries), pass3 re-scan each chunk from its carry. Only the
 // inter-chunk carry is reassociated (chunk-grouped vs element-sequential) — identical structure to the f64
 // blocked scan. Profiled 16M: 49.8→~15ms vs JAX 39ms.
-fn parallel_assoc_scan_f32<F>(src: &[f32], init: f64, op: &F) -> Vec<f32>
+fn parallel_assoc_scan_f32<F>(src: &[f32], init: f64, op: &F, reverse: bool) -> Vec<f32>
 where
     F: Fn(f64, f64) -> f64 + Sync,
 {
@@ -3774,7 +3793,7 @@ where
         .unwrap_or(8);
     let threads = (n / (1 << 18)).clamp(2, cores);
     let block = n.div_ceil(threads);
-    // Pass 1: per-chunk op-reduction from init (the chunk's total), in parallel.
+    // Pass 1: per-chunk op-reduction from init (the chunk's total — direction-independent), in parallel.
     let totals: Vec<f64> = std::thread::scope(|scope| {
         let mut handles = Vec::new();
         let mut s_rest = src;
@@ -3792,14 +3811,22 @@ where
         }
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    // Pass 2: exclusive op-prefix of the chunk totals -> per-chunk carry (sequential, ~#threads elems).
+    // Pass 2: directional exclusive op-prefix of the chunk totals -> per-chunk carry. Forward = op of
+    // EARLIER chunks; reverse = op of LATER chunks.
     let mut carries = vec![init; totals.len()];
     let mut acc = init;
-    for (k, &t) in totals.iter().enumerate() {
-        carries[k] = acc;
-        acc = op(acc, t);
+    if reverse {
+        for k in (0..totals.len()).rev() {
+            carries[k] = acc;
+            acc = op(acc, totals[k]);
+        }
+    } else {
+        for (k, &t) in totals.iter().enumerate() {
+            carries[k] = acc;
+            acc = op(acc, t);
+        }
     }
-    // Pass 3: re-scan each chunk from its carry (full f64 acc, single round per output element).
+    // Pass 3: re-scan each chunk DIRECTIONALLY from its carry (full f64 acc, single round per output).
     let mut out = vec![0.0f32; n];
     std::thread::scope(|scope| {
         let mut s_rest = src;
@@ -3814,9 +3841,16 @@ where
             let carry = carries[k];
             scope.spawn(move || {
                 let mut acc = carry;
-                for (slot, &v) in o.iter_mut().zip(s) {
-                    acc = op(acc, f64::from(v));
-                    *slot = acc as f32;
+                if reverse {
+                    for (slot, &v) in o.iter_mut().rev().zip(s.iter().rev()) {
+                        acc = op(acc, f64::from(v));
+                        *slot = acc as f32;
+                    }
+                } else {
+                    for (slot, &v) in o.iter_mut().zip(s) {
+                        acc = op(acc, f64::from(v));
+                        *slot = acc as f32;
+                    }
                 }
             });
             k += 1;
@@ -4026,11 +4060,16 @@ fn eval_cumulative_dense(
             // when outer>1). cummax/cummin are associative (max/min of f32 is exact → bit-identical
             // parallel scan). cumsum/cumprod are non-associative but their reassociation is TOLERANCE-legal
             // (same accepted policy as the f64 blocked_prefix_scan_to_vec) → parallel rescan.
-            if outer_count == 1 && !reverse && total >= CUMSUM_BLOCKED_MIN_ELEMS {
+            if outer_count == 1 && total >= CUMSUM_BLOCKED_MIN_ELEMS {
                 if matches!(cum_primitive, Primitive::Cummax | Primitive::Cummin) {
-                    parallel_cummax_f32(src, float_init, matches!(cum_primitive, Primitive::Cummax))
+                    parallel_cummax_f32(
+                        src,
+                        float_init,
+                        matches!(cum_primitive, Primitive::Cummax),
+                        reverse,
+                    )
                 } else {
-                    parallel_assoc_scan_f32(src, float_init, float_op)
+                    parallel_assoc_scan_f32(src, float_init, float_op, reverse)
                 }
             } else {
                 scan_contiguous_f32_lines_to_vec(src, axis_dim, reverse, float_init, float_op)
@@ -4911,6 +4950,67 @@ mod tests {
         );
     }
 
+    // Parity gate for the REVERSE parallel f32 scans (parallel_cummax_f32 / parallel_assoc_scan_f32 with
+    // reverse=true), at 4M (> the blocked threshold). Reverse cummax is associative → must be BIT-IDENTICAL
+    // to the sequential reverse cummax; reverse cumsum is tolerance-legal → within 1e-5 of the sequential
+    // reverse f64-accumulate reference.
+    #[test]
+    fn parallel_f32_reverse_scans_match_sequential() {
+        let n = 4_000_000usize;
+        let data: Vec<f32> = (0..n).map(|i| ((i % 9973) as f32) * 1e-3 - 5.0).collect();
+        let x = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([
+            ("axis".to_owned(), "0".to_owned()),
+            ("reverse".to_owned(), "true".to_owned()),
+        ]);
+        // Reverse cummax: bit-identical (max of f32 is exact under any grouping).
+        let Value::Tensor(cmax) =
+            crate::eval_primitive(Primitive::Cummax, std::slice::from_ref(&x), &p).unwrap()
+        else {
+            panic!("tensor");
+        };
+        let got_max = cmax.elements.as_f32_slice().expect("dense f32");
+        let mut ref_max = vec![0.0f32; n];
+        let mut acc = f64::NEG_INFINITY;
+        for i in (0..n).rev() {
+            acc = jax_minmax_scalar(acc, f64::from(data[i]), true);
+            ref_max[i] = acc as f32;
+        }
+        let max_mismatches = got_max
+            .iter()
+            .zip(&ref_max)
+            .filter(|(g, r)| g.to_bits() != r.to_bits())
+            .count();
+        assert_eq!(max_mismatches, 0, "reverse cummax not bit-identical");
+        // Reverse cumsum: tolerance.
+        let Value::Tensor(csum) =
+            crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(&x), &p).unwrap()
+        else {
+            panic!("tensor");
+        };
+        let got_sum = csum.elements.as_f32_slice().expect("dense f32");
+        let mut acc = 0.0f64;
+        let mut max_rel = 0.0f64;
+        for i in (0..n).rev() {
+            acc += f64::from(data[i]);
+            let reference = acc as f32;
+            let denom = f64::from(reference).abs().max(1.0);
+            max_rel = max_rel.max((f64::from(got_sum[i]) - f64::from(reference)).abs() / denom);
+        }
+        assert!(
+            max_rel < 1e-5,
+            "reverse cumsum drifted: max relative error {max_rel:e}"
+        );
+    }
+
     // f32 cumsum/cumprod 1-D (JAX's default dtype; measured JAX cumsum 39.0ms / cumprod 35.9ms). f64 1-D
     // cumsum uses the blocked parallel prefix scan (~21ms); does the f32 path get the same parallelism?
     #[test]
@@ -4946,6 +5046,47 @@ mod tests {
         };
         bench("cumsum1d", Primitive::Cumsum, 39.0);
         bench("cumprod1d", Primitive::Cumprod, 35.9);
+    }
+
+    // REVERSE 1-D cumsum/cummax (common: attention backward, reverse scans). Measured JAX f32 cumsum_rev
+    // 28.4ms / cummax_rev 30.0ms. The parallel scans gate on !reverse, so fj-lax reverse single-chain is
+    // sequential — check the gap.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_cumulative1d_rev_f32_vs_jax() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let data: Vec<f32> = (0..n).map(|i| 0.5 + (i % 9973) as f32 * 1e-5).collect();
+        let x = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([
+            ("axis".to_owned(), "0".to_owned()),
+            ("reverse".to_owned(), "true".to_owned()),
+        ]);
+        let bench = |label: &str, prim: Primitive, jax: f64| {
+            let f = || {
+                std::hint::black_box(
+                    crate::eval_primitive(prim, std::slice::from_ref(&x), &p).unwrap(),
+                );
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..6 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("fj-lax {label} f32 16M: {:.3}ms | JAX={jax}ms", b * 1e3);
+        };
+        bench("cumsum1d_rev", Primitive::Cumsum, 28.4);
+        bench("cummax1d_rev", Primitive::Cummax, 30.0);
     }
 
     // BOLD-VERIFY: cumsum [4096,1024] vs JAX (slow: f32 ax0 6.93 ax1 2.96ms; f64 ax0 20.85 ax1 18.28ms).
