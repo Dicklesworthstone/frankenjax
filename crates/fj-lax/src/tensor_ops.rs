@@ -10738,6 +10738,83 @@ fn sort_multiple_along_axis(
     }
     let outer_count = total / axis_dim;
 
+    // Dense all-f64, single-key, contiguous (last-axis) fast path. The generic path below builds Vec<Literal>
+    // outputs and permutes via tensor.elements[idx] (Literal reconstruction) + a densify round-trip — MEASURED
+    // to dominate (the SortKey comparison sort is NOT the cost; see NEGATIVE_EVIDENCE 2026-06-26). Here we
+    // radix-sort each line's key into a permutation (O(n), same total-order encoding as the production f64
+    // sort -> matches JAX; stable radix keeps ties in ascending idx) and permute every operand's raw f64
+    // slice into DENSE f64 output. Bit-identical; guarded by sort_key_val_f64_num_keys1_parity_threaded.
+    if num_keys == 1
+        && axis_stride == 1
+        && outer_count > 1
+        && tensors.iter().all(|t| t.dtype == DType::F64)
+        && total >= SORT_PARALLEL_MIN_TOTAL_ELEMS
+        && let Some(op_slices) = tensors
+            .iter()
+            .map(|t| t.elements.as_f64_slice())
+            .collect::<Option<Vec<&[f64]>>>()
+    {
+        let key_mask: u64 = if descending { u64::MAX } else { 0 };
+        let key_slice = op_slices[0];
+        let mut outs: Vec<Vec<f64>> = (0..tensors.len()).map(|_| vec![0.0f64; total]).collect();
+        let threads = {
+            let hw = std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1);
+            hw.min(total / SORT_PARALLEL_MIN_TOTAL_ELEMS)
+                .max(1)
+                .min(outer_count)
+        };
+        let per = outer_count.div_ceil(threads.max(1));
+        let op_slices_ref = &op_slices;
+        let mut out_iters: Vec<_> = outs
+            .iter_mut()
+            .map(|v| v.chunks_mut(per * axis_dim))
+            .collect();
+        std::thread::scope(|scope| {
+            let mut start = 0usize;
+            while start < outer_count {
+                let cnt = per.min(outer_count - start);
+                let blocks: Vec<&mut [f64]> =
+                    out_iters.iter_mut().map(|it| it.next().unwrap()).collect();
+                let s0 = start;
+                start += cnt;
+                scope.spawn(move || {
+                    let mut blocks = blocks;
+                    let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(axis_dim);
+                    let mut scratch: Vec<(u64, u32)> = vec![(0, 0); axis_dim];
+                    for j in 0..cnt {
+                        let base = (s0 + j) * axis_dim;
+                        pairs.clear();
+                        for i in 0..axis_dim {
+                            pairs.push((
+                                f64_sort_order_key(key_slice[base + i]) ^ key_mask,
+                                i as u32,
+                            ));
+                        }
+                        radix_pairs_ascending(&mut pairs, &mut scratch);
+                        for (op, blk) in blocks.iter_mut().enumerate() {
+                            let src = op_slices_ref[op];
+                            for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
+                                blk[j * axis_dim + out_pos] = src[base + orig as usize];
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        drop(out_iters);
+        return outs
+            .into_iter()
+            .zip(tensors)
+            .map(|(o, tensor)| {
+                TensorValue::new_f64_values(tensor.shape.clone(), o)
+                    .map(Value::Tensor)
+                    .map_err(EvalError::InvalidTensor)
+            })
+            .collect();
+    }
+
     let mut result_elements: Vec<Vec<Literal>> = tensors
         .iter()
         .map(|tensor| tensor.elements.to_vec())

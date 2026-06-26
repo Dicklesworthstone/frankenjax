@@ -5040,3 +5040,15 @@ multi-sort output DENSE TYPED buffers — for each operand permute its typed sli
 dense Vec and build via new_f64_values, instead of Vec<Literal> + densify. Combined with the radix order that
 becomes the real win (~35ms sort + dense permute). Kept the parity guard test. Two hypotheses now ruled out by
 measurement: (1) index-indirection [turn N-1], (2) sort-compare cost [this turn] — it is the Literal permute.
+
+## 2026-06-26 - sort_key_val LANDED: dense-f64 permute + radix — 736→47ms, 3.4x→~58x WIN vs JAX (SlateHarrier)
+
+Third attempt — LANDED. After ruling out index-indirection (attempt 1) and sort-compare cost (attempt 2, radix
+alone ~0-gain), the pinned bottleneck was the Vec<Literal> permute + densify round-trip. FIX: a dense all-f64,
+num_keys==1, contiguous (last-axis) fast path in sort_multiple_along_axis — radix-sort each line's key
+(f64_sort_order_key total-order u64, stable) into a permutation, then permute every operand's RAW f64 slice
+into DENSE f64 output (new_f64_values), skipping Vec<Literal> entirely. Threaded over lines.
+  sort_key_val f64 [4096,4096] axis1: 736 -> **47.5ms** (15.5x internal) | JAX 2739ms = **~58x WIN** (was 3.4x)
+Bit-identical: parity guard sort_key_val_f64_num_keys1_parity_threaded (1024x1024, NaN/±0/±inf/dups, asc+desc,
+vs trusted single sort) + sort suite 28/0, clippy clean. Non-f64 / num_keys>1 / non-last-axis keep the generic
+Literal path. Follow-on (bead): extend dense permute to f32/i64 keys + mixed-dtype operands.
