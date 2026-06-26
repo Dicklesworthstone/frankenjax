@@ -3189,6 +3189,18 @@ cumsum within 1e-5; conformance cumulative 28/0 + cummax 45/0 (small reverse tes
 sequential path); cum 49/0, clippy clean. cumulative-scan family now covers f32 forward+reverse,
 cummax+cumsum/cumprod.
 
+## 2026-06-25 - REVERSE f64 cumsum/cummax parallel scans — 2-2.5x WIN vs JAX (SlateHarrier)
+
+Completes the family on f64. Reverse f64 single-chain was gated out (the outer dense gate's `!reverse ||
+outer_count > 1` excluded reverse single-line, and the f64 cumsum forward uses the forward-only
+`blocked_prefix_scan_to_vec`) → sequential LOSS: cumsum_rev **88.4ms vs JAX 57.9 = 1.53x**, cummax_rev
+**100.9ms vs JAX 59.4 = 1.70x**. Added `reverse` to `parallel_cummax_f64` + a new `parallel_assoc_scan_f64`
+(reverse f64 cumsum/cumprod rescan; forward f64 cumsum keeps the shipped blocked scan); widened the f64 outer
+gate to admit reverse single-chain ≥1M. **reverse cumsum 88.4→29.69ms (1.95x WIN), cummax 100.9→24.21ms
+(2.45x WIN)**. VERIFIED: `parallel_f64_reverse_scans_match_sequential` (4M) — reverse cummax BIT-IDENTICAL,
+reverse cumsum <1e-5; conformance cumulative 28/0 + cummax 45/0; tests 51/0, clippy clean. CUMULATIVE-SCAN
+FAMILY COMPLETE: f64+f32 × forward+reverse × cummax/cummin+cumsum/cumprod, all ~2-2.6x vs JAX-on-CPU.
+
 ## 2026-06-25 - argsort is a ~35x fj-lax WIN vs JAX (SlateHarrier)
 
 `bench_argsort2d_vs_jax`: argsort f64 [2048,2048] axis1 — fj-lax **17.4ms vs JAX 616.8ms = ~35x WIN**.
