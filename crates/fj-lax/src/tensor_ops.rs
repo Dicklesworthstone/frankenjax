@@ -549,6 +549,31 @@ fn threaded_f64_to_u32_bitcast_into(out: &mut [u32], values: &[f64], threads: us
     });
 }
 
+fn u32_pair_to_f64(low: u32, high: u32) -> f64 {
+    f64::from_bits(u64::from(low) | (u64::from(high) << 32))
+}
+
+fn threaded_u32_to_f64_bitcast_into(out: &mut [f64], values: &[u32], threads: usize) {
+    let n = out.len();
+    let chunk = n.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f64] = out;
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let src = &values[start * 2..(start + len) * 2];
+            scope.spawn(move || {
+                for (i, pair) in src.chunks_exact(2).enumerate() {
+                    blk[i] = u32_pair_to_f64(pair[0], pair[1]);
+                }
+            });
+            start += len;
+        }
+    });
+}
+
 fn dense_width_changing_bitcast_tensor(
     primitive: Primitive,
     tensor: &TensorValue,
@@ -631,13 +656,21 @@ fn dense_width_changing_bitcast_tensor(
             if last_dim != 2 {
                 return Ok(None);
             }
-            let mut out = Vec::with_capacity(values.len() / 2);
-            for chunk in values.chunks_exact(2) {
-                let low = chunk[0].to_le_bytes();
-                let high = chunk[1].to_le_bytes();
-                out.push(f64::from_bits(u64::from_le_bytes([
-                    low[0], low[1], low[2], low[3], high[0], high[1], high[2], high[3],
-                ])));
+            let out_len = values.len() / 2;
+            let mut out = vec![0.0f64; out_len];
+            if values.len() >= BITCAST_WIDTH_CHANGE_PARALLEL_MIN {
+                let threads = crate::arithmetic::work_scaled_threads(values.len());
+                if threads > 1 {
+                    threaded_u32_to_f64_bitcast_into(&mut out, values, threads);
+                } else {
+                    for (i, chunk) in values.chunks_exact(2).enumerate() {
+                        out[i] = u32_pair_to_f64(chunk[0], chunk[1]);
+                    }
+                }
+            } else {
+                for (i, chunk) in values.chunks_exact(2).enumerate() {
+                    out[i] = u32_pair_to_f64(chunk[0], chunk[1]);
+                }
             }
             Ok(Some(Value::Tensor(TensorValue::new_f64_values(
                 Shape { dims },

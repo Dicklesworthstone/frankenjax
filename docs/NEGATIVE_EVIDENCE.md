@@ -2,6 +2,54 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-26 - KEEP: reverse u32->f64 bitcast direct packing narrows JAX gap (ProudSalmon)
+
+BOLD-VERIFY land-or-dig pass: all measured scratch/worktree wins found in
+`/data/projects/.scratch` were already cherry-equivalent to `origin/main`; the
+only cherry-positive live head remained stale QR/SVD WIP `a00dc114` with no
+ratio ledger. New primitive dug here: dense width-changing `bitcast_convert_type`
+from trailing u32 pairs back to f64.
+
+Reconciliation with `c1c9fe80`: that later evidence-only reject measured this
+family through local-fallback/noisy rows and one routing-only RCH candidate. The
+entry below is kept because it has a same-worker current-main baseline and
+candidate pair on `vmi1227854`.
+
+Lever: replace per-pair `to_le_bytes` array reconstruction with direct little-endian
+`u64` packing (`low | high << 32`) and add the same DRAM-scale threaded fill used by
+the f64->u32 direction. This preserves bit semantics exactly: the low u32 remains
+the low 32 bits, the high u32 remains the high 32 bits, and the final `f64::from_bits`
+is unchanged.
+
+Bench command note: this Cargo rejects `cargo bench --release`, so the valid
+crate-scoped optimized equivalent was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo bench -p
+fj-lax --profile release --bench lax_baseline -- 'bitcast_u32_f64_dense_1m'
+--noplot`.
+
+Same-worker RCH evidence on `vmi1227854`: current-main `09d1335e`
+`eval/bitcast_u32_f64_dense_1m` midpoint **627.77us**. The candidate patch
+measured **450.36us** midpoint on the same worker, a **1.39x Rust-side speedup**
+(-28.3%). `09d1335e` touched only `crates/fj-lax/src/reduction.rs` and this
+ledger, so the bitcast code under test is identical to the candidate patch
+applied here. A local-fallback rerun through `rch exec` measured **463.35us**
+midpoint with Criterion **-27.410%**, p=0.00.
+
+Fresh JAX comparator on the exact 1M fixture (`jax.lax.bitcast_convert_type`
+u32 chunks -> f64, JAX/JAXLIB 0.10.1 CPU x64, warmed jit, 20 runs x 50 inner)
+measured best **115.126us**, p50 **149.890us**, mean **177.749us**, p95
+**282.816us**. Ratio-vs-JAX ledger:
+
+| workload | fj-lax row | JAX mean | Rust/JAX | verdict |
+|---|---:|---:|---:|---|
+| `eval/bitcast_u32_f64_dense_1m` current main | 627.77 us | 177.749 us | 3.53x loss | baseline |
+| `eval/bitcast_u32_f64_dense_1m` candidate | 450.36 us | 177.749 us | 2.53x loss | KEEP: material loss-narrowing, not a JAX flip |
+
+Scorecard: **0 JAX wins / 1 JAX loss narrowed / 1 kept / 0 reverted**. Next
+retry should target allocation/write traffic or a no-zero-copy representation
+boundary; do not retry byte-array packing.
+
 ## 2026-06-25 - REJECT: u32->f64 bitcast reverse threading is noise, still loses to JAX (ProudSalmon)
 
 BOLD-VERIFY land-or-dig pass found two dirty scratch worktrees,
