@@ -2,6 +2,40 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-25 - REJECT: u32->f64 bitcast reverse threading is noise, still loses to JAX (ProudSalmon)
+
+BOLD-VERIFY land-or-dig pass found two dirty scratch worktrees,
+`/data/projects/.scratch/frankenjax-proudsalmon-bitcast-reverse-20260626T005511Z`
+and `/data/projects/.scratch/frankenjax-proudsalmon-bitcast-reverse-baseline-20260626T005840Z`,
+with a code-only `U32 -> F64` width-changing bitcast candidate and no ledgered measurement. The
+candidate added a `u32_pair_to_f64` helper plus a threaded dense widening path. It was replayed onto
+fresh `origin/main` (`c6bfb756`) and measured, then reverted because the decisive local row was
+within Criterion noise and the operation remains far behind JAX.
+
+Bench command note: this Cargo still rejects `cargo bench --release` for benches, so the package
+scoped optimized equivalent was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec -- env
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b AGENT_NAME=ProudSalmon cargo bench
+-p fj-lax --profile release --bench lax_baseline -- eval/bitcast_u32_f64_dense_1m --noplot`.
+RCH fell open locally for the current-main baseline runs because no worker slots were admissible;
+one candidate run landed on RCH `hz2` but has no same-worker baseline and is routing-only.
+
+Measured rows for `eval/bitcast_u32_f64_dense_1m`, exact fixture from
+`crates/fj-lax/benches/lax_baseline.rs`:
+
+| row | midpoint | Rust-side verdict | JAX mean | Rust/JAX |
+|---|---:|---|---:|---:|
+| current main local fallback, first run | 804.39 us | baseline | 176.684 us | 4.55x loss |
+| current main local fallback, repeat | 1.0115 ms | noisy baseline | 176.684 us | 5.72x loss |
+| candidate local direct auxiliary | 1.0453 ms | within noise threshold (`-4.34%`, p=0.04) vs saved Criterion baseline | 176.684 us | 5.92x loss |
+| candidate RCH `hz2` | 680.41 us | routing-only; no same-worker baseline | 176.684 us | 3.85x loss |
+
+Fresh JAX comparator used `benchmarks/jax_comparison/bitcast_gauntlet.py` with JAX/JAXLIB 0.10.1
+CPU x64, 10 runs x 30 inner loops: `bitcast_u32_f64_1m` p50 **182.598 us**, mean **176.684 us**.
+Scorecard: **0 wins / 1 loss / 0 kept / 1 reverted**. Do not retry by simply threading this reverse
+bitcast; the next credible lever would need to remove allocation or fuse the producer/consumer so
+the row can approach JAX's ~177 us packed reinterpret path.
+
 ## 2026-06-25 - KEEP: Cholesky panel fan-out cap narrows the JAX LAPACK gap (ProudSalmon)
 
 BOLD-VERIFY land-or-dig pass: the scratch complex-select worktree commit
