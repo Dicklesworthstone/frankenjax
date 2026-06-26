@@ -4676,3 +4676,17 @@ rushed at session depth); ~1.7x recoverable below the fma ceiling. The fma half 
 lever: the gap is the random-access latency floor, not an algorithmic inefficiency (fj-lax already does the
 dense sequential accumulate, not a boxed/odometer path). Recorded as a confirmed-competitive measured result;
 kept the bench. (Genuinely-different-primitive dig: scatter-add is competitive, not a gap.)
+
+## 2026-06-26 - N-D (3-D) separable sum-pool IMPLEMENTED + measured + REVERTED — loses to JAX (SlateHarrier)
+
+Implemented the N-D separable sum-pool (reduce_window_sum_1d_axis_f64 + eval_reduce_window_separable_sum,
+rank≥3, finite-guarded, per-axis 1-D running sums). Bit-identical-within-tolerance (3-D parity test passed,
+48/0). But MEASURED A LOSS vs JAX: f64 [96,96,96] win5³ 17.2ms vs JAX **1.75ms = 9.85x SLOWER**; win9³ 12.5ms
+vs JAX 9.87ms = 1.27x. REVERTED (lib.rs == HEAD). WHY (corrects the bead's premise): JAX's 3-D sum-pool is a
+VECTORIZED, cache-friendly NAIVE O(out·∏window) at ~50 GFLOPs (SIMD over contiguous window taps + threaded),
+which is *cheap* for small/medium 3-D windows; the separable's per-axis 1-D running sums are CACHE-HOSTILE
+(strided access for the non-last axes) + 3 full-array copies between axes → a fixed ~12-17ms overhead that
+loses to JAX. The separable only wins when O(out·window) ≫ O(input) (large 2-D windows, e.g. win31 — shipped);
+for 3-D typical windows it loses. LESSON: a separable/asymptotic win is NOT universal — cache-friendliness +
+the competitor's vectorization decide it; JAX vectorizes its naive. The real 3-D lever is VECTORIZING fj-lax's
+naive `eval_reduce_window_dense_float` (match JAX's ~50 GFLOPs), NOT separating. Bead re-scoped accordingly.
