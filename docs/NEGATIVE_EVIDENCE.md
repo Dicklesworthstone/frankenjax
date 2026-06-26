@@ -2,6 +2,44 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-26 - REJECT: direct LU Schur subtract is under-threshold noise (ProudSalmon)
+
+BOLD-VERIFY land-or-dig pass after `b252d6fc`: live worktree scan found no
+unlanded measured win. The dirty ProudSalmon gather/bitcast worktrees are
+already represented on `origin/main`; the stale QR/SVD head `a00dc114` has no
+ratio ledger; the old `frankenjax_p1vbf51_bench_20260608T104020` LU/matmul
+dirty tree has no local measurement artifact or JAX-ratio entry. New lever
+attempted here: replace LU's blocked Schur update temporary
+`prod = L21 * U12` plus copy-subtract with a strided matmul subtract target that
+writes `A22 -= L21 * U12` directly into the LU trailing block.
+
+Bench command note: this Cargo rejects `cargo bench --release`, so the valid
+crate-scoped optimized equivalent was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a cargo bench -p
+fj-lax --profile release --bench lax_baseline -- 'linalg/lu_1024x1024_f64'
+--noplot`. RCH had no admissible worker and fell open locally for both baseline
+and candidate, so the comparison is same-host/same-target but not remote.
+
+Measured rows:
+
+| workload | main midpoint | direct-sub midpoint | Rust delta | JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `linalg/lu_1024x1024_f64` | 43.370 ms | 41.719 ms | -3.81% / 1.04x faster | 2207.735 ms | 0.0196x (50.91x faster than JAX) | 0.0189x (52.92x faster than JAX) | REVERT: below 1.15x keep bar; Criterion says within noise threshold |
+
+Fresh JAX comparator used `/data/projects/frankenjax/benchmarks/jax_comparison/.venv/bin/python`,
+JAX 0.10.1 CPU x64, exact `1024x1024` deterministic fixture from
+`lax_baseline.rs`, warmed `jax.jit(lambda a: jax.lax.linalg.lu(a))`, 20 runs.
+JAX measured best **1724.934 ms**, p50 **2131.946 ms**, mean **2207.735 ms**,
+p95 **2720.247 ms**. Focused LU reconstruction test passed with the candidate:
+`cargo test -p fj-lax lu_blocked_path_reconstructs_and_matches_scalar --profile
+release`.
+
+Scorecard: **main already dominates JAX / 0 material JAX-gap wins / 1
+under-threshold Rust-only delta / 0 kept / code reverted**. Do not retry this
+allocation-removal shape unless the direct subtract path can be fused into a
+larger LU restructuring with at least a 1.15x same-host or same-worker win.
+
 ## 2026-06-26 - REJECT: radix-4 production dispatch for pow4 FFT is mixed/under-threshold (ProudSalmon)
 
 BOLD-VERIFY land-or-dig pass: live worktree scan found no unlanded measured win.
