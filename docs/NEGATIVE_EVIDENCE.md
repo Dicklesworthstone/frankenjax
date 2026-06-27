@@ -2,6 +2,35 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-27 - MEASURED (no lever): bitcast f64->u32 is already memcpy-speed; residual gap is eval-model (BlackThrush)
+
+Closes the open question in my prior BLOCKER entry — is the `bitcast f64<->u32` ~2.3x
+JAX loss (after ProudSalmon's threaded direct-packing KEEPs) a CONTAINED compute lever
+or the so4wo eval-model floor? The per-element kernel
+(`threaded_f64_to_u32_bitcast_into`: `value.to_bits()` -> two interleaved u32 stores)
+LOOKED un-vectorized, suggesting a bulk byte-reinterpret memcpy (needs `bytemuck`, since
+`#![forbid(unsafe_code)]`) could win. Added an isolated same-binary probe
+(`probe_bitcast_f64_u32_compute_vs_memcpy`, 4M f64, output buffer REUSED so alloc is
+excluded) comparing the production threaded loop vs `copy_from_slice` (raw memcpy) vs a
+single-threaded loop:
+
+| variant | run1 (loaded) | run2 (fair) |
+|---|---:|---:|
+| loop_threaded (production) | 3.88 ms | **1.52 ms** |
+| loop_single | 5.32 ms | 3.12 ms |
+| memcpy (`copy_from_slice`) | 2.06 ms | **1.52 ms** |
+
+Under fair low-contention load (run2) the threaded loop EQUALS memcpy (1.52 == 1.52) —
+LLVM already lowers the contiguous unit-stride `to_bits` interleave to memcpy bandwidth;
+the 1.26–1.88x gaps in the loaded runs were pure host contention. Single-threaded is ~2x
+SLOWER, so the existing threading is correct (the op is bandwidth-bound and benefits from
+multi-core aggregate BW). VERDICT: NO contained compute lever — `bytemuck`/SIMD would not
+help, so a new workspace dependency is NOT justified. The production ~2.3x JAX gap is the
+per-call output `Vec` alloc + first-touch page-faults (so4wo eval-model, Gate 2 of the
+BLOCKER entry), now MEASURED rather than asserted. (The probe was a transient
+same-binary measurement; no production code changed, and a `bytemuck` dep would be dead
+weight.)
+
 ## 2026-06-27 - SURFACE: cod-a RFFT refresh confirms no contained pow2 lever (ProudSalmon)
 
 Land-or-dig pass found no measured bench-worktree win absent from `main`: the visible
