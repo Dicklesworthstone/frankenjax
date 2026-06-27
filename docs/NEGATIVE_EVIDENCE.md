@@ -6103,3 +6103,16 @@ on it (SYRK + panels + im2col add overhead). The unifying lever is the single +f
 across matmul/cholesky/conv/GEMM-linalg); fj-lax cannot close it under forbid-unsafe + no-+fma. NON-contained.
 Guard bench landed. (Contrast: JAX-CPU's LU/QR/det/solve do NOT hit BLAS — they're slow XLA lowerings fj-lax
 beats 5-30x; only the raw GEMM + dpotrf get the tuned FMA path.)
+
+## 2026-06-27 - complex-QR 8.5x fj-lax WIN; complex direct-factorizations fully won (SlateHarrier)
+
+`bench_complex_qr_1024_vs_jax`: fj-lax complex blocked-Householder QR [1024,1024] = **221.8ms vs JAX 1876ms =
+~8.5x WIN**. Completes the complex direct-factorization sweep (complex QR 8.5x, complex-solve 4.4x, complex-eig
+1.27x — all win, mirroring real). FULL LINALG WIN TALLY (9 wins, real+complex):
+  QR 30x, LU 12.9x, complex-QR 8.5x, slogdet 7.3x, det 5.9x, solve 5.2x, complex-solve 4.4x, eig 1.5x,
+  complex-eig 1.27x.
+  PARITY: eigh 1.06x, svd 1.23x. LOSS: cholesky 6.25x (FMA/dpotrf). Core matmul 2.92x (FMA floor).
+DEFINITIVE: JAX-CPU's CPU backend hits tuned FMA BLAS ONLY for raw matmul + cholesky/dpotrf; every higher-level
+linalg factorization (LU/QR/det/slogdet/solve/eig, real AND complex) is a slow XLA lowering that fj-lax's
+blocked GEMM-routed + threaded kernels beat 1.3-30x. Linalg is overwhelmingly a fj-lax STRENGTH. The only
+heavy-compute losses (matmul/cholesky/conv) are the FMA-policy floor (non-contained). Guard bench landed.

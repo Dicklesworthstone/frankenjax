@@ -8197,6 +8197,46 @@ mod tests {
         );
     }
 
+    // COMPLEX QR at scale vs JAX (measured JAX jnp.linalg.qr complex128 [1024,1024] = 1876ms, min-of-5 —
+    // JAX-CPU complex QR is slow, like real QR). fj-lax = complex blocked Householder QR.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_complex_qr_1024_vs_jax() {
+        use std::collections::BTreeMap;
+        use std::time::Instant;
+        let n = 1024usize;
+        let data: Vec<(f64, f64)> = (0..n * n)
+            .map(|i| ((i as f64 * 0.123).sin(), (i as f64 * 0.0457).cos()))
+            .collect();
+        let cm = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::new();
+        let f = || {
+            std::hint::black_box(
+                crate::eval_primitive(Primitive::Qr, std::slice::from_ref(&cm), &p).unwrap(),
+            );
+        };
+        let _ = f();
+        let mut bst = f64::MAX;
+        for _ in 0..4 {
+            let t = Instant::now();
+            f();
+            bst = bst.min(t.elapsed().as_secs_f64());
+        }
+        println!(
+            "fj-lax complex-qr [1024,1024]: {:.1}ms | JAX=1876ms",
+            bst * 1e3
+        );
+    }
+
     /// Same-binary A/B for the apply_householder_left cache-layout fix (ur4h3): the OLD
     /// column-strided left-apply vs the NEW row-contiguous one, inside a full 512×512
     /// Hessenberg reduction. Asserts H and Q are bit-identical. Run `--ignored --nocapture`.
