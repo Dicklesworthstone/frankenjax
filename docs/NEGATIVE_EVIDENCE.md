@@ -5975,3 +5975,13 @@ are ALL FMA-policy + GEMM-tuning bound — the single +fma maintainer decision i
 every one, and the deeper KC-blocked microkernel (9zwwb) the rest. The contained (per-op threading/vectorization/
 algorithm) perf surface is exhausted; the remaining frankenjax gaps are this heavy-compute FMA/tuning class plus
 the FFT kernel family — all multi-session or policy. Permanent guard bench landed.
+
+## 2026-06-27 - QR [2048,2048] fj-lax WINS ~30x vs JAX (JAX-CPU QR is catastrophically slow) (SlateHarrier)
+
+`bench_qr_2048_vs_jax`: fj-lax blocked-Householder QR [2048,2048] = **168.9ms vs JAX jnp.linalg.qr(reduced)
+5061ms (min-of-6, re-verified) = ~30x FASTER**. JAX-CPU's QR lowering is catastrophically slow — the SAME class
+as its sort/top_k/lexsort lowering that fj-lax already dominates (JAX r-only mode still 2476ms). fj-lax's QR
+crushes it. This REVERSES the assumption that JAX/LAPACK linalg is uniformly faster: the heavy-compute linalg
+picture is MIXED — JAX-CPU has a fast cholesky (dpotrf, fj-lax 6.25x slower) but a catastrophically slow QR
+(fj-lax 30x faster). LIKELY MORE JAX-CPU-slow linalg wins to find (svd/eigh/solve eigen-iteration paths) — a
+fresh vein. Permanent guard bench landed. This is a genuine fj-lax WIN on a common, important op.

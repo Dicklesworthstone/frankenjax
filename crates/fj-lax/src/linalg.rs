@@ -7811,6 +7811,34 @@ mod tests {
         );
     }
 
+    // QR at scale (n=2048) vs JAX (measured JAX jnp.linalg.qr mode=reduced f64 [2048,2048] = 5061ms, min-of-6 —
+    // JAX-CPU QR is catastrophically slow, like its sort lowering). fj-lax = blocked Householder.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_qr_2048_vs_jax() {
+        use std::collections::BTreeMap;
+        use std::time::Instant;
+        let n = 2048usize;
+        let a: Vec<f64> = (0..n * n)
+            .map(|i| (i as f64 * 0.123).sin() + (i as f64 * 0.0457).cos())
+            .collect();
+        let am = make_matrix(n, n, &a);
+        let p = BTreeMap::new();
+        let f = || {
+            std::hint::black_box(
+                crate::eval_primitive(Primitive::Qr, std::slice::from_ref(&am), &p).unwrap(),
+            );
+        };
+        let _ = f();
+        let mut bst = f64::MAX;
+        for _ in 0..4 {
+            let t = Instant::now();
+            f();
+            bst = bst.min(t.elapsed().as_secs_f64());
+        }
+        println!("fj-lax qr f64 [2048,2048]: {:.3}ms | JAX=5061ms", bst * 1e3);
+    }
+
     /// Same-binary A/B for the apply_householder_left cache-layout fix (ur4h3): the OLD
     /// column-strided left-apply vs the NEW row-contiguous one, inside a full 512×512
     /// Hessenberg reduction. Asserts H and Q are bit-identical. Run `--ignored --nocapture`.
