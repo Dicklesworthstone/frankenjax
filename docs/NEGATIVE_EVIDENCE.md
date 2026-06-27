@@ -2,6 +2,59 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-27 - KEEP: rank-3 sum-pool x-lane SIMD narrows VALID f64 reduce-window loss (ProudSalmon)
+
+Land-or-dig pass after `2846e95a`: scratch worktree audit found no measured
+win that was not already patch-equivalent to `main`; the remaining rank-3
+sum-pool worktree was ledger-only negative evidence. New lever from the
+graveyard/vectorized-execution route: for dense f64 rank-3
+`reduce_window(sum)`, VALID geometry, unit stride, and no dilation, compute
+adjacent output-x cells in `f64x8` lanes. Each lane is an independent output
+cell and receives taps in the same row-major order as
+`eval_reduce_window_dense_float`, so the change preserves floating-point bit
+identity instead of switching to a separable/integral-image association.
+
+Bench command note: this Cargo rejects `cargo bench --release`, so the valid
+crate-scoped optimized equivalent was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec
+-- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a
+AGENT_NAME=ProudSalmon cargo bench -p fj-lax --profile release --bench
+lax_baseline -- 'eval/sumpool_96x96x96_win(5|9)_f64_vec' --noplot`. RCH had no
+admissible worker for baseline/candidate benches
+(`insufficient_slots=4,hard_preflight=1`) and fell open locally, so the Rust
+comparison is same-host, same-target, and warm-cache.
+
+Measured rows:
+
+| workload | main midpoint | candidate midpoint | Rust delta | JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `eval/sumpool_96x96x96_win5_f64_vec` | 10.761 ms | 5.9560 ms | -44.654%, p=0.00 | 2.096533 ms | 5.13x loss | 2.84x loss | KEEP |
+| `eval/sumpool_96x96x96_win9_f64_vec` | 44.563 ms | 12.148 ms | -72.739%, p=0.00 | 11.195246 ms | 3.98x loss | 1.09x loss | KEEP |
+
+JAX comparator is the exact-fixture 2026-06-26 rank-3 generated-tap run:
+JAX/JAXLIB 0.10.1 CPU x64, fixture
+`sin(arange(96^3) * 0.00123) * 10.0`, warmed jit, 20 runs. JAX means were
+**2.096533 ms** for `win5` and **11.195246 ms** for `win9`.
+
+Correctness/quality gates:
+
+- `cargo fmt -p fj-lax` applied formatting and `cargo fmt -p fj-lax --check`
+  passed.
+- `cargo check -p fj-lax --profile release --all-targets` via RCH
+  `vmi1227854`: passed.
+- `cargo test -p fj-lax --profile release
+  rank3_sum_pool_xlane_simd_matches_dense_float --lib -- --nocapture`: passed
+  locally with `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a`
+  after RCH had no admissible worker.
+- `cargo clippy -p fj-lax --profile release --all-targets -- -D warnings`:
+  passed via RCH `hz2`.
+- `cargo test -p fj-conformance --profile release -- --nocapture`: passed via
+  RCH `ovh-a`.
+- `ubs crates/fj-lax/src/lib.rs docs/NEGATIVE_EVIDENCE.md` returned nonzero
+  on pre-existing broad `fj-lax/src/lib.rs` inventories (test unwrap/panic,
+  direct indexing, cast inventories, false-positive dtype/value comparisons as
+  secret checks); UBS internal fmt/clippy/check/test-build sub-gates were clean.
+
 ## 2026-06-26 - KEEP: mixed-radix leaf fusion narrows smooth FFT batch loss (ProudSalmon)
 
 BOLD-VERIFY land-or-dig pass after `728ea9ea`: no unlanded measured worktree
