@@ -5353,3 +5353,14 @@ the column sub-blocks are STRIDED, not contiguous, so extracting one is itself a
 the square transpose regresses (prior transpose-tiling finding). So it's at its transpose floor — already a
 solid 25x win, no contained lever. Also: JAX flip 3D [256,1024,64] axis1(mid) = 27.6ms (fast data-movement; not
 a gap). The sort/middle-axis frontier is fully mapped; remaining gaps are non-contained (FFT/gather/fma/so4wo).
+
+## 2026-06-26 - FFT 1D pow2 is ~1.38x (near-parity), NOT 7-43x — corrects stale ledger claim (SlateHarrier)
+
+`bench_fft_1d_pow2_vs_jax` (complex 2^20): fj-lax **22.0ms vs JAX 15.95ms = ~1.38x SLOWER** — NEAR-PARITY, not
+the "7-43x" the ledger/memory cited for "FFT". The pow2 kernel (radix2_fft_1d_into) is a competent ITERATIVE
+radix-2 (bit-reverse + precomputed per-stage twiddles, recurrence lifted out of the butterfly for pipelining),
+and it's bit-LOCKED by exact golden digests (split-radix/radix-4 reassociation forbidden). The remaining 1.38x
+is the AoS (f64,f64) complex-multiply butterfly without SIMD/FMA (SoA+SIMD blocked by layout + no-+fma policy)
+— a small near-parity residual, NOT a contained lever. CONCLUSION: the real FFT gap (bead murmw) is the
+BATCHED/2D case (pocketfft SIMD-across-rows / SoA batching) + small/mixed-radix sizes, not the 1D pow2 kernel.
+Re-scope murmw to batched-FFT SoA-SIMD. (Verified: kernel read + measured this turn.)

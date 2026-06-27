@@ -4489,6 +4489,37 @@ mod tests {
     }
 
     /// Same-binary A/B for the SoA real-FFT batch kernel (frankenjax-murmw): OLD =
+    // FFT 1-D pow2 vs JAX (measured JAX fft 1d 2^20 = 15.95ms). fj-lax = iterative radix-2 (bit-reverse +
+    // precomputed per-stage twiddles); the gap is pocketfft's split-radix + SIMD on SoA storage.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_fft_1d_pow2_vs_jax() {
+        use std::time::Instant;
+        let n = 1usize << 20;
+        let input: Vec<(f64, f64)> = (0..n)
+            .map(|i| {
+                (
+                    ((i.wrapping_mul(2654435761) % 100003) as f64) * 1e-3,
+                    (i % 97) as f64,
+                )
+            })
+            .collect();
+        let mut out = Vec::new();
+        fft_1d_into(&input, &mut out);
+        std::hint::black_box(&out);
+        let mut bst = f64::MAX;
+        for _ in 0..6 {
+            let t = Instant::now();
+            fft_1d_into(&input, &mut out);
+            std::hint::black_box(&out);
+            bst = bst.min(t.elapsed().as_secs_f64());
+        }
+        println!(
+            "fj-lax fft 1d 2^20 complex: {:.3}ms | JAX=15.95ms",
+            bst * 1e3
+        );
+    }
+
     /// per-row `RealRfftPower2Plan`; NEW = cache-blocked SoA tiled. Bit-identical
     /// (asserted); run with `--ignored --nocapture` for the single-thread ratio
     /// (the trustworthy signal; threaded FFT A/B is contention-fragile).
