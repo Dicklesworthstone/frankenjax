@@ -2,6 +2,46 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-26 - REJECT: f64 gather portable-SIMD gather is noise vs scalar AMAC loads (ProudSalmon)
+
+BOLD-VERIFY land-or-dig pass after `28ed0924`: worktree scan found no landable
+measured win. The off-main `4940278b` complex boolword select head is already
+documented as patch-equivalent to `origin/main`; the rank-3 sumpool head is a
+ledger-only reject; the QR/SVD head is an unledgered WIP. New lever attempted
+here: replace the current f64 scattered single-element gather's manual eight-way
+AMAC-style scalar load unroll with safe `std::simd::Simd::<f64, 8>::gather_or`.
+This targeted the current random gather residual called out as the biggest
+measured JAX loss, using the graveyard's vectorized-execution route while
+respecting `#![forbid(unsafe_code)]`.
+
+Bench command note: this Cargo rejects `cargo bench --release`, so the valid
+crate-scoped optimized equivalent was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec
+-- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b
+AGENT_NAME=ProudSalmon cargo bench -p fj-lax --profile release --bench
+lax_baseline -- 'eval/gather_scatter_1m_f64' --noplot`. RCH reported no
+admissible workers (`insufficient_slots=4,hard_preflight=1`) and fell open
+locally for baseline and candidate, so the Rust comparison is same-host,
+same-target, and warm-cache.
+
+Measured rows:
+
+| workload | main midpoint | candidate midpoint | Rust delta | JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `eval/gather_scatter_1m_f64` | 5.7792 ms | 5.8982 ms | +2.06%, p=0.40, no significant change | 4.6550 ms | 1.24x loss | 1.27x loss | REVERT |
+
+Fresh JAX comparator used `/data/projects/frankenjax/benchmarks/jax_comparison/.venv/bin/python`,
+JAX/JAXLIB 0.10.1 CPU x64, exact `lax_baseline.rs` fixture
+(`n=1<<22`, `k=1<<20`, `idx=((i*2654435761)^(i>>3))%n`), warmed
+`jax.jit(lambda a,b: a[b])`, 50 hot runs. JAX measured best **2.7252 ms**,
+p50 **4.9019 ms**, mean **4.6550 ms**, p95 **6.0175 ms**. The SIMD candidate
+uses a safe API but still compiles to a bounds-mask gather path whose constants
+do not beat the existing scalar-unrolled memory-level-parallel load schedule.
+Production code was manually reverted; no Rust source change remains. Do not
+retry safe `Simd::gather_or` for this exact f64 random gather loop without a
+new mechanism that also removes its per-lane mask/check overhead or changes the
+data-access contract.
+
 ## 2026-06-26 - REJECT: general attention einsum batched-GEMM route regresses vs JAX (ProudSalmon)
 
 BOLD-VERIFY land-or-dig pass after `fcf6077d`: worktree scan found no landable
