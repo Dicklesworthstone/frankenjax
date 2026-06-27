@@ -7839,6 +7839,48 @@ mod tests {
         println!("fj-lax qr f64 [2048,2048]: {:.3}ms | JAX=5061ms", bst * 1e3);
     }
 
+    // SVD + EIGH at scale vs JAX (measured JAX f64: svd [1024,1024]=2470ms, eigh [1024,1024]=1275ms, min-of-6 —
+    // JAX-CPU's iterative linalg is slow, like QR). fj-lax = bidiag+QR SVD / tridiag+QL eigh.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_svd_eigh_1024_vs_jax() {
+        use std::collections::BTreeMap;
+        use std::time::Instant;
+        let n = 1024usize;
+        let a: Vec<f64> = (0..n * n)
+            .map(|i| (i as f64 * 0.123).sin() + (i as f64 * 0.0457).cos())
+            .collect();
+        let mut sym = vec![0.0f64; n * n];
+        for r in 0..n {
+            for c in 0..n {
+                sym[r * n + c] = a[r * n + c] + a[c * n + r];
+            }
+        }
+        let am = make_matrix(n, n, &a);
+        let symm = make_matrix(n, n, &sym);
+        let p = BTreeMap::new();
+        let bench = |prim: Primitive, m: &Value| -> f64 {
+            let f = || {
+                std::hint::black_box(
+                    crate::eval_primitive(prim, std::slice::from_ref(m), &p).unwrap(),
+                );
+            };
+            let _ = f();
+            let mut b = f64::MAX;
+            for _ in 0..3 {
+                let t = Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b * 1e3
+        };
+        println!(
+            "fj-lax svd [1024,1024]: {:.2}ms | JAX=2470ms ;; eigh [1024,1024]: {:.2}ms | JAX=1275ms",
+            bench(Primitive::Svd, &am),
+            bench(Primitive::Eigh, &symm),
+        );
+    }
+
     /// Same-binary A/B for the apply_householder_left cache-layout fix (ur4h3): the OLD
     /// column-strided left-apply vs the NEW row-contiguous one, inside a full 512×512
     /// Hessenberg reduction. Asserts H and Q are bit-identical. Run `--ignored --nocapture`.

@@ -5985,3 +5985,17 @@ crushes it. This REVERSES the assumption that JAX/LAPACK linalg is uniformly fas
 picture is MIXED — JAX-CPU has a fast cholesky (dpotrf, fj-lax 6.25x slower) but a catastrophically slow QR
 (fj-lax 30x faster). LIKELY MORE JAX-CPU-slow linalg wins to find (svd/eigh/solve eigen-iteration paths) — a
 fresh vein. Permanent guard bench landed. This is a genuine fj-lax WIN on a common, important op.
+
+## 2026-06-27 - svd/eigh near-parity (~1.1-1.2x); linalg-vs-JAX picture is MIXED, not uniform (SlateHarrier)
+
+`bench_svd_eigh_1024_vs_jax`: svd [1024,1024] fj-lax 3049ms vs JAX 2470 = ~1.23x slower; eigh [1024,1024] fj-lax
+1356ms vs JAX 1275 = ~1.06x slower. Both NEAR-PARITY (both iterative — bidiag+QR SVD / tridiag+QL eigh vs JAX's
+equally-slow CPU iteration). REFINED heavy-linalg-vs-JAX picture (all [n>=1024] measured this session):
+  - QR: fj-lax 169ms vs JAX 5061 = ~30x WIN (JAX-CPU QR catastrophically slow)
+  - cholesky: fj-lax 199ms vs JAX 31.85 = 6.25x SLOWER (JAX dpotrf is fast/tuned)
+  - svd: ~1.23x slower (near-parity, both iterative-slow)
+  - eigh: ~1.06x slower (near-parity)
+  - solve [2048]: JAX measured 1067ms (slow, like QR) — fj-lax not yet benched, likely a WIN (next).
+So JAX-CPU linalg is INCONSISTENT: fast dpotrf, but catastrophically slow QR (+ slow solve, slow iterative
+svd/eigh). fj-lax is competitive-or-winning on everything EXCEPT cholesky (the one JAX-fast path, FMA/tuning-
+bound). Guard benches landed.
