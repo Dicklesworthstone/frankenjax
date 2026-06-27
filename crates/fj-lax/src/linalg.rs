@@ -8134,6 +8134,69 @@ mod tests {
         );
     }
 
+    // COMPLEX SOLVE at scale vs JAX (measured JAX jnp.linalg.solve complex128 [2048,2048]x[2048,1] = 3643ms,
+    // min-of-6 — JAX-CPU complex solve is slow, like the real direct factorizations). fj-lax = complex blocked LU.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_complex_solve_2048_vs_jax() {
+        use std::collections::BTreeMap;
+        use std::time::Instant;
+        let n = 2048usize;
+        let adata: Vec<(f64, f64)> = (0..n * n)
+            .map(|i| {
+                let r = (i as f64 * 0.123).sin();
+                let im = (i as f64 * 0.0457).cos();
+                let row = i / n;
+                let col = i % n;
+                if row == col {
+                    (r + 4.0 * n as f64, im)
+                } else {
+                    (r, im)
+                }
+            })
+            .collect();
+        let bdata: Vec<(f64, f64)> = (0..n)
+            .map(|i| ((i as f64 * 0.017).cos(), (i as f64 * 0.029).sin()))
+            .collect();
+        let am = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                adata,
+            )
+            .unwrap(),
+        );
+        let bm = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![n as u32, 1],
+                },
+                bdata,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::new();
+        let f = || {
+            std::hint::black_box(
+                crate::eval_primitive(Primitive::Solve, &[am.clone(), bm.clone()], &p).unwrap(),
+            );
+        };
+        let _ = f();
+        let mut bst = f64::MAX;
+        for _ in 0..4 {
+            let t = Instant::now();
+            f();
+            bst = bst.min(t.elapsed().as_secs_f64());
+        }
+        println!(
+            "fj-lax complex-solve [2048,2048]: {:.1}ms | JAX=3643ms",
+            bst * 1e3
+        );
+    }
+
     /// Same-binary A/B for the apply_householder_left cache-layout fix (ur4h3): the OLD
     /// column-strided left-apply vs the NEW row-contiguous one, inside a full 512×512
     /// Hessenberg reduction. Asserts H and Q are bit-identical. Run `--ignored --nocapture`.

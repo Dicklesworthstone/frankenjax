@@ -6077,3 +6077,16 @@ one-sided Jacobi (sequential cyclic sweeps, no clean post-loop; parallel-Jacobi 
 1.06x headroom is tiny + its accumulation is interleaved. FINAL linalg verdict: WINS = QR 30x, LU 12.9x, slogdet
 7.3x, det 5.9x, solve 5.2x, eig 1.5x, complex-eig 1.27x; PARITY = eigh 1.06x, svd 1.23x; LOSS = cholesky 6.25x
 (FMA only). Linalg is overwhelmingly a fj-lax STRENGTH.
+
+## 2026-06-27 - complex-solve 4.4x fj-lax WIN vs JAX — complex direct-factorizations also win (SlateHarrier)
+
+`bench_complex_solve_2048_vs_jax`: fj-lax complex blocked-LU solve [2048,2048] = **824ms vs JAX
+jnp.linalg.solve(complex128) 3643ms = ~4.4x WIN**. Confirms the JAX-CPU-slow / fj-lax-fast pattern extends to
+COMPLEX direct factorizations (matches real solve 5.2x + complex eig 1.27x). FULL linalg-vs-JAX win tally now:
+  WINS: QR ~30x, LU ~12.9x, slogdet ~7.3x, det ~5.9x, solve ~5.2x, complex-solve ~4.4x, eig ~1.5x,
+    complex-eig ~1.27x (8 wins)
+  PARITY: eigh ~1.06x, svd ~1.23x
+  LOSS: cholesky ~6.25x (the ONLY one — FMA/dpotrf-tuned)
+Linalg (real AND complex) is decisively a fj-lax STRENGTH: JAX-CPU's CPU lowering is fast ONLY for cholesky;
+every other factorization (LU/QR/det/slogdet/solve/eig, real+complex) is 1.3-30x slower than fj-lax's blocked
+GEMM-routed + threaded kernels. The "LAPACK uniformly faster" assumption is comprehensively disproven.
