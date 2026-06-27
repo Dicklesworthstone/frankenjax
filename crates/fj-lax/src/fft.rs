@@ -1032,6 +1032,69 @@ fn mixed_radix_ping(
         out[0] = x[offset];
         return;
     }
+
+    if nn == 2 {
+        let e = x[offset];
+        let o = x[offset + stride];
+        let (tr, ti) = roots[0];
+        let wr = tr * o.0 - ti * o.1;
+        let wi = tr * o.1 + ti * o.0;
+        out[0] = (e.0 + wr, e.1 + wi);
+        out[1] = (e.0 - wr, e.1 - wi);
+        return;
+    }
+
+    if nn == 3 {
+        let (tr0, ti0) = roots[0];
+        let tw0 = |a: (f64, f64)| (tr0 * a.0 - ti0 * a.1, tr0 * a.1 + ti0 * a.0);
+        let u0 = x[offset];
+        let u1 = tw0(x[offset + stride]);
+        let u2 = tw0(x[offset + 2 * stride]);
+        let (c, d) = roots[big_n / 3];
+        let sr = u1.0 + u2.0;
+        let si = u1.1 + u2.1;
+        let dr = u1.0 - u2.0;
+        let di = u1.1 - u2.1;
+        out[0] = (u0.0 + sr, u0.1 + si);
+        let cr = u0.0 + c * sr;
+        let ci = u0.1 + c * si;
+        let xr = d * di;
+        let xi = d * dr;
+        out[1] = (cr - xr, ci + xi);
+        out[2] = (cr + xr, ci - xi);
+        return;
+    }
+
+    if nn == 5 {
+        let (tr0, ti0) = roots[0];
+        let tw0 = |a: (f64, f64)| (tr0 * a.0 - ti0 * a.1, tr0 * a.1 + ti0 * a.0);
+        let u0 = x[offset];
+        let u1 = tw0(x[offset + stride]);
+        let u2 = tw0(x[offset + 2 * stride]);
+        let u3 = tw0(x[offset + 3 * stride]);
+        let u4 = tw0(x[offset + 4 * stride]);
+        let (c1, d1) = roots[big_n / 5];
+        let (c2, d2) = roots[2 * (big_n / 5)];
+        let t1 = (u1.0 + u4.0, u1.1 + u4.1);
+        let t1d = (u1.0 - u4.0, u1.1 - u4.1);
+        let t2 = (u2.0 + u3.0, u2.1 + u3.1);
+        let t2d = (u2.0 - u3.0, u2.1 - u3.1);
+        out[0] = (u0.0 + t1.0 + t2.0, u0.1 + t1.1 + t2.1);
+        let ar = u0.0 + c1 * t1.0 + c2 * t2.0;
+        let ai = u0.1 + c1 * t1.1 + c2 * t2.1;
+        let xr = d1 * t1d.1 + d2 * t2d.1;
+        let xi = d1 * t1d.0 + d2 * t2d.0;
+        out[1] = (ar - xr, ai + xi);
+        out[4] = (ar + xr, ai - xi);
+        let br = u0.0 + c2 * t1.0 + c1 * t2.0;
+        let bi = u0.1 + c2 * t1.1 + c1 * t2.1;
+        let yr = d2 * t1d.1 - d1 * t2d.1;
+        let yi = d2 * t1d.0 - d1 * t2d.0;
+        out[2] = (br - yr, bi + yi);
+        out[3] = (br + yr, bi - yi);
+        return;
+    }
+
     let p = smallest_prime_factor(nn);
     let m = nn / p;
 

@@ -2,6 +2,60 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-26 - KEEP: mixed-radix leaf fusion narrows smooth FFT batch loss (ProudSalmon)
+
+BOLD-VERIFY land-or-dig pass after `728ea9ea`: no unlanded measured worktree
+win was found. New lever: fuse the recursive mixed-radix bottom cases for
+radix-2, radix-3, and radix-5 inside `mixed_radix_ping`, avoiding the five/small
+leaf recursive calls and scratch leaf copies at the bottom of smooth-composite
+FFT rows. This is a different primitive from the rejected straight SoA,
+iterative SoA, specialized iterative SoA, scalar iterative, Bluestein detour,
+threading, and radix-4 routes already recorded for `frankenjax-murmw`.
+
+Bench command note: this Cargo rejects `cargo bench --release`, so the valid
+crate-scoped optimized equivalent was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec
+-- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b
+AGENT_NAME=ProudSalmon cargo bench -p fj-lax --profile release --bench
+lax_baseline -- 'eval/fft_batch_128x1000_complex128' --noplot`. RCH had no
+admissible worker for the benchmark (`insufficient_slots=4,hard_preflight=1`)
+and fell open locally for baseline and candidate, so the Rust comparison is
+same-host, same-target, and warm-cache.
+
+Measured row:
+
+| workload | main midpoint | candidate midpoint | Rust delta | JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `eval/fft_batch_128x1000_complex128` | 2.8589 ms | 2.2642 ms | -20.8%, p=0.00 | 0.514606 ms | 5.56x loss | 4.40x loss | KEEP |
+
+Fresh JAX comparator used `/data/projects/frankenjax/benchmarks/jax_comparison/.venv/bin/python`,
+JAX/JAXLIB 0.10.1 CPU x64, exact `lax_baseline.rs` fixture
+`complex_matrix(128,1000)` (`sin(i*0.125) + 1j*cos(i*0.25)`), warmed
+`jax.jit(lambda z: jnp.fft.fft(z, axis=-1))`, 50 hot runs. JAX measured best
+**0.259742 ms**, p50 **0.340065 ms**, mean **0.514606 ms**, p95
+**1.086559 ms** under current host load. The kept Rust path improves the smooth
+composite batch frontier but remains a material JAX loss; next work still needs
+a larger kernel-family change (length-specialized recursive/in-place kernel,
+pocketfft-class SIMD-within-FFT, or quiesced-host threading proof), not another
+SoA transpose or radix-4 retry.
+
+Correctness/quality gates:
+
+- `cargo fmt -p fj-lax --check` passed.
+- `cargo test -p fj-lax --profile release fft:: --lib -- --nocapture` via RCH
+  `vmi1264463`: 55 passed, 0 failed, 10 ignored.
+- `cargo test -p fj-conformance --profile release -- --nocapture` locally with
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b`: passed. The
+  RCH remote attempt on `ovh-a` failed only because transfer excluded the local
+  `artifacts/phase2c/...` JSON artifacts, causing `artifact_schemas` missing-file
+  panics.
+- `cargo check -p fj-lax --profile release --all-targets` passed.
+- `cargo clippy -p fj-lax --profile release --all-targets -- -D warnings`
+  passed.
+- `ubs crates/fj-lax/src/fft.rs` returned nonzero on pre-existing test-only
+  panic/unwrap/direct-indexing inventory outside the new block; its internal
+  formatting, clippy, cargo-check, and test-build sub-gates were clean.
+
 ## 2026-06-26 - REJECT: f64 gather portable-SIMD gather is noise vs scalar AMAC loads (ProudSalmon)
 
 BOLD-VERIFY land-or-dig pass after `28ed0924`: worktree scan found no landable
