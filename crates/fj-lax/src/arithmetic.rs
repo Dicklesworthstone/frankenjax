@@ -8104,6 +8104,63 @@ fn select_n_pick_threaded<T: Copy + Send + Sync>(
     out
 }
 
+/// FUSED i64-index pick (the common cond/switch case): decode + bounds-check + pick in ONE threaded pass,
+/// skipping the materialized `Vec<u32>` (the 2-pass decode->pick was ~128MB of extra traffic). `u = iv as
+/// usize` and the `u >= n_operands` check match select_n_decode_idx_u32 exactly (negative iv -> huge u -> OOB,
+/// same error). Bit-identical to the 2-pass result.
+fn select_n_pick_fused_i64<T: Copy + Send + Sync>(
+    op_slices: &[&[T]],
+    idx: &[i64],
+    n_operands: usize,
+    primitive: Primitive,
+    zero: T,
+) -> Result<Vec<T>, EvalError> {
+    let n = idx.len();
+    let mut out = vec![zero; n];
+    let pick = |i: usize| -> Result<T, EvalError> {
+        let u = idx[i] as usize;
+        if u >= n_operands {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("select_n index {u} out of bounds for {n_operands} operands"),
+            });
+        }
+        Ok(op_slices[u][i])
+    };
+    let threads = work_scaled_threads(n);
+    if threads <= 1 || n < CHEAP_BINARY_PARALLEL_MIN {
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = pick(i)?;
+        }
+        return Ok(out);
+    }
+    let pick = &pick;
+    let per = n.div_ceil(threads);
+    let results: Vec<Result<(), EvalError>> = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut rest: &mut [T] = out.as_mut_slice();
+        let mut s = 0usize;
+        while s < n {
+            let cnt = per.min(n - s);
+            let (chunk, tail) = rest.split_at_mut(cnt);
+            rest = tail;
+            let start = s;
+            s += cnt;
+            handles.push(scope.spawn(move || -> Result<(), EvalError> {
+                for (j, slot) in chunk.iter_mut().enumerate() {
+                    *slot = pick(start + j)?;
+                }
+                Ok(())
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for r in results {
+        r?;
+    }
+    Ok(out)
+}
+
 /// SelectN: select from N operands based on integer index.
 ///
 /// inputs[0] is the index (integer values 0..N-1), inputs[1..] are the N operands.
@@ -8219,6 +8276,13 @@ pub(crate) fn eval_select_n(primitive: Primitive, inputs: &[Value]) -> Result<Va
                         }
                     }
                     if all_dense {
+                        // i64 index (the common cond/switch case): single-pass fused decode+pick.
+                        if let Some(idx_i64) = idx_tensor.elements.as_i64_slice() {
+                            let out = select_n_pick_fused_i64(
+                                &op_slices, idx_i64, n_operands, primitive, $zero,
+                            )?;
+                            return Ok(Value::Tensor($ctor(idx_tensor.shape.clone(), out)?));
+                        }
                         let idx_u32 = select_n_decode_idx_u32(idx_tensor, n_operands, primitive)?;
                         let out = select_n_pick_threaded(&op_slices, &idx_u32, $zero);
                         return Ok(Value::Tensor($ctor(idx_tensor.shape.clone(), out)?));

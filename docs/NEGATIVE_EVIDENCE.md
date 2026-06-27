@@ -5415,3 +5415,13 @@ SINGLE-THREADED and ~35% of the time (memory-bound: read index + write Vec<u32>)
 (best) = ~1.3x further**, narrowing to **~2.2x vs JAX 19.2**. Bit-identical (select_n 8/0, clippy clean). Total
 select_n arc: 92 -> 42.7ms (2.15x internal), 4.8x -> 2.2x vs JAX. Residual is the inherent 2-pass (decode then
 memory-bound pick over N case arrays) vs JAX's vectorized single-pass select; both passes now threaded.
+
+## 2026-06-27 - select_n FUSED i64 pick (1-pass) — 43→30ms, ~2.2x→~1.57x vs JAX (SlateHarrier)
+
+Final select_n lever: for the common i64 index (cond/switch), fuse decode+bounds+pick into ONE threaded pass
+(select_n_pick_fused_i64), skipping the materialized Vec<u32> (~128MB of extra traffic). 4-way f64 16M: 42.7
+-> **30.1ms (best) = ~1.4x further**, narrowing to **~1.57x vs JAX 19.2**. Bit-identical (select_n 8/0, clippy
+clean; same `u = iv as usize` + OOB semantics). FULL select_n ARC: 92 -> 55 (threaded pick) -> 42.7 (threaded
+decode) -> 30.1ms (fused i64) = **3.06x internal, 4.8x -> 1.57x vs JAX**. The ~1.57x residual is the scalar
+data-dependent gather (op_slices[idx[i]][i]) vs JAX's vectorized select/blend tree — near-parity now. u32/u64/
+bool indices keep the 2-pass (rarer).
