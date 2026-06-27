@@ -39,6 +39,53 @@ Conclusion: recombination pairing is not a contained FFT/RFFT win. The extra bra
 dual-output loop shape lose more than the reduced mirror loads save. `fft.rs` was restored
 to `origin/main`; only this negative evidence is retained.
 
+## 2026-06-27 - KEEP: even non-power-of-two f64 RFFT uses half-size real plan (ProudSalmon)
+
+LAND-OR-DIG scratch audit found no measured `.scratch`/`.worktrees` bench win absent
+from `main`: the visible ProudSalmon gather/cummax/select/FFT keeps were already
+ancestors of `main`, patch-equivalent to landed commits, or superseded by the current
+FFT/reduction code. Dug the remaining active FFT gap instead. New lever: for dense f64
+RFFT with even non-power-of-two `fft_length`, pack even/odd real samples into a
+length-`N/2` complex signal, run the existing `BatchFftPlan` at the half length
+(radix-2, mixed-radix, or Bluestein), then Hermitian-recombine the first `N/2+1`
+bins. Odd non-power-of-two lengths stay on the old paired full-complex path.
+
+Correctness gates:
+
+- `rustfmt --edition 2024 --check crates/fj-lax/src/fft.rs` passed.
+- `AGENT_NAME=ProudSalmon CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a
+  rch exec -- cargo test --release -p fj-lax
+  half_length_rfft_matches_full_fft_reference --lib -- --nocapture` passed on RCH
+  `ovh-a`; the test now covers even smooth-composite lengths 6, 10, 12, 1000, and
+  1500 against a full complex FFT reference.
+- `AGENT_NAME=ProudSalmon CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a
+  rch exec -- cargo test --release -p fj-conformance -- --nocapture` passed on RCH
+  `ovh-a` (remote, 159.4s).
+
+Benchmark note: this Cargo rejects the requested `cargo bench --release` spelling
+(`unexpected argument '--release'`), so the measured crate-scoped command used the
+supported equivalent `cargo bench -p fj-lax --profile release --bench lax_baseline --
+'eval/rfft_batch_64x1000_f64$|eval/rfft_batch_64x1500_mixed_f64$|eval/rfft_batch_64x1003_bluestein_f64$'
+--warm-up-time 1 --measurement-time 2 --sample-size 10 --noplot` through `rch exec`
+with `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a`.
+
+Primary keep ratio is same-host/local-fallback via `rch exec`, with ORIG taken from a
+detached clean `HEAD` worktree at
+`/data/projects/.scratch/frankenjax-proudsalmon-orig-rfft-20260627T2155Z` and candidate
+from the main worktree under the same no-admissible-worker condition:
+
+| workload | ORIG mean | candidate mean | candidate/ORIG | speedup | JAX comparator | ORIG/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `eval/rfft_batch_64x1000_f64` | 662.48 us | 436.44 us | 0.659x | 1.52x faster | 0.200635 ms | 3.30x slower | 2.18x slower | KEEP |
+| `eval/rfft_batch_64x1500_mixed_f64` | 1.5319 ms | 835.11 us | 0.545x | 1.83x faster | 0.347243 ms | 4.41x slower | 2.41x slower | KEEP |
+| `eval/rfft_batch_64x1003_bluestein_f64` | 1.6285 ms | 1.5312 ms | 0.940x | 1.06x faster | 0.191659 ms | 8.50x slower | 7.99x slower | control/no route change |
+
+An earlier candidate-only remote run on `ovh-a` measured 376.59 us for 1000, 607.89 us
+for 1500, and 1.2818 ms for the odd control, but there was no comparable remote ORIG
+slot at that moment. The same-host fallback A/B above is the keep evidence. Residual
+gap vs JAX remains large, but the even smooth-composite RFFT floor moved materially
+without changing transform semantics.
+
 ## 2026-06-27 - RETRACTION: my mimalloc "~2-3x RADICAL LEVER" was a DIFFERENTIAL-LOAD ARTIFACT — falsified by ProudSalmon's same-load A/B (BlackThrush)
 
 I am retracting my own 2026-06-27 mimalloc entries below ("RADICAL LEVER … captures ~2-3x

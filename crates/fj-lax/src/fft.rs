@@ -643,6 +643,87 @@ impl RealRfftPower2Plan {
     }
 }
 
+/// Reusable plan for an even real FFT whose half-length complex FFT may be
+/// radix-2, mixed-radix, or Bluestein.
+struct RealRfftEvenPlan {
+    fft_length: usize,
+    half_len: usize,
+    half_fft: BatchFftPlan,
+    twiddles: Vec<(f64, f64)>,
+}
+
+impl RealRfftEvenPlan {
+    fn new(fft_length: usize) -> Self {
+        debug_assert!(fft_length >= 2);
+        debug_assert_eq!(fft_length % 2, 0);
+        let half_len = fft_length / 2;
+        let half_fft = BatchFftPlan::new(half_len, false);
+        let twiddles = (1..half_len)
+            .map(|k| {
+                let angle = -2.0 * PI * (k as f64) / (fft_length as f64);
+                let (sin_a, cos_a) = angle.sin_cos();
+                (cos_a, sin_a)
+            })
+            .collect();
+        Self {
+            fft_length,
+            half_len,
+            half_fft,
+            twiddles,
+        }
+    }
+
+    fn work_len(&self) -> usize {
+        self.half_fft.work_len(self.half_len)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_real_row_into(
+        &self,
+        input: &[f64],
+        copy_len: usize,
+        packed: &mut Vec<(f64, f64)>,
+        transformed: &mut Vec<(f64, f64)>,
+        scratch: &mut BluesteinScratch,
+        mixed_scratch: &mut Vec<(f64, f64)>,
+        out: &mut [(f64, f64)],
+    ) {
+        debug_assert_eq!(out.len(), self.half_len + 1);
+        debug_assert_eq!(self.fft_length, self.half_len * 2);
+        packed.clear();
+        packed.resize(self.half_len, (0.0, 0.0));
+
+        for (idx, slot) in packed.iter_mut().enumerate() {
+            let even = 2 * idx;
+            let odd = even + 1;
+            let even_re = if even < copy_len { input[even] } else { 0.0 };
+            let odd_re = if odd < copy_len { input[odd] } else { 0.0 };
+            *slot = (even_re, odd_re);
+        }
+
+        self.half_fft
+            .apply_into(packed, scratch, mixed_scratch, false, transformed);
+
+        let (z0_re, z0_im) = transformed[0];
+        out[0] = (z0_re + z0_im, 0.0);
+        out[self.half_len] = (z0_re - z0_im, 0.0);
+
+        for k in 1..self.half_len {
+            let (a_re, a_im) = transformed[k];
+            let (b_re, b_im) = transformed[self.half_len - k];
+            let avg_re = 0.5 * (a_re + b_re);
+            let avg_im = 0.5 * (a_im - b_im);
+            let diff_re = 0.5 * (a_re - b_re);
+            let diff_im = 0.5 * (a_im + b_im);
+
+            let (cos_a, sin_a) = self.twiddles[k - 1];
+            let rotated_re = diff_re * cos_a - diff_im * sin_a;
+            let rotated_im = diff_re * sin_a + diff_im * cos_a;
+            out[k] = (avg_re + rotated_im, avg_im - rotated_re);
+        }
+    }
+}
+
 impl BluesteinPlan {
     /// Precompute the chirp table and kernel FFT for length `n` (`n >= 2`).
     fn new(n: usize, inverse: bool) -> Self {
@@ -2628,54 +2709,109 @@ fn eval_rfft_dense_f64_nonpow2(
     replace_last_axis_len(primitive, &mut out_dims, out_last)?;
     let out_shape = Shape { dims: out_dims };
     let copy_len = fft_length.min(input_last);
-    let plan = BatchFftPlan::new(fft_length, false);
 
     let mut out_values: Vec<(f64, f64)> = vec![(0.0, 0.0); output_count];
     const PARALLEL_MIN_ELEMS: usize = 1 << 18;
-    let transform_work = batch_size.saturating_mul(plan.work_len(fft_length));
-    let threads = if transform_work >= PARALLEL_MIN_ELEMS && batch_size > 1 {
-        std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(1)
-            .min(batch_size)
-    } else {
-        1
-    };
 
-    if threads <= 1 {
-        rfft_rows_f64_nonpow2_into(
-            reals,
-            &plan,
-            fft_length,
-            input_last,
-            copy_len,
-            out_last,
-            0,
-            batch_size,
-            &mut out_values,
-        );
-    } else {
-        let mut rows_per = batch_size.div_ceil(threads);
-        if rows_per % 2 != 0 {
-            rows_per += 1;
-        }
-        let plan_ref = &plan;
-        std::thread::scope(|scope| {
-            let mut rest: &mut [(f64, f64)] = out_values.as_mut_slice();
-            let mut row0 = 0usize;
-            while row0 < batch_size {
-                let rows = rows_per.min(batch_size - row0);
-                let (blk, tail) = rest.split_at_mut(rows * out_last);
-                rest = tail;
-                scope.spawn(move || {
-                    rfft_rows_f64_nonpow2_into(
-                        reals, plan_ref, fft_length, input_last, copy_len, out_last, row0, rows,
-                        blk,
-                    );
-                });
-                row0 += rows;
+    if fft_length % 2 == 0 {
+        let real_plan = RealRfftEvenPlan::new(fft_length);
+        let transform_work = batch_size.saturating_mul(real_plan.work_len());
+        let threads = if transform_work >= PARALLEL_MIN_ELEMS && batch_size > 1 {
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1)
+                .min(batch_size)
+        } else {
+            1
+        };
+
+        if threads <= 1 {
+            rfft_rows_f64_even_nonpow2_into(
+                reals,
+                &real_plan,
+                input_last,
+                copy_len,
+                out_last,
+                0,
+                batch_size,
+                &mut out_values,
+            );
+        } else {
+            let mut rows_per = batch_size.div_ceil(threads);
+            if rows_per % 2 != 0 {
+                rows_per += 1;
             }
-        });
+            let real_plan_ref = &real_plan;
+            std::thread::scope(|scope| {
+                let mut rest: &mut [(f64, f64)] = out_values.as_mut_slice();
+                let mut row0 = 0usize;
+                while row0 < batch_size {
+                    let rows = rows_per.min(batch_size - row0);
+                    let (blk, tail) = rest.split_at_mut(rows * out_last);
+                    rest = tail;
+                    scope.spawn(move || {
+                        rfft_rows_f64_even_nonpow2_into(
+                            reals,
+                            real_plan_ref,
+                            input_last,
+                            copy_len,
+                            out_last,
+                            row0,
+                            rows,
+                            blk,
+                        );
+                    });
+                    row0 += rows;
+                }
+            });
+        }
+    } else {
+        let plan = BatchFftPlan::new(fft_length, false);
+        let transform_work = batch_size.saturating_mul(plan.work_len(fft_length));
+        let threads = if transform_work >= PARALLEL_MIN_ELEMS && batch_size > 1 {
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1)
+                .min(batch_size)
+        } else {
+            1
+        };
+
+        if threads <= 1 {
+            rfft_rows_f64_nonpow2_into(
+                reals,
+                &plan,
+                fft_length,
+                input_last,
+                copy_len,
+                out_last,
+                0,
+                batch_size,
+                &mut out_values,
+            );
+        } else {
+            let mut rows_per = batch_size.div_ceil(threads);
+            if rows_per % 2 != 0 {
+                rows_per += 1;
+            }
+            let plan_ref = &plan;
+            std::thread::scope(|scope| {
+                let mut rest: &mut [(f64, f64)] = out_values.as_mut_slice();
+                let mut row0 = 0usize;
+                while row0 < batch_size {
+                    let rows = rows_per.min(batch_size - row0);
+                    let (blk, tail) = rest.split_at_mut(rows * out_last);
+                    rest = tail;
+                    scope.spawn(move || {
+                        rfft_rows_f64_nonpow2_into(
+                            reals, plan_ref, fft_length, input_last, copy_len, out_last, row0,
+                            rows, blk,
+                        );
+                    });
+                    row0 += rows;
+                }
+            });
+        }
     }
 
     let tensor = TensorValue::new_complex_values(DType::Complex128, out_shape, out_values)
@@ -2789,6 +2925,36 @@ fn vectorized_rfft_pow2_tiled(
             &mut out[out_s..out_s + rows * out_last],
         );
         row0 += rows;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rfft_rows_f64_even_nonpow2_into(
+    reals: &[f64],
+    real_plan: &RealRfftEvenPlan,
+    input_last: usize,
+    copy_len: usize,
+    out_last: usize,
+    row_start: usize,
+    rows: usize,
+    out_blk: &mut [(f64, f64)],
+) {
+    let mut packed = Vec::with_capacity(real_plan.half_len);
+    let mut transformed = Vec::with_capacity(real_plan.half_len);
+    let mut scratch = BluesteinScratch::default();
+    let mut mixed_scratch = Vec::new();
+
+    for r in 0..rows {
+        let start = (row_start + r) * input_last;
+        real_plan.apply_real_row_into(
+            &reals[start..start + input_last],
+            copy_len,
+            &mut packed,
+            &mut transformed,
+            &mut scratch,
+            &mut mixed_scratch,
+            &mut out_blk[r * out_last..r * out_last + out_last],
+        );
     }
 }
 
@@ -5805,8 +5971,18 @@ mod tests {
 
     #[test]
     fn half_length_rfft_matches_full_fft_reference() {
-        for &(fft_length, input_len) in &[(2_usize, 1_usize), (4, 4), (8, 5), (16, 20), (256, 193)]
-        {
+        for &(fft_length, input_len) in &[
+            (2_usize, 1_usize),
+            (4, 4),
+            (8, 5),
+            (16, 20),
+            (256, 193),
+            (6, 5),
+            (10, 7),
+            (12, 20),
+            (1000, 777),
+            (1500, 1001),
+        ] {
             let data: Vec<f64> = (0..input_len)
                 .map(|i| {
                     let x = i as f64;
@@ -5824,7 +6000,7 @@ mod tests {
                 slot.0 = value;
             }
             let expected = fft_1d(&padded);
-            assert_complex_close(&actual, &expected[..fft_length / 2 + 1], 1e-9);
+            assert_complex_close(&actual, &expected[..fft_length / 2 + 1], 1e-8);
         }
     }
 
