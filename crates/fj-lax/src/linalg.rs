@@ -7881,6 +7881,42 @@ mod tests {
         );
     }
 
+    // SOLVE Ax=b at scale vs JAX (measured JAX jnp.linalg.solve f64 [2048,2048] x [2048,1] = 1067ms, min-of-6 —
+    // JAX-CPU solve is slow, QR-class). fj-lax = blocked LU + triangular solves.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_solve_2048_vs_jax() {
+        use std::collections::BTreeMap;
+        use std::time::Instant;
+        let n = 2048usize;
+        let mut a: Vec<f64> = (0..n * n)
+            .map(|i| (i as f64 * 0.123).sin() + (i as f64 * 0.0457).cos())
+            .collect();
+        for d in 0..n {
+            a[d * n + d] += 4.0 * n as f64; // diagonally dominant -> well-conditioned
+        }
+        let b: Vec<f64> = (0..n).map(|i| (i as f64 * 0.017).cos()).collect();
+        let am = make_matrix(n, n, &a);
+        let bm = make_matrix(n, 1, &b);
+        let p = BTreeMap::new();
+        let f = || {
+            std::hint::black_box(
+                crate::eval_primitive(Primitive::Solve, &[am.clone(), bm.clone()], &p).unwrap(),
+            );
+        };
+        let _ = f();
+        let mut bst = f64::MAX;
+        for _ in 0..4 {
+            let t = Instant::now();
+            f();
+            bst = bst.min(t.elapsed().as_secs_f64());
+        }
+        println!(
+            "fj-lax solve f64 [2048,2048]x[2048,1]: {:.3}ms | JAX=1067ms",
+            bst * 1e3
+        );
+    }
+
     /// Same-binary A/B for the apply_householder_left cache-layout fix (ur4h3): the OLD
     /// column-strided left-apply vs the NEW row-contiguous one, inside a full 512×512
     /// Hessenberg reduction. Asserts H and Q are bit-identical. Run `--ignored --nocapture`.
