@@ -107,6 +107,48 @@ output-buffer-reuse eval model (`so4wo`-class, ProudSalmon-active)**. No contain
 ship this pass; the ~40 above-listed scratch worktrees are landed/prunable. Docs-only
 commit (this file); no source touched, suite unchanged.
 
+## 2026-06-27 - REJECT: direct real RFFT input buffer regresses non-pow2 target (ProudSalmon)
+
+Land-or-dig pass found no unlanded measured win absent from `main`, so the dig
+targeted the largest documented contained gap: batched RFFT vs JAX, especially
+non-power-of-two rows. The tested lever changed `eval_rfft` to extract real
+inputs as `Vec<f64>` and feed that through the RFFT row helpers, avoiding the
+current temporary lift to `Vec<(f64, f64)>` where the imaginary lane is zero.
+This should have reduced input working-set size and pair materialization before
+the existing row-pairing mixed-radix/Bluestein path.
+
+Result: REJECT and revert. The non-power-of-two target rows regressed
+significantly, even though the power-of-two dense-input control improved. The
+candidate was removed before commit; no code from the experiment is retained.
+
+Bench command, through RCH with the requested target dir:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec
+-- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b
+AGENT_NAME=ProudSalmon cargo bench -p fj-lax --profile release --bench
+lax_baseline -- 'eval/rfft_batch_64x1000_f64$|eval/rfft_batch_64x1003_bluestein_f64$|eval/rfft_batch_64x1500_mixed_f64$|eval/rfft_batch_2048x256_f64_dense_input$'
+--noplot`. RCH had no admissible worker and fell back locally for both baseline
+and candidate, using the same worktree, target dir, release profile, and bench
+rows.
+
+Fresh JAX comparator used
+`/data/projects/frankenjax/benchmarks/jax_comparison/.venv/bin/python`,
+JAX/JAXLIB 0.10.1 CPU x64, 20 hot `jax.jit(lambda a: jnp.fft.rfft(a, axis=-1))`
+samples per row, using the same Rust benchmark input formula.
+
+| workload | main midpoint | candidate midpoint | Rust delta | JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `eval/rfft_batch_64x1000_f64` | 475.44 us | 590.11 us | +24.3% slower | 0.200635 ms | 2.37x slower | 2.94x slower | REJECT |
+| `eval/rfft_batch_64x1003_bluestein_f64` | 1.6767 ms | 1.7333 ms | +4.8% slower | 0.191659 ms | 8.75x slower | 9.04x slower | REJECT |
+| `eval/rfft_batch_64x1500_mixed_f64` | 794.03 us | 903.52 us | +10.5% slower | 0.347243 ms | 2.29x slower | 2.60x slower | REJECT |
+| `eval/rfft_batch_2048x256_f64_dense_input` | 5.4101 ms | 4.0392 ms | -25.3% faster | 0.371289 ms | 14.57x slower | 10.88x slower | do not land mixed with target regressions |
+
+Interpretation: input pair materialization is not the limiting cost for the
+non-pow2 RFFT gap; the tuple representation likely helps the existing packed
+row-pair transform and avoids slower scalar fill paths in the smooth/Bluestein
+kernels. Do not retry a whole-RFFT real-slice conversion. A future pow2-only
+variant would need independent same-worker proof and a guard that leaves all
+non-pow2 rows on the current pair-backed path.
+
 ## 2026-06-27 - KEEP: all-known staged execution fast-return (ProudSalmon)
 
 Land-or-dig pass found an unlanded measured bench-worktree commit,
