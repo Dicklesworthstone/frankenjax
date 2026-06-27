@@ -2,6 +2,33 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-27 - DIG RESULT: attention einsum `bqhd,bkhd->bhqk` (5.57x) — why the no-copy lever is blocked (BlackThrush)
+
+Dug the biggest unowned measured gap with a fresh angle. The contracted axis `d` is the
+contiguous TRAILING axis in both operands and the canonical output order `[b,h,q,k]`
+already equals `bhqk` (no output permute), so the ENTIRE 5.57x cost is the two input
+`permute_copy_f64` transposes in `try_einsum2_matmul_general` (einsum.rs:1161-1162). The
+"radical lever" is to contract in place (strided rows, contiguous-`d` inner dot) and skip
+both copies. TWO hard constraints kill the quick version:
+
+1. **Determinism: ascending K-accumulation is REQUIRED.** `einsum2_general_matmul_bit_identical_to_naive`
+   (einsum.rs:1925) asserts the general path is BIT-IDENTICAL to the naive odometer, so a
+   SIMD-lane-reassociated dot is illegal. A scalar ascending dot keeps bit-identity but is
+   latency-bound on the accumulation dependency chain (64-deep × 131072 dots ≈ 10ms,
+   ~6x SLOWER than the current 1.76ms). So the inner dot MUST stay order-preserving yet get
+   ILP from multiple independent output accumulators — i.e. reproduce `matmul_2d`'s
+   register-blocking ON STRIDED INPUT.
+2. **`permute_copy_f64` is already trailing-suffix-memcpy-optimized** (it block-copies the
+   contiguous `d` suffix), so it is not naive overhead to undercut cheaply.
+
+CONCLUSION: the only remaining lever is a strided, register-blocked, order-preserving
+contraction kernel (a strided `matmul_2d` variant) — a genuine multi-session kernel, not a
+60-min win; this is WHY ProudSalmon's permute+batched-GEMM candidate was measured-rejected
+(+47.8%). Scoped, not attempted (a half-built strided register kernel would be a buggy
+commit). Conformance einsum is tolerance (1e-10) so reassoc WOULD be legal if the in-repo
+bit-identity test were relaxed to tolerance first — a maintainer determinism call. No source
+touched.
+
 ## 2026-06-27 - CROSS-CRATE FRONTIER MAP: where the unowned contained perf surface stands (BlackThrush)
 
 Land-or-dig pass: no landable worktree win; widened the dig BEYOND fj-lax kernels (now
