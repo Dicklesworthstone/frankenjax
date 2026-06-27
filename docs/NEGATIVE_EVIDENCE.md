@@ -2,6 +2,41 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-27 - BLOCKER (maintainer decision): every remaining measured JAX loss now gates on +fma or the so4wo eval-model (BlackThrush)
+
+Land-or-dig pass, no landable worktree win. Dug the biggest measured non-FFT
+(ProudSalmon-owned) gaps for a NEW contained lever; each resolves to one of two
+ARCHITECTURAL gates that no per-op kernel change can move on this no-AVX512/no-FMA
+host. Consolidating so future passes stop re-mining these (this pass's checks +
+the standing ledger evidence):
+
+**Gate 1 — `+fma` build flag (policy-deferred, `cntiy`).** Caps matmul/conv (FMA
+microkernel ceiling), the transcendental elementwise ops (exp/log/sin/cos/tan/pow
+8.40x, atan2 5.41x), and the `ln`/`exp`-bound special functions (lgamma ~2.4x,
+digamma ~2x). The SIMD-Chebyshev lever I landed for i0e/i1e (pure-polynomial, parity/
+win) does NOT extend to these: digamma's single scalar `ln` already capped its 8-wide
+SIMD at measured 1.03–1.14x (REVERTED last entry) — anything with ≥1 scalar
+transcendental per element needs SIMD-`ln`/`exp`, which is FMA-gated (SIMD-poly exp =
+2.2x WITH fma / 0.79x WITHOUT). Pure-polynomial special-fn vein now exhausted (i0e/i1e
+were the only members; cbrt already ships a SIMD Halley/Newton kernel).
+
+**Gate 2 — output-buffer-reuse eval model (so4wo).** Caps the pure-bandwidth ops where
+fj-lax allocs + first-touch-faults a fresh output `Vec` per eval while JAX reuses
+buffers: reciprocal/maximum/clip/add/mul, AND the width-changing bitcasts — `bitcast
+f64↔u32` sits at ~2.3x JAX even after ProudSalmon's threaded direct-packing KEEPs
+(both directions already landed; residual is the per-call alloc/faults, not the pack
+loop). forbid-unsafe blocks the uninitialized-output trick, so the fix is dispatch-layer
+buffer reuse, not a contained kernel.
+
+**Known-hard, separately owned:** FFT kernel (ProudSalmon, active multi-session);
+attention einsum `bqhd,bkhd->bhqk` 5.57x (the standard permute+batched-GEMM route
+REGRESSES it +47.8% — the 4-D transpose dominates; ProudSalmon already REJECTED).
+
+ASK: the two contained-perf frontiers are spent; the next real JAX-gap closure needs a
+maintainer call on (1) committing `+fma` (bit-exactness tradeoff — would unblock the
+largest cluster) and/or (2) prioritizing the so4wo buffer-reuse eval model. No source
+change this pass (docs-only); suite unchanged.
+
 ## 2026-06-27 - REVERT (~0-gain): 8-wide SIMD digamma — ln-extract eats the win (BlackThrush)
 
 Follow-up to the i0e/i1e KEEP below: tried to extend the SIMD-Chebyshev lever to the
