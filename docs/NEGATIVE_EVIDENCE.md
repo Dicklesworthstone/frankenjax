@@ -42,6 +42,63 @@ retry safe `Simd::gather_or` for this exact f64 random gather loop without a
 new mechanism that also removes its per-lane mask/check overhead or changes the
 data-access contract.
 
+## 2026-06-26 - KEEP: rank-3 middle-axis f64 sort segmented blocks remove transpose round-trip (ProudSalmon)
+
+BOLD-VERIFY land-or-dig pass after `28ed0924`: worktree scan found no
+unlanded measured win to cherry-pick. The visible off-main complex-boolword
+select head `4940278b` has the same stable patch-id as `2c163dfd` already on
+`origin/main`; the rank-3 sumpool scratch head is a measured reject; the QR/SVD
+WIP head has no ratio ledger. New lever attempted here: apply the
+alien-graveyard nested-data-parallel/segmented-primitive idea to dense f64
+rank-3 `sort(axis=1)`. Instead of transposing `[before, axis_dim, inner]` to
+make the sort axis contiguous, sorting, and transposing back, the kept path sorts
+each middle-axis segment in place per `before` block and writes the original
+layout directly.
+
+Bench command note: this Cargo rejects `cargo bench --release`, so the valid
+crate-scoped optimized equivalent was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec
+-- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a
+AGENT_NAME=ProudSalmon cargo bench -p fj-lax --profile release --bench
+lax_baseline -- 'eval/sort3d_mid_256x1024x64_f64' --noplot`. The baseline ran
+remotely on `ovh-a`; candidate reruns hit RCH admission pressure
+(`insufficient_slots=4,hard_preflight=1`) and fell open locally. The local
+candidate rows are therefore not same-worker proof against the `ovh-a` baseline,
+but they are large enough to keep the narrow code path and record a required
+remote rerun when a slot opens.
+
+Measured rows:
+
+| workload | main midpoint | candidate midpoint(s) | fresh JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---|
+| `eval/sort3d_mid_256x1024x64_f64` | 390.98 ms remote `ovh-a` | 40.211 ms, 94.185 ms, 117.96 ms local fallback | 1926.511 ms | 0.203x Rust/JAX, 4.93x Rust win | 0.0209x to 0.0612x Rust/JAX, 47.9x to 16.3x Rust win | KEEP |
+
+Fresh JAX comparator used `/data/projects/frankenjax/benchmarks/jax_comparison/.venv/bin/python`,
+JAX/JAXLIB 0.10.1 CPU x64, exact `[256,1024,64]` f64 fixture
+`(arange * 2654435761 % 1000003).astype(f64)`, warmed
+`jax.jit(lambda a: jnp.sort(a, axis=1))`, 8 hot runs. JAX measured best
+**1526.131 ms**, p50 **1997.948 ms**, mean **1926.511 ms**. Main was already a
+JAX win; this lever attacks the remaining transpose-bound internal gap and
+narrows the row to a segmented block primitive. Candidate vs main midpoint is
+3.31x to 9.72x faster depending on the noisy local fallback row.
+
+Correctness and quality gates: `cargo test -p fj-lax --profile release
+sort_rank3_middle_axis_dense_f64_matches_reference -- --nocapture` passed;
+`cargo test -p fj-lax --profile release sort -- --nocapture` passed
+32/32 sort tests with existing ignored cases unchanged; `cargo fmt --package
+fj-lax -- --check` passed. `AGENT_NAME=ProudSalmon CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a
+cargo test -p fj-conformance --profile release -- --nocapture` passed locally
+with the tracked `artifacts/` tree present. The same crate-wide conformance run
+through `rch exec` rebuilt and ran many tests on `ovh-a`, but failed in
+`artifact_schemas` because `.rchignore` excludes `artifacts/` from remote sync;
+the focused local `artifact_schemas` gate passed 13/13. `ubs
+crates/fj-lax/src/tensor_ops.rs crates/fj-lax/benches/lax_baseline.rs` reported
+its known broad historical unwrap/indexing/heuristic inventory in these huge
+files while its cargo-aware format, clippy, check, test-build, audit, and deny
+checks were green. Risk is scoped to dense f64 rank-3 `axis=1` value sort only;
+argsort, other dtypes, other ranks, and smaller axes fall through to the
+existing implementation.
+
 ## 2026-06-26 - REJECT: general attention einsum batched-GEMM route regresses vs JAX (ProudSalmon)
 
 BOLD-VERIFY land-or-dig pass after `fcf6077d`: worktree scan found no landable

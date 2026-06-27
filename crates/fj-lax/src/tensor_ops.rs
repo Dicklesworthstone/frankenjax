@@ -9803,6 +9803,117 @@ fn sort_along_axis_dense_f64(
     Ok(Some(Value::Tensor(out_value)))
 }
 
+/// Dense F64 rank-3 middle-axis sort without the full-tensor transpose wrapper.
+///
+/// Shape `[before, axis_dim, inner]`, sorting `axis=1`, is common for
+/// sequence-axis workloads. The generic non-last-axis route transposes to
+/// `[before, inner, axis_dim]`, sorts contiguous rows, then transposes back. This
+/// segmented-block path keeps each `before` block in place and sorts each inner
+/// column independently, fanning independent blocks across threads. The per-line
+/// radix key and stable `(key, original_index)` ordering are identical to
+/// `sort_along_axis_dense_f64`.
+fn sort_along_axis_dense_f64_rank3_middle(
+    tensor: &TensorValue,
+    descending: bool,
+) -> Result<Option<Value>, EvalError> {
+    let Some(values) = tensor.elements.as_f64_slice() else {
+        return Ok(None);
+    };
+    if tensor.shape.rank() != 3 {
+        return Ok(None);
+    }
+
+    let before = tensor.shape.dims[0] as usize;
+    let axis_dim = tensor.shape.dims[1] as usize;
+    let inner = tensor.shape.dims[2] as usize;
+    if before <= 1 || inner == 0 || axis_dim < RADIX_SORT_MIN_AXIS {
+        return Ok(None);
+    }
+
+    let block_len = axis_dim
+        .checked_mul(inner)
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive: Primitive::Sort,
+            detail: "rank3 middle-axis sort block length overflowed usize".to_owned(),
+        })?;
+    let total = before
+        .checked_mul(block_len)
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive: Primitive::Sort,
+            detail: "rank3 middle-axis sort element count overflowed usize".to_owned(),
+        })?;
+    if values.len() != total {
+        return Ok(None);
+    }
+
+    let key_mask = if descending { u64::MAX } else { 0 };
+    let mut out = vec![0.0_f64; total];
+    let sort_block = |block_index: usize,
+                      out_block: &mut [f64],
+                      pairs: &mut Vec<(u64, u32)>,
+                      scratch: &mut Vec<(u64, u32)>| {
+        let base = block_index * block_len;
+        for inner_index in 0..inner {
+            pairs.clear();
+            for i in 0..axis_dim {
+                let value = values[base + i * inner + inner_index];
+                pairs.push((f64_sort_order_key(value) ^ key_mask, i as u32));
+            }
+            radix_pairs_ascending(pairs, scratch);
+            for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
+                out_block[out_pos * inner + inner_index] =
+                    values[base + orig as usize * inner + inner_index];
+            }
+        }
+    };
+
+    let hardware = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    let threads = if total >= SORT_PARALLEL_MIN_TOTAL_ELEMS {
+        hardware
+            .min(before)
+            .min((total / SORT_PARALLEL_MIN_TOTAL_ELEMS).max(1))
+            .max(1)
+    } else {
+        1
+    };
+
+    if threads <= 1 {
+        let mut pairs = Vec::with_capacity(axis_dim);
+        let mut scratch = vec![(0_u64, 0_u32); axis_dim];
+        for (block_index, out_block) in out.chunks_mut(block_len).enumerate() {
+            sort_block(block_index, out_block, &mut pairs, &mut scratch);
+        }
+    } else {
+        let per_thread = before.div_ceil(threads);
+        let sort_block = &sort_block;
+        std::thread::scope(|scope| {
+            let mut rest = out.as_mut_slice();
+            let mut block_start = 0usize;
+            while block_start < before {
+                let block_count = per_thread.min(before - block_start);
+                let (chunk, tail) = rest.split_at_mut(block_count * block_len);
+                rest = tail;
+                let first_block = block_start;
+                scope.spawn(move || {
+                    let mut pairs = Vec::with_capacity(axis_dim);
+                    let mut scratch = vec![(0_u64, 0_u32); axis_dim];
+                    for (local, out_block) in chunk.chunks_mut(block_len).enumerate() {
+                        sort_block(first_block + local, out_block, &mut pairs, &mut scratch);
+                    }
+                });
+                block_start += block_count;
+            }
+        });
+    }
+
+    TensorValue::new_f64_values(tensor.shape.clone(), out)
+        .map(Value::Tensor)
+        .map(Some)
+        .map_err(EvalError::InvalidTensor)
+}
+
 /// Dense U32 ascending sort/argsort along `axis`. Unsigned integer keys are
 /// already radix-orderable, so this avoids `as_slice()` materializing dense data
 /// into `Literal`s and emits dense U32 output. Descending uses the same
@@ -10527,6 +10638,14 @@ fn sort_along_axis(
             TensorValue::new(result_dtype, tensor.shape.clone(), vec![])
                 .map_err(EvalError::InvalidTensor)?,
         ));
+    }
+
+    if axis == 1
+        && !return_indices
+        && tensor.dtype == DType::F64
+        && let Some(value) = sort_along_axis_dense_f64_rank3_middle(tensor, descending)?
+    {
+        return Ok(value);
     }
 
     // NON-LAST-AXIS sort: the dtype radix paths only THREAD the contiguous (axis_stride==1) case;
@@ -23859,6 +23978,75 @@ mod tests {
             matches!(err, EvalError::ShapeMismatch { .. }),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn sort_rank3_middle_axis_dense_f64_matches_reference() {
+        let (before, axis_dim, inner) = (3usize, 300usize, 4usize);
+        let mut data: Vec<f64> = (0..before * axis_dim * inner)
+            .map(|i| {
+                let v = (i.wrapping_mul(2_654_435_761) % 10_007) as f64;
+                v - 5_000.0
+            })
+            .collect();
+        for b in 0..before {
+            for d in 0..inner {
+                let base = b * axis_dim * inner + d;
+                data[base + 3 * inner] = f64::NAN;
+                data[base + 17 * inner] = -0.0;
+                data[base + 29 * inner] = 0.0;
+                data[base + 41 * inner] = f64::INFINITY;
+                data[base + 53 * inner] = f64::NEG_INFINITY;
+            }
+        }
+
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![before as u32, axis_dim as u32, inner as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+
+        for descending in [false, true] {
+            let mut params = params(&[("axis", "1")]);
+            if descending {
+                params.insert("descending".to_owned(), "true".to_owned());
+            }
+            let got = eval_sort(Primitive::Sort, std::slice::from_ref(&input), &params).unwrap();
+            let got = got.as_tensor().unwrap().elements.as_f64_slice().unwrap();
+
+            let mut want = vec![0.0_f64; data.len()];
+            for b in 0..before {
+                for d in 0..inner {
+                    let line_base = b * axis_dim * inner + d;
+                    let mut order: Vec<usize> = (0..axis_dim).collect();
+                    order.sort_by(|&lhs, &rhs| {
+                        let l = data[line_base + lhs * inner];
+                        let r = data[line_base + rhs * inner];
+                        let ord = match (l.is_nan(), r.is_nan()) {
+                            (true, true) => Ordering::Equal,
+                            (true, false) => Ordering::Greater,
+                            (false, true) => Ordering::Less,
+                            (false, false) => l.total_cmp(&r),
+                        };
+                        let ord = if descending { ord.reverse() } else { ord };
+                        ord.then(lhs.cmp(&rhs))
+                    });
+                    for (pos, &orig) in order.iter().enumerate() {
+                        want[line_base + pos * inner] = data[line_base + orig * inner];
+                    }
+                }
+            }
+
+            assert_eq!(
+                got.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+                want.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+                "rank3 middle-axis f64 sort mismatch descending={descending}"
+            );
+        }
     }
 
     fn f32_sort_dense(data: &[f32]) -> Value {

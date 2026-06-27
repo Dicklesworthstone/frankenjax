@@ -3075,6 +3075,30 @@ fn bench_sort_64k_f64(c: &mut Criterion) {
     });
 }
 
+// 3-D middle-axis f64 sort. Current main is already a JAX win, but it reaches the
+// contiguous radix path by transposing the sort axis to the end and transposing
+// back, so this row isolates the remaining transpose-bound internal gap.
+fn bench_sort3d_mid_256x1024x64_f64(c: &mut Criterion) {
+    let (b, s, d) = (256usize, 1024usize, 64usize);
+    let data: Vec<f64> = (0..b * s * d)
+        .map(|i| (i.wrapping_mul(2_654_435_761) % 1_000_003) as f64)
+        .collect();
+    let input = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![b as u32, s as u32, d as u32],
+            },
+            data,
+        )
+        .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("axis".to_owned(), "1".to_owned());
+    c.bench_function("eval/sort3d_mid_256x1024x64_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &p))
+    });
+}
+
 // Head-to-head vs JAX argsort (XLA CPU full bitonic sort): completes the order-statistics
 // domination map alongside sort + top_k. CrimsonOtter 2026-06-21.
 fn bench_argsort_64k_f64(c: &mut Criterion) {
@@ -7192,6 +7216,7 @@ criterion_group!(
     bench_cumsum_64k_f64_literal_reference,
     bench_sort_64k_i64,
     bench_sort_64k_f64,
+    bench_sort3d_mid_256x1024x64_f64,
     bench_argsort_64k_f64,
     bench_argmax_64k_f64,
     bench_sort_64k_f64_descending,
