@@ -10789,6 +10789,33 @@ fn sort_along_axis(
                     true
                 );
             }
+            // i64 (exact integer key): value sort keeps i64; argsort -> i64 indices.
+            if !return_indices
+                && tensor.dtype == DType::I64
+                && let Some(s) = tensor.elements.as_i64_slice()
+            {
+                sort_mid!(
+                    s,
+                    TensorValue::new_i64_values,
+                    0i64,
+                    TensorValue::new_i64_values,
+                    as_i64_slice,
+                    false
+                );
+            }
+            if return_indices
+                && tensor.dtype == DType::I64
+                && let Some(s) = tensor.elements.as_i64_slice()
+            {
+                sort_mid!(
+                    s,
+                    TensorValue::new_i64_values,
+                    0i64,
+                    TensorValue::new_i64_values,
+                    as_i64_slice,
+                    true
+                );
+            }
         }
     }
 
@@ -16815,6 +16842,46 @@ mod tests {
                             "f32={f32mode} b={bi} d={di} s={si}"
                         );
                     }
+                }
+            }
+        }
+    }
+
+    // Parity guard for the i64 STRICT-MIDDLE sort + argsort fast path (exact integer key), vs the per-column
+    // stable reference. Distinct per-column values (bijection shifted per column) so both are unambiguous.
+    #[test]
+    fn sort_argsort_3d_mid_axis_i64_matches_reference() {
+        let (b, s, d) = (130usize, 1024usize, 4usize);
+        let n = b * s * d;
+        let val = |bi: usize, si: usize, di: usize| -> i64 {
+            ((si * 1009 + bi * 131 + di * 7) % 100003) as i64 - 50000
+        };
+        let data: Vec<i64> = (0..n)
+            .map(|g| {
+                let bi = g / (s * d);
+                let si = (g / d) % s;
+                let di = g % d;
+                val(bi, si, di)
+            })
+            .collect();
+        let shape = Shape {
+            dims: vec![b as u32, s as u32, d as u32],
+        };
+        let x = Value::Tensor(TensorValue::new_i64_values(shape, data).unwrap());
+        let p = BTreeMap::from([("axis".to_owned(), "1".to_owned())]);
+        let sorted = crate::eval_primitive(Primitive::Sort, std::slice::from_ref(&x), &p).unwrap();
+        let sv = sorted.as_tensor().unwrap().elements.as_i64_slice().unwrap();
+        let asort =
+            crate::eval_primitive(Primitive::Argsort, std::slice::from_ref(&x), &p).unwrap();
+        let av = asort.as_tensor().unwrap().elements.as_i64_slice().unwrap();
+        for bi in 0..b {
+            for di in 0..d {
+                let mut pairs: Vec<(i64, usize)> = (0..s).map(|si| (val(bi, si, di), si)).collect();
+                pairs.sort_by(|a, c| a.0.cmp(&c.0).then(a.1.cmp(&c.1)));
+                for (si, &(wv, wi)) in pairs.iter().enumerate() {
+                    let g = bi * s * d + si * d + di;
+                    assert_eq!(sv[g], wv, "i64 sort b={bi} d={di} s={si}");
+                    assert_eq!(av[g], wi as i64, "i64 argsort b={bi} d={di} s={si}");
                 }
             }
         }

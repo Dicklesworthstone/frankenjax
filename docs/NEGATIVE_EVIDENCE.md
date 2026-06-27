@@ -5300,3 +5300,13 @@ per-seq argsort); fj-lax per-block = **54.8ms = ~75x WIN**. f64+f32 input -> i64
 guard argsort_3d_mid_axis_matches_reference (f64+f32, distinct per-column values, vs stable per-column argsort
 ref) + sort suite 34/0, clippy clean. The middle-axis decomposition class is now COMPLETE for f64/f32 across
 sort + argsort + cumsum + arg-reduce; only i64 keys and leading-axis tails remain (bead, niche).
+
+## 2026-06-26 - sort/argsort MIDDLE-axis extended to i64 — dtype family COMPLETE (SlateHarrier)
+
+Added i64 (exact integer key) arms to the sort_mid! middle-axis fast path: i64 value-sort (-> i64) and argsort
+(-> i64 indices), same per-block L2-resident transpose as f64/f32 (JAX i64 sort/argsort middle ~2000-4000ms;
+fj-lax per-block ~40-55ms = ~36-75x). Bit-identical: parity guard sort_argsort_3d_mid_axis_i64_matches_reference
+(distinct per-column values, vs stable per-column sort+argsort ref) + sort suite 35/0, clippy clean. The
+middle-axis decomposition class is now COMPLETE across f64/f32/i64 for sort+argsort+cumsum+cummax/min, f64/f32
+for arg-extreme, and value-reduce. Bead frankenjax-sort-midaxis-blocked-transpose CLOSED (leading-axis +
+half/complex dtypes remain on the full-transpose path; niche).
