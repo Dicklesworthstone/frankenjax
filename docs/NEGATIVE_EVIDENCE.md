@@ -2,6 +2,41 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-27 - SURFACE: land-or-dig audit — nothing landable, contained surface re-confirmed exhausted (BlackThrush)
+
+Land-or-dig pass (BlackThrush, claude-opus-4-8). NO measured bench-worktree win was
+landable: every scratch worktree with commits ahead of `origin/main` was already
+present on main via a convergent commit (main keeps advancing as ProudSalmon, active
+on the identical loop, lands FFT/gather/sort/pool work every few hours). Verified
+each candidate is already on main, not just patch-similar:
+
+| worktree commit ahead of origin/main | claim | status on main |
+|---|---|---|
+| `1883e291` boxed complex FFT extraction (3.33x Rust) | KEEP | already landed (`extract_homogeneous_complex_literals` present; main is *ahead* of the candidate's fft.rs) |
+| `b0f69d7e` mixed-radix FFT leaf fusion (n==2/n==3) | KEEP | already landed (`if nn == 2`/`if nn == 3` present) |
+| `4940278b` complex boolword select fast-path | KEEP | already landed (`select_complex_boolwords_predicate_bit_identical` present) |
+| `de8d462b` f64 gather AMAC interleave (2.05x Rust) | KEEP | already landed (`gather_single_dense_f64_interleaved` at call site) |
+| `a00dc114` QR-preconditioned SVD WIP | — | unledgered WIP; pinv QR-preprocess already rejected (poyvi, Jacobi flop-bound) |
+
+DIG turned up no contained, low-collision, shippable-in-window lever. Re-checked the
+analogs an incremental pass would reach, all already mined:
+  • einsum multi-axis (bead `frankenjax-7r0ck`) — CLOSED 2026-06-15 (`fba2104a`);
+    `try_einsum2_matmul_general` permutes interleaved batch/free/contracted axes to
+    `[batch,M,K]`/`[batch,K,N]` + batched GEMM (330x on attention). `einsum2` is pure
+    `&[f64]`, so no dtype-sibling gap remains inside it.
+  • scatter-overwrite single-element (the gather-AMAC dual) — SHIPPED `b4e74e2d`
+    (CrimsonOtter, 1.24x; stores are less latency-bound than gather's loads, so the
+    same lever yields less — quantified asymmetry, near ceiling).
+  • special functions (lgamma/digamma/i0e, 2.0–2.5x JAX loss) — folds into `cntiy`
+    (+fma SIMD-ln); the scalar-division SIMD reform MEASURED a regression (SlateHarrier).
+
+This re-affirms SlateHarrier's 2026-06-25 consolidation: every per-op kernel class is
+classified, and the only remaining JAX-loss levers on this no-AVX512/no-FMA host are
+both architectural — **(1) +fma (`cntiy`, maintainer-policy-gated)** and **(2) an
+output-buffer-reuse eval model (`so4wo`-class, ProudSalmon-active)**. No contained
+ship this pass; the ~40 above-listed scratch worktrees are landed/prunable. Docs-only
+commit (this file); no source touched, suite unchanged.
+
 ## 2026-06-27 - KEEP: all-known staged execution fast-return (ProudSalmon)
 
 Land-or-dig pass found an unlanded measured bench-worktree commit,
