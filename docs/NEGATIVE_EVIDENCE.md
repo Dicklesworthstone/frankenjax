@@ -5689,3 +5689,15 @@ f32 gather gate (prev commit) on the canonical embedding. Full row-gather scorec
 **bf16 1.5x WIN, f32 1.19x WIN, f64 ~2.5x** (f64's 100MB table is less cache-resident). The common ML embedding
 dtypes (f32 default, bf16 training) now BEAT JAX; f64 stays behind only because its table is 2-4x larger
 (memory-controller miss-bound). Gather family fully mined.
+
+## 2026-06-27 - safe-Rust software-prefetch touch REGRESSES the gather (reverted) — f64 is controller-floored (SlateHarrier)
+
+Attacked the only remaining gather loss (f64 take 9.4ms, ~2.5x vs JAX 3.77 — the larger 100MB table). HYPOTHESIS:
+the per-row random-miss latency could be hidden by software-prefetching the row PD=8 iterations ahead. Since the
+real prefetch intrinsic is unsafe/forbidden, tried a safe `black_box(src[next_row_base])` touch in
+gather_contiguous_into's copy loop. RESULT: f64 take 9.4 -> **11.97ms (best) = REGRESSION** (+ much noisier
+33-44ms). REVERTED. The gather already runs all-cores (work_scaled = ~all 32) which SATURATES the memory
+controller; the extra touch-loads add contention rather than latency-hiding (no spare MLP to exploit). Confirms
+the f64 large-table gather is at the genuine memory-controller miss floor — JAX's ~2.5x edge there is its
+prefetch/codegen, not a contained lever. (bf16/f32 embeddings already WIN; only the oversized f64 table trails.)
+Do NOT re-attempt prefetch on the gather.
