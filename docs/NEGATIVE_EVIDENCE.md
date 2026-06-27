@@ -28,6 +28,16 @@ no-copy angle: beating `matmul_2d` here needs a strided kernel of equal microker
 quality (a strided GEBP) — a genuine multi-session kernel, NOT a contained win. Lever
 closed with data.
 
+FOLLOW-UP (matmul_2d_into routing, REVERT ~0-gain): the batched-GEMM loop makes one
+`matmul_2d` call PER batch slice, each allocating a temp `Vec` then `extend_from_slice`-
+copying it into `canon`. Routed it through the existing `matmul_2d_into` (writes directly
+into a `vec![0.0; bsz*m*n]` slice — bit-identical, 17 einsum tests pass). Back-to-back
+same-load A/B (host heavily contended, ~3x): old `extend` **3.74 ms** vs into **4.30 ms**
+— neutral-to-slightly-worse; the full-buffer zero-init offsets the saved (tcache-cheap)
+per-slice allocs. REVERTED. Confirms the einsum batched path is `matmul_2d`-bound, not
+alloc-bound — contained micro-opts don't move it; the residual vs XLA (0.317 ms) is XLA's
+fused batched-GEMM, a multi-session kernel.
+
 ## 2026-06-27 - DIG RESULT: attention einsum `bqhd,bkhd->bhqk` (5.57x) — why the no-copy lever is blocked (BlackThrush)
 
 Dug the biggest unowned measured gap with a fresh angle. The contracted axis `d` is the
