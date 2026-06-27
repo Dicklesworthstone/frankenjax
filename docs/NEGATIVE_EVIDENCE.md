@@ -5310,3 +5310,15 @@ fj-lax per-block ~40-55ms = ~36-75x). Bit-identical: parity guard sort_argsort_3
 middle-axis decomposition class is now COMPLETE across f64/f32/i64 for sort+argsort+cumsum+cummax/min, f64/f32
 for arg-extreme, and value-reduce. Bead frankenjax-sort-midaxis-blocked-transpose CLOSED (leading-axis +
 half/complex dtypes remain on the full-transpose path; niche).
+
+## 2026-06-26 - multi-key LEXSORT (num_keys>=2, f64 keys) LSD radix — 750→90ms, ~35x WIN vs JAX (SlateHarrier)
+
+The dense sort_key_val only covered num_keys==1; num_keys>=2 (lexsort: sort by primary+secondary key, common
+for records) fell to the slow enum comparison sort (compare_sort_key_tuples). FIX: `lex_orders_dense` — per
+line, LSD multi-key radix (stable-radix by each f64 key from least- to most-significant) yields the
+lexicographic permutation, then permute every operand into its dense typed buffer (permute_by_orders,
+f64/f32/i64). JAX 2-key lexsort [4096,4096] axis1 = 3157ms (XLA-CPU full per-row sort); fj-lax was 750ms (enum,
+4.2x) -> **90ms = ~8.3x internal, ~35x WIN**. Bit-identical: parity guard lexsort_2key_dense_matches_reference
+(2 f64 keys w/ ties + i64 payload, vs (k0,k1,idx)-lexicographic ref) + sort suite 36/0, clippy clean. All-f64
+keys + last axis; mixed-dtype keys / non-last axis keep the enum path (niche). Generalizes the num_keys==1
+dense sort_key_val to N keys.

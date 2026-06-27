@@ -11186,6 +11186,57 @@ fn sort_orders_dense<T: Copy + Send + Sync>(
     orders
 }
 
+// Multi-key LSD radix (lexsort): per line, stable-radix by each f64 key from LEAST-significant (the last key)
+// to MOST, yielding a lexicographic permutation by (key0, key1, ...). Stable radix carries the prior pass's
+// order, so equal higher-priority keys fall back to lower-priority keys, then to original index. Threaded
+// over lines. `key_mask` = u64::MAX for descending (applied to all keys). `keys[k]` is key operand k's slice.
+fn lex_orders_dense(
+    keys: &[&[f64]],
+    num_keys: usize,
+    outer_count: usize,
+    axis_dim: usize,
+    total: usize,
+    threads: usize,
+    key_mask: u64,
+) -> Vec<u32> {
+    let mut orders: Vec<u32> = vec![0u32; total];
+    let per = outer_count.div_ceil(threads.max(1));
+    let mut iter = orders.chunks_mut(per * axis_dim);
+    std::thread::scope(|scope| {
+        let mut start = 0usize;
+        while start < outer_count {
+            let cnt = per.min(outer_count - start);
+            let chunk = iter.next().unwrap();
+            let s0 = start;
+            start += cnt;
+            scope.spawn(move || {
+                let mut order: Vec<u32> = vec![0u32; axis_dim];
+                let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(axis_dim);
+                let mut scratch: Vec<(u64, u32)> = vec![(0, 0); axis_dim];
+                for j in 0..cnt {
+                    let base = (s0 + j) * axis_dim;
+                    for (i, o) in order.iter_mut().enumerate() {
+                        *o = i as u32;
+                    }
+                    for kf in (0..num_keys).rev() {
+                        let ks = keys[kf];
+                        pairs.clear();
+                        for &o in order.iter() {
+                            pairs.push((f64_sort_order_key(ks[base + o as usize]) ^ key_mask, o));
+                        }
+                        radix_pairs_ascending(&mut pairs, &mut scratch);
+                        for (i, &(_, o)) in pairs.iter().enumerate() {
+                            order[i] = o;
+                        }
+                    }
+                    chunk[j * axis_dim..j * axis_dim + axis_dim].copy_from_slice(&order);
+                }
+            });
+        }
+    });
+    orders
+}
+
 // Permute one operand's dense slice by a precomputed per-line `orders` (idx within each axis_dim line) into a
 // dense typed buffer: out[line*axis_dim + pos] = src[line*axis_dim + orders[line*axis_dim + pos]]. Threaded.
 fn permute_by_orders<T: Copy + Send + Sync>(
@@ -11410,6 +11461,75 @@ fn sort_multiple_along_axis(
             if let Some(results) = results {
                 return Ok(results);
             }
+        }
+    }
+
+    // Multi-key LEXSORT dense path (num_keys >= 2, all f64 keys, contiguous/last-axis): LSD multi-key radix
+    // for the permutation, then permute every operand into its dense typed buffer — vs the generic enum
+    // comparison sort below. Bit-identical (radix lexicographic == the comparison order; stable -> idx ties).
+    if num_keys >= 2
+        && axis_stride == 1
+        && outer_count > 1
+        && total >= SORT_PARALLEL_MIN_TOTAL_ELEMS
+        && let Some(keys) = tensors[..num_keys]
+            .iter()
+            .map(|t| {
+                if t.dtype == DType::F64 {
+                    t.elements.as_f64_slice()
+                } else {
+                    None
+                }
+            })
+            .collect::<Option<Vec<&[f64]>>>()
+    {
+        let threads = {
+            let hw = std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1);
+            hw.min(total / SORT_PARALLEL_MIN_TOTAL_ELEMS)
+                .max(1)
+                .min(outer_count)
+        };
+        let key_mask = if descending { u64::MAX } else { 0 };
+        let orders = lex_orders_dense(
+            &keys,
+            num_keys,
+            outer_count,
+            axis_dim,
+            total,
+            threads,
+            key_mask,
+        );
+        let results: Option<Vec<Value>> = tensors
+            .iter()
+            .map(|t| -> Option<Value> {
+                macro_rules! perm {
+                    ($slice:expr, $zero:expr, $ctor:expr) => {{
+                        let s = $slice?;
+                        let o = permute_by_orders(s, &orders, axis_dim, total, threads, $zero);
+                        $ctor(t.shape.clone(), o).ok().map(Value::Tensor)
+                    }};
+                }
+                match t.dtype {
+                    DType::F64 => perm!(
+                        t.elements.as_f64_slice(),
+                        0.0f64,
+                        TensorValue::new_f64_values
+                    ),
+                    DType::F32 => perm!(
+                        t.elements.as_f32_slice(),
+                        0.0f32,
+                        TensorValue::new_f32_values
+                    ),
+                    DType::I64 => {
+                        perm!(t.elements.as_i64_slice(), 0i64, TensorValue::new_i64_values)
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        if let Some(results) = results {
+            return Ok(results);
         }
     }
 
@@ -16754,6 +16874,84 @@ mod tests {
         println!(
             "fj-lax sort_key_val MIXED f32key+i64val [4096,4096] axis1: {:.3}ms | JAX=2750ms",
             b * 1e3
+        );
+    }
+
+    // Parity guard for the multi-key LEXSORT dense path: 2 f64 keys (primary with ties + secondary) + an i64
+    // payload, [512,1024] (threaded), must equal the per-row (k0,k1,idx)-lexicographic reference.
+    #[test]
+    fn lexsort_2key_dense_matches_reference() {
+        let (rows, cols) = (512usize, 1024usize); // 524288 > 1<<18 -> threaded
+        let n = rows * cols;
+        let k0: Vec<f64> = (0..n).map(|i| (i % 7) as f64).collect();
+        let k1: Vec<f64> = (0..n)
+            .map(|i| (i.wrapping_mul(2654435761) % 100003) as f64)
+            .collect();
+        let payload: Vec<i64> = (0..n).map(|i| i as i64).collect();
+        let shape = Shape {
+            dims: vec![rows as u32, cols as u32],
+        };
+        let t0 = Value::Tensor(TensorValue::new_f64_values(shape.clone(), k0.clone()).unwrap());
+        let t1 = Value::Tensor(TensorValue::new_f64_values(shape.clone(), k1.clone()).unwrap());
+        let tv = Value::Tensor(TensorValue::new_i64_values(shape, payload).unwrap());
+        let p = BTreeMap::from([
+            ("axis".to_owned(), "1".to_owned()),
+            ("num_keys".to_owned(), "2".to_owned()),
+        ]);
+        let out = eval_sort_multi(Primitive::Sort, &[t0, t1, tv], &p).unwrap();
+        let s0 = out[0].as_tensor().unwrap().elements.as_f64_slice().unwrap();
+        let s1 = out[1].as_tensor().unwrap().elements.as_f64_slice().unwrap();
+        let sv = out[2].as_tensor().unwrap().elements.as_i64_slice().unwrap();
+        for r in 0..rows {
+            let base = r * cols;
+            let mut idx: Vec<usize> = (0..cols).collect();
+            idx.sort_by(|&a, &b| {
+                k0[base + a]
+                    .partial_cmp(&k0[base + b])
+                    .unwrap()
+                    .then(k1[base + a].partial_cmp(&k1[base + b]).unwrap())
+                    .then(a.cmp(&b))
+            });
+            for (c, &oi) in idx.iter().enumerate() {
+                let g = base + c;
+                assert_eq!(s0[g], k0[base + oi], "k0 r={r} c={c}");
+                assert_eq!(s1[g], k1[base + oi], "k1 r={r} c={c}");
+                assert_eq!(sv[g], (base + oi) as i64, "payload r={r} c={c}");
+            }
+        }
+    }
+
+    // 2-key lexsort (num_keys=2) vs JAX (measured JAX f64 [4096,4096] axis1 = 3157ms).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_lexsort2_vs_jax() {
+        use std::time::Instant;
+        let (rows, cols) = (4096usize, 4096usize);
+        let k1: Vec<f64> = (0..rows * cols).map(|i| (i % 16) as f64).collect();
+        let k2: Vec<f64> = (0..rows * cols)
+            .map(|i| (i.wrapping_mul(2654435761) % 100003) as f64)
+            .collect();
+        let shape = Shape {
+            dims: vec![rows as u32, cols as u32],
+        };
+        let a = Value::Tensor(TensorValue::new_f64_values(shape.clone(), k1).unwrap());
+        let b = Value::Tensor(TensorValue::new_f64_values(shape, k2).unwrap());
+        let p = BTreeMap::from([
+            ("axis".to_owned(), "1".to_owned()),
+            ("num_keys".to_owned(), "2".to_owned()),
+        ]);
+        let run = || eval_sort_multi(Primitive::Sort, &[a.clone(), b.clone()], &p).unwrap();
+        let _ = run();
+        let mut bst = f64::MAX;
+        for _ in 0..6 {
+            let t = Instant::now();
+            let r = run();
+            bst = bst.min(t.elapsed().as_secs_f64());
+            std::hint::black_box(&r);
+        }
+        println!(
+            "fj-lax lexsort 2-key f64 [4096,4096] axis1: {:.3}ms | JAX=3157ms",
+            bst * 1e3
         );
     }
 
