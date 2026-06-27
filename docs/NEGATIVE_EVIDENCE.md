@@ -6320,5 +6320,6 @@ Evidence:
 Validation:
   - `rch exec -- cargo test -p fj-conformance --profile release -- --nocapture`: green.
   - `rch exec -- cargo test -p fj-lax --profile release threaded_bluestein_batch_rfft_matches_serial_row_block --lib -- --nocapture`: green.
+  - `rustfmt --edition 2024 --check crates/fj-lax/src/fft.rs`: green.
   - `cargo bench --release` is not accepted by this Cargo for `bench` (`unexpected argument '--release'`), so the
     repo's already-used release-profile equivalent was used: `cargo bench -p fj-lax --profile release ...`.

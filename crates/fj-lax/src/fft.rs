@@ -2464,6 +2464,10 @@ pub(crate) fn eval_rfft(
         });
     }
 
+    if let Some(value) = eval_rfft_dense_f64_nonpow2(inputs, params)? {
+        return Ok(value);
+    }
+
     let (shape, in_dtype, elements) = extract_tensor_complex(primitive, &inputs[0])?;
     if is_complex_dtype(in_dtype) {
         return Err(EvalError::Unsupported {
@@ -2580,6 +2584,105 @@ pub(crate) fn eval_rfft(
     Ok(Value::Tensor(tensor))
 }
 
+fn eval_rfft_dense_f64_nonpow2(
+    inputs: &[Value],
+    params: &std::collections::BTreeMap<String, String>,
+) -> Result<Option<Value>, EvalError> {
+    let primitive = Primitive::Rfft;
+    let Value::Tensor(tensor) = &inputs[0] else {
+        return Ok(None);
+    };
+    if tensor.shape.rank() == 0 || tensor.dtype != DType::F64 {
+        return Ok(None);
+    }
+    let Some(reals) = tensor.elements.as_f64_slice() else {
+        return Ok(None);
+    };
+
+    let shape = tensor.shape.clone();
+    let input_last = last_axis_len(primitive, &shape)?;
+    if input_last == 0 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "RFFT requires last dimension > 0".to_owned(),
+        });
+    }
+
+    let fft_length = parse_optional_fft_length(primitive, params, input_last)?;
+    if fft_length == 0 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "fft_length must be > 0".to_owned(),
+        });
+    }
+    if fft_length.is_power_of_two() {
+        return Ok(None);
+    }
+
+    checked_fft_len(primitive, fft_length, "RFFT fft_length")?;
+    let out_last = fft_length / 2 + 1;
+    let batch_size = reals.len() / input_last;
+    let output_count = checked_output_element_count(primitive, batch_size, out_last)?;
+
+    let mut out_dims = shape.dims;
+    replace_last_axis_len(primitive, &mut out_dims, out_last)?;
+    let out_shape = Shape { dims: out_dims };
+    let copy_len = fft_length.min(input_last);
+    let plan = BatchFftPlan::new(fft_length, false);
+
+    let mut out_values: Vec<(f64, f64)> = vec![(0.0, 0.0); output_count];
+    const PARALLEL_MIN_ELEMS: usize = 1 << 18;
+    let transform_work = batch_size.saturating_mul(plan.work_len(fft_length));
+    let threads = if transform_work >= PARALLEL_MIN_ELEMS && batch_size > 1 {
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            .min(batch_size)
+    } else {
+        1
+    };
+
+    if threads <= 1 {
+        rfft_rows_f64_nonpow2_into(
+            reals,
+            &plan,
+            fft_length,
+            input_last,
+            copy_len,
+            out_last,
+            0,
+            batch_size,
+            &mut out_values,
+        );
+    } else {
+        let mut rows_per = batch_size.div_ceil(threads);
+        if rows_per % 2 != 0 {
+            rows_per += 1;
+        }
+        let plan_ref = &plan;
+        std::thread::scope(|scope| {
+            let mut rest: &mut [(f64, f64)] = out_values.as_mut_slice();
+            let mut row0 = 0usize;
+            while row0 < batch_size {
+                let rows = rows_per.min(batch_size - row0);
+                let (blk, tail) = rest.split_at_mut(rows * out_last);
+                rest = tail;
+                scope.spawn(move || {
+                    rfft_rows_f64_nonpow2_into(
+                        reals, plan_ref, fft_length, input_last, copy_len, out_last, row0, rows,
+                        blk,
+                    );
+                });
+                row0 += rows;
+            }
+        });
+    }
+
+    let tensor = TensorValue::new_complex_values(DType::Complex128, out_shape, out_values)
+        .map_err(EvalError::InvalidTensor)?;
+    Ok(Some(Value::Tensor(tensor)))
+}
+
 /// Vectorized SoA real FFT for a block of `batch` rows (pow2 `fft_length`). Mirrors
 /// `RealRfftPower2Plan::apply_into` op-for-op but runs all three stages — pack,
 /// half-length complex FFT, Hermitian recombination — vertically over the batch, so
@@ -2686,6 +2789,69 @@ fn vectorized_rfft_pow2_tiled(
             &mut out[out_s..out_s + rows * out_last],
         );
         row0 += rows;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rfft_rows_f64_nonpow2_into(
+    reals: &[f64],
+    plan: &BatchFftPlan,
+    fft_length: usize,
+    input_last: usize,
+    copy_len: usize,
+    out_last: usize,
+    row_start: usize,
+    rows: usize,
+    out_blk: &mut [(f64, f64)],
+) {
+    let n = fft_length;
+    let mut padded = vec![(0.0, 0.0); fft_length];
+    let mut transformed = Vec::with_capacity(fft_length);
+    let mut scratch = BluesteinScratch::default();
+    let mut mixed_scratch = Vec::new();
+
+    let mut r = 0;
+    while r + 1 < rows {
+        let start_a = (row_start + r) * input_last;
+        let start_b = (row_start + r + 1) * input_last;
+        for j in 0..copy_len {
+            padded[j] = (reals[start_a + j], reals[start_b + j]);
+        }
+        padded[copy_len..].fill((0.0, 0.0));
+        plan.apply_into(
+            &padded,
+            &mut scratch,
+            &mut mixed_scratch,
+            false,
+            &mut transformed,
+        );
+
+        let (blk_a, blk_b) = out_blk[r * out_last..(r + 2) * out_last].split_at_mut(out_last);
+        for k in 0..out_last {
+            let nk = if k == 0 { 0 } else { n - k };
+            let (zr, zi) = transformed[k];
+            let (zr_nk, zi_nk) = transformed[nk];
+            blk_a[k] = (0.5 * (zr + zr_nk), 0.5 * (zi - zi_nk));
+            let dr = zr - zr_nk;
+            let di = zi + zi_nk;
+            blk_b[k] = (0.5 * di, -0.5 * dr);
+        }
+        r += 2;
+    }
+    if r < rows {
+        let start = (row_start + r) * input_last;
+        for j in 0..copy_len {
+            padded[j] = (reals[start + j], 0.0);
+        }
+        padded[copy_len..].fill((0.0, 0.0));
+        plan.apply_into(
+            &padded,
+            &mut scratch,
+            &mut mixed_scratch,
+            false,
+            &mut transformed,
+        );
+        out_blk[r * out_last..r * out_last + out_last].copy_from_slice(&transformed[..out_last]);
     }
 }
 
