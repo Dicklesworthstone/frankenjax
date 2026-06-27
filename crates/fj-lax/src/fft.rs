@@ -4590,6 +4590,45 @@ mod tests {
         }
     }
 
+    // RFFT (real-input FFT, last-axis, batched) vs JAX (measured JAX [4096,1024] pow2 = 5.89ms, [4096,1000]
+    // non-pow2 = 1.93ms). Common DSP/audio op; tests the real-FFT SoA path (vectorized_rfft_pow2_block).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_rfft_vs_jax() {
+        use std::time::Instant;
+        for (sz, jax_ms, label) in [
+            (1024usize, 5.89, "pow2"),
+            (1000usize, 1.93, "non-pow2 smooth"),
+        ] {
+            let rows = 4096usize;
+            let data: Vec<f64> = (0..rows * sz)
+                .map(|i| ((i.wrapping_mul(2654435761) % 100003) as f64) * 1e-3)
+                .collect();
+            let x = Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![rows as u32, sz as u32],
+                    },
+                    data,
+                )
+                .unwrap(),
+            );
+            let p = std::collections::BTreeMap::new();
+            let f = || std::hint::black_box(eval_rfft(std::slice::from_ref(&x), &p).unwrap());
+            let _ = f();
+            let mut bst = f64::MAX;
+            for _ in 0..6 {
+                let t = Instant::now();
+                f();
+                bst = bst.min(t.elapsed().as_secs_f64());
+            }
+            println!(
+                "fj-lax rfft [4096,{sz}] axis1 ({label}): {:.3}ms | JAX={jax_ms}ms",
+                bst * 1e3
+            );
+        }
+    }
+
     // FFT 1-D NON-power-of-2 batched (last-axis) vs JAX (measured JAX [4096,1000] smooth = 62.4ms,
     // [4096,1009] prime = 99.0ms). Non-pow2 is tolerance-parity (no pow2 golden lock) → safe to optimize. Tests
     // mixed-radix (1000=2^3*5^3) and bluestein (1009 prime) vs pocketfft.

@@ -5844,3 +5844,19 @@ prime FFT is power-of-2-Bluestein-convolution, JAX's is slower). So non-pow2 FFT
 picture: 1D pow2 1.38x (bit-locked, near-parity), 2D pow2 batched ~4.9x (FMA + split-radix, non-contained,
 SIMD-regresses), non-pow2 smooth ~1.10x, non-pow2 prime 1.36x WIN. The ONLY FFT loss is the pow2-batched FMA/
 split-radix gap (non-contained). Recorded the bench as a permanent guard.
+
+## 2026-06-27 - RFFT is the biggest contained-candidate gap: 8.5x (pow2) / 23x (non-pow2) vs JAX (SlateHarrier)
+
+`bench_rfft_vs_jax` (real-input FFT, last-axis [4096,N]): pow2 N=1024 fj-lax **49.8ms vs JAX 5.89 = ~8.5x**;
+non-pow2 N=1000 fj-lax **44.5ms vs JAX 1.93 = ~23x**. NEW, LARGEST contained-candidate gap measured this session
+(the complex FFT was only 4.9x). Diagnosis: rfft IS already threaded (transform_work 4.19M > 262K gate, 32t) AND
+uses the SoA path (vectorized_rfft_pow2_tiled, RFFT_VECTORIZED_MIN_ROWS=8) — so it is NOT a missing-parallelism
+or missing-vectorization bug. The gap is ALGORITHMIC: fj-lax rfft = pack(real->half-complex) + half-length
+complex FFT + Hermitian recombine, which is ~4.5x slower PER ROW than its own complex FFT (should be ~0.5x) — the
+pack/recombine overhead + autovec'd half-FFT can't match pocketfft's native real-FFT. Non-pow2 rfft (no
+real_plan) is worse (23x) — it routes through the complex BatchFftPlan rather than a real-optimized mixed-radix.
+LEVER (focused multi-session, NOT a safe extreme-depth edit): a native real-FFT kernel (pow2 = partially
+bit-locked by golden digests → must stay bit-identical; non-pow2 = tolerance, free to rewrite). Explicit SIMD on
+the sibling complex butterfly already REGRESSED (see 2026-06-26), so autovec is likely already optimal — the win
+must come from the algorithm (fewer ops / native real symmetry), not from SIMD-ing the current one. Bench landed
+as a permanent guard + the precise next-lever spec.
