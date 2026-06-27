@@ -5322,3 +5322,13 @@ f64/f32/i64). JAX 2-key lexsort [4096,4096] axis1 = 3157ms (XLA-CPU full per-row
 (2 f64 keys w/ ties + i64 payload, vs (k0,k1,idx)-lexicographic ref) + sort suite 36/0, clippy clean. All-f64
 keys + last axis; mixed-dtype keys / non-last axis keep the enum path (niche). Generalizes the num_keys==1
 dense sort_key_val to N keys.
+
+## 2026-06-26 - half (bf16/f16) MIDDLE-axis value-sort per-block — ~93x WIN vs JAX (SlateHarrier)
+
+Completed the middle-axis sort dtype family with half (bf16/f16) value sort. The half last-axis radix already
+existed, but half MIDDLE sort fell to the slow full-transpose. Added a dedicated half block (new_half_float_values
+needs the dtype, so it can't reuse the sort_mid! macro whose ctors take only (shape, vec)): per before-block
+half radix recursion, L2-resident transpose, threaded. JAX bf16 3D [256,1024,64] axis1 = 2444ms; fj-lax per-block
+= **26.2ms = ~93x WIN**. Bit-identical: parity guard sort_3d_mid_axis_bf16_matches_reference (per-column bf16
+bits sorted by decoded value, ties keep equal bits) + sort suite 37/0, clippy clean. MIDDLE-AXIS SORT now
+covers f64/f32/i64 (value+argsort) + bf16/f16 (value); half argsort middle + leading-axis remain (niche).

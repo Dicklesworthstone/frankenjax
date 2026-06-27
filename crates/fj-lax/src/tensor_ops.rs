@@ -10816,6 +10816,77 @@ fn sort_along_axis(
                     true
                 );
             }
+            // Half (bf16/f16) value-sort: new_half_float_values needs the dtype, so a dedicated block (the
+            // macro's ctors take only (shape, vec)). Per-block half radix recursion; output preserves dtype.
+            if !return_indices
+                && matches!(tensor.dtype, DType::BF16 | DType::F16)
+                && let Some(src) = tensor.elements.as_half_float_slice()
+            {
+                let dt = tensor.dtype;
+                let mut out = vec![0u16; src.len()];
+                let threads = (src.len() / (1 << 18)).clamp(1, cores).min(before);
+                let per = before.div_ceil(threads.max(1));
+                let sort_blocks = |b0: usize,
+                                   b1: usize,
+                                   dst: &mut [u16]|
+                 -> Result<(), EvalError> {
+                    for b in b0..b1 {
+                        let s = b * blk;
+                        let bt = TensorValue::new_half_float_values(
+                            dt,
+                            block_shape.clone(),
+                            src[s..s + blk].to_vec(),
+                        )
+                        .map_err(EvalError::InvalidTensor)?;
+                        let sorted = sort_along_axis(primitive, &bt, 0, descending, false)?;
+                        let sv = match &sorted {
+                            Value::Tensor(t) => {
+                                t.elements.as_half_float_slice().ok_or_else(|| {
+                                    EvalError::Unsupported {
+                                        primitive,
+                                        detail: "middle-axis half block sort produced wrong dtype"
+                                            .into(),
+                                    }
+                                })?
+                            }
+                            _ => {
+                                return Err(EvalError::Unsupported {
+                                    primitive,
+                                    detail: "middle-axis half block sort produced scalar".into(),
+                                });
+                            }
+                        };
+                        dst[(b - b0) * blk..(b - b0) * blk + blk].copy_from_slice(sv);
+                    }
+                    Ok(())
+                };
+                if threads <= 1 {
+                    sort_blocks(0, before, &mut out)?;
+                } else {
+                    let results: Vec<Result<(), EvalError>> = std::thread::scope(|scope| {
+                        let mut handles = Vec::new();
+                        let mut rest: &mut [u16] = out.as_mut_slice();
+                        let mut b0 = 0usize;
+                        while b0 < before {
+                            let cnt = per.min(before - b0);
+                            let (chunk, tail) = rest.split_at_mut(cnt * blk);
+                            rest = tail;
+                            let start = b0;
+                            b0 += cnt;
+                            handles
+                                .push(scope.spawn(move || sort_blocks(start, start + cnt, chunk)));
+                        }
+                        handles.into_iter().map(|h| h.join().unwrap()).collect()
+                    });
+                    for r in results {
+                        r?;
+                    }
+                }
+                return Ok(Value::Tensor(
+                    TensorValue::new_half_float_values(dt, tensor.shape.clone(), out)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
+            }
         }
     }
 
@@ -16990,6 +17061,49 @@ mod tests {
         );
     }
 
+    // Parity guard for the half (bf16) STRICT-MIDDLE value-sort fast path: each output column must be the
+    // input column's bf16 bits sorted by decoded value (ties keep equal bits). 3D threaded.
+    #[test]
+    fn sort_3d_mid_axis_bf16_matches_reference() {
+        let (b, s, d) = (130usize, 1024usize, 4usize);
+        let n = b * s * d;
+        let dec = |bits: u16| Literal::BF16Bits(bits).as_bf16_f32().unwrap();
+        // values 0..=100 (exact in bf16) with per-column scramble; ties allowed.
+        let bits: Vec<u16> = (0..n)
+            .map(|g| {
+                let bi = g / (s * d);
+                let si = (g / d) % s;
+                let di = g % d;
+                let f = ((si * 13 + bi * 7 + di) % 101) as f32;
+                (f.to_bits() >> 16) as u16
+            })
+            .collect();
+        let shape = Shape {
+            dims: vec![b as u32, s as u32, d as u32],
+        };
+        let x = Value::Tensor(
+            TensorValue::new_half_float_values(DType::BF16, shape, bits.clone()).unwrap(),
+        );
+        let p = BTreeMap::from([("axis".to_owned(), "1".to_owned())]);
+        let out = crate::eval_primitive(Primitive::Sort, std::slice::from_ref(&x), &p).unwrap();
+        let got = out
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_half_float_slice()
+            .unwrap();
+        for bi in 0..b {
+            for di in 0..d {
+                let mut col: Vec<u16> = (0..s).map(|si| bits[bi * s * d + si * d + di]).collect();
+                col.sort_by(|&a, &c| dec(a).partial_cmp(&dec(c)).unwrap());
+                for (si, &want) in col.iter().enumerate() {
+                    let g = bi * s * d + si * d + di;
+                    assert_eq!(dec(got[g]), dec(want), "bf16 mid sort b={bi} d={di} s={si}");
+                }
+            }
+        }
+    }
+
     // Parity guard for the f64/f32 STRICT-MIDDLE value-sort fast path: 3D [B,S,D] axis=1 (threaded) must equal
     // the per-(b,d) column-sorted reference.
     #[test]
@@ -17134,6 +17248,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    // sort bf16 3D middle axis vs JAX (measured JAX bf16 [256,1024,64] axis1 = 2444ms).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_sort_bf16_3d_mid_vs_jax() {
+        use std::time::Instant;
+        let (b, s, d) = (256usize, 1024usize, 64usize);
+        let bits: Vec<u16> = (0..b * s * d)
+            .map(|i| (((i.wrapping_mul(2654435761) % 100003) as f32).to_bits() >> 16) as u16)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_half_float_values(
+                DType::BF16,
+                Shape {
+                    dims: vec![b as u32, s as u32, d as u32],
+                },
+                bits,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([("axis".to_owned(), "1".to_owned())]);
+        let f = || {
+            std::hint::black_box(
+                crate::eval_primitive(Primitive::Sort, std::slice::from_ref(&x), &p).unwrap(),
+            );
+        };
+        f();
+        let mut bst = f64::MAX;
+        for _ in 0..6 {
+            let t = Instant::now();
+            f();
+            bst = bst.min(t.elapsed().as_secs_f64());
+        }
+        println!(
+            "fj-lax sort bf16 3D [256,1024,64] axis1(mid): {:.3}ms | JAX=2444ms",
+            bst * 1e3
+        );
     }
 
     // sort 3D middle axis vs JAX (measured JAX f64 [256,1024,64] axis1 = 1974ms).
