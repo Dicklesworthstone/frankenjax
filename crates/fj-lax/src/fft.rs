@@ -97,6 +97,88 @@ fn is_complex_dtype(dtype: DType) -> bool {
     matches!(dtype, DType::Complex64 | DType::Complex128)
 }
 
+fn complex128_literal_to_pair(lit: Literal) -> Option<(f64, f64)> {
+    match lit {
+        Literal::Complex128Bits(re, im) => Some((f64::from_bits(re), f64::from_bits(im))),
+        _ => None,
+    }
+}
+
+fn complex64_literal_to_pair(lit: Literal) -> Option<(f64, f64)> {
+    match lit {
+        Literal::Complex64Bits(re, im) => {
+            Some((f64::from(f32::from_bits(re)), f64::from(f32::from_bits(im))))
+        }
+        _ => None,
+    }
+}
+
+fn extract_homogeneous_complex_literals(
+    literals: &[Literal],
+    convert: fn(Literal) -> Option<(f64, f64)>,
+) -> Option<Vec<(f64, f64)>> {
+    const PARALLEL_LITERAL_EXTRACT_MIN: usize = 1 << 18;
+
+    if literals.len() < PARALLEL_LITERAL_EXTRACT_MIN {
+        let mut out = Vec::with_capacity(literals.len());
+        for lit in literals.iter().copied() {
+            out.push(convert(lit)?);
+        }
+        return Some(out);
+    }
+
+    let threads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1)
+        .min(8)
+        .min(literals.len());
+    if threads <= 1 {
+        let mut out = Vec::with_capacity(literals.len());
+        for lit in literals.iter().copied() {
+            out.push(convert(lit)?);
+        }
+        return Some(out);
+    }
+
+    let chunk_len = literals.len().div_ceil(threads);
+    let mut out = vec![(0.0, 0.0); literals.len()];
+    let all_complex = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut literal_rest = literals;
+        let mut out_rest = out.as_mut_slice();
+
+        while !literal_rest.is_empty() {
+            let take = chunk_len.min(literal_rest.len());
+            let (literal_chunk, literal_tail) = literal_rest.split_at(take);
+            literal_rest = literal_tail;
+            let (out_chunk, out_tail) = out_rest.split_at_mut(take);
+            out_rest = out_tail;
+
+            handles.push(scope.spawn(move || {
+                for (lit, slot) in literal_chunk.iter().copied().zip(out_chunk.iter_mut()) {
+                    let Some(pair) = convert(lit) else {
+                        return false;
+                    };
+                    *slot = pair;
+                }
+                true
+            }));
+        }
+
+        for handle in handles {
+            let Ok(chunk_is_complex) = handle.join() else {
+                return false;
+            };
+            if !chunk_is_complex {
+                return false;
+            }
+        }
+        true
+    });
+
+    all_complex.then_some(out)
+}
+
 fn last_axis_len(primitive: Primitive, shape: &Shape) -> Result<usize, EvalError> {
     shape
         .dims
@@ -218,6 +300,26 @@ fn extract_tensor_complex(
     // (Complex128: exact f64; Complex64: the same f32→f64 widening).
     if let Some(dense) = tensor.elements.as_complex_slice() {
         return Ok((tensor.shape.clone(), tensor.dtype, dense.to_vec()));
+    }
+
+    // Fast path for boxed complex literals that intentionally stayed out of
+    // dense complex storage. Large FFT benches still feed this representation as
+    // the compatibility/reference path; convert it directly instead of routing
+    // every element through the generic `literal_to_complex` Result path.
+    if tensor.dtype == DType::Complex128 || tensor.dtype == DType::Complex64 {
+        let literal_slice = tensor.elements.as_slice();
+        if tensor.dtype == DType::Complex128
+            && let Some(elements) =
+                extract_homogeneous_complex_literals(literal_slice, complex128_literal_to_pair)
+        {
+            return Ok((tensor.shape.clone(), tensor.dtype, elements));
+        }
+        if tensor.dtype == DType::Complex64
+            && let Some(elements) =
+                extract_homogeneous_complex_literals(literal_slice, complex64_literal_to_pair)
+        {
+            return Ok((tensor.shape.clone(), tensor.dtype, elements));
+        }
     }
 
     // Dense real-F64 input (e.g. RFFT operand): read the packed f64 slice and lift
@@ -5114,6 +5216,27 @@ mod tests {
                     "{prim:?} len={len}: dense-input output must match literal-input bit-for-bit"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn boxed_complex128_large_extract_preserves_bits() {
+        let len = (1_usize << 18) + 17;
+        let data: Vec<(f64, f64)> = (0..len)
+            .map(|i| {
+                let x = i as f64;
+                ((x * 0.125).sin(), (x * 0.25).cos() - 0.3 * x)
+            })
+            .collect();
+        let input = make_complex_vector(&data);
+        let (shape, dtype, elements) = extract_tensor_complex(Primitive::Fft, &input).unwrap();
+
+        assert_eq!(shape.dims, vec![len as u32]);
+        assert_eq!(dtype, DType::Complex128);
+        assert_eq!(elements.len(), len);
+        for index in [0, 1, 127, len / 2, len - 1] {
+            assert_eq!(elements[index].0.to_bits(), data[index].0.to_bits());
+            assert_eq!(elements[index].1.to_bits(), data[index].1.to_bits());
         }
     }
 

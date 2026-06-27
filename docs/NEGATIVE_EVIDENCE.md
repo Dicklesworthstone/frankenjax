@@ -2,6 +2,54 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-27 - KEEP: boxed complex literal extraction narrows FFT batch loss (ProudSalmon)
+
+Land-or-dig pass after `bf31d6ca`: no unlanded measured bench-worktree win was
+found. The live scratch/worktree positives checked were already present on
+`origin/main` or patch-equivalent; the only remaining cherry-positive linalg
+head was an unledgered WIP. New lever dug from the biggest measured JAX gap:
+specialize `extract_tensor_complex` for boxed homogeneous complex literals and
+cap the conversion fanout at 8 threads. This attacks the `2048x256` boxed
+complex FFT boundary directly, without changing FFT butterfly math or dense
+complex storage semantics.
+
+Bench command note: this Cargo rejects `cargo bench --release`, so the valid
+crate-scoped optimized equivalent was used. The first 4-slot remote attempt was
+blocked by RCH slot pressure, so the accepted comparison used `-j 1` for worker
+admission while remaining package-scoped:
+`AGENT_NAME=ProudSalmon RCH_WORKER=vmi1227854 RCH_REQUIRE_REMOTE=1
+RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec -- env
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b
+AGENT_NAME=ProudSalmon cargo bench -j 1 -p fj-lax --profile release --bench
+lax_baseline -- 'eval/fft_batch_2048x256_complex128$|eval/fft_batch_2048x256_complex128_dense_input$'
+--noplot`.
+
+Measured rows, RCH `vmi1227854`, same command shape. The accepted baseline is
+the second main run because the first main run had a drifting dense-control row;
+the rerun's dense control matches the candidate dense control, isolating the
+boxed extraction delta.
+
+| workload | main midpoint | candidate midpoint | Rust delta | JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `eval/fft_batch_2048x256_complex128` | 7.9952 ms | 2.4034 ms | -69.9% / 3.33x faster | 257.543 us | 31.04x loss | 9.33x loss | KEEP |
+| `eval/fft_batch_2048x256_complex128_dense_input` | 2.1702 ms | 2.1923 ms | +1.02% control drift | 257.543 us | 8.43x loss | 8.51x loss | unchanged control |
+
+JAX comparator is the existing fresh 2026-06-26 exact fixture measurement for
+`complex_matrix(2048,256)` from this ledger: JAX/JAXLIB 0.10.1 CPU x64,
+20 runs x 20 inner loops, mean **257.543 us** for the complex FFT row. The kept
+Rust path cuts boxed-extract overhead to roughly the dense-input boundary
+(boxed/dense 3.68x on main -> 1.10x on candidate), but still remains a material
+JAX loss; next FFT work should target the kernel itself, not another boxed
+boundary conversion.
+
+Validation: `cargo fmt -p fj-lax --check`, focused `fj-lax` boxed-complex
+extract test, `cargo check -p fj-lax --profile release --all-targets`, and
+`cargo clippy -p fj-lax --profile release --all-targets -- -D warnings` all
+passed via RCH. Remote `fj-conformance` was blocked by missing transferred
+`artifacts/phase2c/...` schema inputs; local `cargo test -p fj-conformance
+--profile release` with `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b`
+passed.
+
 ## 2026-06-27 - KEEP: rank-3 sum-pool x-lane SIMD narrows VALID f64 reduce-window loss (ProudSalmon)
 
 Land-or-dig pass after `2846e95a`: scratch worktree audit found no measured
