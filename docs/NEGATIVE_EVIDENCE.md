@@ -162,6 +162,53 @@ fallback. Workspace `cargo fmt -p fj-interpreters --check` is still blocked by
 pre-existing formatting drift in `crates/fj-interpreters/benches/eval_fusion_speed.rs`;
 the changed source file itself is formatted.
 
+## 2026-06-27 - NO-SHIP: batched FFT SoA thread fanout cap regresses dense kernel control (ProudSalmon)
+
+Land-or-dig pass after `60c2728a`: scratch/worktree audit found no measured
+bench-worktree win absent from `origin/main`; the known FFT boxed extraction and
+mixed-radix positives were already landed or patch-equivalent. New lever from
+the vectorized-execution/cache-morsel route: cap scoped-thread fanout for
+batched pow2/pow4 SoA FFTs, trying to reduce scheduler/DRAM contention on the
+largest fresh residual gap, `eval/fft_batch_2048x256_complex128`. This is a
+kernel scheduling lever, not another boxed-literal conversion retry.
+
+Bench command note: this Cargo rejects `cargo bench --release`, so the valid
+crate-scoped optimized equivalent was used with the requested release profile
+and target dir:
+`AGENT_NAME=ProudSalmon RCH_WORKER=hz2 RCH_REQUIRE_REMOTE=1
+RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec -- env
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b
+AGENT_NAME=ProudSalmon cargo bench -j 1 -p fj-lax --profile release --bench
+lax_baseline -- 'eval/fft_batch_2048x256_complex128$|eval/fft_batch_2048x256_complex128_dense_input$'
+--noplot`. The accepted comparison used RCH `hz2` for clean main baseline and
+both candidates.
+
+Measured rows:
+
+| workload | main midpoint | cap=8 midpoint | cap=16 midpoint | JAX mean | main/JAX | best candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `eval/fft_batch_2048x256_complex128` | 7.6758 ms | 6.1967 ms | 7.0633 ms | 257.543 us | 29.80x loss | 24.06x loss | NO-SHIP: boxed row improves only by trading away dense control |
+| `eval/fft_batch_2048x256_complex128_dense_input` | 4.6246 ms | 5.7357 ms | 5.7748 ms | 257.543 us | 17.96x loss | 22.27x loss | NO-SHIP: dense kernel regresses about 24% |
+
+JAX comparator is the existing fresh 2026-06-26 exact fixture measurement for
+`complex_matrix(2048,256)` from this ledger: JAX/JAXLIB 0.10.1 CPU x64,
+20 runs x 20 inner loops, mean **257.543 us** for the complex FFT row. Cap=8
+had a real boxed-row improvement but regressed dense input from 4.6246 ms to
+5.7357 ms. Cap=16 reduced the boxed win and still left dense input at 5.7748
+ms. Because the dense-input control is the FFT kernel boundary after the boxed
+extraction keep, this lever is rejected and the source hunk was reverted before
+commit.
+
+Validation: the candidate bench was package-scoped through RCH. RCH
+`cargo test -j 1 -p fj-conformance --profile release -- --nocapture` compiled
+and passed the early suites but failed `artifact_schemas` because remote
+transfer omitted required `artifacts/phase2c/...` inputs. The same
+`fj-conformance` command then passed locally with
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b`. After revert,
+`crates/fj-lax/src/fft.rs` is back to `origin/main`; this commit carries only
+the negative-evidence ledger entry. Next FFT work should avoid thread-count
+caps and target a true per-row kernel primitive or representation change.
+
 ## 2026-06-27 - KEEP: boxed complex literal extraction narrows FFT batch loss (ProudSalmon)
 
 Land-or-dig pass after `bf31d6ca`: no unlanded measured bench-worktree win was
