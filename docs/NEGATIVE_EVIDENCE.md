@@ -2,6 +2,29 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-27 - REVERT (~0-gain): 8-wide SIMD digamma — ln-extract eats the win (BlackThrush)
+
+Follow-up to the i0e/i1e KEEP below: tried to extend the SIMD-Chebyshev lever to the
+next special-fn gap, digamma (2x JAX loss, second-worst). Unlike i0e/i1e (pure
+polynomial, no transcendental), digamma has ONE scalar `ln` (`shifted.ln()`) plus the
+integer-shift recurrence and the asymptotic polynomial. Built `digamma_f64x8`: masked
+SIMD recurrence + SIMD polynomial, with the single `ln` evaluated per lane via a scalar
+extract and a scalar fixup for `x<0.5`/non-finite lanes. BIT-IDENTICAL to scalar across
+the reflection branch, recurrence, direct path, and SIMD tail (guarded test, 70_003
+elems passed).
+
+MEASURED same-binary A/B (`bench_special_fns_throughput`, 16M f64, 5 runs):
+SIMD/scalar = **1.32x, 1.14x, 1.30x, 1.06x, 1.03x** (median 1.14x). The TELL: the
+least-loaded runs (fastest scalar baseline = lowest contention, the fair condition)
+collapse to **1.03–1.06x** — vs i0e/i1e, which held 1.5x even on their least-loaded run.
+The scalar `ln`-extract per 8-lane block (8 scalar `f64::ln` calls, same count as fully
+scalar) caps the speedup; the recurrence/polynomial savings don't dominate enough to
+clear it. This is the SAME wall SlateHarrier hit on `lgamma_simd8` (0.84x) — confirmed to
+extend to digamma's single `ln`. REVERTED (arithmetic.rs == HEAD; change stashed).
+LESSON: the SIMD-Chebyshev special-fn lever is bounded to the `ln`/`exp`-FREE members
+(i0e/i1e KEPT); anything with even one scalar transcendental per element folds back into
+`cntiy` (+fma SIMD-ln). The pure-polynomial special-fn vein is now exhausted.
+
 ## 2026-06-27 - KEEP: 8-wide SIMD bessel i0e/i1e — flips ~1.5x JAX loss to parity/win (BlackThrush)
 
 Land-or-dig DIG that actually landed a measured win. Target: the special-function
