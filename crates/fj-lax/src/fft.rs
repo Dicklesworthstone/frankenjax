@@ -4630,6 +4630,50 @@ mod tests {
         }
     }
 
+    // IRFFT (inverse real FFT, last-axis, batched) vs JAX (min-of-10: JAX [4096,513]->1024 pow2 = 4.18ms,
+    // [4096,501]->1000 non-pow2 = 2.62ms). Completes the FFT family; mirrors the rfft real-FFT path.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_irfft_vs_jax() {
+        use std::time::Instant;
+        for (nout, jax_ms, label) in [(1024usize, 4.18, "pow2"), (1000usize, 2.62, "non-pow2")] {
+            let rows = 4096usize;
+            let half = nout / 2 + 1;
+            let data: Vec<(f64, f64)> = (0..rows * half)
+                .map(|i| {
+                    (
+                        ((i.wrapping_mul(2654435761) % 100003) as f64) * 1e-3,
+                        (i % 97) as f64 * 1e-3,
+                    )
+                })
+                .collect();
+            let x = Value::Tensor(
+                TensorValue::new_complex_values(
+                    DType::Complex128,
+                    Shape {
+                        dims: vec![rows as u32, half as u32],
+                    },
+                    data,
+                )
+                .unwrap(),
+            );
+            let mut p = std::collections::BTreeMap::new();
+            p.insert("fft_length".to_owned(), nout.to_string());
+            let f = || std::hint::black_box(eval_irfft(std::slice::from_ref(&x), &p).unwrap());
+            let _ = f();
+            let mut bst = f64::MAX;
+            for _ in 0..6 {
+                let t = Instant::now();
+                f();
+                bst = bst.min(t.elapsed().as_secs_f64());
+            }
+            println!(
+                "fj-lax irfft [4096,{half}]->{nout} ({label}): {:.3}ms | JAX={jax_ms}ms",
+                bst * 1e3
+            );
+        }
+    }
+
     // FFT 1-D NON-power-of-2 batched (last-axis) vs JAX (RE-VERIFIED min-of-10: JAX [4096,1000] smooth =
     // 9.37ms, [4096,1009] prime = 9.46ms — earlier 62/99ms were load-inflated anomalies). fj-lax is ~7x SLOWER:
     // non-pow2 is tolerance-parity → the mixed-radix/bluestein kernel is the gap (NOT competitive as first ledger'd).

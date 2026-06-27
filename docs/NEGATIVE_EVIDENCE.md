@@ -5934,3 +5934,19 @@ threaded 68-70ms = NO GAIN (slightly worse). REVERTED (stashed). The mixed-radix
 without speedup — same class as the f64 gather controller-floor. The ~6.5x gap vs pocketfft is its
 cache-blocking / fewer-pass mixed-radix kernel, NOT parallelism — a multi-session kernel-algorithm lever
 (non-contained), tolerance-parity so legal but not a quick win. Do NOT re-attempt threading this path.
+
+## 2026-06-27 - irfft mirrors rfft (7.7x pow2 / 3.7x non-pow2); FFT FAMILY characterization COMPLETE (SlateHarrier)
+
+`bench_irfft_vs_jax` (min-of-10 JAX baselines): pow2 [4096,513]->1024 fj-lax **32.0ms vs JAX 4.18 = ~7.7x**;
+non-pow2 [4096,501]->1000 fj-lax **9.6ms vs JAX 2.62 = ~3.7x**. Mirrors rfft — the real-FFT family lacks
+pocketfft's native real kernel. COMPLETE FFT-FAMILY SCORECARD vs JAX (all measured this session, JAX baselines
+re-verified min-of-10 where suspicious):
+  - fft pow2 1D: ~1.38x (near-parity, GOLDEN-LOCKED bit-exact)
+  - fft pow2 2D batched: ~4.9x (threaded+autovec-optimal; gap = FMA-policy + split-radix bit-lock)
+  - fft non-pow2 smooth (mixed-radix): ~6.5x (MEMORY-bound; threading = no-gain; gap = cache-blocking)
+  - fft non-pow2 prime (bluestein): ~7.7x (built on the FMA/split-radix-bound pow2)
+  - rfft pow2 ~8.5x / non-pow2 ~29x; irfft pow2 ~7.7x / non-pow2 ~3.7x (no native real-FFT kernel)
+EVERY FFT gap is NON-CONTAINED: FMA build-policy (deliberately avoided), pow2 split-radix bit-lock (golden
+digests), cache-blocked mixed-radix, and a native real-FFT — all multi-session kernel/algorithm efforts or a
+maintainer +fma decision, none a contained single-turn lever. The FFT family is the frankenjax perf frontier;
+benches landed as permanent guards + the precise per-variant lever spec.
