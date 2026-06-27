@@ -65,4 +65,13 @@ fn main() {
         "alloc-ceiling neg 16M f64 [{ALLOC}]: fresh-alloc={fresh:.3}ms reused-buffer={reused:.3}ms ratio={:.2}x",
         fresh / reused
     );
+
+    // Reciprocal: a real JAX-comparable BW-bound op (SlateHarrier 2026-06-25 measured
+    // fj-lax ~20-25ms vs JAX 14ms = ~1.5x loss, attributed to per-call alloc/faults).
+    // Under a caching allocator the fresh-alloc cost should fall enough to flip that.
+    let recip = best_ms(20, || {
+        let out = eval_primitive(Primitive::Reciprocal, std::slice::from_ref(&input), &p).unwrap();
+        black_box(&out);
+    });
+    println!("alloc-ceiling reciprocal 16M f64 [{ALLOC}]: fresh-alloc={recip:.3}ms");
 }
