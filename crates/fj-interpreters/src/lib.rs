@@ -1808,22 +1808,16 @@ fn apply_f64_unary_chunk(out: &mut [f64], op: CheapOp) {
 }
 
 /// Evaluate the fused run over one chunk `out` (already sized to the chunk length).
-#[allow(clippy::eq_op)] // Chain/Chain must execute x-x and x/x to preserve NaN behavior.
-fn apply_fusion_chunk(out: &mut [f64], tape: &[FStep], ext: &[&[f64]], base: usize) {
-    // Step 0 has no chain operand: seed `out` from operand `a`, then apply `b`.
-    let s0 = &tape[0];
-    match s0.a {
-        FOperand::Ext(i) => out.copy_from_slice(&ext[i][base..base + out.len()]),
-        FOperand::RowBroadcast(i) => seed_f64_row_broadcast(out, ext[i], base),
-        FOperand::ColBroadcast { idx, cols } => seed_f64_col_broadcast(out, ext[idx], cols, base),
-        FOperand::Scalar(v) => out.fill(v),
-        FOperand::Chain => {}
-    }
-    match s0.op {
+fn apply_fusion_first_seeded(out: &mut [f64], step: &FStep, ext: &[&[f64]], base: usize) {
+    match step.op {
         op if op.is_unary() => apply_f64_unary_chunk(out, op),
-        _ => apply_fusion_other(out, s0.op, true, s0.b, ext, base),
+        _ => apply_fusion_other(out, step.op, true, step.b, ext, base),
     }
-    for step in &tape[1..] {
+}
+
+#[allow(clippy::eq_op)] // Chain/Chain must execute x-x and x/x to preserve NaN behavior.
+fn apply_fusion_tail(out: &mut [f64], steps: &[FStep], ext: &[&[f64]], base: usize) {
+    for step in steps {
         match step.op {
             op if op.is_unary() => {
                 apply_f64_unary_chunk(out, op);
@@ -1853,6 +1847,34 @@ fn apply_fusion_chunk(out: &mut [f64], tape: &[FStep], ext: &[&[f64]], base: usi
             _ => {} // unreachable for a chain step
         }
     }
+}
+
+/// Evaluate the fused run over one chunk `out` (already sized to the chunk length).
+fn apply_fusion_chunk(out: &mut [f64], tape: &[FStep], ext: &[&[f64]], base: usize) {
+    // Step 0 has no chain operand: seed `out` from operand `a`, then apply `b`.
+    let s0 = &tape[0];
+    match s0.a {
+        FOperand::Ext(i) => out.copy_from_slice(&ext[i][base..base + out.len()]),
+        FOperand::RowBroadcast(i) => seed_f64_row_broadcast(out, ext[i], base),
+        FOperand::ColBroadcast { idx, cols } => seed_f64_col_broadcast(out, ext[idx], cols, base),
+        FOperand::Scalar(v) => out.fill(v),
+        FOperand::Chain => {}
+    }
+    apply_fusion_first_seeded(out, s0, ext, base);
+    apply_fusion_tail(out, &tape[1..], ext, base);
+}
+
+fn seeded_fusion_values(tape: &[FStep], ext: &[&[f64]], n: usize) -> Option<Vec<f64>> {
+    match tape.first()?.a {
+        FOperand::Ext(i) => Some(ext.get(i)?.get(..n)?.to_vec()),
+        FOperand::Scalar(v) => Some(vec![v; n]),
+        FOperand::RowBroadcast(_) | FOperand::ColBroadcast { .. } | FOperand::Chain => None,
+    }
+}
+
+fn apply_seeded_fusion_chunk(out: &mut [f64], tape: &[FStep], ext: &[&[f64]], base: usize) {
+    apply_fusion_first_seeded(out, &tape[0], ext, base);
+    apply_fusion_tail(out, &tape[1..], ext, base);
 }
 
 fn f64_scalar_add_chain_input_and_literals<'a>(
@@ -2056,10 +2078,20 @@ fn try_fuse_elementwise_chain_f64(
         });
     }
 
-    let mut values = vec![0.0_f64; n];
-    drive_fusion_chunks(&mut values, |chunk, base| {
-        apply_fusion_chunk(chunk, &tape, &ext, base)
-    });
+    let values = if n < FUSION_THREAD_MIN_ELEMS
+        && let Some(mut seeded) = seeded_fusion_values(&tape, &ext, n)
+    {
+        drive_fusion_chunks(&mut seeded, |chunk, base| {
+            apply_seeded_fusion_chunk(chunk, &tape, &ext, base)
+        });
+        seeded
+    } else {
+        let mut values = vec![0.0_f64; n];
+        drive_fusion_chunks(&mut values, |chunk, base| {
+            apply_fusion_chunk(chunk, &tape, &ext, base)
+        });
+        values
+    };
     Some(FusedRun {
         out_var,
         values: FusedValues::F64(values),

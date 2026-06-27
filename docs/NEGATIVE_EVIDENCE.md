@@ -2,6 +2,59 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-27 - KEEP: seeded f64 fusion buffer narrows compiled-runner JAX loss (ProudSalmon)
+
+Land-or-dig pass after `60c2728a` found an unlanded measured worktree commit,
+`47435f2b` (`cod-a-n75xr-20260620T105153Z`), carrying a real
+`fj-interpreters` win that was not present on `main`: seed dense f64 fusion
+output directly from the first external/scalar operand, then apply the first and
+tail tape steps. The rebased lever is intentionally gated below the existing
+thread threshold (`FUSION_THREAD_MIN_ELEMS = 1 << 23`) and falls back for row or
+column broadcasts, so transform order and broadcast semantics stay unchanged.
+
+Original unlanded worktree evidence, same-worker RCH `vmi1149989`, showed
+`compiled_runner/bigchain1048576` **1.8646 ms -> 1.6474 ms** (1.132x faster,
+7.16x Rust/JAX loss after the change) and `compiled_runner/bigchain16777216`
+**98.125 ms -> 88.439 ms** (1.110x faster, 3.15x Rust/JAX loss after the
+change). The entry below records the fresh rebased measurement on current
+`main`; the 1,048,576 row is the causal keep because it is below the thread
+gate. The 16,777,216 row moved in the same local run but is treated as
+supporting/noisy evidence because the rebased seeded path does not take that
+branch at this size.
+
+Bench command note: the literal requested spelling `cargo bench --release`
+still fails in this workspace with `error: unexpected argument '--release'
+found`, so the valid crate-scoped optimized equivalent was used through `rch
+exec`:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME rch exec
+-- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a
+AGENT_NAME=ProudSalmon cargo bench -p fj-interpreters --profile release --bench
+compiled_dispatch_speed --
+'compiled_dispatch/compiled_runner/bigchain1048576/n=8|compiled_dispatch/compiled_runner/bigchain16777216/n=8'
+--noplot`. RCH had no admissible bench worker for the timing run, so it fell
+open locally; baseline and candidate used the same host, command, target dir,
+and release profile.
+
+| workload | main midpoint | candidate midpoint | Rust delta | JAX mean | main/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `compiled_dispatch/compiled_runner/bigchain1048576/n=8` | 11.433 ms | 2.6265 ms | -77.0% / 4.35x faster | 0.177862 ms | 64.28x loss | 14.77x loss | KEEP |
+| `compiled_dispatch/compiled_runner/bigchain16777216/n=8` | 396.13 ms | 124.39 ms | -68.6% / 3.18x faster | 26.989615 ms | 14.68x loss | 4.61x loss | supporting/noisy |
+
+Fresh JAX comparator: JAX/JAXLIB 0.10.1 CPU x64, same eight-add chain,
+`JAX_ENABLE_X64=1`, produced **0.177862 ms** mean for n=1,048,576 and
+**26.989615 ms** mean for n=16,777,216.
+
+Validation: `rustfmt --edition 2024 --check
+crates/fj-interpreters/src/lib.rs`, `cargo test -p fj-interpreters --profile
+release fusion --lib`, `cargo check -p fj-interpreters --profile release
+--all-targets`, `cargo clippy -p fj-interpreters --profile release
+--all-targets -- -D warnings -A unknown-lints -A
+clippy::chunks_exact_to_as_chunks`, and `cargo test -p fj-conformance --profile
+release -- --nocapture` all passed through `rch exec` or same-target local
+fallback. Workspace `cargo fmt -p fj-interpreters --check` is still blocked by
+pre-existing formatting drift in `crates/fj-interpreters/benches/eval_fusion_speed.rs`;
+the changed source file itself is formatted.
+
 ## 2026-06-27 - KEEP: boxed complex literal extraction narrows FFT batch loss (ProudSalmon)
 
 Land-or-dig pass after `bf31d6ca`: no unlanded measured bench-worktree win was
