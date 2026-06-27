@@ -7950,11 +7950,81 @@ fn select_n_index_to_usize(
 
 /// Decode a dense select_n index tensor into a validated `Vec<u32>` (every value < `n_operands`), in ONE pass,
 /// matching the per-`Literal` path's bounds errors. Lets the per-element pick run bounds-check-free + threaded.
+// Threaded decode+validate of a typed integer index slice into `Vec<u32>` (each < `n_operands`). The decode is
+// memory-bound (read index + write u32) and was ~35% of select_n's time single-threaded; fan over ranges.
+fn decode_int_idx_threaded<I: Copy + Send + Sync>(
+    idxs: &[I],
+    n_operands: usize,
+    primitive: Primitive,
+    conv: impl Fn(I) -> Result<usize, EvalError> + Sync,
+) -> Result<Vec<u32>, EvalError> {
+    let n = idxs.len();
+    let mut out = vec![0u32; n];
+    let check = |iv: I| -> Result<u32, EvalError> {
+        let u = conv(iv)?;
+        if u >= n_operands {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("select_n index {u} out of bounds for {n_operands} operands"),
+            });
+        }
+        Ok(u as u32)
+    };
+    let threads = work_scaled_threads(n);
+    if threads <= 1 || n < CHEAP_BINARY_PARALLEL_MIN {
+        for (slot, &iv) in out.iter_mut().zip(idxs) {
+            *slot = check(iv)?;
+        }
+        return Ok(out);
+    }
+    let check = &check;
+    let per = n.div_ceil(threads);
+    let results: Vec<Result<(), EvalError>> = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut o_rest: &mut [u32] = out.as_mut_slice();
+        let mut s = 0usize;
+        while s < n {
+            let cnt = per.min(n - s);
+            let (ochunk, otail) = o_rest.split_at_mut(cnt);
+            o_rest = otail;
+            let islice = &idxs[s..s + cnt];
+            s += cnt;
+            handles.push(scope.spawn(move || -> Result<(), EvalError> {
+                for (slot, &iv) in ochunk.iter_mut().zip(islice) {
+                    *slot = check(iv)?;
+                }
+                Ok(())
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for r in results {
+        r?;
+    }
+    Ok(out)
+}
+
 fn select_n_decode_idx_u32(
     idx_tensor: &TensorValue,
     n_operands: usize,
     primitive: Primitive,
 ) -> Result<Vec<u32>, EvalError> {
+    // Heavy dense integer indices: threaded decode (the common cond/switch case).
+    if let Some(idxs) = idx_tensor.elements.as_i64_slice() {
+        return decode_int_idx_threaded(idxs, n_operands, primitive, |iv: i64| Ok(iv as usize));
+    } else if let Some(idxs) = idx_tensor.elements.as_u32_slice() {
+        return decode_int_idx_threaded(idxs, n_operands, primitive, |iv: u32| Ok(iv as usize));
+    } else if let Some(idxs) = idx_tensor.elements.as_u64_slice() {
+        return decode_int_idx_threaded(idxs, n_operands, primitive, |iv: u64| {
+            i64::try_from(iv)
+                .map(|s| s as usize)
+                .map_err(|_| EvalError::TypeMismatch {
+                    primitive,
+                    detail: "select_n index must be an integer or boolean",
+                })
+        });
+    }
+    // Bool / other layouts: serial (cheap / rare).
     let n = idx_tensor.elements.len();
     let mut out = Vec::with_capacity(n);
     let mut push = |u: usize| -> Result<(), EvalError> {
@@ -7967,23 +8037,7 @@ fn select_n_decode_idx_u32(
         out.push(u as u32);
         Ok(())
     };
-    if let Some(idxs) = idx_tensor.elements.as_i64_slice() {
-        for &iv in idxs {
-            push(iv as usize)?;
-        }
-    } else if let Some(idxs) = idx_tensor.elements.as_u32_slice() {
-        for &iv in idxs {
-            push(iv as usize)?;
-        }
-    } else if let Some(idxs) = idx_tensor.elements.as_u64_slice() {
-        for &iv in idxs {
-            let signed = i64::try_from(iv).map_err(|_| EvalError::TypeMismatch {
-                primitive,
-                detail: "select_n index must be an integer or boolean",
-            })?;
-            push(signed as usize)?;
-        }
-    } else if let Some(idxs) = idx_tensor.elements.as_bool_slice() {
+    if let Some(idxs) = idx_tensor.elements.as_bool_slice() {
         if n_operands > 2 {
             return Err(EvalError::TypeMismatch {
                 primitive,

@@ -5406,3 +5406,12 @@ lever. Confirms the elementwise/3-input surface is mined. With select_n now thre
 and clamp at parity, the per-element/fresh-output family is comprehensively covered: the threading lever wins
 on data-movement (tile/dynamic_slice/concat/pad/rev/DUS/one_hot, near-parity to 3x) and reaches parity on
 single-pass elementwise (clamp/select); only select_n's 2-pass gather stays a ~2.9x residual.
+
+## 2026-06-27 - select_n threaded INDEX DECODE — 55→43ms, 2.9x→~2.2x vs JAX (SlateHarrier)
+
+Follow-up to the select_n pick threading: the index decode+validate pass (select_n_decode_idx_u32) was still
+SINGLE-THREADED and ~35% of the time (memory-bound: read index + write Vec<u32>). Added decode_int_idx_threaded
+(fan i64/u32/u64 decode+bounds over ranges; bool/fallback stay serial). select_n 4-way f64 16M: 55 -> **42.7ms
+(best) = ~1.3x further**, narrowing to **~2.2x vs JAX 19.2**. Bit-identical (select_n 8/0, clippy clean). Total
+select_n arc: 92 -> 42.7ms (2.15x internal), 4.8x -> 2.2x vs JAX. Residual is the inherent 2-pass (decode then
+memory-bound pick over N case arrays) vs JAX's vectorized single-pass select; both passes now threaded.
