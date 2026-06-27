@@ -23208,6 +23208,32 @@ mod tests {
         println!("fj-lax select f64 16M: {:.3}ms | JAX=14.78ms", b * 1e3);
     }
 
+    // clamp (jnp.clip) f64 scalar bounds vs JAX (measured JAX [4096,4096] = 18.58ms). Checks the threaded
+    // clamp_f64_scalar_bounds path.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_clamp_vs_jax() {
+        use std::time::Instant;
+        let n = 4096usize * 4096;
+        let xd: Vec<f64> = (0..n).map(|i| (i % 9973) as f64 * 0.001 - 5.0).collect();
+        let x = tensor_f64(vec![n as u32], &xd);
+        let lo = Value::Scalar(Literal::from_f64(-0.5));
+        let hi = Value::Scalar(Literal::from_f64(0.5));
+        let inputs = vec![lo, x, hi];
+        let f = || std::hint::black_box(eval_clamp(Primitive::Clamp, &inputs).unwrap());
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..6 {
+            let s = Instant::now();
+            f();
+            b = b.min(s.elapsed().as_secs_f64());
+        }
+        println!(
+            "fj-lax clamp f64 16M scalar-bounds: {:.3}ms | JAX=18.58ms",
+            b * 1e3
+        );
+    }
+
     // select_n 4-way (switch lowering) vs JAX (measured JAX 4-way f64 [4096,4096] = 19.2ms). The dense path is
     // a single-threaded per-element gather into a fresh output (the one_hot/tile fresh-output-thread vein).
     #[test]

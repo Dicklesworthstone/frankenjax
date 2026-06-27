@@ -5397,3 +5397,12 @@ parallel — the one_hot/tile vein). **92 -> 55ms (best) = ~1.7x internal**, nar
 the residual is fundamental — fj-lax is 2-pass (decode idx + memory-bound pick over N case arrays) vs JAX's
 vectorized single-pass select; + high cross-invocation contention variance (55-86ms). Kept as a real internal
 improvement on a common op; the 2.9x residual is the 2-pass/memory-bound limit.
+
+## 2026-06-27 - clamp (jnp.clip) confirmed near-parity ~1.06x vs JAX (done) (SlateHarrier)
+
+`bench_clamp_vs_jax` (f64 16M scalar bounds): fj-lax **19.7ms vs JAX 18.58 = ~1.06x = near-parity** — the
+threaded clamp_f64_scalar_bounds path (threaded_index_fill_into + work_scaled_threads) is already optimal; no
+lever. Confirms the elementwise/3-input surface is mined. With select_n now threaded (4.8x->2.9x, 2-pass cap)
+and clamp at parity, the per-element/fresh-output family is comprehensively covered: the threading lever wins
+on data-movement (tile/dynamic_slice/concat/pad/rev/DUS/one_hot, near-parity to 3x) and reaches parity on
+single-pass elementwise (clamp/select); only select_n's 2-pass gather stays a ~2.9x residual.
