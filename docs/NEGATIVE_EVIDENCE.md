@@ -5616,3 +5616,14 @@ rows) threads cleanly. Residual ~2.5x is the random-row cache-miss floor (JAX's 
 faster per-miss). NOTE: this run's rch nightly drifted and now flags `chunks_exact`-constant-size (32x) in
 arithmetic.rs/reduction.rs — PRE-EXISTING code (those files were committed clippy-clean earlier today);
 tensor_ops.rs (this change) is clippy-clean.
+
+## 2026-06-27 - row-gather gate lowered for I32/U32/U64/bf16/f16/complex too — bf16 take WINS 1.5x vs JAX (SlateHarrier)
+
+Extended the latency-bound gather gate fix (prev commit did f64/f32/i64) to the remaining dtypes: I32 (JAX's
+default int — id gathers), U32/U64, bf16/f16 (dominant ML embedding dtype), and complex all had the SAME
+threaded gather_contiguous_into path but were still gated at 1<<23 (BW gate) → serial below it. Lowered all to
+1<<19. MEASURED bf16 embedding take ([50000,256] idx[16384]): fj-lax **1.50ms (best) vs JAX 2.245 = 0.67x =
+fj-lax WINS by ~1.5x** (smaller half table is more cache-resident + now threaded). Bit-identical (gather 23/0,
+tensor_ops clippy-clean). The gather family is now fully threaded at realistic embedding sizes across every
+dtype; bf16 (the common ML case) BEATS JAX. (chunks_exact clippy drift remains in arithmetic/reduction —
+pre-existing, bumped rch nightly, not this change.)

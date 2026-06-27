@@ -3823,7 +3823,7 @@ pub(crate) fn eval_gather(
                     out,
                 )?));
             }
-            if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+            if total >= (1 << 19) {
                 let mut out = vec![0i64; total];
                 if gather_contiguous_into(
                     &mut out,
@@ -3855,7 +3855,7 @@ pub(crate) fn eval_gather(
             }
             // Contiguous int row-gather (slice_elems>1): thread the row memcpys above the gate
             // (was serial-only). Same proven gather_contiguous_into f64/i64/bf16 use; bit-identical.
-            if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+            if total >= (1 << 19) {
                 let mut out = vec![0u32; total];
                 if gather_contiguous_into(&mut out, src, &resolved, u32::MAX, slice_elems) {
                     return Ok(Value::Tensor(TensorValue::new_u32_values(
@@ -3877,7 +3877,7 @@ pub(crate) fn eval_gather(
                     out,
                 )?));
             }
-            if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+            if total >= (1 << 19) {
                 let mut out = vec![0u64; total];
                 if gather_contiguous_into(&mut out, src, &resolved, u64::MAX, slice_elems) {
                     return Ok(Value::Tensor(TensorValue::new_u64_values(
@@ -3911,7 +3911,7 @@ pub(crate) fn eval_gather(
             }
             // bf16/f16 embedding lookup (dominant training dtype): thread above the gate
             // (calloc'd u16 output + parallel row memcpy); bit-identical, serial fallback on OOB.
-            if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+            if total >= (1 << 19) {
                 let mut out = vec![0u16; total];
                 if gather_contiguous_into(&mut out, src, &resolved, fill, slice_elems) {
                     return Ok(Value::Tensor(TensorValue::new_half_float_values(
@@ -3983,7 +3983,7 @@ pub(crate) fn eval_gather(
                     out,
                 )?));
             }
-            if total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+            if total >= (1 << 19) {
                 let mut out = vec![(0.0f64, 0.0f64); total];
                 if gather_contiguous_into(&mut out, src, &resolved, fill, slice_elems) {
                     return Ok(Value::Tensor(TensorValue::new_complex_values(
@@ -16665,6 +16665,56 @@ mod tests {
         }
         println!(
             "fj-lax take f64 [50000,256] idx[16384] axis0: {:.3}ms | JAX=3.77ms",
+            bst * 1e3
+        );
+    }
+
+    // bf16 embedding take (dominant ML training dtype) vs JAX (measured JAX bf16 [50000,256] idx[16384] =
+    // 2.245ms). Same gate-lowered gather_contiguous_into path as f64 — confirms the lever generalizes to half.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_take_gather_bf16_vs_jax() {
+        use std::time::Instant;
+        let (vocab, d, n) = (50000usize, 256usize, 16384usize);
+        let bits: Vec<u16> = (0..vocab * d).map(|i| (i % 65536) as u16).collect();
+        let operand = Value::Tensor(
+            TensorValue::new_half_float_values(
+                DType::BF16,
+                Shape {
+                    dims: vec![vocab as u32, d as u32],
+                },
+                bits,
+            )
+            .unwrap(),
+        );
+        let idx: Vec<i64> = (0..n)
+            .map(|i| (i.wrapping_mul(2654435761) % vocab) as i64)
+            .collect();
+        let indices = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                idx,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::from([("slice_sizes".to_owned(), format!("1,{d}"))]);
+        let f = || {
+            std::hint::black_box(
+                crate::eval_primitive(Primitive::Gather, &[operand.clone(), indices.clone()], &p)
+                    .unwrap(),
+            );
+        };
+        f();
+        let mut bst = f64::MAX;
+        for _ in 0..6 {
+            let s = Instant::now();
+            f();
+            bst = bst.min(s.elapsed().as_secs_f64());
+        }
+        println!(
+            "fj-lax take bf16 [50000,256] idx[16384] axis0: {:.3}ms | JAX=2.245ms",
             bst * 1e3
         );
     }
