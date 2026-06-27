@@ -1161,17 +1161,11 @@ fn try_einsum2_matmul_general(
     let a_perm = permute_copy_f64(a, a_shape, &perm_a); // [bsz, M, K] row-major
     let b_perm = permute_copy_f64(b, b_shape, &perm_b); // [bsz, K, N] row-major
 
-    // One cache-blocked GEMM per batch slice; result is [bsz, M, N] row-major.
-    let mut canon = Vec::with_capacity(bsz * m * n);
-    let a_stride = m * k;
-    let b_stride = k * n;
-    for t in 0..bsz {
-        let a_slice = &a_perm[t * a_stride..(t + 1) * a_stride];
-        let b_slice = &b_perm[t * b_stride..(t + 1) * b_stride];
-        canon.extend_from_slice(&crate::tensor_contraction::matmul_2d(
-            a_slice, m, k, b_slice, n,
-        ));
-    }
+    // One batched register-blocked GEMM over [bsz, M, K] × [bsz, K, N].
+    // This preserves the same ascending-K accumulation as the previous
+    // per-batch matmul loop, but lets the existing batched kernel split work
+    // across batch×rows and avoids a temporary Vec per batch slice.
+    let canon = crate::tensor_contraction::batched_matmul_2d(&a_perm, bsz, m, k, &b_perm, n);
 
     // Canonical result layout = [batch…, M…, N…]; permute to `sub_out` if needed.
     let canon_labels: Vec<char> = batch
