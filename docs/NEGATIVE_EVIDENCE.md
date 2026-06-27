@@ -2,6 +2,40 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-27 - NO-SHIP: fj-py mimalloc default via abi3 builds, but same-load alloc_ceiling is not a keep (ProudSalmon)
+
+Land-or-dig/BOLD-VERIFY pass found no measured `.scratch`/`.worktrees` win absent from
+`main`: the visible FFT/select heads were patch-equivalent or already represented on
+`main`, and the remaining positive-looking boxed FFT extraction commit is already landed
+as `835051c4`. Dug the only still-actionable measured blocker from the current frontier
+map: productionizing the mimalloc allocator win for the Python cdylib. New lever tested:
+make `fj-py` build on the RCH Python 3.14 worker by enabling `pyo3/abi3-py39`, then wire
+`mimalloc` as the default `fj-py` global allocator.
+
+Build gate: `rch exec -- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b
+cargo check -p fj-py --release --features extension-module` passed remotely on `hz2`
+with the candidate hunk. That disproves the earlier "PyO3 0.23 vs Python 3.14" blocker:
+the ABI route is viable without a PyO3 version bump.
+
+Performance gate did NOT clear. The requested `cargo bench --release` form is not
+accepted by this Cargo (`unexpected argument '--release'`), so the actual crate-scoped
+bench used the repository's established equivalent:
+`rch exec -- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b cargo
+bench -p fj-lax --profile release --bench alloc_ceiling` and the same command with
+`--features mimalloc-alloc`. RCH had no admissible workers and fell open locally for both
+allocator runs, using the same target dir and host load.
+
+| alloc_ceiling row | ORIG system | candidate mimalloc | candidate/ORIG | JAX comparator | ORIG/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `neg 16M f64 fresh-alloc` | 20.058 ms | 40.599 ms | 2.024x slower | n/a | n/a | n/a | REVERT |
+| `reciprocal 16M f64 fresh-alloc` | 21.241 ms | 20.486 ms | 0.964x / 1.04x faster | ~14 ms | 1.52x slower | 1.46x slower | REVERT; under keep bar |
+
+Conclusion: the ABI build path is real, but this same-load bench did not reproduce the
+earlier 2-3x allocator win strongly enough to change the production default. Source and
+lockfile were restored before commit; only this negative evidence remains. A credible
+retry needs a less-contended paired allocator run or an end-to-end `fj-py` benchmark that
+shows the cdylib allocator default moves a real Python workload.
+
 ## 2026-06-27 - REVERT (1.93x REGRESSION, measured): no-copy strided einsum contraction is SLOWER than permute+matmul_2d (BlackThrush)
 
 Built and benched the lever I scoped in the entry below. Added `contiguous_k_contraction`
