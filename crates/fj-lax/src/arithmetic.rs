@@ -6020,7 +6020,15 @@ pub(crate) fn eval_tanh(primitive: Primitive, inputs: &[Value]) -> Result<Value,
             }
         })
     } else {
-        if let [Value::Tensor(tensor)] = inputs
+        // `simd_poly_tanh` is SINGLE-THREADED and routes through `simd_poly_exp_into`,
+        // which is documented 0.79x SLOWER than libm WITHOUT `+fma`. On this no-fma host
+        // that makes it a regression: measured 356.8ms vs the THREADED scalar `f64::tanh`
+        // map's 188.9ms on 16M f64 (same-binary A/B) = 1.89x slower. Only take the SIMD
+        // poly when the build actually has fma; otherwise use the threaded scalar map,
+        // which is also the (bit-consistent) path the sub-`SIMD_POLY_TANH_F64_MIN` and
+        // boxed-`Literal` tensors already use.
+        if cfg!(target_feature = "fma")
+            && let [Value::Tensor(tensor)] = inputs
             && let Some(value) = simd_poly_tanh_f64_tensor(tensor)
         {
             return Ok(value);
@@ -23544,7 +23552,9 @@ mod tests {
     fn bench_tanh_simd_poly_vs_threaded_scalar() {
         use std::time::Instant;
         let n = 16_000_000usize;
-        let data: Vec<f64> = (0..n).map(|i| ((i % 4001) as f64 - 2000.0) * 0.001).collect();
+        let data: Vec<f64> = (0..n)
+            .map(|i| ((i % 4001) as f64 - 2000.0) * 0.001)
+            .collect();
         let input = tensor_f64(vec![n as u32], &data);
         let bench = |label: &str, f: &dyn Fn()| {
             f();
@@ -23558,7 +23568,9 @@ mod tests {
         };
         bench("simd_poly_single_thread", &|| {
             if let Value::Tensor(t) = &input {
-                std::hint::black_box(simd_poly_tanh_f64_values(t.elements.as_f64_slice().unwrap()));
+                std::hint::black_box(simd_poly_tanh_f64_values(
+                    t.elements.as_f64_slice().unwrap(),
+                ));
             }
         });
         bench("threaded_scalar_libm", &|| {

@@ -2,6 +2,33 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - KEEP (1.89x): gate the no-fma-regressing simd_poly tanh path behind actual FMA (BlackThrush)
+
+A REAL contained win, found by an inverse-lever dig. `eval_tanh` routed every dense-F64
+tensor >= 1<<20 elems through `simd_poly_tanh_f64_values`, which is (a) SINGLE-THREADED and
+(b) computes `exp(-2|x|)` via `simd_poly_exp_into` — documented in `simd_exp.rs` as **0.79x
+SLOWER than libm WITHOUT `+fma`**. This host has no fma, so that path was a net regression
+vs the THREADED scalar `f64::tanh` map (which the sub-threshold + boxed-Literal tensors
+already use). It also made tanh values size-dependent (simd_poly approximation >= 1M, libm
+below) — a latent parity inconsistency.
+
+MEASURED same-binary A/B (16M f64, `bench_tanh_simd_poly_vs_threaded_scalar`, contention-
+robust — both arms in one binary):
+
+| tanh 16M f64 dense path | time | ratio |
+|---|---:|---:|
+| simd_poly (single-thread, prior production >= 1M) | 356.83 ms | baseline |
+| **threaded scalar `f64::tanh` (new)** | **188.87 ms** | **1.89x faster** |
+
+FIX: take the `simd_poly_tanh` route only when `cfg!(target_feature = "fma")` (so a future
+`+fma` build is unchanged); the no-fma build now uses the threaded scalar map for all dense
+tanh. GREEN: 8 `fj-lax` tanh lib tests, `fj-conformance tanh_oracle` 36/0, `cargo fmt
+--check`, `cargo clippy -p fj-lax --release --lib -- -D warnings`. Parity-safe: `f64::tanh`
+was already the small-tensor production path, so this also REMOVES the size-dependent value
+inconsistency. Probe kept as a re-regression guard. Lesson: a SIMD-poly path tuned for `+fma`
+can be a NET LOSS on a no-fma host AND single-thread when a threaded scalar map exists — audit
+other `simd_poly_*` / `simd_exp` consumers (gelu/softplus/mish/logistic via `.tanh()`/`.exp()`).
+
 ## 2026-06-28 - KEEP: dense-f64 pow2 RFFT skips tuple materialization (ProudSalmon)
 
 Land-or-dig/BOLD-VERIFY audit found no measured `.scratch`/`.worktrees` bench win absent
