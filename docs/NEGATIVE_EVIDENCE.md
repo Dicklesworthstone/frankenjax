@@ -2,6 +2,23 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: complex128 same-shape eq/ne threaded — 3.81x WIN vs JAX (JAX complex compare is slow) (ProudSalmon)
+
+A DIFFERENT dtype primitive with the BIGGEST read of the comparison family: a same-shape complex compare reads
+2x16B/elem = **512MB** at 16M complex128. `eval_same_shape_complex_compare` (Eq/Ne — JAX only allows eq/ne on
+complex) ran the component-equality map (`lre==rre && lim==rim`) SCALAR single-thread. Threaded it over contiguous
+SLICES (each `chunk.iter().zip().map` stays autovectorized) past the L3 gate. BIT-IDENTICAL (order-independent
+component eq) — comparison suite 23/0.
+
+Evidence — SAME-INVOCATION A/B (serial component-eq map vs threaded `eval_primitive(Eq)`, one binary, min-of-8),
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, 16M complex128 same-shape `a==b`:
+  - serial **23.99ms → threaded 5.24ms = 4.58x**. vs JAX 0.10.2 `a==b` **19.97ms → 5.24 vs 19.97 = ~3.81x WIN**
+    (was a 1.2x LOSS at serial). KEY: unlike the small-read scalar-broadcast cases (parity, JAX BW-optimal), the
+    512MB read + JAX's SLOW complex compare (25 GB/s) gives a big ratio — the same shape as the f64 same-shape
+    win (read-dominated, tiny output).
+clippy+fmt clean. CONFIRMS the read-volume heuristic: big-read + small-output comparisons beat JAX; small-read
+ones reach parity.
+
 ## 2026-06-28 - WIN: f32/i64 scalar-broadcast comparison SIMD-bitmask — internal 1.4-2.0x, ~parity vs JAX (ProudSalmon)
 
 Completed the scalar-broadcast comparison family (f64 done last turn; f32/i64 were the documented follow-up).

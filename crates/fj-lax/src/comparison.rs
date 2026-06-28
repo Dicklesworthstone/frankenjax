@@ -625,14 +625,47 @@ fn eval_same_shape_complex_compare(
         return Ok(None);
     };
     let is_eq = primitive == Primitive::Eq;
-    let out: Vec<bool> = left
-        .iter()
-        .zip(right)
-        .map(|(&(lre, lim), &(rre, rim))| {
-            let equal = lre == rre && lim == rim;
-            if is_eq { equal } else { !equal }
-        })
-        .collect();
+    // A same-shape complex compare reads 2x16B/elem (512MB at 16M complex128) — BW-bound, one
+    // core cannot saturate DRAM (and JAX's own complex compare is slow here, ~20ms). Thread the
+    // component-equality map over contiguous SLICES (each `chunk.iter().zip().map` stays
+    // autovectorized). Bit-identical (same `lre==rre && lim==rim`, order-independent).
+    let n = left.len();
+    let out: Vec<bool> = if n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+        && crate::arithmetic::work_scaled_threads(n) > 1
+    {
+        let mut o = vec![false; n];
+        let threads = crate::arithmetic::work_scaled_threads(n);
+        let chunk = n.div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut o_rest = o.as_mut_slice();
+            let mut x0 = 0usize;
+            while x0 < n {
+                let cnt = chunk.min(n - x0);
+                let (oblk, otail) = o_rest.split_at_mut(cnt);
+                o_rest = otail;
+                let lblk = &left[x0..x0 + cnt];
+                let rblk = &right[x0..x0 + cnt];
+                x0 += cnt;
+                scope.spawn(move || {
+                    for (out_b, (&(lre, lim), &(rre, rim))) in
+                        oblk.iter_mut().zip(lblk.iter().zip(rblk))
+                    {
+                        let equal = lre == rre && lim == rim;
+                        *out_b = if is_eq { equal } else { !equal };
+                    }
+                });
+            }
+        });
+        o
+    } else {
+        left.iter()
+            .zip(right)
+            .map(|(&(lre, lim), &(rre, rim))| {
+                let equal = lre == rre && lim == rim;
+                if is_eq { equal } else { !equal }
+            })
+            .collect()
+    };
     Ok(Some(Value::Tensor(TensorValue::new_bool_values(
         lhs.shape.clone(),
         out,
@@ -1467,6 +1500,58 @@ mod tests {
         });
         time_it("i64_scalar_gt_threaded", &|| {
             std::hint::black_box(i64_scalar_compare_words(Primitive::Gt, &xi64, 0, false)[123])
+        });
+
+        // complex128 same-shape eq (512MB read): serial component-eq map vs threaded eval.
+        let lc: Vec<(f64, f64)> = (0..n)
+            .map(|i| ((i % 1000) as f64 - 500.0, (i % 7) as f64))
+            .collect();
+        let rc: Vec<(f64, f64)> = vec![(0.0, 0.0); n];
+        let lct = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                lc,
+            )
+            .unwrap(),
+        );
+        let rct = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                rc,
+            )
+            .unwrap(),
+        );
+        let pc = BTreeMap::new();
+        time_it("complex_eq_serial", &|| {
+            let l = lct
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_complex_slice()
+                .unwrap();
+            let r = rct
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_complex_slice()
+                .unwrap();
+            let out: Vec<bool> = l
+                .iter()
+                .zip(r)
+                .map(|(&(a, b), &(c, d))| a == c && b == d)
+                .collect();
+            std::hint::black_box(&out);
+            out[123] as u64
+        });
+        time_it("complex_eq_threaded", &|| {
+            let v = crate::eval_primitive(Primitive::Eq, &[lct.clone(), rct.clone()], &pc).unwrap();
+            std::hint::black_box(v.as_tensor().unwrap().elements.len()) as u64
         });
     }
 
