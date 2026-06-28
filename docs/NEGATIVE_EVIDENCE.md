@@ -2,6 +2,19 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: complex conj threaded — 2.77x internal, 3x JAX loss → near-parity (ProudSalmon)
+
+`eval_conj` negated the imag of each `(re,im)` scalar single-thread. Threaded the negate-imag map over slices
+(autovec preserved) past the L3 gate. A complex conj reads 256MB (16M complex128) + writes 256MB — BW-bound,
+and JAX's complex conj is slow (~45ms). BIT-IDENTICAL (`(re, -im)`, element-independent) — conj tests 7/0.
+
+Evidence — SAME-INVOCATION A/B (`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, 16M complex128
+conj, 2 runs stable): serial **138.7ms → eval 50.1ms = 2.77x**. vs JAX 0.10.2 `jnp.conj` **45.6ms → 50.1 vs
+45.6 = ~1.10x** (near-parity). The 256MB fresh complex OUTPUT write hits the so4wo eval-model floor (JAX reuses
+buffers), so ~parity is the ceiling — like complex add/real/imag. The 2.77x internal closes a common FFT/
+Hermitian op from 3x-slower-than-JAX to near-parity. clippy+fmt clean. (Distinct from the small-gain reverts —
+abs/hypot 2.4x-loss, strided complex isfinite 1.58x-internal — those neither beat JAX nor had a big internal win.)
+
 ## 2026-06-28 - WIN: signbit SIMD-bitmask — 1.33x WIN vs JAX (+ fixes a pre-existing RED) (ProudSalmon)
 
 `Signbit` (`eval_signbit`) used the scalar byte-bool `f64/f32_predicate_dense`. Added `FloatPredKind::SignNeg`

@@ -5546,7 +5546,36 @@ pub(crate) fn eval_conj(primitive: Primitive, inputs: &[Value]) -> Result<Value,
             // (incl. NaN), and as_complex_slice re-decode round-trips; new_complex_values
             // re-rounds Complex64 im to f32, matching the f32 the literal already held.
             if let Some(src) = tensor.elements.as_complex_slice() {
-                let out: Vec<(f64, f64)> = src.iter().map(|&(re, im)| (re, -im)).collect();
+                // Thread the negate-imag map past the L3 gate: a complex conj reads 256MB
+                // (16M complex128) + writes 256MB — BW-bound, one core cannot saturate DRAM,
+                // and JAX's complex conj is slow (~45ms). Slice-threaded (autovec preserved);
+                // bit-identical to the serial `(re, -im)` map (element-independent).
+                let n = src.len();
+                let out: Vec<(f64, f64)> =
+                    if n >= CHEAP_BINARY_PARALLEL_MIN && work_scaled_threads(n) > 1 {
+                        let mut o = vec![(0.0f64, 0.0f64); n];
+                        let threads = work_scaled_threads(n);
+                        let chunk = n.div_ceil(threads);
+                        std::thread::scope(|scope| {
+                            let mut o_rest: &mut [(f64, f64)] = o.as_mut_slice();
+                            let mut x0 = 0usize;
+                            while x0 < n {
+                                let cnt = chunk.min(n - x0);
+                                let (oblk, otail) = o_rest.split_at_mut(cnt);
+                                o_rest = otail;
+                                let sblk = &src[x0..x0 + cnt];
+                                x0 += cnt;
+                                scope.spawn(move || {
+                                    for (o, &(re, im)) in oblk.iter_mut().zip(sblk) {
+                                        *o = (re, -im);
+                                    }
+                                });
+                            }
+                        });
+                        o
+                    } else {
+                        src.iter().map(|&(re, im)| (re, -im)).collect()
+                    };
                 return Ok(Value::Tensor(TensorValue::new_complex_values(
                     tensor.dtype,
                     tensor.shape.clone(),
@@ -14585,6 +14614,46 @@ mod tests {
     // deliberately tuple-array literals; the type-complexity lint is noise here.
     #![allow(clippy::type_complexity)]
     use super::*;
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_complex_conj_threaded_vs_serial() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let z: Vec<(f64, f64)> = (0..n)
+            .map(|i| ((i % 1000) as f64, (i % 7) as f64))
+            .collect();
+        let zt = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                z.clone(),
+            )
+            .unwrap(),
+        );
+        let time_it = |label: &str, f: &dyn Fn() -> u64| {
+            std::hint::black_box(f());
+            let mut b = f64::MAX;
+            for _ in 0..8 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("REF {label}: {:.3}ms", b * 1e3);
+        };
+        time_it("complex_conj_serial", &|| {
+            let out: Vec<(f64, f64)> = z.iter().map(|&(re, im)| (re, -im)).collect();
+            std::hint::black_box(&out);
+            out[123].0.to_bits()
+        });
+        let p = BTreeMap::new();
+        time_it("complex_conj_eval", &|| {
+            let v = crate::eval_primitive(Primitive::Conj, std::slice::from_ref(&zt), &p).unwrap();
+            std::hint::black_box(v.as_tensor().unwrap().elements.len()) as u64
+        });
+    }
 
     // Same-invocation A/B: serial vs threaded complex128 add (512MB read, JAX ~45ms).
     #[test]
