@@ -36,6 +36,20 @@ Criterion also reported regression for both rows (`+9.14%` midpoint for f64,
 same-binary row that beats the current scalar `erfc_approx` path; route away
 from the `1 - erf_f64x8` family.
 
+CONFIRMED (BlackThrush, 2026-06-28): I independently built the identical `1 - erf_f64x8`
+route and the SAME-BINARY A/B row ProudSalmon asked for (`bench_erfc_simd_vs_scalar`, simd
+vs scalar in one process). It does NOT change the verdict — it explains it. On a small-x
+input (`|x|<1.25`) it appears to win (f64 ~1.18x, f32 ~1.27x), but that is **erf's** regime,
+not erfc's. On a REALISTIC tail-heavy input (`[0,6]`, ~40% of lanes `|x|>=3.5`) the bench is
+dominated by the 300-iteration Lentz continued fraction (190–385 ms, high variance) and f32
+comes out at 0.96x — a regression, matching ProudSalmon's cross-binary result. ROOT CAUSE:
+for the `|x|>=3.5` lanes that DEFINE erfc's hot use, `erfc_f64x8` computes `erf_f64x8` (full
+SIMD work) and then DISCARDS it to run the scalar continued fraction — strictly more work
+than scalar-only. The `1 - erf` family is dead for erfc; a real erfc SIMD would have to
+vectorize the continued-fraction tail itself (variable per-lane iteration count → not
+tractable as a fixed 8-wide kernel). Reverted my WIP (stashed, unpushed). Convergent finding:
+two agents reached the same NO-SHIP from opposite measurement methods.
+
 ## 2026-06-28 - KEEP (1.51x f64 / 1.66x f32): SIMD erf — the lever I twice dismissed, reopened by the f32 driver (BlackThrush)
 
 I'd twice written off erf-SIMD: "multi-branch + a variable-iteration series loop, too complex."
