@@ -2,6 +2,32 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - MAP: the many-core threading surface is comprehensively mined — STOP re-surveying (BlackThrush)
+
+Closing marker after a 15-win run mining "single-threaded helper / path that should thread on
+this 32-core + 8-channel-DRAM host". VERIFIED THREADED (with the cost-class-correct gate —
+compute-bound thread-early via `work_scaled`/`dense_unary`, BW-bound thread-past-L3 at `1<<23`):
+- Real elementwise: unary (incl. all transcendentals + special fns), binary (incl. expensive
+  Pow/Atan2/Hypot/Igamma/Zeta/LogAddExp/XLogY), `select`/`where`, `clamp`, `convert`
+  (f64↔f32↔bf16/f16). COMPLEX unary transcendentals too (`COMPLEX_UNARY_PARALLEL_MIN`).
+- Reductions: full sum/max/min (f64/f32/bf16) + axis reductions + leading/last-axis scans.
+- gather/scatter (AMAC + range-partition), RNG (threefry), batched linalg dispatch.
+- LANDED THIS SESSION (the bypass helpers that were NOT threaded): all eager `jax.nn.*`
+  activations + softmax/logsumexp/log_softmax; the full `jnp.linalg.norm` family (L1/L2/L-inf/
+  L-neg-inf/Frobenius/matrix-∞); `jnp.triu`/`tril`/`tile_1d`. (Plus the non-threading wins:
+  i0e/i1e SIMD-chbevl, tanh `+fma`-gate.)
+
+NOT WORTH THREADING (documented so nobody retries): `ReduceProd` (overflow/underflow reassoc
+can flip finite↔inf/nan), `matrix_norm_1` (strided column access is cache-hostile — memory-system
+bound regardless of cores), `diag` (lazy-calloc, only n cells written), `diagonal`/`trace` (tiny
+output), `linspace`/`logspace` (cold one-time construction), Lp-norm (rare, compute-bound gate).
+
+REMAINING JAX-gap levers are all OUTSIDE the contained threading surface: FFT + attention-einsum
+kernels (ProudSalmon-owned, active), `+fma` build flag (`cntiy`, maintainer policy), the so4wo
+output-buffer-reuse eval model (mostly handled by fusion + the compiled-jaxpr pool; mimalloc was
+disproven), and erf-SIMD (multi-branch + a variable-iteration series loop — too complex to
+vectorize cleanly). Next agent: skip the threading sweep; go to those.
+
 ## 2026-06-28 - KEEP (4.17x): thread triu/tril triangular extract past L3 (BlackThrush)
 
 Same many-core lens, fresh module (`array_creation.rs`): `jnp.triu`/`jnp.tril` (extract upper/
