@@ -2,6 +2,25 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: f64 broadcast binary (bias-add/scale) threaded — 3.32x internal, 3.5x JAX loss → parity (ProudSalmon)
+
+A DIFFERENT primitive: broadcast binary arithmetic (`[rows,inner] + [inner]` bias-add, `[N,1]*[1,M]` scale — the
+post-matmul bias / layernorm-affine idiom). The CHEAP broadcast path `broadcast_binary_f64` vectorized its inner
+loop but ran the OUTER blocks SERIALLY (only the EXPENSIVE transcendental broadcast had a `_parallel` variant).
+The outer blocks are INDEPENDENT (each writes a disjoint `inner`-length output run), so past the L3 gate I fan
+them across cores — each thread recomputes its starting `(lb, rb)` by decomposing its first outer index, then
+runs the same odometer carry. BIT-IDENTICAL (same `float_op`, same gather indices/order; `+ Sync` added to the
+`float_op` bound up from `broadcast_binary_tensors`).
+
+Evidence — SAME-INVOCATION A/B (serial inline bias-add vs threaded `eval_primitive(Add)`, one binary, min-of-8),
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, f64 `[4096,4096] + [4096]` (16.8M):
+  - serial **89.4ms → threaded 26.96ms = 3.32x**. vs JAX 0.10.2 `a+b` 25.6ms → **26.96 vs 25.6 = ~parity**
+    (1.05x, within noise) — was a **3.5x LOSS** at serial.
+Both sides are BW-bound on the 128MB fresh-output write (so4wo eval-model floor — JAX reuses buffers, fj-lax
+calloc's fresh), so parity is the expected ceiling; the 3.32x is the real win (removing the single-thread outer
+bottleneck on a ubiquitous op). Guard `threaded_broadcast_binary_f64_bit_identical_to_serial` (8.4M+, bias-add
+(1,0) case), broadcast suite 47/0, clippy+fmt clean. FOLLOW-UP: f32/i64 cheap broadcast still serial-outer.
+
 ## 2026-06-28 - WIN: f64 SCALAR-BROADCAST comparison (x>thresh relu/mask) SIMD+threaded — ~1.36x WIN vs JAX (ProudSalmon)
 
 The scalar-broadcast compare (`x > thresh` — the dominant relu/threshold MASK idiom, more common than the

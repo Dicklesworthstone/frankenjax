@@ -4626,7 +4626,7 @@ fn broadcast_binary_f64(
     out_strides: &[usize],
     lhs_strides: &[usize],
     rhs_strides: &[usize],
-    float_op: &impl Fn(f64, f64) -> f64,
+    float_op: &(impl Fn(f64, f64) -> f64 + Sync),
 ) -> Result<Option<Value>, EvalError> {
     // Dense tier: gather from the contiguous f64 backings via the incremental
     // BroadcastOdometer — same row-major gather order and indices as the generic
@@ -4649,6 +4649,95 @@ fn broadcast_binary_f64(
             let inner_ls = lhs_strides[rank - 1];
             let inner_rs = rhs_strides[rank - 1];
             let outer = out_count / inner;
+            // Threaded contiguous-inner broadcast (bias-add/scale): outer blocks are
+            // INDEPENDENT (each writes a disjoint `inner`-length output run). Past the L3
+            // gate, fan the outer blocks across cores — bit-identical (same per-element
+            // float_op, same gather indices/order; each thread recomputes its starting
+            // (lb, rb) by decomposing its first outer index, then runs the same carry).
+            if rank >= 2 && out_count >= CHEAP_BINARY_PARALLEL_MIN && outer > 1 {
+                let threads = work_scaled_threads(out_count).min(outer);
+                if threads > 1 {
+                    let dims = &out_shape.dims;
+                    let mut out = vec![0.0f64; out_count];
+                    let fill = |dst: &mut [f64], o_start: usize, count: usize| {
+                        let mut coord = vec![0usize; rank - 1];
+                        let (mut lb, mut rb) = (0usize, 0usize);
+                        let mut rem = o_start;
+                        for ax in (0..rank - 1).rev() {
+                            let d = dims[ax] as usize;
+                            let c = rem % d;
+                            rem /= d;
+                            coord[ax] = c;
+                            lb += c * lhs_strides[ax];
+                            rb += c * rhs_strides[ax];
+                        }
+                        for b in 0..count {
+                            let blk = &mut dst[b * inner..b * inner + inner];
+                            match (inner_ls, inner_rs) {
+                                (1, 1) => {
+                                    for (k, o) in blk.iter_mut().enumerate() {
+                                        *o = float_op(lhs_values[lb + k], rhs_values[rb + k]);
+                                    }
+                                }
+                                (1, 0) => {
+                                    let rv = rhs_values[rb];
+                                    for (k, o) in blk.iter_mut().enumerate() {
+                                        *o = float_op(lhs_values[lb + k], rv);
+                                    }
+                                }
+                                (0, 1) => {
+                                    let lv = lhs_values[lb];
+                                    for (k, o) in blk.iter_mut().enumerate() {
+                                        *o = float_op(lv, rhs_values[rb + k]);
+                                    }
+                                }
+                                _ => {
+                                    for (k, o) in blk.iter_mut().enumerate() {
+                                        *o = float_op(
+                                            lhs_values[lb + k * inner_ls],
+                                            rhs_values[rb + k * inner_rs],
+                                        );
+                                    }
+                                }
+                            }
+                            let mut ax = rank - 2;
+                            loop {
+                                coord[ax] += 1;
+                                lb += lhs_strides[ax];
+                                rb += rhs_strides[ax];
+                                if coord[ax] < dims[ax] as usize {
+                                    break;
+                                }
+                                coord[ax] = 0;
+                                lb -= lhs_strides[ax] * dims[ax] as usize;
+                                rb -= rhs_strides[ax] * dims[ax] as usize;
+                                if ax == 0 {
+                                    break;
+                                }
+                                ax -= 1;
+                            }
+                        }
+                    };
+                    let fill = &fill;
+                    let per = outer.div_ceil(threads);
+                    std::thread::scope(|scope| {
+                        let mut rest: &mut [f64] = out.as_mut_slice();
+                        let mut o0 = 0usize;
+                        while o0 < outer {
+                            let cnt = per.min(outer - o0);
+                            let (blk, tail) = rest.split_at_mut(cnt * inner);
+                            rest = tail;
+                            let start = o0;
+                            o0 += cnt;
+                            scope.spawn(move || fill(blk, start, cnt));
+                        }
+                    });
+                    return Ok(Some(Value::Tensor(TensorValue::new_f64_values(
+                        out_shape.clone(),
+                        out,
+                    )?)));
+                }
+            }
             let mut coord = vec![0usize; rank.saturating_sub(1)];
             let mut lb = 0usize;
             let mut rb = 0usize;
@@ -14232,6 +14321,107 @@ mod tests {
     use super::*;
     use fj_test_utils::fixture_id_from_json;
     use std::f64::consts::PI;
+
+    // Same-invocation A/B: serial inline bias-add vs the threaded broadcast eval.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_broadcast_bias_add_threaded_vs_serial() {
+        use std::time::Instant;
+        let rows = 4096usize;
+        let inner = 4096usize;
+        let n = rows * inner;
+        let big: Vec<f64> = (0..n).map(|i| (i as f64) * 1e-7 - 7.0).collect();
+        let bias: Vec<f64> = (0..inner).map(|j| (j as f64) * 0.5 - 100.0).collect();
+        let lhs = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, inner as u32],
+                },
+                big.clone(),
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![inner as u32],
+                },
+                bias.clone(),
+            )
+            .unwrap(),
+        );
+        let time_it = |label: &str, f: &dyn Fn() -> u64| {
+            std::hint::black_box(f());
+            let mut b = f64::MAX;
+            for _ in 0..8 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("REF {label}: {:.3}ms", b * 1e3);
+        };
+        time_it("bias_add_serial", &|| {
+            let mut out = vec![0.0f64; n];
+            for r in 0..rows {
+                let base = r * inner;
+                for j in 0..inner {
+                    out[base + j] = big[base + j] + bias[j];
+                }
+            }
+            std::hint::black_box(&out);
+            out[123].to_bits()
+        });
+        let p = BTreeMap::new();
+        time_it("bias_add_threaded", &|| {
+            let v = crate::eval_primitive(Primitive::Add, &[lhs.clone(), rhs.clone()], &p).unwrap();
+            std::hint::black_box(v.as_tensor().unwrap().elements.as_f64_slice().unwrap()[123])
+                .to_bits()
+        });
+    }
+
+    // Guard: the threaded contiguous-inner broadcast (bias-add/scale) must be bit-identical
+    // to the serial reference across the (1,1)/(1,0)/(0,1) inner cases at >= the L3 gate.
+    #[test]
+    fn threaded_broadcast_binary_f64_bit_identical_to_serial() {
+        // out = [rows, inner] >= 8.4M; bias-add ([rows,inner] + [inner]) is the (1,0) inner case.
+        let rows = 2100usize;
+        let inner = 4096usize;
+        let n = rows * inner;
+        assert!(n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN);
+        let big: Vec<f64> = (0..n).map(|i| (i as f64) * 1e-4 - 7.0).collect();
+        let bias: Vec<f64> = (0..inner).map(|j| (j as f64) * 0.5 - 100.0).collect();
+        let lhs = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, inner as u32],
+                },
+                big.clone(),
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![inner as u32],
+                },
+                bias.clone(),
+            )
+            .unwrap(),
+        );
+        let got = crate::eval_primitive(Primitive::Add, &[lhs, rhs], &BTreeMap::new()).unwrap();
+        let got_slice = got.as_tensor().unwrap().elements.as_f64_slice().unwrap();
+        // Serial reference: row-major bias add.
+        for r in 0..rows {
+            for j in 0..inner {
+                let want = big[r * inner + j] + bias[j];
+                assert_eq!(
+                    got_slice[r * inner + j].to_bits(),
+                    want.to_bits(),
+                    "mismatch at ({r},{j})"
+                );
+            }
+        }
+    }
 
     #[test]
     fn betainc_threaded_bit_identical_to_serial() {
