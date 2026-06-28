@@ -2679,6 +2679,94 @@ pub(crate) fn eval_pad(
 // Thread by output rows (eager full-row write: fill pad then copy the input segment for interior rows) so
 // the fresh-output page faults are first-touch in parallel. Bit-identical (same bytes). out_r/out_c =
 // output dims, in_r/in_c = input dims, lr/lc = low padding on each axis (assumed non-negative here).
+// Max rank for the stack-allocated coord buffer in pad_rows_nd_threaded; higher-rank
+// pads fall back to the serial pad_copy_rows.
+const MAX_PAD_RANK: usize = 8;
+
+// N-D generalization of pad_rows_2d_threaded. A row-major output's last-axis runs
+// (length out_last) are contiguous and tile the buffer in order, so we thread by
+// OUTPUT rows: each output row maps to at most one input row (interior rows copy the
+// input segment between left/right border fills; exterior rows fill pad). Every
+// element is written exactly once — bit-identical to pad_copy_rows. Used for rank>=3
+// pure (non-interior, low>=0, non-cropping) pads, e.g. 4D NHWC conv H+W padding.
+#[allow(clippy::too_many_arguments)]
+fn pad_rows_nd_threaded<T: Copy + Send + Sync>(
+    src: &[T],
+    pad: T,
+    out_total: usize,
+    rank: usize,
+    in_dims: &[u32],
+    out_dims: &[u32],
+    lows: &[i64],
+) -> Vec<T> {
+    let last = rank - 1;
+    let out_last = out_dims[last] as usize;
+    let in_last = in_dims[last] as usize;
+    let lc = lows[last] as usize;
+    let mut out = vec![pad; out_total];
+    let out_rows = out_total.checked_div(out_last).unwrap_or(0);
+    if out_rows == 0 || in_last == 0 {
+        return out;
+    }
+    let cores = std::thread::available_parallelism()
+        .map(|c| c.get())
+        .unwrap_or(8);
+    let threads = (out_total / (1 << 18)).clamp(1, cores).min(out_rows.max(1));
+
+    let fill = |row0: usize, blk: &mut [T]| {
+        let mut coords = [0usize; MAX_PAD_RANK];
+        for (j, row) in blk.chunks_mut(out_last).enumerate() {
+            let or = row0 + j;
+            // Decompose the output-row index into leading output coords (row-major:
+            // the last leading axis varies fastest).
+            let mut rem = or;
+            for ax in (0..last).rev() {
+                let d = out_dims[ax] as usize;
+                coords[ax] = rem % d;
+                rem /= d;
+            }
+            // Membership test + flat input-row index (row-major over in_dims[0..last]).
+            let mut member = true;
+            let mut in_row = 0usize;
+            for ax in 0..last {
+                let c = coords[ax] as i64 - lows[ax];
+                if c < 0 || c >= i64::from(in_dims[ax]) {
+                    member = false;
+                    break;
+                }
+                in_row = in_row * in_dims[ax] as usize + c as usize;
+            }
+            if member {
+                row[..lc].fill(pad);
+                let s = in_row * in_last;
+                row[lc..lc + in_last].copy_from_slice(&src[s..s + in_last]);
+                row[lc + in_last..].fill(pad);
+            } else {
+                row.fill(pad);
+            }
+        }
+    };
+
+    if threads <= 1 {
+        fill(0, &mut out);
+        return out;
+    }
+    let rows_per = out_rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [T] = out.as_mut_slice();
+        let mut r0 = 0usize;
+        while r0 < out_rows {
+            let cnt = rows_per.min(out_rows - r0);
+            let (blk, tail) = rest.split_at_mut(cnt * out_last);
+            rest = tail;
+            let start_r = r0;
+            r0 += cnt;
+            scope.spawn(move || fill(start_r, blk));
+        }
+    });
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn pad_rows_2d_threaded<T: Copy + Send + Sync>(
     src: &[T],
@@ -2758,6 +2846,16 @@ fn pad_rows<T: Copy + Send + Sync>(
         if lr + in_r <= out_r && lc + in_c <= out_c {
             return pad_rows_2d_threaded(src, pad, out_r, out_c, in_r, in_c, lr, lc);
         }
+    }
+    // N-D (rank>=3) pure pad: thread by output rows. Caller's row_copyable already
+    // guarantees no interior dilation, low>=0, and no cropping (low+in<=out per axis).
+    if (3..=MAX_PAD_RANK).contains(&rank)
+        && out_total >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+        && crate::arithmetic::work_scaled_threads(out_total) > 1
+        && interiors.iter().all(|&i| i == 0)
+        && lows.iter().all(|&l| l >= 0)
+    {
+        return pad_rows_nd_threaded(src, pad, out_total, rank, in_dims, out_dims, lows);
     }
     pad_copy_rows(src, pad, out_total, rank, in_dims, lows, out_strides)
 }
@@ -15992,6 +16090,47 @@ fn tile_recursive(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    // Guard: the N-D (rank>=3) threaded pad must be bit-identical to the serial
+    // pad_copy_rows reference across rank-3/4 (NHWC) shapes, asymmetric lows/highs,
+    // channel pads, NaN/±0/inf payloads, and sizes large enough to span threads.
+    #[test]
+    fn pad_rows_nd_threaded_matches_serial() {
+        let cases: &[(Vec<u32>, Vec<i64>, Vec<u32>)] = &[
+            (vec![5, 7, 3], vec![1, 2, 0], vec![2, 1, 0]),
+            (vec![4, 6, 5, 3], vec![0, 1, 2, 0], vec![0, 2, 1, 0]),
+            (vec![8, 33, 33, 16], vec![0, 3, 3, 0], vec![0, 3, 3, 0]), // large -> threads
+            (vec![2, 4, 4, 4], vec![1, 0, 1, 2], vec![0, 1, 0, 0]),
+        ];
+        for (in_dims, lows, highs) in cases {
+            let rank = in_dims.len();
+            let in_total: usize = in_dims.iter().map(|&d| d as usize).product();
+            let src: Vec<f64> = (0..in_total)
+                .map(|i| match i % 7 {
+                    0 => f64::NAN,
+                    1 => f64::INFINITY,
+                    2 => -0.0,
+                    _ => (i as f64) * 0.5 - 3.0,
+                })
+                .collect();
+            let out_dims: Vec<u32> = (0..rank)
+                .map(|ax| (lows[ax] + i64::from(in_dims[ax]) + i64::from(highs[ax])) as u32)
+                .collect();
+            let out_total: usize = out_dims.iter().map(|&d| d as usize).product();
+            let out_strides = checked_row_major_strides(Primitive::Pad, "pad", &out_dims).unwrap();
+            let pad = -9.0f64;
+            let serial = pad_copy_rows(&src, pad, out_total, rank, in_dims, lows, &out_strides);
+            let threaded =
+                pad_rows_nd_threaded(&src, pad, out_total, rank, in_dims, &out_dims, lows);
+            assert_eq!(serial.len(), threaded.len());
+            for (i, (a, b)) in serial.iter().zip(threaded.iter()).enumerate() {
+                assert!(
+                    a.to_bits() == b.to_bits(),
+                    "mismatch at {i}: serial={a} threaded={b} (in_dims={in_dims:?} lows={lows:?})"
+                );
+            }
+        }
+    }
 
     // BOLD-VERIFY: 2D per-row sort vs JAX (CATASTROPHICALLY slow: f32/f64 [4096,4096] ax1 ~2200ms,
     // XLA bitonic network). fj-lax radix/pdqsort threaded across rows should DOMINATE hugely.

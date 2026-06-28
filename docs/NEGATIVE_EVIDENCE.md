@@ -2,6 +2,29 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: N-D pad threaded (4D NHWC conv pad) — 62.1→25.0ms = 2.48x (bead frankenjax-pad-nd-thread) (ProudSalmon)
+
+Closed the open bead `frankenjax-pad-nd-thread`. The threaded pad fast path only covered rank-2
+(`pad_rows_2d_threaded`, 2026-06-26); N-D pure pads (e.g. 4D NHWC conv H+W padding) fell to the serial
+`pad_copy_rows`, which both single-threads AND re-decodes leading-axis coords per input row. Added
+`pad_rows_nd_threaded<T>` (dtype-generic, so it covers every dense dtype the `pad_rows` dispatch reaches):
+a row-major output's last-axis runs are contiguous and tile the buffer in order, so it threads by OUTPUT
+rows via `split_at_mut`, mapping each output row back to its ≤1 input row (interior rows copy the input
+segment between left/right border fills; exterior rows fill pad — each element written exactly once). Wired
+into `pad_rows` for `rank∈3..=8` under the same gating as rank-2 (`out_total>=CHEAP_BINARY_PARALLEL_MIN`,
+`work_scaled_threads>1`, interior==0, low>=0; caller's `row_copyable` guarantees no cropping).
+
+Evidence (same-binary, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`, `rch exec -- cargo bench -p
+fj-lax --profile release --bench lax_baseline -- eval/pad_4d_nhwc_8x256x256x32_f64`), new permanent guard
+bench, NHWC [8,256,256,32]→[8,262,262,32] f64 (~140MB), pad H+W by 3 (SAME-pad for a 7×7 kernel):
+  - ORIG (serial `pad_copy_rows`):       **62.10 ms** `[61.81, 62.10, 62.40]`
+  - Candidate (`pad_rows_nd_threaded`):   **24.99 ms** `[24.82, 24.99, 25.15]`; Criterion change −59.8%
+    → **2.48x internal** (bigger than the rank-2 1.37x: the serial N-D path also paid per-row index decode).
+Bit-identical: new parity guard `pad_rows_nd_threaded_matches_serial` (rank-3/4, asymmetric lows/highs,
+channel pads, NaN/±0/inf, multi-thread sizes, vs serial `pad_copy_rows`) + pad suite **32/0**, clippy + fmt
+clean. Conformance unaffected (its small pads stay below the threading gate → still `pad_copy_rows`).
+Residual is the memory-bandwidth fault floor (so4wo) on the 140MB fresh-output write, same as rank-2.
+
 ## 2026-06-28 - CORRECTION: rfft pow2 recombine is NOT the bottleneck — rfft is 0.26x of fj-lax's OWN complex FFT (ProudSalmon)
 
 The prior rfft-gap spec (2026-06-27, SlateHarrier: "RFFT is the biggest contained-candidate gap: 8.5x pow2")

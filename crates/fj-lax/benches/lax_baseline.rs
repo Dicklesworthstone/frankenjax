@@ -3713,6 +3713,32 @@ fn bench_pad_256x256_to_258x258_f64(c: &mut Criterion) {
     });
 }
 
+// 4D NHWC conv-style spatial pad (H+W by 3, SAME-pad for a 7x7 kernel): the N-D
+// pure-pad path. Before pad_rows_nd_threaded this fell to the single-threaded
+// pad_copy_rows (rank-2 threading only). [8,256,256,32] f64 -> [8,262,262,32] ~140MB.
+fn bench_pad_4d_nhwc_8x256x256x32_f64(c: &mut Criterion) {
+    let n = 8 * 256 * 256 * 32;
+    let data: Vec<f64> = (0..n).map(|i| (i as f64) * 1e-6 - 1.0).collect();
+    let operand = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![8, 256, 256, 32],
+            },
+            data,
+        )
+        .unwrap(),
+    );
+    let pad_value = Value::scalar_f64(0.0);
+    let mut p = BTreeMap::new();
+    p.insert("padding_low".to_owned(), "0,3,3,0".to_owned());
+    p.insert("padding_high".to_owned(), "0,3,3,0".to_owned());
+    p.insert("padding_interior".to_owned(), "0,0,0,0".to_owned());
+    let inputs = [operand, pad_value];
+    c.bench_function("eval/pad_4d_nhwc_8x256x256x32_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Pad, &inputs, &p))
+    });
+}
+
 // OneHot: 2048 i64 indices -> num_classes=512 f64 (~1M output). Fill+scatter
 // dense fast path (pass107) vs the generic per-element decode + Vec<Literal>.
 fn bench_one_hot_2048x512_f64(c: &mut Criterion) {
@@ -7300,6 +7326,7 @@ criterion_group!(
     bench_broadcast_scalar_dense_fill,
     bench_tile_scalar_dense_fill,
     bench_pad_256x256_to_258x258_f64,
+    bench_pad_4d_nhwc_8x256x256x32_f64,
     bench_rev_256x256_f64,
     bench_one_hot_2048x512_f64,
     bench_broadcasted_iota_512x512_i64,
