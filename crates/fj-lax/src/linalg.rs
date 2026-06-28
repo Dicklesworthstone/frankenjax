@@ -6015,6 +6015,39 @@ fn pinv_svd(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
 
 // ── Norms ───────────────────────────────────────────────────────────
 
+/// Threaded sum of squares for the L2 / Frobenius norm. A read-only reduction is
+/// bandwidth-bound, so it only threads past L3 (`>= 1<<23` elems), where aggregate DRAM
+/// read bandwidth across cores wins; below that a single core saturates L3 and threading a
+/// memory-bound op regresses. It REASSOCIATES the sum (per-thread partials, then combine),
+/// which is LEGAL here — norm parity is tolerance (`abs() < 1e-10` in tests), and a
+/// tree-of-partials sum is if anything MORE accurate than the serial left-fold. Below the
+/// gate / single-thread it is the EXACT serial sum, so the small in-repo norm tests and
+/// every small `jnp.linalg.norm` are unchanged.
+fn threaded_sum_of_squares(x: &[f64]) -> f64 {
+    let n = x.len();
+    let threads = if n >= (1 << 23) {
+        crate::arithmetic::work_scaled_threads(n)
+    } else {
+        1
+    };
+    if threads <= 1 {
+        return x.iter().map(|&v| v * v).sum();
+    }
+    let chunk = n.div_ceil(threads);
+    let partials: Vec<f64> = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut start = 0usize;
+        while start < n {
+            let end = (start + chunk).min(n);
+            let seg = &x[start..end];
+            handles.push(scope.spawn(move || seg.iter().map(|&v| v * v).sum::<f64>()));
+            start = end;
+        }
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    });
+    partials.iter().sum()
+}
+
 /// Compute vector or matrix norms.
 ///
 /// For vectors: ord=None or 2 gives L2 norm, ord=1 gives L1, ord=inf gives max.
@@ -6034,7 +6067,7 @@ pub fn vector_norm(x: &[f64], ord: f64) -> f64 {
         x.iter().map(|&v| v.abs()).sum()
     } else if ord == 2.0 {
         // L2 norm: Euclidean
-        x.iter().map(|&v| v * v).sum::<f64>().sqrt()
+        threaded_sum_of_squares(x).sqrt()
     } else if ord == f64::INFINITY {
         // L-infinity norm: max absolute value
         x.iter().map(|&v| v.abs()).fold(0.0_f64, f64::max)
@@ -6052,7 +6085,7 @@ pub fn vector_norm(x: &[f64], ord: f64) -> f64 {
 
 /// Frobenius norm of a matrix: sqrt(sum of squared elements).
 pub fn frobenius_norm(a: &[f64]) -> f64 {
-    a.iter().map(|&v| v * v).sum::<f64>().sqrt()
+    threaded_sum_of_squares(a).sqrt()
 }
 
 /// Matrix 1-norm (max column sum of absolute values).
@@ -11646,6 +11679,51 @@ mod tests {
         let n = frobenius_norm(&a);
         let expected = (1.0 + 4.0 + 9.0 + 16.0_f64).sqrt();
         assert!((n - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn threaded_norm_matches_serial_at_scale() {
+        // Above the L3 gate the L2/Frobenius norm uses the threaded (reassociated) sum;
+        // it must match the exact serial sum well within the 1e-10 norm tolerance (the
+        // tree-of-partials sum is in fact more accurate, so the gap is tiny).
+        let n = 9_000_000usize;
+        let x: Vec<f64> = (0..n)
+            .map(|i| ((i % 9973) as f64 - 5000.0) * 0.013)
+            .collect();
+        let serial = x.iter().map(|&v| v * v).sum::<f64>().sqrt();
+        let threaded = frobenius_norm(&x);
+        let rel = (threaded - serial).abs() / serial.max(1.0);
+        assert!(
+            rel < 1e-12,
+            "rel err {rel:.2e} (threaded={threaded}, serial={serial})"
+        );
+        assert!((vector_norm(&x, 2.0) - serial).abs() / serial < 1e-12);
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_frobenius_norm_threaded_vs_serial() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let x: Vec<f64> = (0..n)
+            .map(|i| ((i % 4001) as f64 - 2000.0) * 0.001)
+            .collect();
+        let bench = |label: &str, f: &dyn Fn()| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..7 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("frobenius_norm f64 16M [{label}]: {:.3}ms", b * 1e3);
+        };
+        bench("serial", &|| {
+            std::hint::black_box(x.iter().map(|&v| v * v).sum::<f64>().sqrt());
+        });
+        bench("threaded", &|| {
+            std::hint::black_box(frobenius_norm(&x));
+        });
     }
 
     #[test]

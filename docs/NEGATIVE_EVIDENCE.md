@@ -2,6 +2,26 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - KEEP (2.83x): thread L2/Frobenius norm sum-of-squares past L3 (BlackThrush)
+
+Extending the many-core lens beyond the (now-exhausted) eager nn vein to the linalg HELPER
+reductions, which — like the nn helpers — bypass the threaded ReduceSum primitive. `vector_norm`
+(ord=2) and `frobenius_norm` did a SINGLE-THREADED `x.iter().map(|v| v*v).sum().sqrt()`. For a
+large eager `jnp.linalg.norm` (e.g. global-norm gradient clipping over a big model — a real
+training-step op) that is a needless serial bottleneck.
+
+FIX: `threaded_sum_of_squares` — a per-thread-partials reduction GATED past L3 (`>= 1<<23`,
+since a read-only reduction is bandwidth-bound; below L3 a single core saturates and threading
+regresses). It reassociates the sum, LEGAL here because norm parity is TOLERANCE (`abs()<1e-10`
+in tests) and a tree-of-partials sum is if anything MORE accurate than the serial left-fold;
+below the gate it is the EXACT serial sum (small norms unchanged).
+
+MEASURED same-binary A/B (16M f64, `bench_frobenius_norm_threaded_vs_serial`): serial 12.44 ms
+→ **threaded 4.39 ms = 2.83x faster**. Correctness: `threaded_norm_matches_serial_at_scale`
+(9M) confirms rel-err < 1e-12 (far inside the 1e-10 norm tolerance); all 27 `_norm` lib tests
+0-fail; `cargo fmt --check`; clippy clean on linalg.rs. (linalg.rs was untouched since session
+start `0fe8f05a` — low collision risk despite being a historical codex zone.)
+
 ## 2026-06-28 - NO-SHIP: dense-f64 RFFT exact-pack branch is not a Criterion-significant win (ProudSalmon)
 
 DIG followed the remaining FFT/RFFT gap after the dense-f64 pow2 RFFT tuple-lift
