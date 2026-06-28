@@ -6104,6 +6104,20 @@ pub(crate) fn eval_convert_element_type(
                         ));
                     }
                 }
+                // Threaded f64->i64 (float->int quantization/indexing): the fresh 8-byte
+                // i64 output is page-fault-bound serially, same as the f64->f32 cast above.
+                // Bit-identical (per-element `v as i64`, order-independent).
+                if target_dtype == DType::I64 && n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+                    let threads = bw_bound_threads(n);
+                    if threads > 1 {
+                        let mut out = vec![0i64; n];
+                        threaded_convert_into(&mut out, values, threads, |v| v as i64);
+                        return Ok(Value::Tensor(
+                            TensorValue::new_i64_values(shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
+                }
                 let dense = match target_dtype {
                     // from_f64(v): identity in value.
                     DType::F64 => Some(TensorValue::new_f64_values(shape.clone(), values.to_vec())),
@@ -6236,6 +6250,31 @@ pub(crate) fn eval_convert_element_type(
                 // `from_f32(f64_val as f32)` (double-round-safe for |v| > 2^24). I32 stores
                 // the raw value and lets the narrow chokepoint wrap mod 2^32, exactly as
                 // convert_literal (`Literal::I64(i64_val)` tagged I32) does.
+                // Threaded int->float casts (i64/i32 source -> f64/f32): int data/indices
+                // promoted to float for compute. Fresh float output is page-fault-bound
+                // serially. Bit-identical (per-element `v as f64` / `(v as f64) as f32`).
+                let n = values.len();
+                if n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+                    let threads = bw_bound_threads(n);
+                    if threads > 1 {
+                        if target_dtype == DType::F64 {
+                            let mut out = vec![0.0f64; n];
+                            threaded_convert_into(&mut out, values, threads, |v| v as f64);
+                            return Ok(Value::Tensor(
+                                TensorValue::new_f64_values(shape, out)
+                                    .map_err(EvalError::InvalidTensor)?,
+                            ));
+                        }
+                        if target_dtype == DType::F32 {
+                            let mut out = vec![0.0f32; n];
+                            threaded_convert_into(&mut out, values, threads, |v| (v as f64) as f32);
+                            return Ok(Value::Tensor(
+                                TensorValue::new_f32_values(shape, out)
+                                    .map_err(EvalError::InvalidTensor)?,
+                            ));
+                        }
+                    }
+                }
                 let dense = match target_dtype {
                     DType::F64 => Some(TensorValue::new_f64_values(
                         shape.clone(),
@@ -16091,6 +16130,50 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    // Same-invocation A/B (contention-immune) for the threaded int<->float converts:
+    // serial `.iter().map().collect()` vs `threaded_convert_into`, one binary, min-of-8.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_convert_int_float_vs_jax() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let i64src: Vec<i64> = (0..n as i64).map(|i| (i % 100_003) - 50_000).collect();
+        let f64src: Vec<f64> = (0..n).map(|i| (i % 100_003) as f64 - 50_000.0).collect();
+        let threads = bw_bound_threads(n);
+        let time_it = |label: &str, f: &dyn Fn() -> u64| {
+            std::hint::black_box(f());
+            let mut b = f64::MAX;
+            for _ in 0..8 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("REF {label}: {:.3}ms", b * 1e3);
+        };
+        time_it("i64_to_f64_serial", &|| {
+            let v: Vec<f64> = i64src.iter().map(|&v| v as f64).collect();
+            std::hint::black_box(&v);
+            v[12345].to_bits()
+        });
+        time_it("i64_to_f64_threaded", &|| {
+            let mut out = vec![0.0f64; n];
+            threaded_convert_into(&mut out, &i64src, threads, |v| v as f64);
+            std::hint::black_box(&out);
+            out[12345].to_bits()
+        });
+        time_it("f64_to_i64_serial", &|| {
+            let v: Vec<i64> = f64src.iter().map(|&v| v as i64).collect();
+            std::hint::black_box(&v);
+            v[12345] as u64
+        });
+        time_it("f64_to_i64_threaded", &|| {
+            let mut out = vec![0i64; n];
+            threaded_convert_into(&mut out, &f64src, threads, |v| v as i64);
+            std::hint::black_box(&out);
+            out[12345] as u64
+        });
+    }
+
     // Guard: the N-D (rank>=3) threaded pad must be bit-identical to the serial
     // pad_copy_rows reference across rank-3/4 (NHWC) shapes, asymmetric lows/highs,
     // channel pads, NaN/±0/inf payloads, and sizes large enough to span threads.
@@ -18724,6 +18807,59 @@ mod tests {
             .collect();
         let want2_bits: Vec<u64> = xf32.iter().map(|&v| f64::from(v).to_bits()).collect();
         assert!(got2_bits == want2_bits, "threaded f32->f64 != serial");
+
+        // Threaded int<->float casts (bit-identical to the serial per-element cast).
+        let xi64: Vec<i64> = (0..n as i64).map(|i| (i % 100_003) - 50_000).collect();
+        let conv = |inp: &Value, dt: &str| -> Value {
+            let mut pp = BTreeMap::new();
+            pp.insert("new_dtype".to_owned(), dt.to_owned());
+            eval_convert_element_type(std::slice::from_ref(inp), &pp).unwrap()
+        };
+        // i64 -> f64
+        let ii = Value::Tensor(TensorValue::new_i64_values(shape_n(n), xi64.clone()).unwrap());
+        let g_f64: Vec<u64> = conv(&ii, "f64")
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f64_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let w_f64: Vec<u64> = xi64.iter().map(|&v| (v as f64).to_bits()).collect();
+        assert!(g_f64 == w_f64, "threaded i64->f64 != serial");
+        // i64 -> f32
+        let g_f32: Vec<u32> = conv(&ii, "f32")
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f32_slice()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let w_f32: Vec<u32> = xi64
+            .iter()
+            .map(|&v| ((v as f64) as f32).to_bits())
+            .collect();
+        assert!(g_f32 == w_f32, "threaded i64->f32 != serial");
+        // f64 -> i64 (NaN/±inf saturation handled by `v as i64`)
+        let fi = Value::Tensor(TensorValue::new_f64_values(shape_n(n), xf64.clone()).unwrap());
+        let g_i64: Vec<i64> = conv(&fi, "i64")
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_i64_slice()
+            .unwrap()
+            .to_vec();
+        let w_i64: Vec<i64> = xf64.iter().map(|&v| v as i64).collect();
+        assert!(g_i64 == w_i64, "threaded f64->i64 != serial");
+    }
+
+    fn shape_n(n: usize) -> Shape {
+        Shape {
+            dims: vec![n as u32],
+        }
     }
 
     #[test]

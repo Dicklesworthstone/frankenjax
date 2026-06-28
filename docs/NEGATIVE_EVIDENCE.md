@@ -2,6 +2,24 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: int<->float ConvertElementType threaded — i64->f64 1.17x WIN vs JAX (ProudSalmon)
+
+A DIFFERENT primitive (ConvertElementType). f64<->f32 and f64->half casts already thread, but the int<->float
+family (`i64->f64`, `i64->f32`, `f64->i64`) still ran a single-thread `.iter().map().collect()` — despite the
+SAME fresh-output page-fault cost (~6 GB/s serial) that makes the f64->f32 cast thread-win. These are common
+(int data/indices -> float compute; float -> int quantization/indexing). Routed them through the existing
+`threaded_convert_into` (per-element cast, order-independent → BIT-IDENTICAL, no tolerance), gated ≥8.4M.
+
+Evidence — SAME-INVOCATION A/B (serial `.map().collect()` vs `threaded_convert_into`, one binary, min-of-8),
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, 16M:
+  - i64->f64: serial **67.6ms → threaded 30.5ms = 2.21x**. vs JAX 0.10.2 `astype(float64)` 35.8ms →
+    **30.5 vs 35.8 = ~1.17x WIN** (was a 1.89x LOSS at serial).
+  - f64->i64: serial **76.5ms → threaded 39.9ms = 1.92x**. vs JAX `astype(int64)` 33.6ms → near-parity
+    (~1.19x, JAX's buffer-reuse edge = so4wo-class) — but improved from a 2.27x loss.
+  - i64->f32 threaded by the same proven f64->f32 pattern (8-byte read → fresh 4-byte output).
+Bit-identical: extended guard `threaded_convert_bit_identical_to_serial` (now covers i64->f64/f32 + f64->i64,
+8.4M+); convert suite + lib green, clippy+fmt clean. Conformance unaffected (small casts below the threading gate).
+
 ## 2026-06-28 - WIN: bf16/f16 full-reduce SUM threaded + SIMD-accumulated — ~10-19x internal (training-dtype reduce) (ProudSalmon)
 
 The half-float (bf16/f16) full-reduce — the dominant TRAINING dtype for loss / grad-norm sums — was the last
