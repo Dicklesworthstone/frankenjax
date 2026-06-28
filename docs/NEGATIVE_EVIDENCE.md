@@ -2,6 +2,38 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - NO-SHIP: explicit std::simd sqrt route is only noise over scalar threaded sqrt (ProudSalmon)
+
+Alien-graveyard / artifact screen picked the hardware-unary residue from the
+`eval/sqrt_1m_f64_vec` benchmark comment: `sqrt` is a hardware vector operation,
+so a direct `std::simd::StdFloat::sqrt` route through the dense unary SIMD driver
+looked like a possible generated-kernel/vector-execution lever. Candidate patch
+added `eval_sqrt` beside the existing SIMD `erf/i0e/i1e` path and routed only
+`Primitive::Sqrt` through it; dense f64/f32 bit identity was checked against the
+current scalar-threaded `eval_unary_elementwise_parallel` path.
+
+Requested bench spelling was tried first:
+`AGENT_NAME=ProudSalmon CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b
+rch exec -- cargo bench --release -p fj-lax --bench lax_baseline --
+'eval/sqrt_1m_f64_vec$' --warm-up-time 1 --measurement-time 2 --sample-size 10
+--noplot`. RCH had no admissible workers and fell open locally; Cargo rejected
+`cargo bench --release` with `unexpected argument '--release'`. The accepted
+crate-scoped release spelling was used for ORIG and candidate:
+`rch exec -- cargo bench -p fj-lax --profile release --bench lax_baseline --
+'eval/sqrt_1m_f64_vec$' --warm-up-time 1 --measurement-time 2 --sample-size 10
+--noplot`, same fallback host and target dir.
+
+| workload | ORIG midpoint | SIMD-sqrt candidate midpoint | candidate/ORIG | verdict |
+|---|---:|---:|---:|---|
+| `eval/sqrt_1m_f64_vec` | 1.4433 ms | 1.3968 ms | 0.968x time / 1.033x speed | REVERT |
+
+Criterion reported `change: [-4.0533% -0.2115% +3.8199%] (p = 0.91)` and
+`No change in performance detected`. The apparent 3.3% midpoint is noise, below
+the keep bar, and not worth widening the sqrt dispatch surface. Code and test
+hunks were reverted; no production source change remains. The existing generic
+scalar-threaded dense unary sqrt path stays the right implementation until a
+same-binary or same-worker row shows a material win.
+
 ## 2026-06-28 - NO-SHIP: SIMD erfc via 1-erf regresses against current scalar ORIG (ProudSalmon)
 
 BOLD-VERIFY audited the unpushed WIP heads `92704cea` / `e2899927`
