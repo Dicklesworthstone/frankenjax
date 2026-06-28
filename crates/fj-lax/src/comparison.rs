@@ -296,7 +296,8 @@ pub(crate) fn eval_comparison(
                 }
                 if lhs.dtype == DType::F32
                     && rhs.dtype == DType::F32
-                    && let Some(value) = eval_same_shape_f32_compare(lhs, rhs, &float_cmp)?
+                    && let Some(value) =
+                        eval_same_shape_f32_compare(primitive, lhs, rhs, &float_cmp)?
                 {
                     return Ok(value);
                 }
@@ -645,7 +646,82 @@ fn eval_same_shape_complex_compare(
 /// `float_cmp`; this does the same off the packed `as_f32_slice` backing into a
 /// dense `Vec<bool>` (1 byte/elem vs 24). Returns `None` if not dense F32.
 #[inline]
+// f32 sibling of `f64_compare_words`. f32->f64 widening is EXACT and order/NaN-
+// preserving, so an f32x8 SIMD compare yields the SAME boolean as the prior scalar
+// `float_cmp(f64::from(a), f64::from(b))` path — bit-identical values, now SIMD +
+// threaded into a packed bitmask (was fully scalar `.map().collect()`).
+fn f32_compare_words(
+    primitive: Primitive,
+    left: &[f32],
+    right: &[f32],
+    float_cmp: &impl Fn(f64, f64) -> bool,
+) -> Vec<u64> {
+    const WORD_BITS: usize = u64::BITS as usize;
+    const LANES: usize = 8;
+    let n = left.len();
+    let mut words = vec![0_u64; n.div_ceil(WORD_BITS)];
+    let full_words = n / WORD_BITS;
+    let compute_word = |word_index: usize| -> u64 {
+        let base = word_index * WORD_BITS;
+        let mut word = 0_u64;
+        for chunk in 0..(WORD_BITS / LANES) {
+            let offset = base + chunk * LANES;
+            let lv = Simd::<f32, LANES>::from_slice(&left[offset..offset + LANES]);
+            let rv = Simd::<f32, LANES>::from_slice(&right[offset..offset + LANES]);
+            let mask = match primitive {
+                Primitive::Eq => lv.simd_eq(rv).to_bitmask(),
+                Primitive::Ne => lv.simd_ne(rv).to_bitmask(),
+                Primitive::Lt => lv.simd_lt(rv).to_bitmask(),
+                Primitive::Le => lv.simd_le(rv).to_bitmask(),
+                Primitive::Gt => lv.simd_gt(rv).to_bitmask(),
+                Primitive::Ge => lv.simd_ge(rv).to_bitmask(),
+                _ => 0,
+            };
+            word |= mask << (chunk * LANES);
+        }
+        word
+    };
+    let threads = if n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+        crate::arithmetic::work_scaled_threads(n)
+    } else {
+        1
+    };
+    if threads > 1 && full_words > 0 {
+        let compute_word = &compute_word;
+        let per = full_words.div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut rest: &mut [u64] = &mut words[..full_words];
+            let mut w0 = 0usize;
+            while w0 < full_words {
+                let cnt = per.min(full_words - w0);
+                let (blk, tail) = rest.split_at_mut(cnt);
+                rest = tail;
+                let start = w0;
+                w0 += cnt;
+                scope.spawn(move || {
+                    for (j, slot) in blk.iter_mut().enumerate() {
+                        *slot = compute_word(start + j);
+                    }
+                });
+            }
+        });
+    } else {
+        for (word_index, word_slot) in words.iter_mut().take(full_words).enumerate() {
+            *word_slot = compute_word(word_index);
+        }
+    }
+    for index in (full_words * WORD_BITS)..n {
+        push_bool_word(
+            &mut words,
+            index,
+            float_cmp(f64::from(left[index]), f64::from(right[index])),
+        );
+    }
+    words
+}
+
 fn eval_same_shape_f32_compare(
+    primitive: Primitive,
     lhs: &TensorValue,
     rhs: &TensorValue,
     float_cmp: &impl Fn(f64, f64) -> bool,
@@ -654,15 +730,13 @@ fn eval_same_shape_f32_compare(
     else {
         return Ok(None);
     };
-    let out: Vec<bool> = left
-        .iter()
-        .zip(right)
-        .map(|(&a, &b)| float_cmp(f64::from(a), f64::from(b)))
-        .collect();
-    Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+    let out = f32_compare_words(primitive, left, right, float_cmp);
+    Ok(Some(bool_words_tensor(
+        primitive,
         lhs.shape.clone(),
+        left.len(),
         out,
-    )?)))
+    )?))
 }
 
 /// Same-shape BF16/F16 comparison fast path producing a `DType::Bool` tensor.
@@ -1027,6 +1101,24 @@ mod tests {
         };
         time_it("f64_gt_serial", &serial);
         time_it("f64_gt_threaded", &threaded);
+
+        // f32 (JAX default dtype): old scalar widen-to-f64 map vs new SIMD+threaded words.
+        let lf32: Vec<f32> = (0..n).map(|i| (i % 100_003) as f32 - 50_000.0).collect();
+        let rf32: Vec<f32> = vec![0.0f32; n];
+        let f32_serial = || -> u64 {
+            let out: Vec<bool> = lf32
+                .iter()
+                .zip(&rf32)
+                .map(|(&a, &b)| f64::from(a) > f64::from(b))
+                .collect();
+            std::hint::black_box(&out);
+            out[123] as u64
+        };
+        let f32_threaded = || -> u64 {
+            std::hint::black_box(f32_compare_words(Primitive::Gt, &lf32, &rf32, &|a, b| a > b)[123])
+        };
+        time_it("f32_gt_serial", &f32_serial);
+        time_it("f32_gt_threaded", &f32_threaded);
     }
 
     #[test]

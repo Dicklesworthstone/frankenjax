@@ -2,6 +2,24 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: f32 same-shape comparison SIMD+threaded — 1.39x WIN vs JAX (was fully scalar) (ProudSalmon)
+
+The f32 (JAX's DEFAULT float) same-shape compare was the surfaced follow-up: it ran a FULLY SCALAR
+`.iter().zip().map(|(a,b)| float_cmp(f64::from(a), f64::from(b))).collect::<Vec<bool>>()` — no SIMD, no threads,
+byte-per-bool output. Added `f32_compare_words` (f32x8 SIMD compare → packed bitmask, threaded over disjoint
+words, mirror of `f64_compare_words`). f32->f64 widening is EXACT + order/NaN-preserving, so a direct f32 compare
+yields the SAME boolean as the prior f64-widened scalar path → BIT-IDENTICAL values (the f32 dense bit-identity
+test stays green; no test pinned f32 to byte-bool — only half-float does).
+
+Evidence — SAME-INVOCATION A/B (old scalar map vs new SIMD+threaded `f32_compare_words`, one binary, min-of-8),
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, 16M f32 same-shape `a>b`:
+  - serial **4.56ms → threaded 2.28ms = 2.0x**. vs JAX 0.10.2 same-shape `a>b` (two f32 arrays, fair 128MB read)
+    **3.17ms → 2.28 vs 3.17 = ~1.39x WIN** (was a 1.44x LOSS at scalar).
+  - CORRECTION to the f64 entry below: its fair same-shape JAX comparator is **5.81ms** (the prior 4.11ms was
+    JAX's cheaper scalar-broadcast `a>0.0`), so f64 same-shape compare is **3.47x WIN** (1.68 vs 5.81), not 2.45x.
+Comparison suite 23/0, clippy+fmt clean, conformance-safe (small compares stay serial). The same-shape float
+comparison family (f64 + f32) is now SIMD+threaded.
+
 ## 2026-06-28 - WIN: f64 same-shape comparison (masking x>t) threaded — 2.45x WIN vs JAX (ProudSalmon)
 
 A DIFFERENT primitive (comparison / `Gt`/`Lt`/`Eq`/… → bool mask), the `x > thresh` masking idiom. `f64_compare_words`
