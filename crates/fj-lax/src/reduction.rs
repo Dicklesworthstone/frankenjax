@@ -317,6 +317,94 @@ fn threaded_tree_reduce_sum_f64(values: &[f64]) -> f64 {
     acc
 }
 
+// Product sibling of `threaded_tree_reduce_sum_f64`. Float product is non-associative, so the
+// per-chunk fold + combine reassociates — TOLERANCE-parity vs JAX (which itself tree-reduces
+// floating products). Small vectors stay on the strictly-ascending scalar fold (bit-identical
+// to the generic per-Literal path); only large (>=8.4M) reductions thread.
+fn threaded_tree_reduce_prod_f64(values: &[f64]) -> f64 {
+    let n = values.len();
+    let threads = crate::arithmetic::work_scaled_threads(n).min(8);
+    if n < crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN || threads <= 1 {
+        let mut acc = 1.0;
+        for &value in values {
+            acc *= value;
+        }
+        return acc;
+    }
+    let chunk = n.div_ceil(threads);
+    let partials: Vec<f64> = std::thread::scope(|scope| {
+        let handles: Vec<_> = values
+            .chunks(chunk)
+            .map(|chunk_values| {
+                scope.spawn(move || {
+                    let mut acc = 1.0;
+                    for &value in chunk_values {
+                        acc *= value;
+                    }
+                    acc
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| match handle.join() {
+                Ok(partial) => partial,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
+    });
+    let mut acc = 1.0;
+    for partial in partials {
+        acc *= partial;
+    }
+    acc
+}
+
+// f32 (JAX's default float) tree sum/prod. Accumulates each chunk in f64 (widening `v as f64`,
+// lossless — identical to the generic `Literal::F32Bits.as_f64()` fold), combines in f64; the
+// caller rounds to f32. Small vectors stay on the ascending scalar fold (bit-identical); large
+// ones thread (tolerance, same contract as f64 sum). `init`/`mul` select sum vs product.
+fn threaded_tree_reduce_f32_to_f64(values: &[f32], mul: bool) -> f64 {
+    let n = values.len();
+    let threads = crate::arithmetic::work_scaled_threads(n).min(8);
+    let init = if mul { 1.0 } else { 0.0 };
+    let fold = |acc: f64, v: f32| if mul { acc * v as f64 } else { acc + v as f64 };
+    if n < crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN || threads <= 1 {
+        let mut acc = init;
+        for &value in values {
+            acc = fold(acc, value);
+        }
+        return acc;
+    }
+    let chunk = n.div_ceil(threads);
+    let partials: Vec<f64> = std::thread::scope(|scope| {
+        let handles: Vec<_> = values
+            .chunks(chunk)
+            .map(|chunk_values| {
+                scope.spawn(move || {
+                    let mut acc = init;
+                    for &value in chunk_values {
+                        acc = fold(acc, value);
+                    }
+                    acc
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| match handle.join() {
+                Ok(partial) => partial,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
+    });
+    let mut acc = init;
+    for partial in partials {
+        acc = if mul { acc * partial } else { acc + partial };
+    }
+    acc
+}
+
 /// f32 sibling of [`threaded_reduce_minmax_f64`].
 fn threaded_reduce_minmax_f32(values: &[f32], is_max: bool) -> f32 {
     let n = values.len();
@@ -1271,23 +1359,32 @@ fn eval_dense_float_full_reduce(
     match tensor.dtype {
         DType::F64 => {
             let values = tensor.elements.as_f64_slice()?;
-            let acc = if primitive == Primitive::ReduceSum {
-                threaded_tree_reduce_sum_f64(values)
-            } else {
-                let mut acc = float_init;
-                for &value in values {
-                    acc = float_op(acc, value);
+            let acc = match primitive {
+                Primitive::ReduceSum => threaded_tree_reduce_sum_f64(values),
+                Primitive::ReduceProd => threaded_tree_reduce_prod_f64(values),
+                _ => {
+                    let mut acc = float_init;
+                    for &value in values {
+                        acc = float_op(acc, value);
+                    }
+                    acc
                 }
-                acc
             };
             Some(Value::Scalar(reduce_real_literal(DType::F64, acc)))
         }
         DType::F32 => {
             let values = tensor.elements.as_f32_slice()?;
-            let mut acc = float_init;
-            for &value in values {
-                acc = float_op(acc, value as f64);
-            }
+            let acc = match primitive {
+                Primitive::ReduceSum => threaded_tree_reduce_f32_to_f64(values, false),
+                Primitive::ReduceProd => threaded_tree_reduce_f32_to_f64(values, true),
+                _ => {
+                    let mut acc = float_init;
+                    for &value in values {
+                        acc = float_op(acc, value as f64);
+                    }
+                    acc
+                }
+            };
             Some(Value::Scalar(reduce_real_literal(DType::F32, acc)))
         }
         // BF16 is the dominant TRAINING dtype; loss / grad-norm full reductions over it
@@ -6205,6 +6302,70 @@ mod tests {
         bench("max", Primitive::ReduceMax);
         bench("prod", Primitive::ReduceProd);
         bench("argmax", Primitive::Argmax);
+
+        // f32 (JAX's DEFAULT float) full sum/prod — values near 1.0 so the product stays finite.
+        let dataf32: Vec<f32> = (0..n).map(|i| 1.0 + (i % 9973) as f32 * 1e-9).collect();
+        let inf32 = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                dataf32,
+            )
+            .unwrap(),
+        );
+        let benchf32 = |label: &str, prim: Primitive| {
+            let f = || {
+                std::hint::black_box(
+                    crate::eval_primitive(prim, std::slice::from_ref(&inf32), &p).unwrap(),
+                );
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..8 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("fj-lax {label} f32 16M: {:.3}ms", b * 1e3);
+        };
+        benchf32("sum", Primitive::ReduceSum);
+        benchf32("prod", Primitive::ReduceProd);
+
+        // Same-invocation scalar references (contention-immune A/B vs the threaded eval above):
+        // time the exact ascending single-accumulator folds the threaded paths replaced.
+        let dataf64: Vec<f64> = (0..n).map(|i| 0.5 + (i % 9973) as f64 * 1e-4).collect();
+        let dataf32b: Vec<f32> = (0..n).map(|i| 1.0 + (i % 9973) as f32 * 1e-9).collect();
+        let time_it = |label: &str, f: &dyn Fn() -> f64| {
+            std::hint::black_box(f());
+            let mut b = f64::MAX;
+            for _ in 0..8 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("REF {label}: {:.3}ms", b * 1e3);
+        };
+        time_it("prod_f64_scalar", &|| {
+            let mut acc = 1.0;
+            for &v in &dataf64 {
+                acc *= v;
+            }
+            acc
+        });
+        time_it("prod_f64_threaded", &|| {
+            threaded_tree_reduce_prod_f64(&dataf64)
+        });
+        time_it("sum_f32_scalar", &|| {
+            let mut acc = 0.0;
+            for &v in &dataf32b {
+                acc += v as f64;
+            }
+            acc
+        });
+        time_it("sum_f32_threaded", &|| {
+            threaded_tree_reduce_f32_to_f64(&dataf32b, false)
+        });
     }
 
     // BOLD-VERIFY: max-reduce 2D vs JAX (f32 ax0 1.67 ax1 0.65ms; f64 ax0 10.36 ax1 3.13ms).
@@ -6851,6 +7012,107 @@ mod tests {
             (got - expected).abs() <= tolerance,
             "large tree reduce_sum got {got}, sequential {expected}, diff {} > {tolerance}",
             (got - expected).abs()
+        );
+    }
+
+    #[test]
+    fn dense_f64_reduce_prod_large_tree_matches_sequential_with_tolerance() {
+        let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 1024;
+        // Values near 1.0 keep the 8.4M-element product finite and comparable.
+        let data: Vec<f64> = (0..n)
+            .map(|i| 1.0 + ((i as f64) * 1.1e-7).sin() * 1e-7)
+            .collect();
+        let expected: f64 = data.iter().copied().product();
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let result = eval_reduce(
+            Primitive::ReduceProd,
+            &[input],
+            0,
+            1.0,
+            |a, b| a * b,
+            |a, b| a * b,
+        )
+        .unwrap();
+        let got = extract_f64(&result);
+        let tolerance = expected.abs() * 1e-10 + 1e-9;
+        assert!(
+            (got - expected).abs() <= tolerance,
+            "large tree reduce_prod got {got}, sequential {expected}, diff {} > {tolerance}",
+            (got - expected).abs()
+        );
+    }
+
+    #[test]
+    fn dense_f32_reduce_sum_prod_large_tree_matches_sequential_with_tolerance() {
+        let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 1024;
+        // SUM: sin-valued f32; PROD: values near 1.0 to stay finite. Sequential reference
+        // folds in f64 (matching the impl's widening), then compares the threaded eval.
+        let sum_data: Vec<f32> = (0..n)
+            .map(|i| (((i as f64) * 1.1e-7).sin() * 3.0) as f32)
+            .collect();
+        let sum_seq: f64 = sum_data.iter().map(|&v| v as f64).sum();
+        let sum_in = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                sum_data,
+            )
+            .unwrap(),
+        );
+        let sum_got = extract_f64(
+            &eval_reduce(
+                Primitive::ReduceSum,
+                &[sum_in],
+                0,
+                0.0,
+                |a, b| a + b,
+                |a, b| a + b,
+            )
+            .unwrap(),
+        );
+        let sum_tol = (sum_seq as f32).abs() as f64 * 1e-5 + 1e-3;
+        assert!(
+            (sum_got - sum_seq).abs() <= sum_tol,
+            "large tree f32 reduce_sum got {sum_got}, sequential {sum_seq}"
+        );
+
+        let prod_data: Vec<f32> = (0..n)
+            .map(|i| 1.0 + (((i as f64) * 1.1e-7).sin() * 1e-7) as f32)
+            .collect();
+        let prod_seq: f64 = prod_data.iter().map(|&v| v as f64).product();
+        let prod_in = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                prod_data,
+            )
+            .unwrap(),
+        );
+        let prod_got = extract_f64(
+            &eval_reduce(
+                Primitive::ReduceProd,
+                &[prod_in],
+                0,
+                1.0,
+                |a, b| a * b,
+                |a, b| a * b,
+            )
+            .unwrap(),
+        );
+        let prod_tol = prod_seq.abs() * 1e-5 + 1e-5;
+        assert!(
+            (prod_got - prod_seq).abs() <= prod_tol,
+            "large tree f32 reduce_prod got {prod_got}, sequential {prod_seq}"
         );
     }
 

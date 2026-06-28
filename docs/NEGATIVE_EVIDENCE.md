@@ -2,6 +2,30 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: f64 PROD + f32 SUM/PROD full-reduce threaded tree-fold — ~2.7x (completes the float-reduce family) (ProudSalmon)
+
+Completes the tolerance-relaxed float full-reduce family. The f64 SUM tree-fold (mine, 2026-06-25, KEEP) and
+max/min already thread; f64 PROD and f32 SUM/PROD were still SCALAR single-accumulator folds. Added
+`threaded_tree_reduce_prod_f64` and `threaded_tree_reduce_f32_to_f64(values, mul)` (per-chunk f64 fold +
+combine, same shape as the shipped f64 sum), wired into `eval_dense_float_full_reduce` for ReduceProd(f64) and
+ReduceSum/ReduceProd(f32). Float ×/+ are non-associative → the chunk reassociation is TOLERANCE-parity vs JAX
+(which itself tree-reduces floating products); this extends the already-accepted f64-sum tolerance contract.
+Small vectors (<8.4M) stay on the strictly-ascending scalar fold → existing bit-identity tests untouched.
+
+Evidence — SAME-INVOCATION, contention-immune A/B (scalar ref beside threaded in one binary, min-of-8),
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`, `rch exec -- cargo test -p fj-lax --profile release
+--lib bench_full_reduce_vs_jax -- --ignored` (16M f64/f32):
+  - f64 prod: scalar **13.30ms → threaded 4.94ms = 2.69x**
+  - f32 sum:  scalar **13.42ms → threaded 5.03ms = 2.67x**
+  (f32 prod mirrors, same path.) The scalar prod ref (13.30ms) matches the bead's prior 13.3ms exactly → same-
+  class host, so the bead's measured JAX f64 prod 8.5ms is a valid comparator: **4.94 vs 8.5 = ~1.72x WIN vs
+  JAX** (was 1.56x loss). f32 sum reaches the same ~5ms BW floor as the f64 sum that already beats JAX 1.56x.
+  (Raw cross-invocation eval ratios were unreliable — the UNCHANGED f64-sum control drifted 13.6→4.7ms across
+  builds from host load; the same-invocation scalar-ref A/B is the trustworthy number.)
+Bit-identical small path + tolerance large path: guards `dense_f64_reduce_prod_large_tree_matches_sequential_
+with_tolerance` + `dense_f32_reduce_sum_prod_large_tree_matches_sequential_with_tolerance`; reduce suite 145/0,
+conformance `reduce_sum_oracle` 41/41. Closes the residual of bead `frankenjax-tree-sum-reduce-jfd2c`.
+
 ## 2026-06-28 - SURFACE: contained per-op frontier exhausted post-pad; concat dense-i64 already lazy-view-fast (~0-gain) (ProudSalmon)
 
 After landing the N-D pad win (666e71e5, 2.48x), swept every remaining OPEN P3 perf bead for a NEW contained
