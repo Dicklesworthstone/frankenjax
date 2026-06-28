@@ -2,6 +2,27 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-27 - SCOPE CORRECTION: the so4wo alloc gap is mostly already handled — 2.86x is a worst-case single-op figure (BlackThrush)
+
+Land-or-dig: no unlanded `.scratch`/`.worktrees` win (the visible heads — boldverify
+select, fft-dig, landordig — are days-old and already on `main`; ProudSalmon lands their
+own FFT/einsum wins directly). Followed up my mimalloc RETRACTION by tracing the so4wo
+"per-call alloc/page-fault" gap to its REAL-workload impact so nobody over-invests in it
+now that the mimalloc shortcut is dead:
+
+- My `alloc_ceiling` 2.86x (fresh-alloc vs reused-buffer) is a SINGLE eager
+  `eval_primitive(Neg)` call — the worst case, no fusion, no compiled plan.
+- `eval_jaxpr` ALREADY FUSES elementwise chains into ONE output alloc (committed
+  threaded fusion), so a chain `x→neg→mul→add` pays ONE alloc, not N.
+- The jit/repeated-eval path (`compile_jaxpr_for_repeated_eval`) ALREADY POOLS buffers
+  across calls (so4wo compiled-cache, 3.37x landed), so jitted loops don't re-fault.
+
+NET: the remaining so4wo gap is only the EAGER, NON-fused, single-op path — niche; fusion
++ the compiled pool already capture the common cases, and a contained within-eval free-list
+would mostly duplicate fusion. The mimalloc death leaves NO large unaddressed gap. The
+genuinely-open big levers are unchanged: `+fma` (policy) and the FFT kernel (ProudSalmon-
+active). No contained kernel lever remains for me; docs-only this pass.
+
 ## 2026-06-27 - NO-SHIP: paired Hermitian RFFT recombination regresses pow2 batch row (ProudSalmon)
 
 Land-or-dig audit found no live measured `.scratch`/bench-worktree win absent from
