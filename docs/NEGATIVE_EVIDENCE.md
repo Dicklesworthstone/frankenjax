@@ -2,6 +2,19 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - NO-SHIP (REVERTED): complex broadcast threaded — odometer index-decode leaves 1.25x JAX loss (ProudSalmon)
+
+Threaded the cheap complex broadcast (`[B,N] complex + [N]` bias-add) by porting the f64-broadcast per-thread
+odometer-carry pattern (decompose first outer index → start (lb,rb), run carry; 4 inner cases). BIT-IDENTICAL
+(parity guard `threaded_complex_broadcast_bit_identical_to_serial`, Add/Sub/Mul, passed). Measured same-invocation
+(`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, 16M complex128 `[8192,2048]+[2048]`, 2 stable runs):
+  - serial **159ms → eval 56-58ms = 2.76x** internal, BUT vs JAX 0.10.2 `a+b` **44.9ms → 1.25x LOSS**.
+ROOT CAUSE: unlike the CONTIGUOUS same-shape / tensor-scalar complex threading (which reached PARITY 1.03-1.10x),
+the broadcast adds per-block odometer index-decode + strided bias access — that overhead keeps it 1.25x slower
+than JAX (beyond the ~1.15x near-parity ship line). REVERTED (arithmetic.rs == HEAD; the contiguous complex
+same-shape/tensor-scalar/conj/real-imag threads from this session retained). Refines the rule: complex threading
+reaches parity only on CONTIGUOUS access; broadcast (index-decode) doesn't pay off.
+
 ## 2026-06-28 - WIN: cheap complex tensor⊗scalar (z*c twiddle / z+c) threaded — 2.32x internal, parity vs JAX (ProudSalmon)
 
 `eval_complex_tensor_scalar`'s cheap path (z*c phase-rotation / scaling, z+c, z-c, z/c — the FFT-twiddle /
