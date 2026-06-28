@@ -2,6 +2,44 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - KEEP: dense-f64 pow2 RFFT skips tuple materialization (ProudSalmon)
+
+Land-or-dig/BOLD-VERIFY audit found no measured `.scratch`/`.worktrees` bench win absent
+from `main`; the visible recent ProudSalmon FFT heads were already landed, patch-equivalent,
+or documented no-ships. Dug the biggest remaining code-shaped RFFT gap instead:
+`eval/rfft_batch_2048x256_f64_dense_input`.
+
+New lever from the cache-locality / representation-erasure playbook: for dense `F64`
+power-of-two RFFT only, read the packed `&[f64]` input directly into the existing
+`RealRfftPower2Plan` SoA half-FFT path. This avoids first materializing
+`Vec<(f64, f64)>` with a zero imaginary lane. It deliberately leaves all non-power-of-two
+RFFT rows on the current tuple-backed path, because the prior whole-RFFT real-slice
+conversion regressed those targets.
+
+Correctness gates:
+- `AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME,RCH_WORKER
+  CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo test
+  --release -p fj-lax vectorized_rfft_pow2_bit_identical_to_per_row --lib -- --nocapture`
+  passed through RCH local fallback. The test compares the dense-f64 helper bit-for-bit
+  with the tuple-backed per-row `RealRfftPower2Plan` across exact, padded, truncated,
+  small-row, and tiled-row cases.
+- Same command shape for `threaded_batch_rfft_matches_per_row_serial` passed through
+  RCH local fallback.
+- `cargo test --release -p fj-conformance -- --nocapture` passed through RCH `ovh-a`.
+
+Bench command, per-crate through RCH with the requested target dir:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME,RCH_WORKER
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo bench
+-p fj-lax --profile release --bench lax_baseline --
+'eval/rfft_batch_2048x256_f64_dense_input$' --warm-up-time 1 --measurement-time 2
+--sample-size 10 --noplot`. RCH had no admissible bench worker for both timing runs and
+fell open locally, so the comparison is same worktree, same target dir, same command,
+same host mode. JAX comparator is the standing same-fixture row, `0.371289 ms`.
+
+| workload | ORIG midpoint | candidate midpoint | candidate/ORIG | ORIG/JAX | candidate/JAX | verdict |
+|---|---:|---:|---:|---:|---:|---|
+| `eval/rfft_batch_2048x256_f64_dense_input` | 5.0742 ms | 4.2789 ms | 0.843x runtime / 1.19x faster | 13.67x slower | 11.52x slower | KEEP |
+
 ## 2026-06-27 - SCOPE CORRECTION: the so4wo alloc gap is mostly already handled — 2.86x is a worst-case single-op figure (BlackThrush)
 
 Land-or-dig: no unlanded `.scratch`/`.worktrees` win (the visible heads — boldverify

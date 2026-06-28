@@ -2545,6 +2545,10 @@ pub(crate) fn eval_rfft(
         });
     }
 
+    if let Some(value) = eval_rfft_dense_f64_pow2(inputs, params)? {
+        return Ok(value);
+    }
+
     if let Some(value) = eval_rfft_dense_f64_nonpow2(inputs, params)? {
         return Ok(value);
     }
@@ -2663,6 +2667,107 @@ pub(crate) fn eval_rfft(
     let tensor = TensorValue::new_complex_values(out_dtype, out_shape, out_values)
         .map_err(EvalError::InvalidTensor)?;
     Ok(Value::Tensor(tensor))
+}
+
+fn eval_rfft_dense_f64_pow2(
+    inputs: &[Value],
+    params: &std::collections::BTreeMap<String, String>,
+) -> Result<Option<Value>, EvalError> {
+    let primitive = Primitive::Rfft;
+    let Value::Tensor(tensor) = &inputs[0] else {
+        return Ok(None);
+    };
+    if tensor.shape.rank() == 0 || tensor.dtype != DType::F64 {
+        return Ok(None);
+    }
+    let Some(reals) = tensor.elements.as_f64_slice() else {
+        return Ok(None);
+    };
+
+    let shape = tensor.shape.clone();
+    let input_last = last_axis_len(primitive, &shape)?;
+    if input_last == 0 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "RFFT requires last dimension > 0".to_owned(),
+        });
+    }
+
+    let fft_length = parse_optional_fft_length(primitive, params, input_last)?;
+    if fft_length == 0 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "fft_length must be > 0".to_owned(),
+        });
+    }
+    if fft_length < 2 || !fft_length.is_power_of_two() {
+        return Ok(None);
+    }
+
+    checked_fft_len(primitive, fft_length, "RFFT fft_length")?;
+    let out_last = fft_length / 2 + 1;
+    let batch_size = reals.len() / input_last;
+    let output_count = checked_output_element_count(primitive, batch_size, out_last)?;
+
+    let mut out_dims = shape.dims;
+    replace_last_axis_len(primitive, &mut out_dims, out_last)?;
+    let out_shape = Shape { dims: out_dims };
+    let copy_len = fft_length.min(input_last);
+    let real_plan = cached_real_rfft_power2_plan(fft_length);
+    let mut out_values: Vec<(f64, f64)> = vec![(0.0, 0.0); output_count];
+
+    const PARALLEL_MIN_ELEMS: usize = 1 << 18;
+    let transform_work = batch_size.saturating_mul(fft_length);
+    let threads = if transform_work >= PARALLEL_MIN_ELEMS && batch_size > 1 {
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            .min(batch_size)
+    } else {
+        1
+    };
+
+    if threads <= 1 {
+        rfft_rows_f64_pow2_into(
+            reals,
+            real_plan.as_ref(),
+            input_last,
+            copy_len,
+            out_last,
+            0,
+            batch_size,
+            &mut out_values,
+        );
+    } else {
+        let rows_per = batch_size.div_ceil(threads);
+        let real_plan_ref = real_plan.as_ref();
+        std::thread::scope(|scope| {
+            let mut rest: &mut [(f64, f64)] = out_values.as_mut_slice();
+            let mut row0 = 0usize;
+            while row0 < batch_size {
+                let rows = rows_per.min(batch_size - row0);
+                let (blk, tail) = rest.split_at_mut(rows * out_last);
+                rest = tail;
+                scope.spawn(move || {
+                    rfft_rows_f64_pow2_into(
+                        reals,
+                        real_plan_ref,
+                        input_last,
+                        copy_len,
+                        out_last,
+                        row0,
+                        rows,
+                        blk,
+                    );
+                });
+                row0 += rows;
+            }
+        });
+    }
+
+    let tensor = TensorValue::new_complex_values(DType::Complex128, out_shape, out_values)
+        .map_err(EvalError::InvalidTensor)?;
+    Ok(Some(Value::Tensor(tensor)))
 }
 
 fn eval_rfft_dense_f64_nonpow2(
@@ -2925,6 +3030,169 @@ fn vectorized_rfft_pow2_tiled(
             &mut out[out_s..out_s + rows * out_last],
         );
         row0 += rows;
+    }
+}
+
+/// Dense-f64 sibling of `vectorized_rfft_pow2_block`: reads real samples directly
+/// from `&[f64]` and then runs the same SoA half-FFT and recombination.
+#[allow(clippy::too_many_arguments)]
+fn vectorized_rfft_pow2_block_f64(
+    real_plan: &RealRfftPower2Plan,
+    reals: &[f64],
+    batch: usize,
+    input_last: usize,
+    copy_len: usize,
+    out_last: usize,
+    re: &mut [f64],
+    im: &mut [f64],
+    out_blk: &mut [(f64, f64)],
+) {
+    let half_len = real_plan.half_len;
+    let w = batch;
+    debug_assert_eq!(out_last, half_len + 1);
+    debug_assert_eq!(re.len(), batch * half_len);
+    debug_assert_eq!(im.len(), batch * half_len);
+    debug_assert_eq!(out_blk.len(), batch * out_last);
+
+    let bitrev = &real_plan.half_fft.bit_reversed;
+    for b in 0..batch {
+        let row = &reals[b * input_last..b * input_last + input_last];
+        for (i, &idx) in bitrev.iter().enumerate() {
+            let even = 2 * idx;
+            let odd = even + 1;
+            let even_re = if even < copy_len { row[even] } else { 0.0 };
+            let odd_re = if odd < copy_len { row[odd] } else { 0.0 };
+            re[i * w + b] = even_re;
+            im[i * w + b] = odd_re;
+        }
+    }
+
+    soa_radix2_butterfly_stages(&real_plan.half_fft, w, half_len, re, im);
+
+    for b in 0..batch {
+        let z0_re = re[b];
+        let z0_im = im[b];
+        out_blk[b * out_last] = (z0_re + z0_im, 0.0);
+        out_blk[b * out_last + half_len] = (z0_re - z0_im, 0.0);
+    }
+    for k in 1..half_len {
+        let (cos_a, sin_a) = real_plan.twiddles[k - 1];
+        let kb = k * w;
+        let mkb = (half_len - k) * w;
+        for b in 0..batch {
+            let a_re = re[kb + b];
+            let a_im = im[kb + b];
+            let b_re = re[mkb + b];
+            let b_im = im[mkb + b];
+            let avg_re = 0.5 * (a_re + b_re);
+            let avg_im = 0.5 * (a_im - b_im);
+            let diff_re = 0.5 * (a_re - b_re);
+            let diff_im = 0.5 * (a_im + b_im);
+            let rotated_re = diff_re * cos_a - diff_im * sin_a;
+            let rotated_im = diff_re * sin_a + diff_im * cos_a;
+            out_blk[b * out_last + k] = (avg_re + rotated_im, avg_im - rotated_re);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn vectorized_rfft_pow2_tiled_f64(
+    real_plan: &RealRfftPower2Plan,
+    reals: &[f64],
+    batch: usize,
+    input_last: usize,
+    copy_len: usize,
+    out_last: usize,
+    out: &mut [(f64, f64)],
+) {
+    let half_len = real_plan.half_len;
+    let cap = POW2_TILE_ROWS * half_len;
+    let mut re = vec![0.0f64; cap];
+    let mut im = vec![0.0f64; cap];
+    let mut row0 = 0usize;
+    while row0 < batch {
+        let rows = POW2_TILE_ROWS.min(batch - row0);
+        let in_s = row0 * input_last;
+        let out_s = row0 * out_last;
+        vectorized_rfft_pow2_block_f64(
+            real_plan,
+            &reals[in_s..in_s + rows * input_last],
+            rows,
+            input_last,
+            copy_len,
+            out_last,
+            &mut re[..rows * half_len],
+            &mut im[..rows * half_len],
+            &mut out[out_s..out_s + rows * out_last],
+        );
+        row0 += rows;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rfft_rows_f64_pow2_into(
+    reals: &[f64],
+    real_plan: &RealRfftPower2Plan,
+    input_last: usize,
+    copy_len: usize,
+    out_last: usize,
+    row_start: usize,
+    rows: usize,
+    out_blk: &mut [(f64, f64)],
+) {
+    const RFFT_VECTORIZED_MIN_ROWS: usize = 8;
+    if rows >= RFFT_VECTORIZED_MIN_ROWS {
+        let base = row_start * input_last;
+        vectorized_rfft_pow2_tiled_f64(
+            real_plan,
+            &reals[base..base + rows * input_last],
+            rows,
+            input_last,
+            copy_len,
+            out_last,
+            out_blk,
+        );
+        return;
+    }
+
+    let mut packed = vec![(0.0, 0.0); real_plan.half_len];
+    let mut transformed = Vec::with_capacity(real_plan.half_len);
+    for r in 0..rows {
+        let start = (row_start + r) * input_last;
+        for (idx, slot) in packed.iter_mut().enumerate() {
+            let even = 2 * idx;
+            let odd = even + 1;
+            let even_re = if even < copy_len {
+                reals[start + even]
+            } else {
+                0.0
+            };
+            let odd_re = if odd < copy_len {
+                reals[start + odd]
+            } else {
+                0.0
+            };
+            *slot = (even_re, odd_re);
+        }
+        real_plan.half_fft.apply_into(&packed, &mut transformed);
+
+        let (z0_re, z0_im) = transformed[0];
+        out_blk[r * out_last] = (z0_re + z0_im, 0.0);
+        out_blk[r * out_last + real_plan.half_len] = (z0_re - z0_im, 0.0);
+
+        for k in 1..real_plan.half_len {
+            let (a_re, a_im) = transformed[k];
+            let (b_re, b_im) = transformed[real_plan.half_len - k];
+            let avg_re = 0.5 * (a_re + b_re);
+            let avg_im = 0.5 * (a_im - b_im);
+            let diff_re = 0.5 * (a_re - b_re);
+            let diff_im = 0.5 * (a_im + b_im);
+
+            let (cos_a, sin_a) = real_plan.twiddles[k - 1];
+            let rotated_re = diff_re * cos_a - diff_im * sin_a;
+            let rotated_im = diff_re * sin_a + diff_im * cos_a;
+            out_blk[r * out_last + k] = (avg_re + rotated_im, avg_im - rotated_re);
+        }
     }
 }
 
@@ -4916,6 +5184,24 @@ mod tests {
                         bits(&reference),
                         bits(&got),
                         "rfft SoA != per-row (fft_len={fft_len} input_last={input_last} batch={batch})"
+                    );
+
+                    let reals: Vec<f64> = elements.iter().map(|&(re, _)| re).collect();
+                    let mut got_dense = vec![(0.0, 0.0); batch * out_last];
+                    rfft_rows_f64_pow2_into(
+                        &reals,
+                        &real_plan,
+                        input_last,
+                        copy_len,
+                        out_last,
+                        0,
+                        batch,
+                        &mut got_dense,
+                    );
+                    assert_eq!(
+                        bits(&reference),
+                        bits(&got_dense),
+                        "dense-f64 rfft path != per-row tuple path (fft_len={fft_len} input_last={input_last} batch={batch})"
                     );
                 }
             }
