@@ -527,10 +527,36 @@ pub fn repeat_1d(a: &[f64], repeats: usize) -> Vec<f64> {
 ///
 /// Matches `jnp.tile(a, reps)` for a 1D array.
 pub fn tile_1d(a: &[f64], reps: usize) -> Vec<f64> {
-    let mut result = Vec::with_capacity(a.len() * reps);
-    for _ in 0..reps {
-        result.extend_from_slice(a);
+    let len = a.len();
+    let total = len.saturating_mul(reps);
+    // Large tile: thread the replicate-memcpys across rep-blocks past L3 (BW-bound write).
+    // Each block is an independent copy of `a`, so the result is BIT-IDENTICAL to the serial
+    // `extend_from_slice` loop. Below the gate keep the simple serial extend.
+    if len == 0 || total < (1 << 23) || crate::arithmetic::work_scaled_threads(total) <= 1 {
+        let mut result = Vec::with_capacity(total);
+        for _ in 0..reps {
+            result.extend_from_slice(a);
+        }
+        return result;
     }
+    let threads = crate::arithmetic::work_scaled_threads(total).min(reps);
+    let reps_per = reps.div_ceil(threads);
+    let mut result = vec![0.0f64; total];
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f64] = result.as_mut_slice();
+        let mut rep0 = 0usize;
+        while rep0 < reps {
+            let rep1 = (rep0 + reps_per).min(reps);
+            let (blk, tail) = rest.split_at_mut((rep1 - rep0) * len);
+            rest = tail;
+            scope.spawn(move || {
+                for r in 0..(rep1 - rep0) {
+                    blk[r * len..(r + 1) * len].copy_from_slice(a);
+                }
+            });
+            rep0 = rep1;
+        }
+    });
     result
 }
 
@@ -956,6 +982,49 @@ mod tests {
             assert_eq!(triu(&a, m, n, k), triu_ref, "triu k={k}");
             assert_eq!(tril(&a, m, n, k), tril_ref, "tril k={k}");
         }
+    }
+
+    #[test]
+    fn threaded_tile_1d_bit_identical() {
+        // Above the L3 gate tile_1d threads across rep-blocks; must equal the serial extend
+        // bit-for-bit. len*reps = 9M > 1<<23; also check a below-gate size and len=0.
+        let a: Vec<f64> = (0..900).map(|i| (i as f64) * 0.37 - 11.0).collect();
+        for reps in [10_000usize, 3] {
+            let mut serial = Vec::with_capacity(a.len() * reps);
+            for _ in 0..reps {
+                serial.extend_from_slice(&a);
+            }
+            assert_eq!(tile_1d(&a, reps), serial, "reps={reps}");
+        }
+        assert_eq!(tile_1d(&[], 5), Vec::<f64>::new());
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_tile_1d_threaded_vs_serial() {
+        use std::time::Instant;
+        let a: Vec<f64> = (0..1000).map(|i| (i as f64) * 0.001).collect();
+        let reps = 16_000usize; // 16M output
+        let bench = |label: &str, f: &dyn Fn()| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..7 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("tile_1d 1000x16000 [{label}]: {:.3}ms", b * 1e3);
+        };
+        bench("serial", &|| {
+            let mut r = Vec::with_capacity(a.len() * reps);
+            for _ in 0..reps {
+                r.extend_from_slice(&a);
+            }
+            std::hint::black_box(r);
+        });
+        bench("threaded", &|| {
+            std::hint::black_box(tile_1d(&a, reps));
+        });
     }
 
     #[test]

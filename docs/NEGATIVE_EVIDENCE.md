@@ -21,6 +21,15 @@ L3-gated), and reduce sum/max/min (f64/f32). ReduceProd stays serial (overflow-r
 to thread); fj-ad VJPs route through the threaded primitives. The "single-threaded helper that
 bypasses a threaded primitive" pattern is now mined across nn + linalg-norm + array_creation.
 
+EXTENDED (same module): threaded `tile_1d` (1D replicate, the last structural op with real copy
+work) across rep-blocks past L3 — BIT-IDENTICAL (each block is an independent `copy_from_slice`
+of `a`; below the gate the serial `extend_from_slice`). MEASURED same-binary A/B (1000×16000 =
+16M, `bench_tile_1d_threaded_vs_serial`): serial 62.16 ms → **threaded 17.18 ms = 3.62x**;
+`threaded_tile_1d_bit_identical` (9M + below-gate + empty) passes; fmt + clippy clean. The other
+array_creation structural ops need no change: `diag` is lazy-calloc (only the n diagonal cells
+are written into a mostly-zero output), `diagonal` has a tiny output, `eye`/`zeros`/`ones`/`full`
+are dense-fill, `linspace`/`logspace` are cold one-time construction.
+
 ## 2026-06-28 - KEEP (2.83x): thread L2/Frobenius norm sum-of-squares past L3 (BlackThrush)
 
 Extending the many-core lens beyond the (now-exhausted) eager nn vein to the linalg HELPER
