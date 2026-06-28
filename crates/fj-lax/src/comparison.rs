@@ -500,7 +500,7 @@ pub(crate) fn eval_comparison(
             )?))
         }
         (Value::Scalar(lhs), Value::Tensor(rhs)) => {
-            if let Some(value) = eval_f64_scalar_compare(*lhs, rhs, true, &float_cmp)? {
+            if let Some(value) = eval_f64_scalar_compare(primitive, *lhs, rhs, true, &float_cmp)? {
                 return Ok(value);
             }
             if let Some(value) = eval_f32_scalar_compare(*lhs, rhs, true, &float_cmp)? {
@@ -526,7 +526,7 @@ pub(crate) fn eval_comparison(
             )?))
         }
         (Value::Tensor(lhs), Value::Scalar(rhs)) => {
-            if let Some(value) = eval_f64_scalar_compare(*rhs, lhs, false, &float_cmp)? {
+            if let Some(value) = eval_f64_scalar_compare(primitive, *rhs, lhs, false, &float_cmp)? {
                 return Ok(value);
             }
             if let Some(value) = eval_f32_scalar_compare(*rhs, lhs, false, &float_cmp)? {
@@ -1032,7 +1032,93 @@ fn eval_unsigned_scalar_compare(
 /// identical to the generic `compare_literals` path for F64 operands. Returns
 /// `Ok(None)` for non-F64 scalar/elements so the caller uses the generic path.
 #[inline]
+// SIMD+threaded scalar-broadcast f64 compare (`x > thresh` relu/threshold masks): splat
+// the scalar, f64x8 compare each 64-element block into a packed bitmask word, threaded over
+// disjoint words. Bit-identical to the scalar `float_cmp` map. `scalar_on_left` selects the
+// operand order (`scalar OP value` vs `value OP scalar`).
+fn f64_scalar_compare_words(
+    primitive: Primitive,
+    values: &[f64],
+    scalar: f64,
+    scalar_on_left: bool,
+) -> Vec<u64> {
+    const WORD_BITS: usize = u64::BITS as usize;
+    const LANES: usize = 8;
+    let n = values.len();
+    let sv = Simd::<f64, LANES>::splat(scalar);
+    let mut words = vec![0_u64; n.div_ceil(WORD_BITS)];
+    let full_words = n / WORD_BITS;
+    let compute_word = |word_index: usize| -> u64 {
+        let base = word_index * WORD_BITS;
+        let mut word = 0_u64;
+        for chunk in 0..(WORD_BITS / LANES) {
+            let offset = base + chunk * LANES;
+            let vv = Simd::<f64, LANES>::from_slice(&values[offset..offset + LANES]);
+            let (l, r) = if scalar_on_left { (sv, vv) } else { (vv, sv) };
+            let mask = match primitive {
+                Primitive::Eq => l.simd_eq(r).to_bitmask(),
+                Primitive::Ne => l.simd_ne(r).to_bitmask(),
+                Primitive::Lt => l.simd_lt(r).to_bitmask(),
+                Primitive::Le => l.simd_le(r).to_bitmask(),
+                Primitive::Gt => l.simd_gt(r).to_bitmask(),
+                Primitive::Ge => l.simd_ge(r).to_bitmask(),
+                _ => 0,
+            };
+            word |= mask << (chunk * LANES);
+        }
+        word
+    };
+    let threads = if n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN {
+        crate::arithmetic::work_scaled_threads(n)
+    } else {
+        1
+    };
+    if threads > 1 && full_words > 0 {
+        let compute_word = &compute_word;
+        let per = full_words.div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut rest: &mut [u64] = &mut words[..full_words];
+            let mut w0 = 0usize;
+            while w0 < full_words {
+                let cnt = per.min(full_words - w0);
+                let (blk, tail) = rest.split_at_mut(cnt);
+                rest = tail;
+                let start = w0;
+                w0 += cnt;
+                scope.spawn(move || {
+                    for (j, slot) in blk.iter_mut().enumerate() {
+                        *slot = compute_word(start + j);
+                    }
+                });
+            }
+        });
+    } else {
+        for (word_index, word_slot) in words.iter_mut().take(full_words).enumerate() {
+            *word_slot = compute_word(word_index);
+        }
+    }
+    let tail_start = full_words * WORD_BITS;
+    for (k, &v) in values[tail_start..].iter().enumerate() {
+        let bit = match primitive {
+            Primitive::Eq => v == scalar,
+            Primitive::Ne => v != scalar,
+            Primitive::Lt if scalar_on_left => scalar < v,
+            Primitive::Lt => v < scalar,
+            Primitive::Le if scalar_on_left => scalar <= v,
+            Primitive::Le => v <= scalar,
+            Primitive::Gt if scalar_on_left => scalar > v,
+            Primitive::Gt => v > scalar,
+            Primitive::Ge if scalar_on_left => scalar >= v,
+            Primitive::Ge => v >= scalar,
+            _ => false,
+        };
+        push_bool_word(&mut words, tail_start + k, bit);
+    }
+    words
+}
+
 fn eval_f64_scalar_compare(
+    primitive: Primitive,
     scalar: Literal,
     tensor: &TensorValue,
     scalar_on_left: bool,
@@ -1045,22 +1131,15 @@ fn eval_f64_scalar_compare(
         return Ok(None);
     }
     let scalar = f64::from_bits(scalar_bits);
-    // Dense F64 path: contiguous map into a dense Bool backing.
+    // Dense F64 path: SIMD+threaded splat compare into a packed bitmask.
     if let Some(values) = tensor.elements.as_f64_slice() {
-        let out: Vec<bool> = values
-            .iter()
-            .map(|&value| {
-                if scalar_on_left {
-                    float_cmp(scalar, value)
-                } else {
-                    float_cmp(value, scalar)
-                }
-            })
-            .collect();
-        return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+        let out = f64_scalar_compare_words(primitive, values, scalar, scalar_on_left);
+        return Ok(Some(bool_words_tensor(
+            primitive,
             tensor.shape.clone(),
+            values.len(),
             out,
-        )?)));
+        )?));
     }
 
     let mut out = Vec::with_capacity(tensor.elements.len());
@@ -1207,6 +1286,20 @@ mod tests {
         };
         time_it("i64_gt_serial", &i64_serial);
         time_it("i64_gt_threaded", &i64_threaded);
+
+        // f64 SCALAR-BROADCAST (x > thresh, the dominant relu/threshold mask): old scalar map
+        // (one full array, 128MB) vs new SIMD+threaded splat words.
+        let xf64: Vec<f64> = (0..n).map(|i| (i % 100_003) as f64 - 50_000.0).collect();
+        let sb_serial = || -> u64 {
+            let out: Vec<bool> = xf64.iter().map(|&v| v > 0.0).collect();
+            std::hint::black_box(&out);
+            out[123] as u64
+        };
+        let sb_threaded = || -> u64 {
+            std::hint::black_box(f64_scalar_compare_words(Primitive::Gt, &xf64, 0.0, false)[123])
+        };
+        time_it("f64_scalar_gt_serial", &sb_serial);
+        time_it("f64_scalar_gt_threaded", &sb_threaded);
     }
 
     #[test]

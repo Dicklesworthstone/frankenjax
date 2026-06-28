@@ -2,6 +2,21 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: f64 SCALAR-BROADCAST comparison (x>thresh relu/mask) SIMD+threaded — ~1.36x WIN vs JAX (ProudSalmon)
+
+The scalar-broadcast compare (`x > thresh` — the dominant relu/threshold MASK idiom, more common than the
+same-shape case) was fully SCALAR single-thread: `values.iter().map(|v| float_cmp(v, scalar)).collect::<Vec<
+bool>>()`. Added `f64_scalar_compare_words` (splat the scalar to f64x8, SIMD compare each 64-elem block → packed
+bitmask, threaded over disjoint words; `scalar_on_left` selects operand order). BIT-IDENTICAL to the scalar
+`float_cmp` map (IEEE compare; comparison fast-path tests stay green).
+
+Evidence — SAME-INVOCATION A/B (scalar map vs threaded splat words, one binary, min-of-8),
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, 16M f64 `x>0` (one array, 128MB read):
+  - QUIET host: serial **4.90ms → threaded 2.13ms = 2.31x**; LOADED host: 18.2→9.9ms = 1.83x (the same-
+    invocation ratio is contention-immune; absolute drifts ~3.7x with host load this turn).
+  - vs JAX 0.10.2 `(a>0.0)` 2.90ms → quiet-host **2.13 vs 2.90 = ~1.36x WIN** (was a ~1.7x LOSS at scalar).
+Comparison suite 23/0, clippy+fmt clean. FOLLOW-UP: f32/i64 scalar-broadcast still scalar (same pattern, next).
+
 ## 2026-06-28 - WIN: i64/i32 same-shape comparison SIMD+threaded — 2.24x WIN vs JAX (was scalar i128) (ProudSalmon)
 
 Completes the same-shape comparison family (f64 + f32 done; integer was the last scalar holdout). The i64/i32
