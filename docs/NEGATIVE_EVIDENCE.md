@@ -2,6 +2,23 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - KEEP (1.82x): extend the unary SIMD driver to dense f32 — i0e/i1e on JAX's default dtype (BlackThrush)
+
+My landed i0e/i1e SIMD-chbevl path (`eval_unary_simd_dense_f64_parallel`) only fired for dense
+F64; F32 — JAX's DEFAULT float, so the common ML case — fell back to the scalar per-element map.
+Added a dense-F32 branch that widens 8 lanes f32→f64 (exact), runs the SAME f64 SIMD kernel, and
+rounds back f32. BIT-IDENTICAL to the scalar fallback `scalar(x as f64) as f32` — the SIMD
+`cast` (via `std::simd::num::SimdFloat`) rounds exactly like `as f64`/`as f32`; verified for both
+i0e and i1e at 70k elements with a tail. This benefits EVERY op routed through the driver.
+
+MEASURED same-binary A/B (i0e, 16M f32, `bench_bessel_i0e_f32_simd_vs_scalar`): scalar 44.43 ms →
+**simd 24.36 ms = 1.82x faster** (the widen+f64-SIMD+round still crushes scalar-per-element — 8
+lanes/step). fmt + clippy clean. NOTE: `cast` needs `use std::simd::num::SimdFloat` in-scope —
+the portable-SIMD trait that provides it (this nightly) — matching the existing bf16 helpers; the
+trait location drifts across nightlies (see the simd-poly-exp memory note). LESSON: an F64-only
+SIMD fast path silently leaves JAX's default F32 dtype on the slow loop — promote→f64-SIMD→round
+recovers it bit-identically (same family as the dot_general/conv f32-promote wins).
+
 ## 2026-06-28 - KEEP (7.62x): matrix_norm_1 cache-friendly row-pass + thread — biggest norm win (BlackThrush)
 
 Corrects my own map entry below: I'd dismissed `matrix_norm_1` (operator 1-norm = max column

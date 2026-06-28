@@ -11025,6 +11025,7 @@ fn eval_unary_simd_dense_f64_parallel(
     scalar: fn(f64) -> f64,
 ) -> Result<Value, EvalError> {
     use std::simd::Simd;
+    use std::simd::num::SimdFloat;
     if let [Value::Tensor(tensor)] = inputs
         && tensor.dtype == DType::F64
         && let Some(src) = tensor.elements.as_f64_slice()
@@ -11060,6 +11061,50 @@ fn eval_unary_simd_dense_f64_parallel(
                 }
             });
             return Ok(Value::Tensor(TensorValue::new_f64_values(
+                tensor.shape.clone(),
+                out,
+            )?));
+        }
+    }
+    // Dense F32 (JAX's default float): widen 8 lanes f32->f64 (exact), run the SAME f64 SIMD
+    // kernel, round back f32 — BIT-IDENTICAL to the scalar F32 fallback `scalar(x as f64) as f32`
+    // (the SIMD f32->f64/f64->f32 `cast`s round exactly like `as f64`/`as f32`).
+    if let [Value::Tensor(tensor)] = inputs
+        && tensor.dtype == DType::F32
+        && let Some(src) = tensor.elements.as_f32_slice()
+    {
+        let n = src.len();
+        let threads = dense_unary_threads(n);
+        if threads > 1 {
+            let mut out = vec![0.0f32; n];
+            let chunk = n.div_ceil(threads);
+            let kref = &simd_kernel;
+            std::thread::scope(|scope| {
+                let mut rest: &mut [f32] = out.as_mut_slice();
+                let mut start = 0usize;
+                while start < n {
+                    let len = chunk.min(n - start);
+                    let (blk, tail) = rest.split_at_mut(len);
+                    rest = tail;
+                    let s = start;
+                    scope.spawn(move || {
+                        let chunk_src = &src[s..s + len];
+                        let n8 = len - len % 8;
+                        let mut i = 0;
+                        while i < n8 {
+                            let xf = Simd::<f32, 8>::from_slice(&chunk_src[i..i + 8]);
+                            let y = kref(xf.cast::<f64>());
+                            y.cast::<f32>().copy_to_slice(&mut blk[i..i + 8]);
+                            i += 8;
+                        }
+                        for j in i..len {
+                            blk[j] = scalar(chunk_src[j] as f64) as f32;
+                        }
+                    });
+                    start += len;
+                }
+            });
+            return Ok(Value::Tensor(TensorValue::new_f32_values(
                 tensor.shape.clone(),
                 out,
             )?));
@@ -23711,6 +23756,88 @@ mod tests {
         }
         // also spot-check vs a direct reference value
         assert_eq!(parallel[0].to_bits(), lgamma_approx(data[0]).to_bits());
+    }
+
+    #[test]
+    fn bessel_i0e_i1e_f32_simd_bit_identical_to_scalar() {
+        // Dense-f32 i0e/i1e via the widen->f64-SIMD->round path must equal the scalar f32
+        // reference `(approx(x as f64) as f32)` bit-for-bit (exact widen + identical round).
+        let n = 70_003usize; // not a multiple of 8 -> exercises the scalar tail
+        let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.002).collect();
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let f32_out = |v: &Value| -> Vec<f32> {
+            match v {
+                Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
+                _ => panic!("expected tensor"),
+            }
+        };
+        let i0e =
+            f32_out(&eval_bessel_i0e(Primitive::BesselI0e, std::slice::from_ref(&input)).unwrap());
+        let i1e =
+            f32_out(&eval_bessel_i1e(Primitive::BesselI1e, std::slice::from_ref(&input)).unwrap());
+        for idx in 0..n {
+            let x = data[idx] as f64;
+            assert_eq!(
+                i0e[idx].to_bits(),
+                (bessel_i0e_approx(x) as f32).to_bits(),
+                "i0e {idx}"
+            );
+            assert_eq!(
+                i1e[idx].to_bits(),
+                (bessel_i1e_approx(x) as f32).to_bits(),
+                "i1e {idx}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_bessel_i0e_f32_simd_vs_scalar() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.002).collect();
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let bench = |label: &str, f: &dyn Fn()| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("i0e f32 16M [{label}]: {:.3}ms", b * 1e3);
+        };
+        bench("scalar", &|| {
+            std::hint::black_box(
+                eval_unary_elementwise_parallel(
+                    Primitive::BesselI0e,
+                    std::slice::from_ref(&input),
+                    bessel_i0e_approx,
+                )
+                .unwrap(),
+            );
+        });
+        bench("simd", &|| {
+            std::hint::black_box(
+                eval_bessel_i0e(Primitive::BesselI0e, std::slice::from_ref(&input)).unwrap(),
+            );
+        });
     }
 
     /// Dense-f32 threaded elementwise (`as_f32_slice`-backed `new_f32_values`
