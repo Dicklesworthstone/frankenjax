@@ -2,6 +2,33 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - CORRECTION: rfft pow2 recombine is NOT the bottleneck — rfft is 0.26x of fj-lax's OWN complex FFT (ProudSalmon)
+
+The prior rfft-gap spec (2026-06-27, SlateHarrier: "RFFT is the biggest contained-candidate gap: 8.5x pow2")
+diagnosed the rfft path as "~4.5x slower PER ROW than its own complex FFT (should be ~0.5x)", pointing the next
+digger at the pack/recombine overhead. **That per-row diagnosis is wrong.** Measured same-binary (existing dense
+benches + two new guard benches at the size SlateHarrier used), `CARGO_TARGET_DIR=/data/projects/.rch-targets/
+jax-cc`, `rch exec -- cargo bench -p fj-lax --profile release --bench lax_baseline`:
+
+  - `eval/rfft_batch_2048x256_f64_dense_input` (rfft = 128-pt half-FFT + Hermitian recombine): **459 µs**
+  - `eval/fft_batch_2048x256_real_dense_input` (FULL 256-pt complex FFT, same real data):       **1247 µs**
+    → rfft = **0.368x** of fj-lax's own complex FFT.
+  - `eval/rfft_batch_2048x1024_f64_dense_input` (NEW guard, the 1024-pt case):                   **16.40 ms**
+  - `eval/fft_batch_2048x1024_real_dense_input` (NEW guard, FULL 1024-pt complex FFT):           **62.42 ms**
+    → rfft = **0.263x** of fj-lax's own complex FFT.
+
+So the rfft path is ALREADY *better* than the 0.5x half-work ideal (0.26-0.37x), because the half-complex pack +
+SoA half-length butterfly + Hermitian recombine all vectorize well — the recombine/pack is NOT a contained bug
+and chasing it is wasted effort. The 8.5x-vs-JAX rfft gap decomposes as: (1) the SHARED complex-FFT kernel gap
+(the ~4.9x batched autovec-vs-pocketfft / FMA frontier — feeds fft AND rfft, SIMD butterfly already REGRESSED
+2026-06-26, threading already done → non-contained), times (2) a residual ~1.7x because pocketfft's NATIVE real
+decimation beats the half-complex trick even more than fj-lax does (≈0.21x of its own complex vs our 0.26x). Only
+lever (2) is contained, and it is exactly the "from-scratch native real-FFT kernel, multi-session, pow2 is golden-
+digest bit-locked" item — NOT a safe extreme-depth edit. NEXT-DIGGER GUIDANCE: do not touch rfft pack/recombine;
+the only real-FFT win is a native real decimation, and the dominant factor is the complex-kernel FMA floor.
+Two permanent guard benches (`rfft_batch_2048x1024_f64_dense_input`, `fft_batch_2048x1024_real_dense_input`)
+landed so the rfft-vs-own-complex ratio stays pinned.
+
 ## 2026-06-28 - NO-SHIP: explicit std::simd sqrt route is only noise over scalar threaded sqrt (ProudSalmon)
 
 Alien-graveyard / artifact screen picked the hardware-unary residue from the

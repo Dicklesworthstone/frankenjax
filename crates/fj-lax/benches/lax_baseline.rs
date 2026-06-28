@@ -6391,6 +6391,55 @@ fn bench_fft_batch_2048x256_real_dense(c: &mut Criterion) {
     });
 }
 
+// pow2 N=1024 pair (matches the size SlateHarrier used to measure the 8.5x-vs-JAX
+// rfft gap). Comparing rfft (128/512-pt half-FFT + Hermitian recombine) against the
+// FULL 1024-pt complex FFT of the SAME real data localizes the rfft overhead: if
+// rfft << full-complex, the recombine/pack is NOT the bottleneck (the gap is the
+// shared complex-kernel autovec/FMA frontier, not an rfft-specific bug).
+fn bench_rfft_batch_2048x1024_dense_input(c: &mut Criterion) {
+    let values: Vec<f64> = (0..2048 * 1024)
+        .map(|i| {
+            let x = i as f64;
+            (x * 0.125).sin() + (x * 0.03125).cos()
+        })
+        .collect();
+    let input = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![2048, 1024],
+            },
+            values,
+        )
+        .unwrap(),
+    );
+    let p = no_params();
+    c.bench_function("eval/rfft_batch_2048x1024_f64_dense_input", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Rfft, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_fft_batch_2048x1024_real_dense(c: &mut Criterion) {
+    let values: Vec<f64> = (0..2048 * 1024)
+        .map(|i| {
+            let x = i as f64;
+            (x * 0.125).sin() + (x * 0.03125).cos()
+        })
+        .collect();
+    let input = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![2048, 1024],
+            },
+            values,
+        )
+        .unwrap(),
+    );
+    let p = no_params();
+    c.bench_function("eval/fft_batch_2048x1024_real_dense_input", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Fft, std::slice::from_ref(&input), &p))
+    });
+}
+
 // Dense-f64-input variant: real input backed by packed f64 storage (new_f64_values),
 // the representation upstream f64 ops produce — extract reads the bulk slice
 // instead of converting 524288 Literals one by one.
@@ -7367,6 +7416,8 @@ criterion_group!(
     bench_rfft_batch_2048x256,
     bench_rfft_batch_2048x256_dense_input,
     bench_fft_batch_2048x256_real_dense,
+    bench_rfft_batch_2048x1024_dense_input,
+    bench_fft_batch_2048x1024_real_dense,
     bench_irfft_256,
     bench_irfft_batch_2048x256,
     bench_einsum2_general_attention_f64,
