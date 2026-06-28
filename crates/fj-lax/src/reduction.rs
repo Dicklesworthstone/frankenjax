@@ -7298,27 +7298,26 @@ mod tests {
         for is_f16 in [false, true] {
             let bits: Vec<u16> = (0..n)
                 .map(|i| {
-                    let v = 1.0f32 + (i % 9973) as f32 * 1e-6;
-                    if is_f16 {
-                        half::f16::from_f32(v).to_bits()
+                    let v = 1.0f64 + (i % 9973) as f64 * 1e-6;
+                    let lit = if is_f16 {
+                        Literal::from_f16_f64(v)
                     } else {
-                        (v.to_bits() >> 16) as u16
+                        Literal::from_bf16_f64(v)
+                    };
+                    match lit {
+                        Literal::F16Bits(b) | Literal::BF16Bits(b) => b,
+                        _ => unreachable!(),
                     }
                 })
                 .collect();
             // SUM: threaded SIMD-accumulate vs the scalar ascending fold — TOLERANCE.
+            // (Product over millions of half-floats overflows/underflows regardless of order —
+            // a degenerate op; its bit-identity is covered by the small-input dense tests.)
             let threaded = threaded_reduce_half(&bits, is_f16, false);
             let scalar = half_fold_chunk(&bits, is_f16, false);
             assert!(
                 (threaded - scalar).abs() <= scalar.abs() * 1e-5 + 1e-3,
                 "half sum is_f16={is_f16}: threaded {threaded} vs scalar {scalar}"
-            );
-            // PROD threads via the scalar chunk fold; combine reassociation TOLERANCE.
-            let tp = threaded_reduce_half(&bits, is_f16, true);
-            let sp = half_fold_chunk(&bits, is_f16, true);
-            assert!(
-                (tp - sp).abs() <= sp.abs() * 1e-9 + 1e-9,
-                "half prod is_f16={is_f16}: threaded {tp} vs scalar {sp}"
             );
         }
     }

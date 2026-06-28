@@ -2,6 +2,30 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: bf16/f16 full-reduce SUM threaded + SIMD-accumulated — ~10-19x internal (training-dtype reduce) (ProudSalmon)
+
+The half-float (bf16/f16) full-reduce — the dominant TRAINING dtype for loss / grad-norm sums — was the last
+single-thread holdout after float/integer/complex: it SIMD-decoded 8 lanes but then EXTRACTED them to scalars
+and folded a single f64 accumulator (`for &v in f64v.to_array()`), so it was decode+scalar-fold bound. Two fixes:
+(1) keep an f64x8 accumulator VECTOR and `accv += decoded` (no per-lane extraction), horizontal-sum at the end
+(`half_simd_sum_chunk`); (2) thread it (`threaded_reduce_half`, chunk aligned to the 8-lane width, partials
+combine). SUM reassociation is TOLERANCE (same contract as the f64/f32/complex reduces); PROD keeps the scalar
+chunk fold (degenerate over millions of half-floats). Small inputs (<8.4M) stay on the scalar f64 ascending fold
+→ the dense half bit-identity tests are untouched.
+
+Evidence — SAME-INVOCATION A/B (scalar `half_fold_chunk` vs threaded, one binary, min-of-8),
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, 16M bf16:
+  - bf16 sum: scalar **13.2ms → threaded 1.37ms = ~9.6x** (this run; 9.6-18.9x across runs — the absolute
+    drifts with host load, but the per-run same-invocation ratio is the trustworthy number). f16 shares the path.
+  - vs JAX 0.10.2 `jnp.sum(bfloat16)` 16M = **0.211ms** (jaxvenv; XLA's bf16 reduce is exceptionally BW-tuned,
+    ~30x faster than its OWN f64 sum). So the half-reduce gap closes from **~54x slower** (scalar 13.2ms) to
+    **~3-6x slower** (threaded; cross-invocation host variance prevents a tighter ratio). A large real speedup of
+    fj-lax's own op even though JAX's bf16 path stays ahead.
+A probe of f32x8 accumulation (bf16→f32 is exact) was only ~1.33x over f64x8 (0.40 vs 0.54ms same-run) and adds
+precision/f16-path risk → kept the precise f64x8 version. Guard `threaded_reduce_half_matches_scalar` (bf16+f16
+sum tolerance vs scalar, 8.4M+); lib suite 1639/0, clippy+fmt clean. The float+int+complex+half full-reduce
+family is now fully threaded.
+
 ## 2026-06-28 - WIN: COMPLEX full-reduce threaded — complex sum 1.43x WIN vs JAX (was 1.91x loss) (ProudSalmon)
 
 After threading the float (f64/f32 sum/prod) and integer full-reduces, the COMPLEX full-reduce
