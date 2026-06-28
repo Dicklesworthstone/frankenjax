@@ -2,6 +2,21 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - NO-SHIP (REVERTED): complex is_finite/is_nan dense-bitmask — strided read BW-limits to ~parity (ProudSalmon)
+
+Complex `is_finite`/`is_nan` fell to the slow per-Literal boxed loop (`float_predicate_words_dense` returned None
+for complex). Added a dense `complex_predicate_words` (scalar finite/nan bit-test per element → packed bitmask,
+threaded over words) wired into both via the complex branch of `float_predicate_words_dense`. BIT-IDENTICAL
+(isfinite = re.finite & im.finite; isnan = re.nan | im.nan) — predicate suite 16/0.
+Measured (`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, 16M complex128 isfinite):
+  - SAME-INVOCATION internal (trustworthy): serial-dense **11.28ms → threaded 7.12ms = only 1.58x** — the
+    256MB STRIDED (re,im) read + scalar bit-pack does NOT BW-scale like a contiguous f64 read (which threaded
+    4x). vs JAX `jnp.isfinite(complex)` 5.99ms (quiet) the eval was 6.9ms = **1.15x LOSS** (and cross-process
+    ratio swung 1.15x–2.47x with host load — unreliable).
+REVERTED. The dense path likely beats the OLD boxed loop, but threaded it only reaches ~parity-to-loss vs JAX
+(the strided complex read is the floor; a SIMD deinterleave of re/im might close it — bigger, deferred). Adds
+to the heuristic: big-read wins need a CONTIGUOUS read — a strided complex (re,im) scan BW-scales poorly.
+
 ## 2026-06-28 - NO-SHIP (REVERTED): complex abs threaded — hypot floor leaves 2.4x JAX loss (ProudSalmon)
 
 `eval_unary_complex_abs` is scalar single-thread (`dense.iter().map(|&(re,im)| re.hypot(im)).collect()`). Threaded
