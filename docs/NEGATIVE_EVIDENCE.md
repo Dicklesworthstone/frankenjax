@@ -2,6 +2,22 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: u64/u32 same-shape comparison SIMD-bitmask — u64 1.69x WIN vs JAX (ProudSalmon)
+
+Completes the same-shape comparison family across ALL dtypes (f64/f32/i64/i32 + complex done; u64/u32 were the
+last scalar `.map(int_cmp(i128::from(l), i128::from(r))).collect::<Vec<bool>>()` holdouts). Added a
+`unsigned_compare_words!` macro generating `u64_compare_words`/`u32_compare_words` (Simd<u64,8>/Simd<u32,8>
+UNSIGNED compare → packed bitmask, threaded). Bit-identical: unsigned values are non-negative in i128 and
+`simd_lt/gt` on unsigned Simd is unsigned ordering, so the SIMD compare == the i128-widened scalar path — suite
+23/0 incl. `u32_u64_compare_dense_matches_generic`.
+
+Evidence — SAME-INVOCATION A/B (scalar i128 map vs SIMD-bitmask `u64_compare_words`, one binary, min-of-8),
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, 16M u64 same-shape `a>b` (256MB read):
+  - serial **8.06ms → threaded 2.84ms = 2.83x**. vs JAX 0.10.2 `a>b` (u64) **4.80ms → 2.84 vs 4.80 = ~1.69x
+    WIN** (was a 1.68x LOSS at scalar). (u32 = 128MB read, smaller win, same path.) Matches the read-volume
+    heuristic (256MB read + small bitmask output → JAX win, like i64's 2.24x). clippy+fmt clean.
+Same-shape comparison is now SIMD-bitmask+threaded across f64/f32/i64/i32/u64/u32/complex — family COMPLETE.
+
 ## 2026-06-28 - WIN: cheap complex binary (Add/Sub/Div) threaded — 3.6x internal, 3.5x JAX loss → parity (ProudSalmon)
 
 The cheap complex same-shape binary path (Add/Sub/Div/Rem/Max/Min) ran SERIAL with a stale comment "no threads:
