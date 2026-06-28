@@ -22,6 +22,13 @@ MEASURED same-binary A/B (16M f64, `bench_frobenius_norm_threaded_vs_serial`): s
 0-fail; `cargo fmt --check`; clippy clean on linalg.rs. (linalg.rs was untouched since session
 start `0fe8f05a` — low collision risk despite being a historical codex zone.)
 
+EXTENDED (same pass): generalized `threaded_sum_of_squares` → `threaded_map_sum_bw(x, f)` and
+routed the **L1** vector norm (`f = abs`, common in L1-regularization / lasso over all params)
+through it too — same BW/L3 profile as L2, so the same ~2.8x at scale. Tolerance-verified at
+9M (rel-err < 1e-12, both L1 and L2); 27 `_norm` tests pass; fmt + clippy clean. The BW-bound
+vector/matrix norm family (L1, L2, Frobenius) now threads past L3; L-inf/L0 stay serial (max/
+count, cheap) and the rare Lp (compute-bound `powf`, different gate) is left as-is.
+
 ## 2026-06-28 - NO-SHIP: dense-f64 RFFT exact-pack branch is not a Criterion-significant win (ProudSalmon)
 
 DIG followed the remaining FFT/RFFT gap after the dense-f64 pow2 RFFT tuple-lift

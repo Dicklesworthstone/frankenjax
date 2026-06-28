@@ -6015,7 +6015,8 @@ fn pinv_svd(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
 
 // ── Norms ───────────────────────────────────────────────────────────
 
-/// Threaded sum of squares for the L2 / Frobenius norm. A read-only reduction is
+/// Threaded `sum(f(x[i]))` for the BW-bound vector/matrix norms — L1 (`f=abs`), L2/Frobenius
+/// (`f=square`). A read-only reduction is
 /// bandwidth-bound, so it only threads past L3 (`>= 1<<23` elems), where aggregate DRAM
 /// read bandwidth across cores wins; below that a single core saturates L3 and threading a
 /// memory-bound op regresses. It REASSOCIATES the sum (per-thread partials, then combine),
@@ -6023,7 +6024,7 @@ fn pinv_svd(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
 /// tree-of-partials sum is if anything MORE accurate than the serial left-fold. Below the
 /// gate / single-thread it is the EXACT serial sum, so the small in-repo norm tests and
 /// every small `jnp.linalg.norm` are unchanged.
-fn threaded_sum_of_squares(x: &[f64]) -> f64 {
+fn threaded_map_sum_bw(x: &[f64], f: impl Fn(f64) -> f64 + Sync) -> f64 {
     let n = x.len();
     let threads = if n >= (1 << 23) {
         crate::arithmetic::work_scaled_threads(n)
@@ -6031,16 +6032,17 @@ fn threaded_sum_of_squares(x: &[f64]) -> f64 {
         1
     };
     if threads <= 1 {
-        return x.iter().map(|&v| v * v).sum();
+        return x.iter().map(|&v| f(v)).sum();
     }
     let chunk = n.div_ceil(threads);
+    let f = &f;
     let partials: Vec<f64> = std::thread::scope(|scope| {
         let mut handles = Vec::new();
         let mut start = 0usize;
         while start < n {
             let end = (start + chunk).min(n);
             let seg = &x[start..end];
-            handles.push(scope.spawn(move || seg.iter().map(|&v| v * v).sum::<f64>()));
+            handles.push(scope.spawn(move || seg.iter().map(|&v| f(v)).sum::<f64>()));
             start = end;
         }
         handles.into_iter().filter_map(|h| h.join().ok()).collect()
@@ -6063,11 +6065,11 @@ pub fn vector_norm(x: &[f64], ord: f64) -> f64 {
         // L0 "norm": count of non-zero elements
         x.iter().filter(|&&v| v != 0.0).count() as f64
     } else if ord == 1.0 {
-        // L1 norm: sum of absolute values
-        x.iter().map(|&v| v.abs()).sum()
+        // L1 norm: sum of absolute values (e.g. L1-regularization over all params).
+        threaded_map_sum_bw(x, f64::abs)
     } else if ord == 2.0 {
         // L2 norm: Euclidean
-        threaded_sum_of_squares(x).sqrt()
+        threaded_map_sum_bw(x, |v| v * v).sqrt()
     } else if ord == f64::INFINITY {
         // L-infinity norm: max absolute value
         x.iter().map(|&v| v.abs()).fold(0.0_f64, f64::max)
@@ -6085,7 +6087,7 @@ pub fn vector_norm(x: &[f64], ord: f64) -> f64 {
 
 /// Frobenius norm of a matrix: sqrt(sum of squared elements).
 pub fn frobenius_norm(a: &[f64]) -> f64 {
-    threaded_sum_of_squares(a).sqrt()
+    threaded_map_sum_bw(a, |v| v * v).sqrt()
 }
 
 /// Matrix 1-norm (max column sum of absolute values).
@@ -11698,6 +11700,9 @@ mod tests {
             "rel err {rel:.2e} (threaded={threaded}, serial={serial})"
         );
         assert!((vector_norm(&x, 2.0) - serial).abs() / serial < 1e-12);
+        // L1 also uses the threaded BW reduction.
+        let l1_serial = x.iter().map(|&v| v.abs()).sum::<f64>();
+        assert!((vector_norm(&x, 1.0) - l1_serial).abs() / l1_serial < 1e-12);
     }
 
     #[test]
