@@ -2,6 +2,44 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - SCOPE CORRECTION: 1M Criterion rows do not support broad eager-nn threading (ProudSalmon)
+
+LAND-OR-DIG audit initially found the local `main` WIP
+`a96f46bd`/`f106fa7f` (`gelu/silu/softplus/mish` eager threading) not yet on
+`origin/main`; during this pass BlackThrush pushed it as `f106fa7f` with a
+same-binary 16M GELU keep. I am not reverting that landed commit here. This
+entry records a separate per-crate Criterion check that narrows the claim:
+the 16M GELU result is a real keep, but my 1M `cargo bench` rows do **not**
+support assuming `silu`, `softplus`, and `mish` share the same win.
+
+Bench harness added identically in clean ORIG and candidate worktrees for this
+measurement only: `nn/gelu_1m_f64`, `nn/silu_1m_f64`, `nn/softplus_1m_f64`,
+and `nn/mish_1m_f64` in `crates/fj-lax/benches/lax_baseline.rs`. The harness
+was not committed. `cargo bench --release` is rejected by this Cargo for bench
+targets, so the accepted release spelling was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-b rch exec --
+cargo bench -p fj-lax --profile release --bench lax_baseline --
+'nn/(gelu|silu|softplus|mish)_1m_f64$' --warm-up-time 1 --measurement-time 2
+--sample-size 10 --noplot`. RCH had no admissible workers and fell open locally
+for both ORIG and candidate, same target dir and host mode.
+
+| candidate shape | workload | ORIG midpoint | candidate midpoint | candidate/ORIG | verdict |
+|---|---|---:|---:|---:|---|
+| broad `gelu/silu/softplus/mish` threading | `nn/gelu_1m_f64` | 21.461 ms | 14.973 ms | 0.698x time / 1.43x faster | possible small-size GELU win |
+| broad `gelu/silu/softplus/mish` threading | `nn/silu_1m_f64` | 5.3876 ms | 7.6248 ms | 1.415x slower | REJECT |
+| broad `gelu/silu/softplus/mish` threading | `nn/softplus_1m_f64` | 12.911 ms | 36.837 ms | 2.853x slower | REJECT |
+| broad `gelu/silu/softplus/mish` threading | `nn/mish_1m_f64` | 33.425 ms | 285.80 ms | 8.550x slower | REJECT |
+| narrowed GELU-only threading retry | `nn/gelu_1m_f64` | 21.461 ms | 28.532 ms | 1.329x slower | REJECT/noise |
+| narrowed GELU-only threading retry | `nn/silu_1m_f64` | 5.3876 ms | 11.173 ms | 2.074x slower | control/noise |
+| narrowed GELU-only threading retry | `nn/softplus_1m_f64` | 12.911 ms | 12.925 ms | 1.001x | control |
+| narrowed GELU-only threading retry | `nn/mish_1m_f64` | 33.425 ms | 35.758 ms | 1.070x slower | control |
+
+Conclusion: keep the landed `f106fa7f` 16M GELU claim as covered work, but do
+not use this pass as support for broad 1M eager activation threading. Any next
+change should add committed Criterion rows and per-op gates before extending the
+threaded helper beyond GELU-sized, compute-heavy cases.
+
 ## 2026-06-28 - KEEP (9.74x): thread the compute-bound eager nn activations gelu/silu/softplus/mish (BlackThrush)
 
 Extending the tanh-fix vein (single-threaded eager paths that should thread): the `jax.nn`
