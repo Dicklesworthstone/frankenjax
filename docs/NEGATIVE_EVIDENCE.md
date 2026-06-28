@@ -2,6 +2,20 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: complex real/imag threaded — 3.54x internal, 3.2x JAX loss → parity (ProudSalmon)
+
+`eval_real`/`eval_imag` extracted the re/im component scalar single-thread (`src.iter().map(|&(re,_)| re)
+.collect()`) — reads 256MB (16M complex128, strided) into a 128MB output, BW-bound, and JAX's complex real/imag
+is slow (~26ms). Added slice-threaded `threaded_complex_component_f64`/`_f32` (autovec preserved per thread),
+wired into both for Complex128/Complex64. BIT-IDENTICAL (per-element component pick) — real/imag tests 2/0.
+
+Evidence — SAME-INVOCATION A/B (`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, 16M complex128
+`real`): serial map **77.2ms → threaded helper 21.84ms = 3.54x**; full `eval_primitive(Real)` **27.58ms** vs
+JAX 0.10.2 `jnp.real` **26.0ms = ~parity** (the helper at 21.84ms BEATS JAX 1.19x, but fj-lax's eval machinery
++ 128MB output write — so4wo — adds ~6ms back to parity). Was a ~3.2x LOSS at serial. The 3.54x internal closes
+a common op (component extraction) from 3x-slower-than-JAX to parity. clippy+fmt clean. (conj left serial — full
+256MB output, more so4wo-floored.)
+
 ## 2026-06-28 - WIN: u64/u32 same-shape comparison SIMD-bitmask — u64 1.69x WIN vs JAX (ProudSalmon)
 
 Completes the same-shape comparison family across ALL dtypes (f64/f32/i64/i32 + complex done; u64/u32 were the

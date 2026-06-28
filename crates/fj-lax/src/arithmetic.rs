@@ -5566,6 +5566,71 @@ pub(crate) fn eval_conj(primitive: Primitive, inputs: &[Value]) -> Result<Value,
     }
 }
 
+// Slice-threaded extraction of one component (re or im) of a packed complex slice into a
+// dense f64/f32 output. A complex real/imag read scans 256MB (16M complex128) into a 128MB
+// output — BW-bound, one core cannot saturate DRAM, and JAX's complex real/imag is slow
+// (~26ms). Threading over contiguous chunks keeps the per-thread map autovectorized.
+// Bit-identical (per-element component pick, order-independent).
+fn threaded_complex_component_f64(src: &[(f64, f64)], take_re: bool) -> Vec<f64> {
+    let n = src.len();
+    let mut out = vec![0.0f64; n];
+    if n < CHEAP_BINARY_PARALLEL_MIN || work_scaled_threads(n) <= 1 {
+        for (o, &(re, im)) in out.iter_mut().zip(src) {
+            *o = if take_re { re } else { im };
+        }
+        return out;
+    }
+    let threads = work_scaled_threads(n);
+    let chunk = n.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut o_rest = out.as_mut_slice();
+        let mut x0 = 0usize;
+        while x0 < n {
+            let cnt = chunk.min(n - x0);
+            let (oblk, otail) = o_rest.split_at_mut(cnt);
+            o_rest = otail;
+            let sblk = &src[x0..x0 + cnt];
+            x0 += cnt;
+            scope.spawn(move || {
+                for (o, &(re, im)) in oblk.iter_mut().zip(sblk) {
+                    *o = if take_re { re } else { im };
+                }
+            });
+        }
+    });
+    out
+}
+
+fn threaded_complex_component_f32(src: &[(f64, f64)], take_re: bool) -> Vec<f32> {
+    let n = src.len();
+    let mut out = vec![0.0f32; n];
+    if n < CHEAP_BINARY_PARALLEL_MIN || work_scaled_threads(n) <= 1 {
+        for (o, &(re, im)) in out.iter_mut().zip(src) {
+            *o = if take_re { re as f32 } else { im as f32 };
+        }
+        return out;
+    }
+    let threads = work_scaled_threads(n);
+    let chunk = n.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut o_rest = out.as_mut_slice();
+        let mut x0 = 0usize;
+        while x0 < n {
+            let cnt = chunk.min(n - x0);
+            let (oblk, otail) = o_rest.split_at_mut(cnt);
+            o_rest = otail;
+            let sblk = &src[x0..x0 + cnt];
+            x0 += cnt;
+            scope.spawn(move || {
+                for (o, &(re, im)) in oblk.iter_mut().zip(sblk) {
+                    *o = if take_re { re as f32 } else { im as f32 };
+                }
+            });
+        }
+    });
+    out
+}
+
 fn real_dtype_from_complex(dtype: DType) -> DType {
     match dtype {
         DType::Complex64 => DType::F32,
@@ -5607,11 +5672,11 @@ pub(crate) fn eval_real(primitive: Primitive, inputs: &[Value]) -> Result<Value,
                 let tv = match tensor.dtype {
                     DType::Complex128 => TensorValue::new_f64_values(
                         tensor.shape.clone(),
-                        src.iter().map(|&(re, _)| re).collect(),
+                        threaded_complex_component_f64(src, true),
                     ),
                     DType::Complex64 => TensorValue::new_f32_values(
                         tensor.shape.clone(),
-                        src.iter().map(|&(re, _)| re as f32).collect(),
+                        threaded_complex_component_f32(src, true),
                     ),
                     _ => {
                         return Err(EvalError::TypeMismatch {
@@ -5665,11 +5730,11 @@ pub(crate) fn eval_imag(primitive: Primitive, inputs: &[Value]) -> Result<Value,
                 let tv = match tensor.dtype {
                     DType::Complex128 => TensorValue::new_f64_values(
                         tensor.shape.clone(),
-                        src.iter().map(|&(_, im)| im).collect(),
+                        threaded_complex_component_f64(src, false),
                     ),
                     DType::Complex64 => TensorValue::new_f32_values(
                         tensor.shape.clone(),
-                        src.iter().map(|&(_, im)| im as f32).collect(),
+                        threaded_complex_component_f32(src, false),
                     ),
                     _ => {
                         return Err(EvalError::TypeMismatch {
@@ -14551,6 +14616,49 @@ mod tests {
     use super::*;
 
     // Same-invocation A/B: serial vs threaded complex128 add (512MB read, JAX ~45ms).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_complex_real_threaded_vs_serial() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let z: Vec<(f64, f64)> = (0..n)
+            .map(|i| ((i % 1000) as f64, (i % 7) as f64))
+            .collect();
+        let zt = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                z.clone(),
+            )
+            .unwrap(),
+        );
+        let time_it = |label: &str, f: &dyn Fn() -> u64| {
+            std::hint::black_box(f());
+            let mut b = f64::MAX;
+            for _ in 0..8 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("REF {label}: {:.3}ms", b * 1e3);
+        };
+        time_it("complex_real_serial", &|| {
+            let out: Vec<f64> = z.iter().map(|&(re, _)| re).collect();
+            std::hint::black_box(&out);
+            out[123].to_bits()
+        });
+        time_it("complex_real_threaded", &|| {
+            std::hint::black_box(threaded_complex_component_f64(&z, true)[123].to_bits())
+        });
+        let p = BTreeMap::new();
+        time_it("complex_real_eval", &|| {
+            let v = crate::eval_primitive(Primitive::Real, std::slice::from_ref(&zt), &p).unwrap();
+            std::hint::black_box(v.as_tensor().unwrap().elements.len()) as u64
+        });
+    }
+
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_complex_add_threaded_vs_serial() {
