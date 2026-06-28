@@ -2,6 +2,35 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - NO-SHIP: dense-f64 RFFT exact-pack branch is not a Criterion-significant win (ProudSalmon)
+
+DIG followed the remaining FFT/RFFT gap after the dense-f64 pow2 RFFT tuple-lift
+keep: specialize `vectorized_rfft_pow2_block_f64` when `copy_len == fft_length`
+so exact/truncated inputs read `row[2*idx]`/`row[2*idx+1]` directly instead of
+testing the zero-padding branch for every packed lane. This is distinct from the
+landed tuple-materialization skip: it only removes the per-lane padding guards
+inside the already-dense SoA pack.
+
+RCH had no admissible worker and fell open locally for both ORIG and candidate;
+same checkout, same target dir, same single `fj-lax` Criterion row. This Cargo
+rejects `cargo bench --release`, so the accepted release spelling was used:
+`AGENT_NAME=ProudSalmon RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,AGENT_NAME
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec --
+cargo bench -p fj-lax --profile release --bench lax_baseline --
+'eval/rfft_batch_2048x256_f64_dense_input$'`.
+
+| workload | ORIG midpoint | candidate midpoint | candidate/ORIG | Criterion verdict |
+|---|---:|---:|---:|---|
+| `eval/rfft_batch_2048x256_f64_dense_input` | 4.1422 ms | 3.6864 ms | 0.890x time / 1.12x faster | No change, p=0.46 |
+
+Focused behavior proof was green:
+`cargo test -p fj-lax --profile release vectorized_rfft_pow2_bit_identical_to_per_row
+-- --nocapture` (1/0). Because the measured interval still crossed zero and
+Criterion reported no performance change, the code change was reverted. Do not
+retry this exact no-padding-branch RFFT pack gate without a same-binary A/B or a
+lower-noise worker result; the remaining FFT gap is in the kernel schedule /
+recombination arithmetic, not this branch.
+
 ## 2026-06-28 - SCOPE CORRECTION: 1M Criterion rows do not support broad eager-nn threading (ProudSalmon)
 
 LAND-OR-DIG audit initially found the local `main` WIP
