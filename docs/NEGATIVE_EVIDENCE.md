@@ -2,6 +2,27 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: COMPLEX full-reduce threaded — complex sum 1.43x WIN vs JAX (was 1.91x loss) (ProudSalmon)
+
+After threading the float (f64/f32 sum/prod) and integer full-reduces, the COMPLEX full-reduce
+(sum/prod/max/min → scalar) was the last single-thread holdout: `eval_complex_full_reduce`'s dense path folded
+the packed `(re, im)` slice with ONE scalar accumulator. Complex128 is 16 B/elem, so a 16M reduce reads 256MB —
+purely BW-bound, and one core cannot saturate multi-channel DRAM. Added `threaded_complex_full_reduce`
+(per-chunk independent `(re,im)` accumulator, combine partials with the SAME fold) wired in for inputs ≥8.4M.
+sum/prod reassociation is TOLERANCE (complex +/× non-associative in FP, same accepted contract as the float
+reduce); lexicographic max/min is order-invariant → BIT-IDENTICAL. Small inputs keep the ascending scalar fold.
+
+Evidence — SAME-INVOCATION A/B (scalar ref beside threaded in one binary, min-of-8),
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, `rch exec -- cargo test -p fj-lax --profile
+release --lib bench_full_reduce_vs_jax -- --ignored` (16M Complex128):
+  - complex sum: scalar **13.34ms → threaded 4.89ms = 2.73x internal**.
+  - JAX 0.10.2 x64 `jnp.sum(complex128)` 16M = **6.98ms** (jaxvenv) → **4.89 vs 6.98 = ~1.43x WIN vs JAX**
+    (was a 1.91x LOSS at scalar 13.34ms). prod/max/min share the identical threaded path.
+Bit-identical small path + tolerance large path: guard `threaded_complex_full_reduce_matches_scalar` (sum
+tolerance, max/min bit-exact vs scalar fold, 8.4M+); reduce suite 145/0, clippy+fmt clean. Conformance unaffected
+(its complex reduces are below the threading gate → still scalar). The float+integer+complex full-reduce family
+is now fully threaded.
+
 ## 2026-06-28 - WIN: f64 PROD + f32 SUM/PROD full-reduce threaded tree-fold — ~2.7x (completes the float-reduce family) (ProudSalmon)
 
 Completes the tolerance-relaxed float full-reduce family. The f64 SUM tree-fold (mine, 2026-06-25, KEEP) and

@@ -405,6 +405,47 @@ fn threaded_tree_reduce_f32_to_f64(values: &[f32], mul: bool) -> f64 {
     acc
 }
 
+// Threaded complex full-reduce (sum/prod/max/min). A full complex reduce is a pure
+// BW-bound read of the packed (re, im) backing (16 B/elem for Complex128) — one core
+// cannot saturate multi-channel DRAM. `fold` is the per-element step (sum/prod/lex
+// max/min); `init` is the op's identity. Each chunk folds an independent (re, im)
+// accumulator, then the partials combine with the SAME fold. sum/prod reassociation is
+// TOLERANCE (complex +/* non-associative in FP, same contract as the float reduce);
+// max/min lexicographic compare is order-invariant -> BIT-IDENTICAL. Small inputs stay
+// on the caller's ascending scalar fold.
+fn threaded_complex_full_reduce(
+    src: &[(f64, f64)],
+    init: (f64, f64),
+    fold: &(impl Fn(&mut f64, &mut f64, f64, f64) + Sync),
+) -> (f64, f64) {
+    let n = src.len();
+    let threads = crate::arithmetic::work_scaled_threads(n).min(8);
+    let chunk = n.div_ceil(threads);
+    let partials: Vec<(f64, f64)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = src
+            .chunks(chunk)
+            .map(|c| {
+                scope.spawn(move || {
+                    let (mut re, mut im) = init;
+                    for &(r, i) in c {
+                        fold(&mut re, &mut im, r, i);
+                    }
+                    (re, im)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("complex reduce partial-fold thread"))
+            .collect()
+    });
+    let (mut re, mut im) = init;
+    for (r, i) in partials {
+        fold(&mut re, &mut im, r, i);
+    }
+    (re, im)
+}
+
 /// f32 sibling of [`threaded_reduce_minmax_f64`].
 fn threaded_reduce_minmax_f32(values: &[f32], is_max: bool) -> f32 {
     let n = values.len();
@@ -1735,8 +1776,16 @@ pub(crate) fn eval_reduce(
                 // literal_to_complex_parts returns for dense complex), skipping the
                 // per-element 24-byte Literal reconstruction.
                 if let Some(src) = tensor.elements.as_complex_slice() {
-                    for &(re, im) in src {
-                        fold(&mut re_acc, &mut im_acc, re, im);
+                    if src.len() >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
+                        && crate::arithmetic::work_scaled_threads(src.len()) > 1
+                    {
+                        let (re, im) = threaded_complex_full_reduce(src, (re_acc, im_acc), &fold);
+                        re_acc = re;
+                        im_acc = im;
+                    } else {
+                        for &(re, im) in src {
+                            fold(&mut re_acc, &mut im_acc, re, im);
+                        }
                     }
                 } else {
                     for literal in &tensor.elements {
@@ -6366,6 +6415,32 @@ mod tests {
         time_it("sum_f32_threaded", &|| {
             threaded_tree_reduce_f32_to_f64(&dataf32b, false)
         });
+
+        // Complex128 full sum (16M complex = 256MB read, BW-bound). Same-invocation
+        // scalar-fold ref vs the threaded helper.
+        let cdata: Vec<(f64, f64)> = (0..n)
+            .map(|i| {
+                (
+                    0.5 + (i % 9973) as f64 * 1e-4,
+                    0.25 - (i % 7919) as f64 * 1e-4,
+                )
+            })
+            .collect();
+        let csum_fold = |re: &mut f64, im: &mut f64, r: f64, i: f64| {
+            *re += r;
+            *im += i;
+        };
+        time_it("complex_sum_scalar", &|| {
+            let (mut re, mut im) = (0.0, 0.0);
+            for &(r, i) in &cdata {
+                csum_fold(&mut re, &mut im, r, i);
+            }
+            re + im
+        });
+        time_it("complex_sum_threaded", &|| {
+            let (re, im) = threaded_complex_full_reduce(&cdata, (0.0, 0.0), &csum_fold);
+            re + im
+        });
     }
 
     // BOLD-VERIFY: max-reduce 2D vs JAX (f32 ax0 1.67 ax1 0.65ms; f64 ax0 10.36 ax1 3.13ms).
@@ -7113,6 +7188,62 @@ mod tests {
         assert!(
             (prod_got - prod_seq).abs() <= prod_tol,
             "large tree f32 reduce_prod got {prod_got}, sequential {prod_seq}"
+        );
+    }
+
+    #[test]
+    fn threaded_complex_full_reduce_matches_scalar() {
+        let n = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN + 777;
+        let data: Vec<(f64, f64)> = (0..n)
+            .map(|i| ((i as f64 * 1.1e-7).sin(), (i as f64 * 1.3e-7).cos()))
+            .collect();
+        let scalar = |init: (f64, f64), f: &dyn Fn(&mut f64, &mut f64, f64, f64)| {
+            let (mut re, mut im) = init;
+            for &(r, i) in &data {
+                f(&mut re, &mut im, r, i);
+            }
+            (re, im)
+        };
+        // SUM (complex add, reassociation -> tolerance).
+        let sum_fold = |re: &mut f64, im: &mut f64, r: f64, i: f64| {
+            *re += r;
+            *im += i;
+        };
+        let (tre, tim) = threaded_complex_full_reduce(&data, (0.0, 0.0), &sum_fold);
+        let (sre, sim) = scalar((0.0, 0.0), &sum_fold);
+        assert!(
+            (tre - sre).abs() <= sre.abs() * 1e-10 + 1e-9
+                && (tim - sim).abs() <= sim.abs() * 1e-10 + 1e-9,
+            "complex sum threaded ({tre},{tim}) vs scalar ({sre},{sim})"
+        );
+        // MAX / MIN (lexicographic compare, order-invariant -> BIT-IDENTICAL).
+        let max_fold = |re: &mut f64, im: &mut f64, r: f64, i: f64| {
+            if complex_lex_cmp((r, i), (*re, *im)).is_gt() {
+                *re = r;
+                *im = i;
+            }
+        };
+        let init = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+        let (tre, tim) = threaded_complex_full_reduce(&data, init, &max_fold);
+        let (sre, sim) = scalar(init, &max_fold);
+        assert_eq!(
+            (tre.to_bits(), tim.to_bits()),
+            (sre.to_bits(), sim.to_bits()),
+            "complex max"
+        );
+        let min_fold = |re: &mut f64, im: &mut f64, r: f64, i: f64| {
+            if complex_lex_cmp((r, i), (*re, *im)).is_lt() {
+                *re = r;
+                *im = i;
+            }
+        };
+        let init = (f64::INFINITY, f64::INFINITY);
+        let (tre, tim) = threaded_complex_full_reduce(&data, init, &min_fold);
+        let (sre, sim) = scalar(init, &min_fold);
+        assert_eq!(
+            (tre.to_bits(), tim.to_bits()),
+            (sre.to_bits(), sim.to_bits()),
+            "complex min"
         );
     }
 
