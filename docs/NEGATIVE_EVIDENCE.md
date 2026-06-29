@@ -2,6 +2,29 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - SURVEY (isolated re-measure): reduction/scatter/one_hot family exhausted after mid-axis max fix (ProudSalmon)
+
+Isolated re-measure (one bench per invocation, load-noise-free) of the vs-JAX suite to find the next
+real gap after landing the mid-axis max threading win. Result — the family is all WINS or alloc-floor:
+
+| op (16M / as noted) | fj-lax | JAX | verdict |
+|---|---:|---:|---|
+| any(x>0) f64 16M | 3.21 ms | 5.95 ms | WIN 1.85x |
+| sum 3D-mid [256,1024,64] | 3.14 ms | 4.24 ms | WIN 1.34x |
+| max 3D-mid (this session's fix) | 3.38 ms | 4.32 ms | WIN 1.28x |
+| sum/max/prod f64 full 16M | 2.52/3.96/3.98 ms | 6.5/6.7/- | WIN |
+| argmax f64 full 16M | 12.93 ms | 25.2 ms | WIN 1.95x |
+| argmax 3D-mid | 3.15 ms | 3.43 ms | ~parity |
+| scatter-add f64 1M/1M | 4.44 ms | 4.78 ms | WIN |
+| one_hot f32 [200000,512] | 59.2 ms | 48.0 ms | **1.23x LOSS** |
+
+Only `one_hot` loses, and its fill (`one_hot_scatter`) is ALREADY threaded — the 1.23x is the per-call
+410MB fresh-output PAGE-FAULT cost (7 vs JAX's buffer-reused 8.5 GB/s), i.e. the eval-model alloc
+frontier already quantified at 1.62x and tracked as bead `frankenjax-jjb1h` (buffer donation). NOT a
+contained kernel lever. The reduction/scatter/one_hot family is exhausted for contained per-crate
+wins. No code change in this entry. (Method note: the earlier batched sweep falsely flagged any/sum as
+6x/3x gaps — they are WINS; always re-measure isolated.)
+
 ## 2026-06-29 - KEEP (LANDED): thread f64 middle/leading-axis max/min reduce — 1.67x JAX LOSS -> 1.28x WIN (2.77x internal) (ProudSalmon)
 
 Re-measured the vs-JAX bench suite in ISOLATION (the batched sweep is load-inflated — `any(x>0)` read
