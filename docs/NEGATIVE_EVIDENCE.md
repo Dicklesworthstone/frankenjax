@@ -2,6 +2,23 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - DO-NOT-REDIG: conv + convert confirmed (GEMM-FMA-floor / already-threaded); primitive sweep absolutely complete (ProudSalmon)
+
+Last two un-checked primitives:
+- **conv**: no vs-JAX bench (internal A/B only). Main path = im2col + GEMM (FMA-floor -> `cntiy`);
+  grouped/depthwise channel-vectorized (mined). Conv VJP GEMM-routed. No contained lever.
+- **convert/astype**: BOTH directions threaded (`threaded_convert_into`: f64->f32 line 6076, f32->f64
+  line 6262, +bf16/f16/int). Measured f64->f32 11.3ms / f32->f64 19.4ms / f64->bf16 5.2ms — the
+  f32->f64 1.7x asymmetry is the inherent write-heavy direction (writes 128MB vs reads 64MB, RFO), not
+  a serial sibling. No lever.
+
+PRIMITIVE SWEEP NOW ABSOLUTELY COMPLETE this session — every measurable primitive family isolate-
+measured or source-audited: reduction, take/gather, elementwise, array-manip, sort, linalg, FFT,
+scatter, one_hot, cumulative, transcendental/activation, conv, convert. The contained per-crate kernel
+frontier is mined; the only residual vs-JAX losses are the three INDEPENDENT non-contained gates:
+`murmw` (FFT pocketfft kernel, 14.9x, multi-session), `cntiy` (+fma -> transcendental/GEMM/conv/
+attention), `jjb1h` (eval-model buffer donation, 1.62x, architectural). No code change.
+
 ## 2026-06-29 - CLARIFY (FFT root cause): batched FFT 14.9x is NOT +fma-gated (no mul_add); it's the standalone pocketfft kernel (murmw) (ProudSalmon)
 
 Refined the FFT blocker root cause. The butterfly kernels (`soa_radix2/4_butterfly_stages`,
