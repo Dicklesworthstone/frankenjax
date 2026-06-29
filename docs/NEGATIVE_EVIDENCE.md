@@ -2,6 +2,23 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - NO-SHIP (measured 0.82x): guarded conjugate-form complex_div — Smith's already wins (BlackThrush)
+
+After the complex hypot-elision family, tried the analogous division-count reduction: `complex_div` uses
+Smith's algorithm (3 divisions + a branch, for overflow safety); the direct conjugate form
+`(a·conj(b))/|b|²` is 1 division. Guarded it for overflow safety (`|b|²` normal AND
+`max(|ar|,|ai|,|br|,|bi|) < 1.34e154` so no product overflows → else Smith's). ISOLATED in-process A/B
+(probe, NOT production — bench-first to protect the broadly-used `complex_div`): 4M complex128 divisions,
+Smith's **12.74 ms** vs guarded **15.58 ms = 0.82x REGRESSION** (rel err <1e-12, correct).
+
+ROOT CAUSE: Smith's is ~3 ns/element — NOT division-bound (the 3 divisions pipeline well / overlap), so
+the guarded form's per-element overhead (4 `abs` + 3 `max` + `is_normal` + computing `|b|²`) EXCEEDS the
+2-division saving. A cheaper `d.is_normal()`-only guard would reintroduce numerator overflow for huge
+`|a|`, not worth the risk on an op that's already fast. DO-NOT replace Smith's complex_div with the
+conjugate form. (Distinct from the hypot-elision wins: there the libm `hypot`/`sin`/`cos` calls are
+~20-40 cyc and the replacement is cheap — here division already pipelines and the guard isn't free.)
+Bench-first on a probe test (no production edit) — nothing to revert beyond removing the probe.
+
 ## 2026-06-29 - KEEP (3.0x on the |z±1| magnitudes): complex asin/acos HFT hypot-elision (BlackThrush)
 
 Completes the complex hypot-elision family (log/abs/sqrt/pow done earlier; I'd skipped this one citing
