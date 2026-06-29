@@ -2,6 +2,24 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - REJECT (bench-backed): 2x-unroll of SIMD-unary driver is NEUTRAL post-branch-skip; threading already saturates (ProudSalmon)
+
+Re-attempted driver unroll under NEW conditions: after the bessel branch-skip, i0e is single-branch
+(light registers, unlike the 4x-unroll reject which had both branches + spilled). The single-branch
+30-step Clenshaw is latency-bound in isolation (~210cyc chain vs ~22cyc throughput), so 2x-unroll (2
+chains, ~12 AVX regs < 16, no spill) should hide it. Same-binary A/B (`FJ_SIMD_X1`), i0e 16M f64:
+
+| path | best |
+|---|---:|
+| 1x (current, branch-skip) | 24.86 ms |
+| 2x-unroll | 25.44 ms |
+
+**~0.98x = NEUTRAL.** The unroll doesn't help because the 16 THREADS already provide ILP/MLP across
+groups (16 independent Clenshaw chains run concurrently) + the compiler pipelines the inlined
+single-branch loop — within-thread unroll is redundant. REVERTED (branch-skip stays). KEY: i0e is now
+24.86ms vs JAX 21.7 = **1.15x = near-parity** (the branch-skip extracted 1.67x->1.15x; little residual
+left, and it's the no-FMA Clenshaw throughput -> cntiy). DO-NOT unroll the threaded SIMD-unary driver.
+
 ## 2026-06-29 - MEASURED-SURFACE SWEEP COMPLETE: top_k 460x WIN; sort family + nearly all ops beat JAX (ProudSalmon)
 
 Last un-measured JAX-target op: `top_k k=64 f64 [4096,4096]` = 5.31ms vs JAX 2440ms = **460x WIN**
