@@ -2,23 +2,27 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
-## 2026-06-29 - BLOCKER (host): bench fleet contended ~12x; algorithm-free scan floor proves wins are unverifiable now (ProudSalmon)
+## 2026-06-29 - SURFACE (corrected): 4M cumsum floor is PAGE-FAULT-bound (~33ms, load-INVARIANT), not contention; real gap is per-call 32MB alloc (ProudSalmon)
 
-Decisive load measurement this pass via the existing `eval/cumsum_4m_f64_1d_tight` micro-bench — a
-PURE sequential `acc+=v; out.push(acc)` over 4M f64 with NO algorithm, NO dispatch (its author
-CrimsonOtter measured its floor at **~3ms on an idle host**). Measured now: **36.9ms — a ~12x
-inflation** of a fixed-work loop. Same code, same machine → the delta is pure host contention, not
-algorithm. Corroborating: `/proc/loadavg` 18.56 on 64 cores with competing `gh`/`sbh`/`claude`
-processes saturating memory bandwidth. Companion reads this pass: `eval/cummax_4m_f64_1d` 9.2ms
-(ledger idle ~ varies), `eval/cummax_4096x1024_f32_axis1` 5.6ms.
+SELF-CORRECTION of a wrong conclusion I nearly committed. First read of `eval/cumsum_4m_f64_1d_tight`
+(pure `acc+=v; out.push(acc)`, no algorithm) was 36.9ms at loadavg 18.56; I hypothesized ~12x host
+CONTENTION vs the bench author's "~3ms idle floor" estimate. Re-measured after load fell to 6.72
+(3x drop): tight-floor was **33.1ms — essentially UNCHANGED**. A load-invariant fixed-work loop is
+NOT contention-bound. ROOT CAUSE: the tight bench `Vec::with_capacity(4M)` then push-faults a fresh
+32MB output EVERY criterion iteration → ~8200 first-touch PAGE FAULTS dominate (~30ms of kernel
+fault-handling), which the author's "~3ms" estimate (FP-add chain only) omitted. So tight-floor is a
+BAD load detector and my proposed "<6ms gate" was wrong — DISREGARD it.
 
-Consequence (the actionable blocker): per the project's own standing rule ("definitive vs-JAX
-win/loss requires an IDLE host"), **no MEASURED land-or-dig win can be honestly declared while the
-algorithm-free scan floor reads >2x its ~3ms idle value.** A same-binary A/B is NOT contention-immune
-(load varies WITHIN a run — see this session's FFT A/B which split 4.0 vs 3.16 ms on byte-identical
-binaries; and `threaded-eager-fusion`: idle "wins" REVERSE to 0.42x under contention). RECOMMENDED
-GATE for the next agent: before declaring any win, run `eval/cumsum_4m_f64_1d_tight`; proceed only if
-it reads < ~6ms (≤2x idle floor), else defer landing. No code change this pass; tree clean.
+Real signal that stands: production `eval/cumsum_4m_f64_1d` (~30ms vs JAX 14.1ms) is likewise
+PAGE-FAULT / ALLOCATION-bound — `eval_primitive` must return a FRESH `Value`, so every call allocates
+and first-touches a new 32MB output buffer; JAX/XLA reuses pre-faulted device buffers and pays this
+once. The kernel (blocked parallel-prefix) is not the bottleneck; the per-call 32MB output
+materialization is. This is the documented allocation/dispatch architectural frontier
+(`interpreter-dispatch-is-the-frontier` / compiled-jaxpr typed-slot pooling), NOT a contained kernel
+lever, and it is NOT closable under the fresh-Value contract without buffer pooling (multi-session).
+Companion reads: `eval/cummax_4m_f64_1d` 9.2ms, `eval/cummax_4096x1024_f32_axis1` 5.6ms. Load-variance
+across a run is still real (this session's FFT A/B split 4.0 vs 3.16ms on identical binaries), so
+prefer median-of-3 same-binary A/B. No code change; tree clean.
 
 ## 2026-06-29 - BLOCKER: all 4 biggest remaining measured gaps code-audited at-floor; the wall is ONE policy fork (ProudSalmon)
 
