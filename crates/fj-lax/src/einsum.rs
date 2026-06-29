@@ -520,6 +520,7 @@ fn batched_matmul_slices_into(
     lhs_stride: usize,
     rhs_stride: usize,
     out_stride: usize,
+    transpose_lhs: bool,
     transpose_rhs: bool,
 ) -> Vec<f64> {
     let mut out = vec![0.0f64; batch_size * out_stride];
@@ -540,29 +541,44 @@ fn batched_matmul_slices_into(
     } else {
         1
     };
-    let compute = |bt: usize, dst: &mut [f64], buf: &mut Vec<f64>| {
+    // Per-slice: transpose lhs ([k,m]->[m,k]) and/or rhs ([n,k]->[k,n]) into reusable scratch as
+    // needed (ascending, exact data movement), then dispatch the canonical [m,k]·[k,n] product.
+    let compute = |bt: usize, dst: &mut [f64], a_buf: &mut Vec<f64>, b_buf: &mut Vec<f64>| {
         let a_slice = &a[bt * lhs_stride..bt * lhs_stride + lhs_stride];
         let b_slice = &b[bt * rhs_stride..bt * rhs_stride + rhs_stride];
-        if transpose_rhs {
-            // b_slice is [n, k]; transpose to [k, n] (ascending, exact data movement).
-            buf.clear();
-            buf.resize(k * n, 0.0);
+        let lhs_mk: &[f64] = if transpose_lhs {
+            a_buf.clear();
+            a_buf.resize(m * k, 0.0);
+            for r in 0..k {
+                let row = &a_slice[r * m..r * m + m];
+                for (c, &v) in row.iter().enumerate() {
+                    a_buf[c * k + r] = v;
+                }
+            }
+            a_buf
+        } else {
+            a_slice
+        };
+        let rhs_kn: &[f64] = if transpose_rhs {
+            b_buf.clear();
+            b_buf.resize(k * n, 0.0);
             for r in 0..n {
                 let row = &b_slice[r * k..r * k + k];
                 for (c, &v) in row.iter().enumerate() {
-                    buf[c * n + r] = v;
+                    b_buf[c * n + r] = v;
                 }
             }
-            crate::tensor_contraction::matmul_2d_into(a_slice, m, k, buf, n, dst);
+            b_buf
         } else {
-            crate::tensor_contraction::matmul_2d_into(a_slice, m, k, b_slice, n, dst);
-        }
+            b_slice
+        };
+        crate::tensor_contraction::matmul_2d_into(lhs_mk, m, k, rhs_kn, n, dst);
     };
     if threads <= 1 {
-        let mut buf = Vec::new();
+        let (mut a_buf, mut b_buf) = (Vec::new(), Vec::new());
         for bt in 0..batch_size {
             let s = bt * out_stride;
-            compute(bt, &mut out[s..s + out_stride], &mut buf);
+            compute(bt, &mut out[s..s + out_stride], &mut a_buf, &mut b_buf);
         }
         return out;
     }
@@ -578,12 +594,13 @@ fn batched_matmul_slices_into(
             let start = bt0;
             bt0 += cnt;
             scope.spawn(move || {
-                let mut buf = Vec::new();
+                let (mut a_buf, mut b_buf) = (Vec::new(), Vec::new());
                 for j in 0..cnt {
                     compute_ref(
                         start + j,
                         &mut blk[j * out_stride..(j + 1) * out_stride],
-                        &mut buf,
+                        &mut a_buf,
+                        &mut b_buf,
                     );
                 }
             });
@@ -676,7 +693,7 @@ fn try_einsum2_matmul(
     // Defensive: out_stride product must not overflow before the helper allocs.
     batch_size.checked_mul(out_stride)?;
     let out = batched_matmul_slices_into(
-        a, b, batch_size, m, k, n, lhs_stride, rhs_stride, out_stride, false,
+        a, b, batch_size, m, k, n, lhs_stride, rhs_stride, out_stride, false, false,
     );
 
     let mut out_shape: Vec<usize> = a_shape[..nb].to_vec();
@@ -772,7 +789,7 @@ fn try_einsum2_matmul_bt(
     // rhs slice stored [n, k] (transposed); the helper transposes each to [k, n) per slice
     // and threads independent slices for the attention-score regime.
     let out = batched_matmul_slices_into(
-        a, b, batch_size, m, k, n, lhs_stride, rhs_stride, out_stride, true,
+        a, b, batch_size, m, k, n, lhs_stride, rhs_stride, out_stride, false, true,
     );
 
     let mut out_shape: Vec<usize> = a_shape[..nb].to_vec();
@@ -876,35 +893,22 @@ fn try_einsum2_matmul_at(
         return None;
     }
 
-    let mut out = Vec::with_capacity(batch_size.checked_mul(out_stride)?);
-    let mut at_buf = vec![0.0f64; lhs_stride]; // [m, k] transposed lhs scratch
-    let mut bt_buf = vec![0.0f64; rhs_stride]; // [k, n] transposed rhs scratch (Bᵀ case)
-    for bt in 0..batch_size {
-        let a_slice = &a[bt * lhs_stride..bt * lhs_stride + lhs_stride]; // [k, m]
-        for r in 0..k {
-            let row = &a_slice[r * m..r * m + m];
-            for (c, &v) in row.iter().enumerate() {
-                at_buf[c * k + r] = v; // [m, k]
-            }
-        }
-        let b_slice = &b[bt * rhs_stride..bt * rhs_stride + rhs_stride];
-        let b_kn: &[f64] = if b_transposed {
-            // rhs is [n, k] -> transpose to [k, n].
-            for r in 0..n {
-                let row = &b_slice[r * k..r * k + k];
-                for (c, &v) in row.iter().enumerate() {
-                    bt_buf[c * n + r] = v;
-                }
-            }
-            &bt_buf
-        } else {
-            // rhs already [k, n].
-            b_slice
-        };
-        out.extend_from_slice(&crate::tensor_contraction::matmul_2d(
-            &at_buf, m, k, b_kn, n,
-        ));
-    }
+    batch_size.checked_mul(out_stride)?;
+    // lhs stored [k, m] (transposed); rhs [n, k] when `b_transposed`. The helper transposes each
+    // per slice and threads the independent slices (backprop weight-gradient regime).
+    let out = batched_matmul_slices_into(
+        a,
+        b,
+        batch_size,
+        m,
+        k,
+        n,
+        lhs_stride,
+        rhs_stride,
+        out_stride,
+        true,
+        b_transposed,
+    );
 
     let mut out_shape: Vec<usize> = a_shape[..nb].to_vec();
     out_shape.push(m);
@@ -1310,6 +1314,40 @@ mod tests {
                 }
                 out[0] + out[out.len() / 2]
             });
+            // Full-helper path including the lhs transpose (the _at backprop regime), threaded.
+            let at_threaded = best(&|| {
+                let out = super::batched_matmul_slices_into(
+                    &a, &b, batch, m, k, n, ls, rs, os, true, false,
+                );
+                out[0] + out[out.len() / 2]
+            });
+            let at_serial = best(&|| {
+                let mut out = vec![0.0f64; batch * os];
+                let mut ab = vec![0.0f64; m * k];
+                for bt in 0..batch {
+                    let asl = &a[bt * ls..bt * ls + ls];
+                    for r in 0..k {
+                        for c in 0..m {
+                            ab[c * k + r] = asl[r * m + c];
+                        }
+                    }
+                    crate::tensor_contraction::matmul_2d_into(
+                        &ab,
+                        m,
+                        k,
+                        &b[bt * rs..bt * rs + rs],
+                        n,
+                        &mut out[bt * os..bt * os + os],
+                    );
+                }
+                out[0] + out[out.len() / 2]
+            });
+            eprintln!(
+                "[batched_matmul_AT B={batch} {m}x{k}x{n}] serial={:.3}ms threaded={:.3}ms ratio={:.2}x",
+                at_serial as f64 / 1e6,
+                at_threaded as f64 / 1e6,
+                at_serial as f64 / at_threaded as f64,
+            );
             let threaded = best(&|| {
                 let mut out = vec![0.0f64; batch * os];
                 let threads = std::thread::available_parallelism()

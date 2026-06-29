@@ -2,6 +2,27 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - KEEP (LANDED, 13th win): batch-thread the lhs-transposed batched matmul (Aᵀ·B / Aᵀ·Bᵀ backprop) — 2.41-2.80x (ProudSalmon)
+
+Completes the batched-matmul batch-threading: the lhs-transposed path `try_einsum2_matmul_at` (the
+backprop weight-gradient layout `Xᵀ·dY`, `Aᵀ·B` and `Aᵀ·Bᵀ`) still ran a SERIAL per-slice loop after the
+12th win threaded the canonical/`A·Bᵀ` paths. Generalized `batched_matmul_slices_into` to take a
+`transpose_lhs` flag (two per-thread transpose scratch buffers), and routed `_at` through it
+(transpose_lhs=true, transpose_rhs=b_transposed). Now all three einsum2 batched-matmul fast paths
+(`A·B`, `A·Bᵀ`, `Aᵀ·B`/`Aᵀ·Bᵀ`) fan independent slices across `thread::scope`.
+
+Same-binary A/B (min-of-5), serial vs threaded (full helper incl. per-slice lhs transpose):
+
+| batch × slice | serial | threaded | ratio |
+|---|---:|---:|---:|
+| 256 × 128×64×128 | 40.69 ms | 16.90 ms | 2.41x |
+| 512 × 64×64×64 | 13.90 ms | 4.97 ms | **2.80x** |
+
+Bit-for-bit identical (`einsum2_lhs_transposed_matmul_bit_identical` + the batched bit-identity tests
+pass). Gates: `cargo fmt -p fj-lax --check` clean; `cargo test -p fj-lax --lib` 1646/0. Realistic training
+workload (the gradient of every linear/attention layer). Batched-matmul batch-threading is now COMPLETE
+across all three orientation fast paths.
+
 ## 2026-06-29 - KEEP (LANDED, 12th win): batch-threaded batched matmul (attention einsum) — 1.89-2.71x (ProudSalmon)
 
 DIFFERENT primitive (dot_general/einsum batched matmul = the attention `Q·V` / `Q·Kᵀ` path). The
