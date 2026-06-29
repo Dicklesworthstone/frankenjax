@@ -2,6 +2,21 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - DO-NOT-REDIG: sort confirmed radix-optimized; primitive-by-primitive dig exhausted this session (ProudSalmon)
+
+Picked integer/float SORT as a fresh "different primitive" lever (radix O(n) vs comparison O(n log n)).
+Already done: `sort_along_axis_dense_{i64,f64,f32,half}` all use `radix_pairs_ascending_maybe_parallel`
+with total-order key transforms (`f64_sort_order_key` etc.) and `use_parallel_radix` threading. The
+only comparison-sort path (`sort_along_axis`, `compare_sort_keys_nan_last`) is the niche COMPLEX /
+non-radix-dtype fallback, itself already line-threaded — and complex is inherently lexicographic.
+No lever. This is the 6th consecutive primitive this session confirmed at its optimized floor by
+direct source audit / bench: **FFT (tuned butterflies+leaf fusion), cumsum (blocked/assoc, bench-
+rejected unify), cummax/cummin (3-pass threaded), scatter (range-partitioned), sort (parallel radix),
+linalg (wins 1.3-30x already)**. DO-NOT-REDIG these for a contained kernel win. The only remaining
+levers are (a) multi-session architectural (compiled-jaxpr typed-slot dispatch / per-call output
+buffer pooling — the alloc-bound frontier) or (b) policy-walled SIMD (`#![forbid(unsafe_code)]` /
+no-`+fma`). No code change; tree clean.
+
 ## 2026-06-29 - REJECT (bench-backed): forward f64 cumsum via 2-pass-total rescan == blocked scan (~1.0x), REVERTED (ProudSalmon)
 
 DIG + measure on the 4M forward-cumsum path (at a genuinely idle window: `eval/cumsum_4m_f64_1d`
