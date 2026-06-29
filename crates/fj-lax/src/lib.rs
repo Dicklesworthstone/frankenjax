@@ -7184,6 +7184,68 @@ fn reduce_window_separable_sum_nd_f64(
     cur
 }
 
+/// i64 sibling of [`reduce_window_separable_sum_nd_f64`] for N-D integer sum pooling. Integer add
+/// is a ring (associative even on overflow), so the block-prefix with `wrapping_add`/`wrapping_sub`
+/// is BIT-IDENTICAL to the naive `wrapping_add` fold in `eval_reduce_window_dense_i64` — no
+/// tolerance. Generalizes the rank-3 i64 separable to any rank (e.g. rank-5 integer volumetric
+/// pooling), handling any stride/padding (OOB taps = 0).
+fn reduce_window_separable_sum_nd_i64(
+    src: &[i64],
+    input_dims: &[usize],
+    window_dims: &[usize],
+    strides: &[usize],
+    pad_lows: &[usize],
+    out_dims: &[usize],
+) -> Vec<i64> {
+    let rank = input_dims.len();
+    let mut cur = src.to_vec();
+    let mut cur_dims = input_dims.to_vec();
+    for d in 0..rank {
+        if window_dims[d] == 1 && strides[d] == 1 && pad_lows[d] == 0 && cur_dims[d] == out_dims[d]
+        {
+            continue;
+        }
+        let l = cur_dims[d];
+        let out_l = out_dims[d];
+        let inner: usize = cur_dims[d + 1..].iter().product();
+        let outer: usize = cur_dims[..d].iter().product();
+        let (wd, sd, pd) = (window_dims[d], strides[d], pad_lows[d]);
+        let mut next = vec![0i64; outer * out_l * inner];
+        let mut prefix = vec![0i64; (l + 1) * inner];
+        for o in 0..outer {
+            let cur_o = o * l * inner;
+            let next_o = o * out_l * inner;
+            for v in prefix[0..inner].iter_mut() {
+                *v = 0;
+            }
+            for k in 0..l {
+                let (lo, hi) = prefix.split_at_mut((k + 1) * inner);
+                let prev = &lo[k * inner..(k + 1) * inner];
+                let nextp = &mut hi[0..inner];
+                let row = &cur[cur_o + k * inner..cur_o + (k + 1) * inner];
+                for ((p, &pv), &rv) in nextp.iter_mut().zip(prev).zip(row) {
+                    *p = pv.wrapping_add(rv);
+                }
+            }
+            for ol in 0..out_l {
+                let raw_start = ol as isize * sd as isize - pd as isize;
+                let raw_end = raw_start + wd as isize;
+                let start = raw_start.clamp(0, l as isize) as usize;
+                let end = raw_end.clamp(0, l as isize) as usize;
+                let lo = &prefix[start * inner..(start + 1) * inner];
+                let hi = &prefix[end * inner..(end + 1) * inner];
+                let out_blk = &mut next[next_o + ol * inner..next_o + (ol + 1) * inner];
+                for ((o_, &h), &l_) in out_blk.iter_mut().zip(hi).zip(lo) {
+                    *o_ = h.wrapping_sub(l_);
+                }
+            }
+        }
+        cur = next;
+        cur_dims[d] = out_l;
+    }
+    cur
+}
+
 /// Separable sliding-window max/min for dense i64 — the integer sibling of
 /// `reduce_window_separable_maxmin`. Reduces each window axis with an independent
 /// monotonic-deque 1D pass: O(input+output) per axis, WINDOW-INDEPENDENT, vs the
@@ -8232,6 +8294,38 @@ fn eval_reduce_window(
                 .map_err(EvalError::from)?,
             ));
         }
+    }
+
+    // Rank>=4 I64 SUM: N-D separable block-prefix (the integer analogue of the rank>=4 float
+    // path). Bit-identical (integer ring); covers integer volumetric pooling at any stride/pad.
+    if no_base_dilation
+        && no_window_dilation
+        && tensor.dtype == fj_core::DType::I64
+        && output_dtype == fj_core::DType::I64
+        && rank >= 4
+        && reduce_window_sum_like(reduce_op)
+        && window_dims.iter().product::<usize>() > 2 * window_dims.iter().sum::<usize>()
+        && let Some(src) = tensor.elements.as_i64_slice()
+    {
+        let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+        let out_dims_usize: Vec<usize> = out_dims.iter().map(|&d| d as usize).collect();
+        let values = reduce_window_separable_sum_nd_i64(
+            src,
+            &input_dims,
+            &window_dims,
+            &strides,
+            &pad_lows,
+            &out_dims_usize,
+        );
+        return Ok(Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: out_dims.clone(),
+                },
+                values,
+            )
+            .map_err(EvalError::from)?,
+        ));
     }
 
     if no_base_dilation
@@ -9958,6 +10052,138 @@ mod tests {
             assert!(
                 max_rel < 1e-10,
                 "N-D separable sum drifted (rank={rank}): max rel {max_rel:e}"
+            );
+        }
+    }
+
+    // N-D i64 separable sum is BIT-IDENTICAL to the naive wrapping fold (rank-5 + rank-4 strided).
+    #[test]
+    fn separable_sum_nd_i64_bit_identical() {
+        let cases: &[(Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>)] = &[
+            (
+                vec![2, 12, 12, 12, 4],
+                vec![1, 5, 5, 5, 1],
+                vec![1, 1, 1, 1, 1],
+                vec![0, 0, 0, 0, 0],
+            ),
+            (
+                vec![3, 16, 16, 16],
+                vec![1, 6, 6, 6],
+                vec![1, 2, 2, 2],
+                vec![0, 1, 1, 1],
+            ),
+        ];
+        for (input_dims, window, strides, pad) in cases {
+            let rank = input_dims.len();
+            let total: usize = input_dims.iter().product();
+            let src: Vec<i64> = (0..total).map(|i| (i as i64 % 131) - 65).collect();
+            let out_dims: Vec<usize> = (0..rank)
+                .map(|d| (input_dims[d] + 2 * pad[d] - window[d]) / strides[d] + 1)
+                .collect();
+            let sep = super::reduce_window_separable_sum_nd_i64(
+                &src, input_dims, window, strides, pad, &out_dims,
+            );
+            let out_u32: Vec<u32> = out_dims.iter().map(|&d| d as u32).collect();
+            let dil = vec![1usize; rank];
+            let mut in_strides = vec![1usize; rank];
+            for d in (0..rank - 1).rev() {
+                in_strides[d] = in_strides[d + 1] * input_dims[d + 1];
+            }
+            let total_out: usize = out_dims.iter().product();
+            let naive = super::eval_reduce_window_dense_i64(
+                DType::I64,
+                "add",
+                &src,
+                window,
+                strides,
+                &dil,
+                &out_u32,
+                pad,
+                input_dims,
+                &in_strides,
+                total_out,
+            )
+            .unwrap();
+            let nvals: Vec<i64> = naive
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    fj_core::Literal::I64(v) => *v,
+                    other => panic!("expected i64, got {other:?}"),
+                })
+                .collect();
+            assert_eq!(sep, nvals, "N-D i64 separable != naive (rank={rank})");
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_sumpool_nd_i64_separable_ab() {
+        use std::time::Instant;
+        let input_dims = vec![2usize, 48, 48, 48, 16];
+        let rank = input_dims.len();
+        let total: usize = input_dims.iter().product();
+        let src: Vec<i64> = (0..total).map(|i| (i as i64 % 131) - 65).collect();
+        let best = |f: &dyn Fn() -> i64| -> u64 {
+            let mut b = u64::MAX;
+            for _ in 0..5 {
+                let t0 = Instant::now();
+                let acc = f();
+                std::hint::black_box(acc);
+                b = b.min(t0.elapsed().as_nanos() as u64);
+            }
+            b
+        };
+        for k in [3usize, 5] {
+            let window = vec![1, k, k, k, 1];
+            let strides = vec![1usize; rank];
+            let pad = vec![0usize; rank];
+            let out_dims: Vec<usize> = (0..rank).map(|d| (input_dims[d] - window[d]) + 1).collect();
+            let out_u32: Vec<u32> = out_dims.iter().map(|&d| d as u32).collect();
+            let dil = vec![1usize; rank];
+            let mut in_strides = vec![1usize; rank];
+            for d in (0..rank - 1).rev() {
+                in_strides[d] = in_strides[d + 1] * input_dims[d + 1];
+            }
+            let total_out: usize = out_dims.iter().product();
+            let naive = best(&|| {
+                let v = super::eval_reduce_window_dense_i64(
+                    DType::I64,
+                    "add",
+                    &src,
+                    &window,
+                    &strides,
+                    &dil,
+                    &out_u32,
+                    &pad,
+                    &input_dims,
+                    &in_strides,
+                    total_out,
+                )
+                .unwrap();
+                match &v.as_tensor().unwrap().elements.as_slice()[0] {
+                    fj_core::Literal::I64(b) => *b,
+                    _ => 0,
+                }
+            });
+            let sep = best(&|| {
+                let v = super::reduce_window_separable_sum_nd_i64(
+                    &src,
+                    &input_dims,
+                    &window,
+                    &strides,
+                    &pad,
+                    &out_dims,
+                );
+                v[0].wrapping_add(v[v.len() / 2])
+            });
+            eprintln!(
+                "[sumpool-nd-i64 rank5 48^3 win{k}] naive={:.3}ms separable={:.3}ms ratio={:.2}x (min of 5)",
+                naive as f64 / 1e6,
+                sep as f64 / 1e6,
+                naive as f64 / sep as f64,
             );
         }
     }

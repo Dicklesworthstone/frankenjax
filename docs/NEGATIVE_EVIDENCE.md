@@ -2,6 +2,25 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - KEEP (LANDED, 11th win): N-D (rank>=4) i64 separable sum-pooling — 8.90x @rank-5 win5³, BIT-IDENTICAL (ProudSalmon)
+
+i64 sibling of the rank>=4 N-D float separable: integer volumetric sum pooling (rank-5 `[N,D,H,W,C]`)
+still fell to the naive scalar `wrapping_add` per-tap loop — the slowest path of all dtypes. New
+`reduce_window_separable_sum_nd_i64` (block-prefix over `inner`-wide contiguous blocks, `wrapping_add`/
+`wrapping_sub`); integer add is a ring so it is **BIT-IDENTICAL** to the naive fold (no tolerance).
+
+Same-binary A/B (`bench_sumpool_nd_i64_separable_ab`, rank-5 [2,48,48,48,16] i64, min-of-5):
+
+| window | naive | separable | ratio |
+|---|---:|---:|---:|
+| win3³ | 103.46 ms | 28.69 ms | 3.61x |
+| win5³ | 241.11 ms | 27.10 ms | **8.90x** |
+
+Wired rank>=4 I64 sum at `∏window > 2·∑window`. Gates: `cargo fmt -p fj-lax --check` clean; new
+`separable_sum_nd_i64_bit_identical` test (rank-5 VALID + rank-4 strided/padded, exact `assert_eq`)
+passes. The separable sum-pool vein is now COMPLETE across all dtypes (f64/f32/half/i64) and all ranks
+(rank-3 dedicated + rank>=4 N-D).
+
 ## 2026-06-29 - KEEP (LANDED, 10th win): N-D (rank>=4) separable sum-pooling — 2.91x @rank-5 3D-CNN win5³ (ProudSalmon)
 
 Generalizes the rank-3 separable to ANY rank, covering the REALISTIC 3D-CNN avg-pool: rank-5
