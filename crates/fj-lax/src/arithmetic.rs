@@ -10342,8 +10342,79 @@ pub(crate) fn eval_lgamma(primitive: Primitive, inputs: &[Value]) -> Result<Valu
     eval_unary_elementwise_parallel(primitive, inputs, lgamma_approx)
 }
 
+/// 8-wide `digamma` for the common `x >= 0.5` finite range: the recurrence shift-to-`>=8` and the
+/// asymptotic series vectorize (bit-identical per lane — same ascending-order subtractions + same
+/// op order); `ln(shifted)` is taken per-lane via scalar libm (bit-identical). Lanes with `x < 0.5`
+/// (reflection), non-finite, or the `x<=0` near-integer pole fall back to scalar [`digamma_approx`],
+/// so every lane equals the scalar form. digamma's hot uses (KL/entropy gradients) sit at x>=0.5.
+fn digamma_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialOrd;
+    type F = Simd<f64, 8>;
+    let half = F::splat(0.5);
+    let eight = F::splat(8.0);
+    let one = F::splat(1.0);
+    let inf = F::splat(f64::INFINITY);
+    let simd_ok = x.simd_ge(half) & x.simd_lt(inf);
+    // If no lane is in the SIMD regime (all x<0.5 / non-finite), skip the wasted SIMD shift+poly and
+    // go straight to scalar — keeps x<0.5-heavy inputs NEUTRAL (no regression), strictly better-or-equal.
+    if !simd_ok.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f64; 8];
+        for k in 0..8 {
+            ra[k] = digamma_approx(xa[k]);
+        }
+        return F::from_array(ra);
+    }
+    // Shift each lane up to `>=8`, accumulating `-1/shifted` in ascending order (bit-identical to the
+    // scalar `while shifted < 8` loop). Masked lanes (already >=8, or not simd_ok) don't advance.
+    let mut shifted = x;
+    let mut result = F::splat(0.0);
+    loop {
+        let m = shifted.simd_lt(eight) & simd_ok;
+        if !m.any() {
+            break;
+        }
+        result -= m.select(one / shifted, F::splat(0.0));
+        shifted += m.select(one, F::splat(0.0));
+    }
+    let inv = one / shifted;
+    let inv2 = inv * inv;
+    let inv4 = inv2 * inv2;
+    let inv6 = inv4 * inv2;
+    let inv8 = inv4 * inv4;
+    let inv10 = inv8 * inv2;
+    // ln(shifted) per lane via scalar libm — bit-identical to the scalar `shifted.ln()`.
+    let sh = shifted.to_array();
+    let mut lnv = [0.0f64; 8];
+    for k in 0..8 {
+        lnv[k] = sh[k].ln();
+    }
+    let ln = F::from_array(lnv);
+    let mut res = result + ln - half * inv - inv2 / F::splat(12.0) + inv4 / F::splat(120.0)
+        - inv6 / F::splat(252.0)
+        + inv8 / F::splat(240.0)
+        - F::splat(5.0) * inv10 / F::splat(660.0);
+    if !simd_ok.all() {
+        let xa = x.to_array();
+        let mut ra = res.to_array();
+        for k in 0..8 {
+            if !(xa[k] >= 0.5 && xa[k] < f64::INFINITY) {
+                ra[k] = digamma_approx(xa[k]);
+            }
+        }
+        res = F::from_array(ra);
+    }
+    res
+}
+
 pub(crate) fn eval_digamma(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
-    eval_unary_elementwise_parallel(primitive, inputs, digamma_approx)
+    // FJ_DIGAMMA_SCALAR forces the pre-SIMD scalar-map path (same-binary A/B hook).
+    if std::env::var_os("FJ_DIGAMMA_SCALAR").is_some() {
+        return eval_unary_elementwise_parallel(primitive, inputs, digamma_approx);
+    }
+    eval_unary_simd_dense_f64_parallel(primitive, inputs, digamma_f64x8, digamma_approx)
 }
 
 pub(crate) fn eval_polygamma(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {

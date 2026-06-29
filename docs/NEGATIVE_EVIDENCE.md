@@ -2,6 +2,28 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - KEEP (LANDED, 6th win): SIMD digamma (shift+asymptotic, scalar-ln) — 1.09x, narrows 1.85x->1.7x vs JAX (ProudSalmon)
+
+Revisited digamma (was scalar `eval_unary_elementwise_parallel`). SIMD-vectorized the x>=0.5 path: the
+recurrence shift-to->=8 (masked SIMD loop, `-1/shifted` accumulated in ascending order = bit-identical)
++ the asymptotic series (SIMD poly), with `ln(shifted)` taken per-lane via scalar libm (bit-identical).
+Per-lane scalar fallback for x<0.5 (reflection) / non-finite / x<=0 pole, plus an early
+`!simd_ok.any()` guard so all-x<0.5 groups go straight to scalar (strictly better-or-neutral — no
+regression on x<0.5-heavy inputs). The scalar ln caps the win (Amdahl) but it still helps.
+
+Same-binary A/B (`FJ_DIGAMMA_SCALAR`), CLEAN window (loadavg later spiked to 58 — those reads
+discarded per the idle-host rule), `bench_special_fns_throughput digamma 16M f64`, 2 runs each:
+
+| path | run1 | run2 | ratio |
+|---|---:|---:|---:|
+| scalar (old) | 31.46 ms | 29.80 ms | — |
+| SIMD digamma | 28.88 ms | 27.36 ms | **1.089x (both runs)** |
+
+vs JAX 17.3ms: 1.85x -> ~1.6x (still a loss — the residual is the scalar-per-lane ln -> `cntiy` SIMD-ln).
+Gates: rustfmt clean; `cargo test -p fj-lax --lib digamma` 4 passed / 0 failed (bit-identical to scalar
+incl. accuracy goldens); `cargo test -p fj-conformance` GREEN; clippy clean at the changed lines.
+Modest (comparable to the landed erf-skip 1.10x), bit-identical, safe.
+
 ## 2026-06-29 - DO-NOT-REDIG: the 2 remaining non-cntiy-adjacent gaps confirmed floor/cntiy (gather, digamma) (ProudSalmon)
 
 Closing the investigation of the only vs-JAX losses not obviously cntiy/murmw:
