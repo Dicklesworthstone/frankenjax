@@ -2,6 +2,27 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - NO-SHIP (measured +94% REGRESSION): FFT SoA transpose loop order is ALREADY cache-optimal — DO-NOT re-dig (BlackThrush)
+
+Probed the biggest contained vs-JAX gap (FFT batched pow2/pow4 ~14.9x, "biggest unowned legal-to-fix
+gap" per murmw) for a contained transpose lever. The non-butterfly ~43% of `vectorized_pow4_block` /
+`vectorized_pow2_block` is the SoA pack (`elements`→`re[i*w+b]`) + unpack (`re[k*w+b]`→`out`). Hypothesis:
+swap the pack loop nesting (`for b{for i}` → `for i{for b}`) so the L1 SoA scratch writes are CONTIGUOUS
+(store-coalescing) instead of strided-by-`w`.
+
+MEASURED A/B (same target dir `frankenjax-cc`, criterion save/compare baseline, `eval/fft_batch_2048x256_complex128_dense_input`):
+  - baseline (current loop order): **5.366 ms** `[5.295, 5.366, 5.440]`.
+  - candidate (swapped, contiguous scratch write): **10.40 ms** `[8.93, 10.40, 11.95]`; change **+62.9%/+93.8%/+120.9%, p=0.00 REGRESSED**.
+
+ROOT CAUSE (confirmed by the measurement): the big buffers — `elements` (8 MB input) and `out` (8 MB
+output) — dominate the cache; `re`/`im` are a 16 KB L1-resident scratch. The CURRENT order reads
+`elements[b*n..b*n+n]` and writes `out[b*n..b*n+n]` CONTIGUOUSLY per row (optimal for the 8 MB buffers),
+striding only the cheap L1 scratch. The swap inverts this — strided access to the 8 MB input — so it ~2x
+regresses. The transpose is already structured correctly (stride the small L1 buffer, never the big one).
+LESSON: in an out-of-place SoA transpose, keep the large DRAM buffer contiguous and confine striding to the
+L1-resident scratch; reverted (fft.rs unchanged). Confirms the prior murmw verdict — the FFT gap is the
+SIMD-butterfly kernel itself (+fma + split-radix, multi-session), NOT the transpose framing.
+
 ## 2026-06-29 - KEEP (LANDED, 13th win): batch-thread the lhs-transposed batched matmul (Aᵀ·B / Aᵀ·Bᵀ backprop) — 2.41-2.80x (ProudSalmon)
 
 Completes the batched-matmul batch-threading: the lhs-transposed path `try_einsum2_matmul_at` (the
