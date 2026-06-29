@@ -2,6 +2,22 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - KEEP (4.91x): thread the complex Sign/Square dense kernel (was single-threaded) (BlackThrush)
+
+The follow-up flagged in the complex-Abs-threading entry: complex **Sign** (z/|z|) and **Square** (z²)
+shared a single-threaded `src.iter().map(|z| match primitive {...}).collect()` in `eval_unary_int_or_float`
+(producing dense complex out via `new_complex_values`). Both are compute-bound (Sign = sqrt+2 div; Square
+= complex_mul = 4 mul + 2 add). Added a generic `threaded_complex_unary_map(src, f)` (work-scaled
+`thread::scope`, gate `CHEAP_BINARY_PARALLEL_MIN`, serial below) and matched the primitive ONCE outside
+the loop (Sign/Square never error on complex; the `_ => Err` only fires for other complex primitives).
+
+Measured same-binary A/B (`complex_sign_threaded_vs_serial_ab`, 16M complex128): serial-map **195.1 ms →
+threaded-eval 39.7 ms = 4.91x**. Bit-identical (lib **1654/0** incl. complex Sign/Square dense-vs-boxed +
+hypot-elision tests), conformance green, fmt + clippy clean. With the Abs threading (5.02x), ALL the
+compute-bound complex dense unary kernels now thread; the `.iter().map().collect()` audit of complex
+kernels is complete (transcendentals were already threaded via eval_unary_complex_map; abs/sign/square
+lived in different dispatch fns and were missed — now fixed).
+
 ## 2026-06-29 - KEEP (5.02x): thread the complex Abs dense kernel (was single-threaded) (BlackThrush)
 
 Fresh lever (NOT hypot-elision): `eval_unary_complex_abs`'s dense path was `dense.iter().map(complex_abs_f64).collect()`

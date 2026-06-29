@@ -5689,6 +5689,42 @@ fn threaded_complex_abs_f64(src: &[(f64, f64)]) -> Vec<f64> {
     out
 }
 
+/// Threaded complex→complex map (e.g. Sign = z/|z|, Square = z²) — compute-bound per element, so
+/// it fans across work-scaled threads above the gate, serial below (no small-array regression).
+/// Bit-identical to the serial map (each output depends only on its input).
+fn threaded_complex_unary_map(
+    src: &[(f64, f64)],
+    f: &(impl Fn((f64, f64)) -> (f64, f64) + Sync),
+) -> Vec<(f64, f64)> {
+    let n = src.len();
+    let mut out = vec![(0.0f64, 0.0f64); n];
+    if n < CHEAP_BINARY_PARALLEL_MIN || work_scaled_threads(n) <= 1 {
+        for (o, &z) in out.iter_mut().zip(src) {
+            *o = f(z);
+        }
+        return out;
+    }
+    let threads = work_scaled_threads(n);
+    let chunk = n.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut o_rest = out.as_mut_slice();
+        let mut x0 = 0usize;
+        while x0 < n {
+            let cnt = chunk.min(n - x0);
+            let (oblk, otail) = o_rest.split_at_mut(cnt);
+            o_rest = otail;
+            let sblk = &src[x0..x0 + cnt];
+            x0 += cnt;
+            scope.spawn(move || {
+                for (o, &z) in oblk.iter_mut().zip(sblk) {
+                    *o = f(z);
+                }
+            });
+        }
+    });
+    out
+}
+
 /// f32 sibling of [`threaded_complex_abs_f64`] (Complex64 abs; the stored f64 pair is f32-exact).
 fn threaded_complex_abs_f32(src: &[(f64, f64)]) -> Vec<f32> {
     let n = src.len();
@@ -7359,28 +7395,31 @@ pub(crate) fn eval_unary_int_or_float(
                 && let Some(src) = tensor.elements.as_complex_slice()
             {
                 let dt = tensor.dtype;
-                let out: Result<Vec<(f64, f64)>, EvalError> = src
-                    .iter()
-                    .map(|&(re, im)| match primitive {
-                        Primitive::Sign => {
-                            let magnitude = complex_abs_f64(re, im);
-                            Ok(if magnitude == 0.0 {
-                                (0.0, 0.0)
-                            } else {
-                                (re / magnitude, im / magnitude)
-                            })
+                // Match the primitive ONCE (Sign/Square never error on complex; only OTHER complex
+                // primitives hit the error arm) and thread the compute-bound per-element map.
+                let out: Vec<(f64, f64)> = match primitive {
+                    Primitive::Sign => threaded_complex_unary_map(src, &|(re, im)| {
+                        let magnitude = complex_abs_f64(re, im);
+                        if magnitude == 0.0 {
+                            (0.0, 0.0)
+                        } else {
+                            (re / magnitude, im / magnitude)
                         }
-                        Primitive::Square => Ok(complex_mul((re, im), (re, im))),
-                        _ => Err(EvalError::TypeMismatch {
+                    }),
+                    Primitive::Square => {
+                        threaded_complex_unary_map(src, &|z| complex_mul(z, z))
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
                             primitive,
                             detail: complex_unary_unsupported_detail(primitive),
-                        }),
-                    })
-                    .collect();
+                        });
+                    }
+                };
                 return Ok(Value::Tensor(TensorValue::new_complex_values(
                     dt,
                     tensor.shape.clone(),
-                    out?,
+                    out,
                 )?));
             }
             let mut elements = Vec::with_capacity(tensor.elements.len());
@@ -15126,6 +15165,61 @@ mod tests {
             hyp * 1e3,
             fast * 1e3,
             hyp / fast
+        );
+    }
+
+    // complex Sign is now THREADED too. A/B: threaded eval vs serial map on 16M.
+    #[test]
+    #[ignore = "perf; run explicitly"]
+    fn complex_sign_threaded_vs_serial_ab() {
+        use std::time::Instant;
+        let n = 1usize << 24;
+        let data: Vec<(f64, f64)> = (0..n)
+            .map(|i| (((i % 397) as f64) * 0.02 - 4.0, ((i % 521) as f64) * 0.02 - 5.0))
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape { dims: vec![n as u32] },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let best = |f: &dyn Fn()| -> f64 {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let threaded = best(&|| {
+            std::hint::black_box(
+                crate::eval_primitive(
+                    Primitive::Sign,
+                    std::slice::from_ref(&input),
+                    &std::collections::BTreeMap::new(),
+                )
+                .unwrap(),
+            );
+        });
+        let serial = best(&|| {
+            let out: Vec<(f64, f64)> = data
+                .iter()
+                .map(|&(re, im)| {
+                    let m = super::complex_abs_f64(re, im);
+                    if m == 0.0 { (0.0, 0.0) } else { (re / m, im / m) }
+                })
+                .collect();
+            std::hint::black_box(out);
+        });
+        eprintln!(
+            "[complex_sign 16M] serial-map={:.3}ms threaded-eval={:.3}ms ratio={:.2}x",
+            serial * 1e3,
+            threaded * 1e3,
+            serial / threaded
         );
     }
 
