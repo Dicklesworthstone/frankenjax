@@ -2,6 +2,29 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - KEEP (LANDED, 9th win): i64 rank-3 separable 3D sum-pooling — 184.76x over naive @win9³, BIT-IDENTICAL (ProudSalmon)
+
+Completes the 3D separable sum-pool family (f64 7th, f32 8th, i64 now). i64 rank-3 volumetric sum had
+the WORST path of any dtype: the naive scalar `wrapping_add` per-tap loop in
+`eval_reduce_window_dense_i64` (the SAT/integral-image fast path is rank-2 only) — 257ms at win9³ 96³, a
+huge JAX loss. Integer addition is a RING (associative + commutative even on overflow), so the
+add-new-subtract-old running sum with `wrapping_add`/`wrapping_sub` is **BIT-IDENTICAL** (not just
+tolerance) to the naive fold — no finite guard, no accuracy concern. Added
+`separable_reduce_window_sum_3d_i64`, wired for rank-3 I64 VALID unit-stride sum at `∏window>=216`.
+
+Same-binary A/B (`bench_sumpool_3d_i64_separable_ab`, 96³ i64 VALID, min-of-7), naive vs separable:
+
+| window | naive | separable | ratio |
+|---|---:|---:|---:|
+| win6³ | 85.41 ms | 1.52 ms | 56.04x |
+| win9³ | 257.01 ms | 1.39 ms | **184.76x** |
+
+The naive i64 path scales with ∏window AND has no SIMD (slowest dtype); the separable is
+window-independent (~1.4ms, 3 passes). Gates: `cargo fmt -p fj-lax --check` clean; new
+`separable_sum_3d_i64_bit_identical_to_dense` test (3 shapes incl. a 2^60-scaled overflow case, exact
+`assert_eq`) passes; `reduce_window` subset 48/0. The 3D-separable sum-pool vein is now COMPLETE across
+f64/f32/i64; remaining tails are i32-retag + small-window threading (niche).
+
 ## 2026-06-29 - KEEP (LANDED, 8th win): f32 rank-3 separable 3D sum-pooling — 25.8x over generic baseline @win9³ (ProudSalmon)
 
 Follow-on to the f64 3D separable (7th win): f32 is JAX's DEFAULT float, so f32 volumetric sum/avg

@@ -4089,6 +4089,102 @@ fn separable_reduce_window_sum_3d_f32(
     Some(output)
 }
 
+/// i64 sibling of [`separable_reduce_window_sum_3d_f64`] for VALID unit-stride integer 3D sum
+/// pooling. Integer addition is a RING (associative + commutative even on overflow), so the
+/// add-new-subtract-old running sum with `wrapping_add`/`wrapping_sub` is BIT-IDENTICAL to the
+/// naive `wrapping_add` fold in [`eval_reduce_window_dense_i64`] — no tolerance, no finite guard
+/// needed. Replaces the rank-3 naive O(out·∏window) loop (the SAT fast path is rank-2 only).
+fn separable_reduce_window_sum_3d_i64(
+    src: &[i64],
+    input_dims: [usize; 3],
+    window_dims: [usize; 3],
+    out_dims: [usize; 3],
+) -> Option<Vec<i64>> {
+    let [in_z, in_y, in_x] = input_dims;
+    let [win_z, win_y, win_x] = window_dims;
+    let [out_z, out_y, out_x] = out_dims;
+    if src.len() != in_z.checked_mul(in_y)?.checked_mul(in_x)? {
+        return None;
+    }
+    if win_x == 0
+        || win_y == 0
+        || win_z == 0
+        || out_x + win_x - 1 != in_x
+        || out_y + win_y - 1 != in_y
+        || out_z + win_z - 1 != in_z
+    {
+        return None;
+    }
+
+    // Phase 1: horizontal (x) running window-sum -> hx[in_z, in_y, out_x].
+    let zy_rows = in_z * in_y;
+    let mut hx = vec![0i64; zy_rows * out_x];
+    for zy in 0..zy_rows {
+        let row = &src[zy * in_x..zy * in_x + in_x];
+        let hr = &mut hx[zy * out_x..(zy + 1) * out_x];
+        let mut s = 0i64;
+        for &v in &row[0..win_x] {
+            s = s.wrapping_add(v);
+        }
+        hr[0] = s;
+        for ox in 1..out_x {
+            s = s
+                .wrapping_add(row[ox + win_x - 1])
+                .wrapping_sub(row[ox - 1]);
+            hr[ox] = s;
+        }
+    }
+
+    // Phase 2: vertical (y) running window-sum within each z-plane -> hy[in_z, out_y, out_x].
+    let in_plane = in_y * out_x;
+    let out_plane = out_y * out_x;
+    let mut hy = vec![0i64; in_z * out_plane];
+    let mut vsum = vec![0i64; out_x];
+    for z in 0..in_z {
+        let plane = &hx[z * in_plane..(z + 1) * in_plane];
+        let outp = &mut hy[z * out_plane..(z + 1) * out_plane];
+        for v in vsum.iter_mut() {
+            *v = 0;
+        }
+        for wy in 0..win_y {
+            for (v, &h) in vsum.iter_mut().zip(&plane[wy * out_x..(wy + 1) * out_x]) {
+                *v = v.wrapping_add(h);
+            }
+        }
+        outp[0..out_x].copy_from_slice(&vsum);
+        for oy in 1..out_y {
+            let add = &plane[(oy + win_y - 1) * out_x..(oy + win_y) * out_x];
+            let sub = &plane[(oy - 1) * out_x..oy * out_x];
+            for ((v, &a), &s) in vsum.iter_mut().zip(add).zip(sub) {
+                *v = v.wrapping_add(a).wrapping_sub(s);
+            }
+            outp[oy * out_x..(oy + 1) * out_x].copy_from_slice(&vsum);
+        }
+    }
+
+    // Phase 3: depth (z) running window-sum over planes -> output[out_z, out_y, out_x].
+    let mut output = vec![0i64; out_z * out_plane];
+    let mut zsum = vec![0i64; out_plane];
+    for wz in 0..win_z {
+        for (v, &h) in zsum
+            .iter_mut()
+            .zip(&hy[wz * out_plane..(wz + 1) * out_plane])
+        {
+            *v = v.wrapping_add(h);
+        }
+    }
+    output[0..out_plane].copy_from_slice(&zsum);
+    for oz in 1..out_z {
+        let add = &hy[(oz + win_z - 1) * out_plane..(oz + win_z) * out_plane];
+        let sub = &hy[(oz - 1) * out_plane..oz * out_plane];
+        for ((v, &a), &s) in zsum.iter_mut().zip(add).zip(sub) {
+            *v = v.wrapping_add(a).wrapping_sub(s);
+        }
+        output[oz * out_plane..(oz + 1) * out_plane].copy_from_slice(&zsum);
+    }
+    Some(output)
+}
+
 fn eval_reduce_window_rank2_f64_sum(
     primitive: Primitive,
     tensor: &TensorValue,
@@ -7969,6 +8065,52 @@ fn eval_reduce_window(
         );
     }
 
+    // Rank-3 VALID I64 SUM: large-window separable running-sum. Integer add is a ring, so this is
+    // BIT-IDENTICAL to the naive `wrapping_add` fold (no SAT for rank>2; the per-tap loop is
+    // O(out·∏window)). Same ∏window>=216 break-even as the float separable.
+    if no_base_dilation
+        && no_window_dilation
+        && tensor.dtype == fj_core::DType::I64
+        && output_dtype == fj_core::DType::I64
+        && rank == 3
+        && reduce_window_sum_like(reduce_op)
+        && strides.iter().all(|&s| s == 1)
+        && pad_lows.iter().all(|&p| p == 0)
+        && window_dims.iter().all(|&w| w > 0)
+        && window_dims.iter().product::<usize>() >= 216
+        && let Some(src) = tensor.elements.as_i64_slice()
+    {
+        let input_dims = [
+            tensor.shape.dims[0] as usize,
+            tensor.shape.dims[1] as usize,
+            tensor.shape.dims[2] as usize,
+        ];
+        let window_dims_rank3 = [window_dims[0], window_dims[1], window_dims[2]];
+        let out_dims_rank3 = [
+            out_dims[0] as usize,
+            out_dims[1] as usize,
+            out_dims[2] as usize,
+        ];
+        if (0..3).all(|d| out_dims_rank3[d] + window_dims_rank3[d] - 1 <= input_dims[d])
+            && let Some(values) = separable_reduce_window_sum_3d_i64(
+                src,
+                input_dims,
+                window_dims_rank3,
+                out_dims_rank3,
+            )
+        {
+            return Ok(Value::Tensor(
+                TensorValue::new_i64_values(
+                    Shape {
+                        dims: out_dims.clone(),
+                    },
+                    values,
+                )
+                .map_err(EvalError::from)?,
+            ));
+        }
+    }
+
     if no_base_dilation
         && matches!(tensor.dtype, fj_core::DType::I64 | fj_core::DType::I32)
         && (matches!(reduce_op, "max" | "min") || reduce_window_sum_like(reduce_op))
@@ -9560,6 +9702,126 @@ mod tests {
             assert!(
                 max_rel < 1e-5,
                 "f32 separable 3D sum drifted at n={n} win={win}: max rel {max_rel:e}"
+            );
+        }
+    }
+
+    // i64 rank-3 separable sum is BIT-IDENTICAL to the naive wrapping fold (integer ring), incl.
+    // a window large/dense enough to overflow i64 (verifies wrapping consistency).
+    #[test]
+    fn separable_sum_3d_i64_bit_identical_to_dense() {
+        for &(n, win, scale) in &[(40usize, 6usize, 1i64), (40, 9, 1), (24, 7, 1i64 << 60)] {
+            let out = n - win + 1;
+            let s64: Vec<i64> = (0..n * n * n)
+                .map(|i| ((i as i64 % 97) - 48).wrapping_mul(scale))
+                .collect();
+            let sep = super::separable_reduce_window_sum_3d_i64(
+                &s64,
+                [n, n, n],
+                [win, win, win],
+                [out, out, out],
+            )
+            .expect("i64 separable should accept VALID input");
+            let dims = [n, n, n];
+            let wd = [win, win, win];
+            let st = [1usize, 1, 1];
+            let dil = [1usize; 3];
+            let pad = [0usize; 3];
+            let out_u32 = [out as u32; 3];
+            let mut in_strides = [1usize; 3];
+            for d in (0..2).rev() {
+                in_strides[d] = in_strides[d + 1] * dims[d + 1];
+            }
+            let naive = super::eval_reduce_window_dense_i64(
+                DType::I64,
+                "add",
+                &s64,
+                &wd,
+                &st,
+                &dil,
+                &out_u32,
+                &pad,
+                &dims,
+                &in_strides,
+                out * out * out,
+            )
+            .unwrap();
+            let nvals: Vec<i64> = naive
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    fj_core::Literal::I64(v) => *v,
+                    other => panic!("expected i64, got {other:?}"),
+                })
+                .collect();
+            assert_eq!(
+                sep, nvals,
+                "i64 separable 3D sum != naive at n={n} win={win}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_sumpool_3d_i64_separable_ab() {
+        use std::time::Instant;
+        let n = 96usize;
+        let s64: Vec<i64> = (0..n * n * n).map(|i| (i as i64 % 97) - 48).collect();
+        let best = |f: &dyn Fn() -> i64| -> u64 {
+            let mut b = u64::MAX;
+            for _ in 0..7 {
+                let t0 = Instant::now();
+                let acc = f();
+                let dt = t0.elapsed().as_nanos() as u64;
+                std::hint::black_box(acc);
+                b = b.min(dt);
+            }
+            b
+        };
+        for win in [6usize, 9] {
+            let out = n - win + 1;
+            let dims = [n, n, n];
+            let wd = [win, win, win];
+            let st = [1usize, 1, 1];
+            let dil = [1usize; 3];
+            let pad = [0usize; 3];
+            let out_u32 = [out as u32; 3];
+            let mut in_strides = [1usize; 3];
+            for d in (0..2).rev() {
+                in_strides[d] = in_strides[d + 1] * dims[d + 1];
+            }
+            let naive = best(&|| {
+                let v = super::eval_reduce_window_dense_i64(
+                    DType::I64,
+                    "add",
+                    &s64,
+                    &wd,
+                    &st,
+                    &dil,
+                    &out_u32,
+                    &pad,
+                    &dims,
+                    &in_strides,
+                    out * out * out,
+                )
+                .unwrap();
+                match &v.as_tensor().unwrap().elements.as_slice()[0] {
+                    fj_core::Literal::I64(b) => *b,
+                    _ => 0,
+                }
+            });
+            let sep = best(&|| {
+                let v = super::separable_reduce_window_sum_3d_i64(&s64, dims, wd, [out, out, out])
+                    .unwrap();
+                v[0].wrapping_add(v[v.len() / 2])
+            });
+            eprintln!(
+                "[sumpool3d-i64 {n}^3 win{win}] naive={:.3}ms separable={:.3}ms ratio={:.2}x (min of 7)",
+                naive as f64 / 1e6,
+                sep as f64 / 1e6,
+                naive as f64 / sep as f64,
             );
         }
     }
