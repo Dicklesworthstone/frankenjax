@@ -2,6 +2,22 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-28 - WIN: integer bitwise NOT (i64/i32/u32/u64) densified + threaded — 2.74x, parity vs JAX (ProudSalmon)
+
+`eval_bitwise_unary`'s integer `~x` (i64/i32/u32/u64) fell to the BOXED per-Literal `.map().collect()` — slow
+AND single-thread (only bool NOT had a dense path). JAX-CPU is slow here (24.13ms). Added dense+threaded paths
+(reusing `threaded_unary_typed_map`, now pub(crate)): read the packed backing, map `!v` (i32: `i64::from(!(v as
+i32))`) across cores. BIT-IDENTICAL — bitwise tests 15/0.
+
+Evidence — `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`, 16M i64 BitwiseNot:
+  - dense-serial **67.8ms → threaded 24.7ms = 2.74x** (the OLD path was BOXED, even slower — so the real gain
+    is larger: ~boxed→dense→threaded).
+  - vs JAX `jnp.bitwise_not(int64)` **24.13ms → 24.7 = ~parity (1.02x)**. Covers i64/i32/u32/u64.
+This session's measurement-driven sweep also confirmed (NO lever): bf16 binary (JAX FAST 2.08ms, tuned),
+axis-reductions (JAX FAST 2.8-8.7ms, tuned), f64→i32/f64→bool convert (JAX 12/3.6ms), max/min/clamp (already
+threaded+winning). JAX-CPU is slow ONLY on f64/int FULL-WIDTH cheap elementwise — that family (unary incl. now
+bitwise-NOT, binary, convert int↔float) is fully threaded. clippy+fmt clean.
+
 ## 2026-06-28 - WIN: integer neg/abs/sign (i64/i32/u32/u64) threaded — 2.84x internal, parity-to-1.10x WIN (ProudSalmon)
 
 `eval_unary_int_or_float`'s INTEGER dense paths (i64/i32/u32/u64) ran serial `.iter().map(int_op).collect()`

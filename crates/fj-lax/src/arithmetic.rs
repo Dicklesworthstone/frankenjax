@@ -6966,7 +6966,7 @@ pub(crate) fn eval_round(
 // int map reads its packed backing into a fresh same-size output — BW-bound past L3, and
 // JAX-CPU is slow on these (~22-23ms). Threads over contiguous chunks (each thread's
 // `chunk.iter().map(f)` stays autovectorized — index-fill would not). Bit-identical.
-fn threaded_unary_typed_map<T: Copy + Send + Sync + Default>(
+pub(crate) fn threaded_unary_typed_map<T: Copy + Send + Sync + Default>(
     src: &[T],
     f: &(impl Fn(T) -> T + Sync),
 ) -> Vec<T> {
@@ -14897,6 +14897,45 @@ mod tests {
         });
         time_it("signbit_simd_bitmask", &|| {
             std::hint::black_box(f64_predicate_words(&xs, FloatPredKind::SignNeg)[1])
+        });
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_i64_bitnot_vs_serial() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let xs: Vec<i64> = (0..n as i64).map(|i| (i % 200_003) - 100_000).collect();
+        let xt = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xs.clone(),
+            )
+            .unwrap(),
+        );
+        let time_it = |label: &str, f: &dyn Fn() -> u64| {
+            std::hint::black_box(f());
+            let mut b = f64::MAX;
+            for _ in 0..8 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("REF {label}: {:.3}ms", b * 1e3);
+        };
+        time_it("i64_not_serial_dense", &|| {
+            let out: Vec<i64> = xs.iter().map(|&v| !v).collect();
+            std::hint::black_box(&out);
+            out[123] as u64
+        });
+        let p = BTreeMap::new();
+        time_it("i64_not_eval_threaded", &|| {
+            let v = crate::eval_primitive(Primitive::BitwiseNot, std::slice::from_ref(&xt), &p)
+                .unwrap();
+            std::hint::black_box(v.as_tensor().unwrap().elements.as_i64_slice().unwrap()[123])
+                as u64
         });
     }
 

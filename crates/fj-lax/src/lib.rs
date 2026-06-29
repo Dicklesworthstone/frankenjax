@@ -2978,6 +2978,46 @@ fn eval_bitwise_unary(primitive: Primitive, inputs: &[Value]) -> Result<Value, E
                         .map_err(EvalError::InvalidTensor)?,
                 ));
             }
+            // Dense + threaded integer BitwiseNot (`~x` on i64/i32/u32/u64): the boxed
+            // per-Literal path below is slow AND single-thread; read the packed backing and
+            // map `!v` (i32: sign-extend `!(v as i32)`) into dense storage across cores. JAX
+            // is slow here (~24ms). Bit-identical to apply_bitwise_unary_literal (`!v`).
+            if primitive == Primitive::BitwiseNot {
+                if t.dtype == fj_core::DType::I64
+                    && let Some(src) = t.elements.as_i64_slice()
+                {
+                    let out = crate::arithmetic::threaded_unary_typed_map(src, &|v: i64| !v);
+                    return Ok(Value::Tensor(
+                        TensorValue::new_i64_values(t.shape.clone(), out)
+                            .map_err(EvalError::InvalidTensor)?,
+                    ));
+                }
+                if t.dtype == fj_core::DType::I32
+                    && let Some(src) = t.elements.as_i64_slice()
+                {
+                    let out = crate::arithmetic::threaded_unary_typed_map(src, &|v: i64| {
+                        i64::from(!(v as i32))
+                    });
+                    return Ok(Value::Tensor(
+                        TensorValue::new_i32_values(t.shape.clone(), out)
+                            .map_err(EvalError::InvalidTensor)?,
+                    ));
+                }
+                if let Some(src) = t.elements.as_u32_slice() {
+                    let out = crate::arithmetic::threaded_unary_typed_map(src, &|v: u32| !v);
+                    return Ok(Value::Tensor(
+                        TensorValue::new_u32_values(t.shape.clone(), out)
+                            .map_err(EvalError::InvalidTensor)?,
+                    ));
+                }
+                if let Some(src) = t.elements.as_u64_slice() {
+                    let out = crate::arithmetic::threaded_unary_typed_map(src, &|v: u64| !v);
+                    return Ok(Value::Tensor(
+                        TensorValue::new_u64_values(t.shape.clone(), out)
+                            .map_err(EvalError::InvalidTensor)?,
+                    ));
+                }
+            }
             let out_dtype = unary_bitwise_output_dtype(primitive, t.dtype);
             let elements: Result<Vec<_>, _> = t
                 .elements
