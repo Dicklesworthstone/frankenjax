@@ -2,6 +2,20 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - CORRECTION/REFINE: FFT (murmw) and +fma (cntiy) are COUPLED — FMA butterflies are tolerance-legal for FFT (ProudSalmon)
+
+Refines the earlier "FFT 14.9x is NOT +fma-gated, separate from cntiy" entry. That was right about the
+CURRENT code (zero mul_add in fft.rs, so the +fma flag alone wouldn't change it — Rust does not
+auto-contract `*`+`-` into FMA). BUT the FFT butterflies do plain complex multiplies
+(`wr = tr*o.0 - ti*o.1`, lines 1223/1316) and **FFT parity is TOLERANCE** (1e-9 vs DFT, lines
+446/575/1121), NOT bit-exact like GEMM. So a competitive radix-8 kernel (the murmw rewrite) SHOULD use
+`mul_add` FMA butterflies — which is TOLERANCE-LEGAL for FFT (the FMA rounding delta is absorbed),
+unlike GEMM where FMA breaks bit-exact goldens. And `mul_add` only fuses (vs a 25x libcall) under
+`+fma`. NET: closing the FFT gap needs BOTH `cntiy` (+fma) AND the `murmw` kernel rewrite — they are
+COUPLED, not independent. This makes `cntiy` even more central: it gates transcendental + special-fn +
+GEMM + conv + attention (those bit-exact-or-tolerance) AND the FFT-butterfly FMA (tolerance-legal).
+Recommend the murmw bead be scoped to assume +fma is available (mul_add butterflies). No code change.
+
 ## 2026-06-29 - SURFACE (maintainer action): cntiy (+fma) is the #1 unblock — widest cluster, evidence ALREADY exists (cz0g0) (ProudSalmon)
 
 Both halves of land-or-dig are exhausted (3 wins landed incl. recovered erfc; contained kernel surface
