@@ -2,6 +2,23 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - DO-NOT-REDIG: per-group branch-skip vein FULLY MINED (erf+bessel done; rest cntiy/iterative) (ProudSalmon)
+
+Closed the branch-skip vein (2 wins landed: bessel `eb0e1954`, erf `01f4d01e`). Audited ALL SIMD
+kernels for the dual-heavy-branch + select pattern (the skip target):
+- `erf_f64x8` (2 fdlibm rationals) — SKIP DONE.
+- `bessel_i0e_f64x8` / `bessel_i1e_f64x8` (2 Cephes Clenshaw branches) — SKIP DONE.
+- `erfc_f64x8` — just `1 - erf_f64x8` + scalar |x|>=3.5 tail fallback; NO own SIMD branch (erf-skip
+  covers it). Done.
+- reduction/tensor_ops `select()`s are cheap NaN-handling / argmax-update, NOT dual-heavy-branch. No
+  benefit.
+These are the ONLY dual-heavy-branch SIMD kernels — vein fully mined. The remaining special-fns are
+NOT branch-skippable: lgamma (partial-fraction Lanczos: 15 divisions + ln — division-reform is
+accuracy-risky + ln-capped), digamma (data-dependent shift loop + asymptotic with ln(shifted∈[8,9));
+SIMD-izing needs SIMD-ln), igamma/igammac/betainc/zeta/polygamma (continued fractions / series,
+iterative), erf_inv (ln+exp+Newton). All funnel into `cntiy` (+fma SIMD-ln/exp) or are iterative.
+No more contained non-fma special-fn lever. No code change.
+
 ## 2026-06-29 - KEEP (LANDED, 5th win): erf per-group branch skip — 1.10x f64 / 1.15x f32 on erfc; mines the same vein as bessel (ProudSalmon)
 
 Mined the per-group branch-skip vein opened by the bessel win (below) into `erf_f64x8`: it computed
