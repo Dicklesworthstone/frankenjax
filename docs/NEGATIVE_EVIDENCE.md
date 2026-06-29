@@ -2,6 +2,30 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - SURVEY (no code, empirical re-measure): contained frontier reconfirmed vs JAX 0.10.2; softmax at PARITY (BlackThrush)
+
+Land-or-dig after the vmap-vein survey: no unlanded win. Rather than reason from the (aging) ledger, ran
+a fresh JAX-0.10.2-x64 op timing sweep (`/data/projects/.scratch/op_sweep.py`) and cross-checked the
+fj-lax side. The contained frontier is reconfirmed EXHAUSTED — fj-lax wins/ties every contained op; every
+loss is non-contained:
+
+| op (size) | JAX | fj-lax | verdict |
+|-----------|-----|--------|---------|
+| cumsum f64 4M | 19.6 ms | 9.14 ms | **fj-lax WIN 2.1x** (re-measured) |
+| sort/argsort f64 4M | 1018 / 1298 ms | (known ~10x win) | fj-lax WIN |
+| scatter_add f64 4M→1M | 9.1 ms | (known 2.78x) | fj-lax WIN |
+| softmax f64 4096² | 17.3 ms | 18.3 ms (`softmax_2d`) | **PARITY 1.06x** |
+| logsumexp f64 4096² | 5.9 ms | (fused, threaded exp) | ~parity |
+| take/gather f64 1M | 1.17 ms | ~1.66x slower | LOSS (BW-bound, non-contained) |
+
+KEY: `fj_lax::nn::{softmax,logsumexp,log_softmax,...}` are the DIRECT public jax.nn implementation
+(called as `fj_lax::nn::softmax`, e.g. nn_softmax_oracle.rs:12 — NOT routed through the composed-primitive
+jaxpr). So softmax already uses the single-pass FUSED, row-threaded `softmax_2d` kernel and sits at JAX
+parity (18.3 vs 17.3 ms) — the exp is NOT the dominant cost there. There is NO unwired-fused-kernel gap:
+the nn.rs fused kernels ARE the live path. (Briefly suspected a multipass-jaxpr softmax gap; disproven.)
+Net: the only vs-JAX losses remain FFT (murmw, multi-session), the +fma cluster (matmul/conv/cholesky/
+softmax-exp at huge sizes), and BW-bound gather (~1.66x) — all non-contained.
+
 ## 2026-06-29 - SURVEY (no code): vmap-dispatch serial-fallback vein EXHAUSTED after complex-dot + conv wins (BlackThrush)
 
 Land-or-dig after the vmap(conv) threading land (53fcbede): no unlanded bench-worktree win. Mined the
