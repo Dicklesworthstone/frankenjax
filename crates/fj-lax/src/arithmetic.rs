@@ -3083,7 +3083,12 @@ fn complex_logistic(input: (f64, f64)) -> (f64, f64) {
 }
 
 fn complex_sin((re, im): (f64, f64)) -> (f64, f64) {
-    (re.sin() * im.cosh(), re.cos() * im.sinh())
+    // sin(re+im·i) = (sin re · cosh im, cos re · sinh im). One `sin_cos` + one `exp`
+    // (cosh/sinh derived) = 2 libm instead of 4 — the same lever as the `eval_sin`
+    // kernel. Feeds `complex_sinc` and `complex_lgamma`'s reflection. Tolerance-equal.
+    let (s, c) = re.sin_cos();
+    let (cosh_im, sinh_im) = cosh_sinh_from_exp(im);
+    (s * cosh_im, c * sinh_im)
 }
 
 fn complex_sinc(input: (f64, f64)) -> (f64, f64) {

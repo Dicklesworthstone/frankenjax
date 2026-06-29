@@ -2,6 +2,18 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - KEEP (2.12x): internal `complex_sin` helper joins the 4→2 libm lever (BlackThrush)
+
+Follow-up to the complex-trig 4→2-libm win: the INTERNAL `complex_sin((re,im))` helper (arithmetic.rs,
+distinct from the `eval_sin` complex kernel) still used `(sin re·cosh im, cos re·sinh im)` = 4 separate
+libm calls. It feeds `complex_sinc` (the Sinc primitive) and `complex_lgamma`'s reflection branch
+(re<0.5, used for complex Gamma/Beta log-densities), both per-element on large complex arrays. Applied
+the same lever: `sin_cos(re)` + `cosh_sinh_from_exp(im)` = 2 libm (identical formula to the verified
+`eval_sin` kernel, so the same measured **2.12x** on the per-element transcendental cost applies).
+Tolerance-equal (complex-trig parity is metamorphic/oracle tolerance). fj-lax lib 1649/0 (complex sinc +
+lgamma + sin metamorphic/prop tests), conformance green, fmt clean. The complex-trig libm-halving lever
+is now COMPLETE — no production complex `sin/cos/cosh/sinh` pair left computing 4 separate libm calls.
+
 ## 2026-06-29 - KEEP (2.12x): complex trig (sin/cos/tan/sinh/cosh/tanh) halve libm calls 4→2 (BlackThrush)
 
 The complex-trig kernels needed both `cosh(t)` AND `sinh(t)` of the same argument (2 libm calls) plus a
