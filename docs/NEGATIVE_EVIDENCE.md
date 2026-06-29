@@ -2,6 +2,18 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - DO-NOT-REDIG (FFT threading): ALL batch dispatch paths confirmed threaded; only the kernel (murmw) remains (ProudSalmon)
+
+Verified the LAST FFT dispatch path. `transform_batches_dense` routes: pow4 (SoA+tiled+threaded) /
+pow2 (same) / bluestein (vectorized SoA) / smooth-composite -> per-row recursive mixed-radix, which is
+ALSO threaded across rows (`std::thread::scope`, gate `total >= 1<<18`, line ~1926). So EVERY batched
+FFT path threads the independent rows. (NOTE in code: lowering the gate so the smaller
+`fft_batch_128x1000` threads REGRESSED 2.4-3x under swarm contention — per-row 1000-pt FFT is ~40us,
+too short to amortize spawn; gated to large batches only. JAX's idle-core threading win there is
+unmeasurable on this shared host.) No serial-row lever remains in any FFT path. The 5.65x smooth /
+14.9x pow2 / 6.6x prime residuals are 100% the per-row/per-tile kernel throughput vs pocketfft's
+radix-8 wide-SIMD butterflies — bead `murmw`, multi-session. FFT contained surface is fully closed.
+
 ## 2026-06-29 - DO-NOT-REDIG (FFT transpose): pow4 path is tile-local SoA, not a naive transpose — no contained transpose lever (ProudSalmon)
 
 Last FFT contained angle: the SoA "transpose" is NOT a naive full 16MB matrix transpose.
