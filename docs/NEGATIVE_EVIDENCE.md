@@ -2,6 +2,27 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - SURVEY: take/row-gather family — 8-byte gather ~1.66x JAX (already threaded, latency floor); no clean lever (ProudSalmon)
+
+Isolated re-measure of the `take`/row-gather (`eval_gather`) family:
+
+| op (table [50000,256], idx[16384], axis0) | fj-lax | JAX | verdict |
+|---|---:|---:|---|
+| take f32 (16MB out) | 2.55 ms | 3.38 ms | WIN |
+| take bf16 | 2.55 ms | 2.25 ms | ~parity |
+| take f64 (32MB out) | 6.25 ms | 3.77 ms | 1.66x loss |
+| take i32 (i64 backing, 32MB) | 9.4-12.0 ms | 2.14 ms | NOISY |
+| embedding gather f32 [2M,128] | 178 ms | 158.6 ms | 1.12x |
+
+Investigated the i32 anomaly (slower than f64 at identical 8-byte size): the I32 branch runs the
+IDENTICAL `gather_contiguous_into::<i64>` stencil as f64's `::<f64>` (same size, same `1<<19` gate,
+same threading; verified in `eval_gather`). So the i32 spread (28% across runs) is LOAD NOISE, not an
+algorithmic bug — i32 ≈ f64 ≈ 1.66x. The real signal: **8-byte row-gather is ~1.66x slower than JAX,
+and the gather is ALREADY threaded** (`gather_contiguous_into`, MLP over scattered rows). The residual
+is the random-row latency floor (JAX likely uses prefetch/gather intrinsics unavailable under
+`#![forbid(unsafe_code)]`); 4-byte (f32) already WINS. No clean contained lever — same
+latency/BW-bound class as the alloc frontier. Do NOT chase the i32 "4.3x" (noise). No code change.
+
 ## 2026-06-29 - SURVEY (isolated re-measure): reduction/scatter/one_hot family exhausted after mid-axis max fix (ProudSalmon)
 
 Isolated re-measure (one bench per invocation, load-noise-free) of the vs-JAX suite to find the next
