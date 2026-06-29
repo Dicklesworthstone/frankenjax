@@ -2,6 +2,31 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - KEEP (LANDED, 12th win): batch-threaded batched matmul (attention einsum) — 1.89-2.71x (ProudSalmon)
+
+DIFFERENT primitive (dot_general/einsum batched matmul = the attention `Q·V` / `Q·Kᵀ` path). The
+einsum2 batched-matmul fast paths (`try_einsum2_matmul`, `try_einsum2_matmul_bt`) ran a SERIAL
+`for bt in 0..batch_size` loop calling `matmul_2d` per slice. In the attention regime each slice is
+small (e.g. 128×64×128 = 1M ops) — BELOW `matmul_2d`'s own 1<<23-op fanout floor — so it runs
+single-threaded AND the batch loop is serial → all cores idle. Added `batched_matmul_slices_into`:
+fans the INDEPENDENT slices across `thread::scope` (each via `matmul_2d_into` to a disjoint output
+chunk), gated to slices below the self-fanout floor (no oversubscription) with a substantial total.
+Bit-for-bit identical (same kernel, same output range, per-slice order unchanged) — the existing
+einsum bit-identity tests pass.
+
+Same-binary A/B (`bench_batched_matmul_serial_vs_threaded`, min-of-5):
+
+| batch × slice | serial | threaded | ratio |
+|---|---:|---:|---:|
+| 256 × 128×64×128 | 38.18 ms | 20.25 ms | 1.89x |
+| 512 × 64×64×64 | 13.22 ms | 4.88 ms | **2.71x** |
+
+Wired into the canonical (`A·B`) and transposed-rhs (`A·Bᵀ`, QKᵀ) batched paths. Gates: `cargo fmt -p
+fj-lax --check` clean; `cargo test -p fj-lax --lib` 1646/0 (einsum bit-identity incl. batched fast paths
+17/0). This is a REALISTIC-workload win (transformer attention). Same serial-batch→thread::scope pattern
+as the linalg batched dispatch (2.6-5.1x). Follow-on: the lhs-transposed `try_einsum2_matmul_at` path
+still has a serial loop (could reuse the helper).
+
 ## 2026-06-29 - REJECT (bench-backed): parallel associative_scan(max/min) REGRESSES vs its tight in-place serial scan (ProudSalmon)
 
 Tried routing 1-D (inner==1) `associative_scan` max/min over a long leading axis to the proven

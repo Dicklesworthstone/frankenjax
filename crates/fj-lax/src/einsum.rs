@@ -499,6 +499,99 @@ pub fn einsum1(
 /// per-(output, contracted)-pair loop (which allocates a `HashMap` per
 /// iteration).
 ///
+/// Batched single-contraction matmul over `batch_size` independent `[m,k]·[k,n]` slices, writing
+/// the `[batch, m, n]` row-major result. Each slice is dispatched to the cache-blocked
+/// [`matmul_2d_into`]; when `transpose_rhs` is set the rhs slice is stored `[n,k]` (the `A·Bᵀ`
+/// attention-score layout) and is transposed to `[k,n]` per slice first.
+///
+/// The slices are INDEPENDENT, so for the attention regime — many small cache-resident slices, each
+/// below `matmul_2d`'s own ~8M-op fanout floor (so it runs single-threaded) — the batch loop is
+/// fanned across scoped threads, leaving no cores idle. Gated so it only threads when each slice is
+/// below that floor (no oversubscription with `matmul_2d`'s internal threading) yet the whole batch
+/// is substantial. Bit-for-bit identical to the serial loop: each slice is computed by the same
+/// kernel and written to the same disjoint output range, regardless of which thread runs it.
+fn batched_matmul_slices_into(
+    a: &[f64],
+    b: &[f64],
+    batch_size: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+    lhs_stride: usize,
+    rhs_stride: usize,
+    out_stride: usize,
+    transpose_rhs: bool,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; batch_size * out_stride];
+    let per_slice_ops = m.saturating_mul(k).saturating_mul(n);
+    let total_ops = batch_size.saturating_mul(per_slice_ops);
+    // matmul_2d self-threads at >= 1<<23 ops; below that a slice is serial, so batch-level
+    // threading is the only parallelism and won't oversubscribe.
+    const SLICE_SELF_THREADS_OPS: usize = 1 << 23;
+    const BATCH_PAR_MIN_OPS: usize = 1 << 21;
+    let threads = if batch_size >= 2
+        && per_slice_ops < SLICE_SELF_THREADS_OPS
+        && total_ops >= BATCH_PAR_MIN_OPS
+    {
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            .min(batch_size)
+    } else {
+        1
+    };
+    let compute = |bt: usize, dst: &mut [f64], buf: &mut Vec<f64>| {
+        let a_slice = &a[bt * lhs_stride..bt * lhs_stride + lhs_stride];
+        let b_slice = &b[bt * rhs_stride..bt * rhs_stride + rhs_stride];
+        if transpose_rhs {
+            // b_slice is [n, k]; transpose to [k, n] (ascending, exact data movement).
+            buf.clear();
+            buf.resize(k * n, 0.0);
+            for r in 0..n {
+                let row = &b_slice[r * k..r * k + k];
+                for (c, &v) in row.iter().enumerate() {
+                    buf[c * n + r] = v;
+                }
+            }
+            crate::tensor_contraction::matmul_2d_into(a_slice, m, k, buf, n, dst);
+        } else {
+            crate::tensor_contraction::matmul_2d_into(a_slice, m, k, b_slice, n, dst);
+        }
+    };
+    if threads <= 1 {
+        let mut buf = Vec::new();
+        for bt in 0..batch_size {
+            let s = bt * out_stride;
+            compute(bt, &mut out[s..s + out_stride], &mut buf);
+        }
+        return out;
+    }
+    let per = batch_size.div_ceil(threads);
+    let compute_ref = &compute;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f64] = out.as_mut_slice();
+        let mut bt0 = 0usize;
+        while bt0 < batch_size {
+            let cnt = per.min(batch_size - bt0);
+            let (blk, tail) = rest.split_at_mut(cnt * out_stride);
+            rest = tail;
+            let start = bt0;
+            bt0 += cnt;
+            scope.spawn(move || {
+                let mut buf = Vec::new();
+                for j in 0..cnt {
+                    compute_ref(
+                        start + j,
+                        &mut blk[j * out_stride..(j + 1) * out_stride],
+                        &mut buf,
+                    );
+                }
+            });
+        }
+    });
+    out
+}
+
 /// Returns `None` for any other pattern (repeated/diagonal/transposed indices,
 /// non-leading or repeated batch labels, a zero-size extent), leaving the
 /// generic path to handle it. Each batch slice (`M·K` / `K·N`) is contiguous in
@@ -580,14 +673,11 @@ fn try_einsum2_matmul(
         return None;
     }
 
-    let mut out = Vec::with_capacity(batch_size.checked_mul(out_stride)?);
-    for bt in 0..batch_size {
-        let a_slice = &a[bt * lhs_stride..bt * lhs_stride + lhs_stride];
-        let b_slice = &b[bt * rhs_stride..bt * rhs_stride + rhs_stride];
-        out.extend_from_slice(&crate::tensor_contraction::matmul_2d(
-            a_slice, m, k, b_slice, n,
-        ));
-    }
+    // Defensive: out_stride product must not overflow before the helper allocs.
+    batch_size.checked_mul(out_stride)?;
+    let out = batched_matmul_slices_into(
+        a, b, batch_size, m, k, n, lhs_stride, rhs_stride, out_stride, false,
+    );
 
     let mut out_shape: Vec<usize> = a_shape[..nb].to_vec();
     out_shape.push(m);
@@ -678,22 +768,12 @@ fn try_einsum2_matmul_bt(
         return None;
     }
 
-    let mut out = Vec::with_capacity(batch_size.checked_mul(out_stride)?);
-    let mut bt_buf = vec![0.0f64; rhs_stride]; // [k, n] transpose scratch, reused
-    for bt in 0..batch_size {
-        let a_slice = &a[bt * lhs_stride..bt * lhs_stride + lhs_stride];
-        let b_slice = &b[bt * rhs_stride..bt * rhs_stride + rhs_stride]; // [n, k]
-        // Transpose [n, k] -> [k, n] so matmul_2d sees the canonical rhs layout.
-        for r in 0..n {
-            let row = &b_slice[r * k..r * k + k];
-            for (c, &v) in row.iter().enumerate() {
-                bt_buf[c * n + r] = v;
-            }
-        }
-        out.extend_from_slice(&crate::tensor_contraction::matmul_2d(
-            a_slice, m, k, &bt_buf, n,
-        ));
-    }
+    batch_size.checked_mul(out_stride)?;
+    // rhs slice stored [n, k] (transposed); the helper transposes each to [k, n) per slice
+    // and threads independent slices for the attention-score regime.
+    let out = batched_matmul_slices_into(
+        a, b, batch_size, m, k, n, lhs_stride, rhs_stride, out_stride, true,
+    );
 
     let mut out_shape: Vec<usize> = a_shape[..nb].to_vec();
     out_shape.push(m);
@@ -1190,6 +1270,88 @@ fn try_einsum2_matmul_general(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A/B: serial vs batch-threaded batched matmul on the attention regime (many small
+    // cache-resident slices, each below matmul_2d's own 8M-op fanout floor → serial today).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_batched_matmul_serial_vs_threaded() {
+        use std::time::Instant;
+        // [B*H=256, M=128, K=64] · [256, 64, 128] -> attention-score-like batched GEMM.
+        for (batch, m, k, n) in [(256usize, 128usize, 64usize, 128usize), (512, 64, 64, 64)] {
+            let a: Vec<f64> = (0..batch * m * k)
+                .map(|i| (i as f64 * 0.0007).sin())
+                .collect();
+            let b: Vec<f64> = (0..batch * k * n)
+                .map(|i| (i as f64 * 0.0009).cos())
+                .collect();
+            let (ls, rs, os) = (m * k, k * n, m * n);
+            let best = |f: &dyn Fn() -> f64| -> u64 {
+                let mut bb = u64::MAX;
+                for _ in 0..5 {
+                    let t0 = Instant::now();
+                    let acc = f();
+                    std::hint::black_box(acc);
+                    bb = bb.min(t0.elapsed().as_nanos() as u64);
+                }
+                bb
+            };
+            let serial = best(&|| {
+                let mut out = vec![0.0f64; batch * os];
+                for bt in 0..batch {
+                    crate::tensor_contraction::matmul_2d_into(
+                        &a[bt * ls..bt * ls + ls],
+                        m,
+                        k,
+                        &b[bt * rs..bt * rs + rs],
+                        n,
+                        &mut out[bt * os..bt * os + os],
+                    );
+                }
+                out[0] + out[out.len() / 2]
+            });
+            let threaded = best(&|| {
+                let mut out = vec![0.0f64; batch * os];
+                let threads = std::thread::available_parallelism()
+                    .map(|p| p.get())
+                    .unwrap_or(1)
+                    .min(batch);
+                let per = batch.div_ceil(threads);
+                std::thread::scope(|scope| {
+                    let mut rest: &mut [f64] = out.as_mut_slice();
+                    let mut bt0 = 0usize;
+                    while bt0 < batch {
+                        let cnt = per.min(batch - bt0);
+                        let (blk, tail) = rest.split_at_mut(cnt * os);
+                        rest = tail;
+                        let (a, b) = (&a, &b);
+                        let start = bt0;
+                        bt0 += cnt;
+                        scope.spawn(move || {
+                            for j in 0..cnt {
+                                let bt = start + j;
+                                crate::tensor_contraction::matmul_2d_into(
+                                    &a[bt * ls..bt * ls + ls],
+                                    m,
+                                    k,
+                                    &b[bt * rs..bt * rs + rs],
+                                    n,
+                                    &mut blk[j * os..j * os + os],
+                                );
+                            }
+                        });
+                    }
+                });
+                out[0] + out[out.len() / 2]
+            });
+            eprintln!(
+                "[batched_matmul B={batch} {m}x{k}x{n}] serial={:.3}ms threaded={:.3}ms ratio={:.2}x (min of 5)",
+                serial as f64 / 1e6,
+                threaded as f64 / 1e6,
+                serial as f64 / threaded as f64,
+            );
+        }
+    }
 
     #[test]
     fn einsum2_matmul_fast_path_bit_identical() {
