@@ -2,6 +2,36 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - REJECT (bench-backed): radix-4/2 split FFT for `n = 2·4^k` REGRESSES at the common lengths (ProudSalmon)
+
+Targeted the murmw.1 lever: extend the shipped radix-4 pow2 SoA FFT (1.76x win at pow4 lengths,
+commit 04868248) to the OTHER half of the power-of-two sizes — `n = 2·4^k` (8, 32, 128, 512, 2048,
+...), which `is_power_of_four` rejects so they still fall to radix-2. Implemented a DIT radix-2 split:
+one length-`n` transform → two length-`m=n/2` power-of-four FFTs (the validated
+`soa_radix4_butterfly_stages`, reused verbatim) + one radix-2 combine `X[k]=E[k]±W_n^k·O[k]`, with the
+even/odd de-interleave + base-4 digit-reverse folded into the SoA transpose-in. Correctness CONFIRMED:
+the DFT-oracle dispatch test passed for n=8/32/128 (tolerance <1e-9 vs ground-truth `dft_1d`), and the
+cols=128 golden re-baselined to `0x7a030c4a3e1398bf`.
+
+Same-binary single-thread A/B (`vectorized_pow4x2_tiled` vs `vectorized_pow2_tiled`, tiled/no-fanout so
+the ratio is load-robust), min-of-9, forward, dense c128:
+
+| rows×n | radix-2 | radix-4/2 | ratio |
+|---|---:|---:|---:|
+| 8192×32  | 1.59 ms | 1.03 ms | **1.55x WIN** |
+| 2048×128 | 0.98 ms | 1.34 ms | **0.73x LOSS** |
+| 2048×512 | 7.72 ms | 9.27 ms | **0.83x LOSS** |
+
+Wins ONLY at n=32 (tile = 8·32·16B·2 = 16 KiB, L1-resident; the halved stage count helps). At n≥128 the
+extra full radix-2 combine pass + the de-interleave scatter + the 2× larger SoA tile (n=512 tile = 128
+KiB, blows L1/L2) outweigh the pass-count saving — exactly the bead's REVERT condition (<1.15x). The
+radix-4 pow4 win held at n=256 because pure radix-4 has NO combine pass; adding one for `2·4^k` is the
+killer. n=32 is a niche/uncommon FFT length already near JAX parity, not worth a dispatch branch +
+golden churn + maintenance that regresses the common n=128/512. REVERTED (code stashed
+`pow4x2-fft-rejected-regression-n128-512`). DO-NOT re-attempt radix-4/2 for `2·4^k`: the combine pass is
+structural, not a tuning artifact. The remaining FFT lever stays the SIMD butterfly / split-radix
+op-count work (murmw), which needs intra-vector shuffle (safe-Rust-blocked) or `+fma` (cntiy).
+
 ## 2026-06-29 - KEEP (LANDED, 6th win): SIMD digamma (shift+asymptotic, scalar-ln) — 1.09x, narrows 1.85x->1.7x vs JAX (ProudSalmon)
 
 Revisited digamma (was scalar `eval_unary_elementwise_parallel`). SIMD-vectorized the x>=0.5 path: the
