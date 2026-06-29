@@ -2,6 +2,25 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - SURVEY: array-manipulation family all WINS; contained frontier comprehensively swept (ProudSalmon)
+
+Isolated re-measure of array manipulation (the last un-swept compute family):
+
+| op | fj-lax | JAX | verdict |
+|---|---:|---:|---|
+| pad f64 [4096,4096]->[4224,4224] | 21.2 ms | 27.6 ms | WIN 1.30x |
+| dynamic_slice [4096,4096]->[4000,4000] | 19.9 ms | 72.8 ms | WIN 3.66x |
+| tile [1000,1000]x(16,1)->16M | 19.9 ms | 21.9 ms | WIN 1.10x |
+
+All wins. CONTAINED FRONTIER SWEEP COMPLETE this session (every family isolate-measured or
+ledger-confirmed): reduction (wins + mid-axis max fixed 68af7f59), take/gather (f32 win; 8-byte
+BW-floor 1.66x), elementwise (wins + select BW-floor 1.35x), array-manip (all wins), sort/argsort
+(radix, wins; JAX 600-2700ms), linalg (wins 1.3-30x), scatter (win), one_hot (alloc-floor 1.23x).
+The ONLY remaining vs-JAX losses are: BW/latency-bound + already-threaded (gather/select), alloc-bound
+(one_hot -> bead `jjb1h`, 1.62x measured buffer donation), or policy-walled (FFT, +fma `cntiy`). NO
+contained per-crate serial->threaded kernel lever remains. Next work is architectural (`jjb1h`) or a
+maintainer +fma/unsafe-SIMD decision. No code change.
+
 ## 2026-06-29 - DO-NOT-REDIG: inner-axis reduce vein fully closed (all dtypes×ops×axes threaded) (ProudSalmon)
 
 Audited the inner>1 (middle/leading-axis) reduce dispatch after landing the mid-axis max/min threading
