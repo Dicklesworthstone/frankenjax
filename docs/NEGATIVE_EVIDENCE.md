@@ -2,6 +2,19 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - DO-NOT-REDIG: inner-axis reduce vein fully closed (all dtypes×ops×axes threaded) (ProudSalmon)
+
+Audited the inner>1 (middle/leading-axis) reduce dispatch after landing the mid-axis max/min threading
+fix (68af7f59). State now: **max/min** f64(now threaded)/f32/bf16/f16 all via threaded
+`simd_minmax_inner_axis_reduce_*`; **sum/prod** f64/f32 already fast (measured sum 3D-mid = WIN 1.34x),
+bf16/f16 via threaded `simd_sumprod_inner_axis_reduce_*`. No serial sibling remains. The inner-axis
+reduce vein is CLOSED — do not re-scan it. Combined with this session's family sweeps
+(reduction/scatter/one_hot, take/gather, elementwise), the contained serial→threaded kernel levers are
+exhausted; every remaining vs-JAX loss is BW/latency-bound (already threaded: gather 1.66x, select
+1.35x), alloc-bound (one_hot 1.23x -> bead `jjb1h` buffer donation, 1.62x measured), or policy-walled
+(FFT, +fma `cntiy`). Next real lever = `jjb1h` (architectural) or a maintainer +fma/unsafe-SIMD call.
+No code change.
+
 ## 2026-06-29 - SURVEY + REJECT: elementwise (select/clamp/...) — select 1.35x is BW-bound; SIMD-blend REGRESSES, reverted (ProudSalmon)
 
 Isolated re-measure of the elementwise family (16M f64):
