@@ -2,6 +2,24 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - KEEP (5.02x): thread the complex Abs dense kernel (was single-threaded) (BlackThrush)
+
+Fresh lever (NOT hypot-elision): `eval_unary_complex_abs`'s dense path was `dense.iter().map(complex_abs_f64).collect()`
+— SINGLE-THREADED, while the complex TRANSCENDENTALS (exp/log/sin/…) all thread via `eval_unary_complex_map`.
+Complex abs is COMPUTE-bound (a sqrt + 2 mul + add per element ≈ 46ms-of-compute vs ~19ms-of-memory at 16M),
+so threading wins. Added `threaded_complex_abs_f64`/`_f32` (work-scaled `thread::scope`, gate
+`CHEAP_BINARY_PARALLEL_MIN`, serial below it — no small-array regression), mirroring
+`threaded_complex_component_f64`. Bit-identical to the serial map (each output depends only on its input).
+
+Measured same-binary A/B (`complex_abs_threaded_vs_serial_ab`, 16M complex128 — the 4096² regime):
+serial-map **113.0 ms → threaded-eval 22.5 ms = 5.02x**, bit-for-bit equal (`to_bits`). This FLIPS complex
+abs from a ~7.6x JAX LOSS (113 ms single-thread vs JAX 14.8 ms) to near-parity (22.5 vs 14.8 ms). fj-lax
+lib **1654/0** (incl. `complex_abs_dense_matches_boxed_bit_for_bit` — threaded dense still == serial boxed),
+conformance green (abs oracle), fmt + clippy clean. NOTE: complex **Sign** (z/|z|) has the SAME
+single-threaded compute-bound dense path (eval_unary_int_or_float) — a follow-up thread-it lever. LESSON:
+audit dense compute-bound kernels for `.iter().map().collect()` — threading was applied to the complex
+transcendentals but MISSED on abs/sign (they're in a different dispatch fn).
+
 ## 2026-06-29 - NO-SHIP (1.01x): sin_cos elision is a no-op on this glibc — confirmed again (BlackThrush)
 
 Broad cross-crate grep for redundant transcendental pairs found `unary_first_second_derivative` in

@@ -5655,6 +5655,71 @@ pub(crate) fn eval_conj(primitive: Primitive, inputs: &[Value]) -> Result<Value,
 // output — BW-bound, one core cannot saturate DRAM, and JAX's complex real/imag is slow
 // (~26ms). Threading over contiguous chunks keeps the per-thread map autovectorized.
 // Bit-identical (per-element component pick, order-independent).
+/// Threaded `|z|` over a dense complex slice into dense f64 (the Abs primitive). Complex abs is
+/// COMPUTE-bound (a sqrt per element), so — like the complex transcendentals — it fans across
+/// work-scaled threads above the gate; below it (or 1 core) it runs the serial map. Bit-identical
+/// to the serial `complex_abs_f64` map (each output depends only on its input).
+fn threaded_complex_abs_f64(src: &[(f64, f64)]) -> Vec<f64> {
+    let n = src.len();
+    let mut out = vec![0.0f64; n];
+    if n < CHEAP_BINARY_PARALLEL_MIN || work_scaled_threads(n) <= 1 {
+        for (o, &(re, im)) in out.iter_mut().zip(src) {
+            *o = complex_abs_f64(re, im);
+        }
+        return out;
+    }
+    let threads = work_scaled_threads(n);
+    let chunk = n.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut o_rest = out.as_mut_slice();
+        let mut x0 = 0usize;
+        while x0 < n {
+            let cnt = chunk.min(n - x0);
+            let (oblk, otail) = o_rest.split_at_mut(cnt);
+            o_rest = otail;
+            let sblk = &src[x0..x0 + cnt];
+            x0 += cnt;
+            scope.spawn(move || {
+                for (o, &(re, im)) in oblk.iter_mut().zip(sblk) {
+                    *o = complex_abs_f64(re, im);
+                }
+            });
+        }
+    });
+    out
+}
+
+/// f32 sibling of [`threaded_complex_abs_f64`] (Complex64 abs; the stored f64 pair is f32-exact).
+fn threaded_complex_abs_f32(src: &[(f64, f64)]) -> Vec<f32> {
+    let n = src.len();
+    let mut out = vec![0.0f32; n];
+    if n < CHEAP_BINARY_PARALLEL_MIN || work_scaled_threads(n) <= 1 {
+        for (o, &(re, im)) in out.iter_mut().zip(src) {
+            *o = complex_abs_f32(re as f32, im as f32);
+        }
+        return out;
+    }
+    let threads = work_scaled_threads(n);
+    let chunk = n.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut o_rest = out.as_mut_slice();
+        let mut x0 = 0usize;
+        while x0 < n {
+            let cnt = chunk.min(n - x0);
+            let (oblk, otail) = o_rest.split_at_mut(cnt);
+            o_rest = otail;
+            let sblk = &src[x0..x0 + cnt];
+            x0 += cnt;
+            scope.spawn(move || {
+                for (o, &(re, im)) in oblk.iter_mut().zip(sblk) {
+                    *o = complex_abs_f32(re as f32, im as f32);
+                }
+            });
+        }
+    });
+    out
+}
+
 fn threaded_complex_component_f64(src: &[(f64, f64)], take_re: bool) -> Vec<f64> {
     let n = src.len();
     let mut out = vec![0.0f64; n];
@@ -6006,18 +6071,14 @@ fn eval_unary_complex_abs(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             if let Some(dense) = tensor.elements.as_complex_slice() {
                 match tensor.dtype {
                     DType::Complex128 => {
-                        let out: Vec<f64> =
-                            dense.iter().map(|&(re, im)| complex_abs_f64(re, im)).collect();
+                        let out = threaded_complex_abs_f64(dense);
                         return Ok(Value::Tensor(TensorValue::new_f64_values(
                             tensor.shape.clone(),
                             out,
                         )?));
                     }
                     DType::Complex64 => {
-                        let out: Vec<f32> = dense
-                            .iter()
-                            .map(|&(re, im)| complex_abs_f32(re as f32, im as f32))
-                            .collect();
+                        let out = threaded_complex_abs_f32(dense);
                         return Ok(Value::Tensor(TensorValue::new_f32_values(
                             tensor.shape.clone(),
                             out,
@@ -15065,6 +15126,53 @@ mod tests {
             hyp * 1e3,
             fast * 1e3,
             hyp / fast
+        );
+    }
+
+    // complex abs is now THREADED (compute-bound sqrt). A/B: threaded eval vs serial map on 16M.
+    #[test]
+    fn complex_abs_threaded_vs_serial_ab() {
+        use std::time::Instant;
+        let n = 1usize << 24; // 16M (the 4096² regime)
+        let data: Vec<(f64, f64)> = (0..n)
+            .map(|i| (((i % 397) as f64) * 0.02 - 4.0, ((i % 521) as f64) * 0.02 - 5.0))
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape { dims: vec![n as u32] },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        // correctness: threaded eval == serial map, bit-for-bit.
+        let got = eval_abs(Primitive::Abs, std::slice::from_ref(&input)).unwrap();
+        let gv = got.as_tensor().unwrap().elements.as_f64_slice().unwrap();
+        for (k, &(re, im)) in data.iter().enumerate() {
+            assert_eq!(gv[k].to_bits(), super::complex_abs_f64(re, im).to_bits(), "abs[{k}]");
+        }
+        let best = |f: &dyn Fn()| -> f64 {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let threaded = best(&|| {
+            std::hint::black_box(eval_abs(Primitive::Abs, std::slice::from_ref(&input)).unwrap());
+        });
+        let serial = best(&|| {
+            let out: Vec<f64> = data.iter().map(|&(re, im)| super::complex_abs_f64(re, im)).collect();
+            std::hint::black_box(out);
+        });
+        eprintln!(
+            "[complex_abs 16M] serial-map={:.3}ms threaded-eval={:.3}ms ratio={:.2}x (JAX ~14.8ms)",
+            serial * 1e3,
+            threaded * 1e3,
+            serial / threaded
         );
     }
 
