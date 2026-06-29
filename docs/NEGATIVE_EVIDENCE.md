@@ -2,6 +2,21 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - NO-SHIP (1.01x): sin_cos elision is a no-op on this glibc — confirmed again (BlackThrush)
+
+Broad cross-crate grep for redundant transcendental pairs found `unary_first_second_derivative` in
+fj-ad (the per-element second-order AD loop): `Sin => (cos, -sin)`, `Cos => (-sin, -cos)` compute sin AND
+cos of the same x separately. Replaced with one `x.sin_cos()`. Isolated in-process A/B (4M, fj-ad):
+separate sin+cos **41.62 ms** vs sin_cos **41.21 ms = 1.01x** — ~0-gain. REVERTED.
+
+ROOT CAUSE (re-confirms the complex_sin 1.02x finding + the lgamma neutral f64): on this host's glibc,
+`f64::sin_cos()` is NOT faster than two separate `sin()`+`cos()` calls (no shared argument reduction
+benefit / the compiler already schedules them well). The complex-trig wins came ENTIRELY from
+`cosh_sinh_from_exp` (one `exp` → both hyperbolics, where `exp` IS expensive and avoiding the 2nd is real)
+— NOT from sin_cos. RULE: `sin_cos` is a NO-OP lever here; only pursue it for the hyperbolic pair
+(cosh+sinh via one exp) or hypot-elision (sqrt). DO-NOT re-try sin_cos anywhere. (The fj-ad scalar grad
+fast-paths at lib.rs ~1509/1556 recompute sin/cos but are scalar/per-call — unmeasurable, also not worth it.)
+
 ## 2026-06-29 - KEEP (2.10x): complex Sign (z/|z|) hypot-elision — the site I missed (BlackThrush)
 
 CORRECTION to yesterday's "complex hypot-elision vein MINED OUT" survey: a cross-CRATE `grep '\.hypot('`
