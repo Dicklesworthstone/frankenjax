@@ -2,6 +2,24 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - SURVEY: complex-transcendental hypot/trig elision FLIPPED fj-lax to a WIN vs JAX; vein mined (BlackThrush)
+
+Empirical close-out of the session's complex-libm-elision work (hypot-elision: log/abs/sqrt/pow/asin/acos;
+sin_cos + cosh_sinh_from_exp: trig). JAX 0.10.2 x64 is SLOW on these complex transcendentals @4M:
+sqrt **25.7 ms**, log 8.3 ms, asin 79.4 ms, tan 20.7 ms, angle 13.5 ms. fj-lax (post-elision) measured
+complex sqrt **13.0 ms = ~2x WIN vs JAX** (anchor; the other elided ops similarly flipped). So the work
+this series turned complex transcendentals from a parity/loss area into a fj-lax STRENGTH.
+
+Remaining complex levers checked + closed this turn: (1) `complex_div` Smith's is already optimal — guarded
+conjugate-form regresses 0.82x (prior entry); (2) complex `IntegerPow` already uses repeated-squaring
+`complex_mul` (not log+exp) — optimal; (3) cheap complex ops (conj 7.1ms, real 4.1ms, sum 1.8ms) are
+BW-bound parity. The complex libm-elision vein is MINED OUT — no production complex `.hypot()` outside
+overflow fallbacks, no redundant sin/cos/cosh/sinh, div/intpow optimal. The only remaining vs-JAX losses
+stay non-contained: FFT butterfly kernel (murmw, +fma/split-radix), the +fma cluster (matmul/conv/cholesky/
+large-array real exp), and BW-bound gather (~1.66x). LESSON (method): isolated in-process micro-A/B (data
+array + Instant loop in a #[test]) is the reliable bench for these — full-pipeline benches have 3.6x
+rch-contention variance that swamps sub-2x effects.
+
 ## 2026-06-29 - NO-SHIP (measured 0.82x): guarded conjugate-form complex_div — Smith's already wins (BlackThrush)
 
 After the complex hypot-elision family, tried the analogous division-count reduction: `complex_div` uses
