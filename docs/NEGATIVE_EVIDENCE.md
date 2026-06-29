@@ -2,6 +2,38 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - SURFACE: mixed-radix FFT leaf fusion was CONVERGENTLY already landed; no unlanded worktree win remains (ProudSalmon)
+
+LAND-OR-DIG pass. The most promising scratch candidate was `frankenjax-proudsalmon-fft-dig`
+commit `b0f69d7e` ("fuse mixed-radix FFT leaf cases", measured -20.8% / 5.56x->4.40x JAX loss on
+`eval/fft_batch_128x1000_complex128`). Investigation result: **this exact win is ALREADY on main**
+as commit `e05febcf` ("perf(fj-lax): fuse mixed-radix FFT leaf cases") — a convergent commit by
+another agent/session. `git merge-base --is-ancestor e05febcf HEAD` = yes; main's `fft.rs` already
+contains the `nn==2`, `nn==3`, `nn==5` radix leaf blocks (`grep` count 3). The worktree patch is a
+no-op against HEAD (`git apply --3way` merges to zero net diff; plain `git apply` rejects on the
+already-present context). Nothing to land — DO NOT re-land `b0f69d7e`.
+
+A/B-method caution recorded: a naive same-host A/B here is MEANINGLESS because `git checkout fft.rs`
+restores HEAD which ALREADY has the fusion, so "baseline" and "candidate" are the SAME binary. The
+observed split (baseline 4.0068 ms vs candidate 3.1655 ms, both [3.09,4.36] under load) was pure
+cross-invocation host-load variance, not the fusion — a live instance of the documented
+`rch bench cross-invocation variance` (20-60% drift; only same-binary before/after is trustworthy).
+
+Swept the other ProudSalmon ahead=1 worktrees (`softmax-cand` logsumexp-exp-map, `landordig` boxed
+complex FFT extraction, `boldverify` complex boolword select): all `git apply --3way`-only against
+main = already present / superseded. **No genuinely unlanded measured win exists in scratch.**
+
+Next-lever scan (biggest non-FMA-floor measured gaps): FFT remains 4.40x (its SoA / iterative-SoA /
+scalar-iterative / Bluestein / threading / radix-4 routes are all already REJECTED for
+`frankenjax-murmw`; only a different kernel CLASS remains, multi-session). `cummax`/`cummin` show a
+contained 1.13-1.17x loss; pass-1 of `parallel_cummax_f64/f32` is a scalar loop-carried scan that
+does not autovectorize. A SIMD in-lane prefix-max WOULD break the dependency and is numerically
+bit-exact (max/min are exact, no rounding) — BUT it requires hand-rolled NaN-propagation masks to
+match `jax_minmax_scalar`'s exact JAX total-order NaN semantics, and portable-SIMD select/compare
+trait locations drift across nightlies (see `simd-poly-exp-fma-finding`). For only ~1.13x headroom
+that fragility/golden-break risk is poor-EV this pass; DEFERRED, not rejected. Tree left clean; no
+code change. Gates: working tree clean, fft:: lib tests 56 passed / 0 failed on current main.
+
 ## 2026-06-28 - SURFACE: f64/int cheap-elementwise vs-slow-JAX-CPU vein COMPREHENSIVELY MINED (ProudSalmon)
 
 Measured-confirmation sweep this turn (no new lever — all already threaded+winning): f64 scalar-broadcast binary
