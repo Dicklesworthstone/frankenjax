@@ -2,6 +2,33 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - KEEP (f32 1.27x, f64 neutral): SIMD lgamma via the 8-wide dense unary driver — completes the digamma/erf/erfc SIMD family (BlackThrush)
+
+`eval_lgamma` was the last hot special-fn still on the scalar `eval_unary_elementwise_parallel` path
+while its sibling `eval_digamma` already had an 8-wide `digamma_f64x8` through
+`eval_unary_simd_dense_f64_parallel`. Added `lgamma_f64x8` on the identical pattern: SIMD the common
+`x >= 0.5` finite regime (the fixed 8-term Lanczos series + final combine vectorize; `t.ln()`/`acc.ln()`
+per-lane scalar libm — bit-identical op order), scalar `lgamma_approx` fallback for `x<0.5` reflection /
+`x<=0` poles / non-finite. Gated behind `FJ_LGAMMA_SCALAR` for the same-binary A/B.
+
+Measured (same-binary A/B, `cargo test -p fj-lax --release --lib bench_lgamma_simd_vs_scalar --ignored`,
+16M elems, target `frankenjax-cc`):
+| dtype | scalar | simd | ratio |
+|-------|--------|------|-------|
+| f64 | 40.126 ms | 39.578 ms | **1.01x (NEUTRAL)** |
+| f32 | 32.058 ms | 25.228 ms | **1.27x faster** (f32 = JAX default dtype) |
+
+ROOT CAUSE of the f64 neutrality (documented so no one re-digs the f64 side): lgamma is **2-scalar-ln-bound**
+— it takes TWO `.ln()` per element (`t.ln()` + `acc.ln()`), both via scalar libm to preserve the golden-bit
+contract, so they cannot vectorize. Vectorizing only the series leaves f64 flat (ln dominates). f32 wins
+because the driver widens 8×f32→f64x8, amortizing the conversion the scalar f32 path pays per-element.
+(Contrast digamma: ONE ln/elem → more f64 headroom.) Closing the f64 lgamma JAX gap (~1.8x) would need a
+bit-exact SIMD `ln`, which breaks the special-fn golden digests — out of scope.
+
+Validation: `lgamma_simd_bit_identical_to_scalar` asserts `to_bits()` equality vs scalar `lgamma_approx`
+across 70_003 mixed-branch f64 values + f32 + ±0/±inf/NaN/reflection/poles. Full `fj-lax --lib` 1648/0,
+fmt + clippy clean, conformance green. The SIMD special-fn family (erf/erfc/digamma/lgamma) is now complete.
+
 ## 2026-06-29 - NO-SHIP (measured +94% REGRESSION): FFT SoA transpose loop order is ALREADY cache-optimal — DO-NOT re-dig (BlackThrush)
 
 Probed the biggest contained vs-JAX gap (FFT batched pow2/pow4 ~14.9x, "biggest unowned legal-to-fix

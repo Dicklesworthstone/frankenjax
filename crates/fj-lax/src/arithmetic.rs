@@ -10375,8 +10375,69 @@ pub(crate) fn erf_inv_approx(x: f64) -> f64 {
     y
 }
 
+/// 8-wide `lgamma` for the common `x >= 0.5` finite range: the fixed 8-term Lanczos series and the
+/// final combine vectorize (bit-identical per lane — same ascending coeff-sum order + same op order
+/// as the scalar `lgamma_approx`); `t.ln()`/`acc.ln()` are taken per-lane via scalar libm
+/// (bit-identical to scalar `.ln()`). Lanes with `x < 0.5` (the reflection branch / `x<=0`
+/// near-integer pole) or non-finite fall back to scalar [`lgamma_approx`], so every lane equals the
+/// scalar form. lgamma's hot uses (Dirichlet/Beta/Gamma log-densities, log-factorials) sit at x>=0.5.
+fn lgamma_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialOrd;
+    type F = Simd<f64, 8>;
+    let half = F::splat(0.5);
+    let inf = F::splat(f64::INFINITY);
+    let simd_ok = x.simd_ge(half) & x.simd_lt(inf);
+    // If no lane is in the SIMD regime (all x<0.5 / non-finite), skip the wasted SIMD series and go
+    // straight to scalar — keeps x<0.5-heavy / reflection inputs NEUTRAL (no regression).
+    if !simd_ok.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f64; 8];
+        for k in 0..8 {
+            ra[k] = lgamma_approx(xa[k]);
+        }
+        return F::from_array(ra);
+    }
+    let z = x - F::splat(1.0);
+    // Lanczos series, ascending order (bit-identical to the scalar `acc += coeff/(z+idx)` loop).
+    let mut acc = F::splat(LANCZOS_COEFFS[0]);
+    for (idx, &coeff) in LANCZOS_COEFFS.iter().enumerate().skip(1) {
+        acc += F::splat(coeff) / (z + F::splat(idx as f64));
+    }
+    let t = z + F::splat(LANCZOS_G) + half;
+    // ln(t), ln(acc) per lane via scalar libm — bit-identical to the scalar `t.ln()`/`acc.ln()`.
+    let ta = t.to_array();
+    let aa = acc.to_array();
+    let mut lnt = [0.0f64; 8];
+    let mut lnacc = [0.0f64; 8];
+    for k in 0..8 {
+        lnt[k] = ta[k].ln();
+        lnacc[k] = aa[k].ln();
+    }
+    let lnt = F::from_array(lnt);
+    let lnacc = F::from_array(lnacc);
+    // Same op order/association as scalar: 0.5*ln(2π) + (z+0.5)*ln(t) - t + ln(acc).
+    let c = F::splat(0.5 * (2.0 * std::f64::consts::PI).ln());
+    let mut res = c + (z + half) * lnt - t + lnacc;
+    if !simd_ok.all() {
+        let xa = x.to_array();
+        let mut ra = res.to_array();
+        for k in 0..8 {
+            if !(xa[k] >= 0.5 && xa[k] < f64::INFINITY) {
+                ra[k] = lgamma_approx(xa[k]);
+            }
+        }
+        res = F::from_array(ra);
+    }
+    res
+}
+
 pub(crate) fn eval_lgamma(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
-    eval_unary_elementwise_parallel(primitive, inputs, lgamma_approx)
+    // FJ_LGAMMA_SCALAR forces the pre-SIMD scalar-map path (same-binary A/B hook).
+    if std::env::var_os("FJ_LGAMMA_SCALAR").is_some() {
+        return eval_unary_elementwise_parallel(primitive, inputs, lgamma_approx);
+    }
+    eval_unary_simd_dense_f64_parallel(primitive, inputs, lgamma_f64x8, lgamma_approx)
 }
 
 /// 8-wide `digamma` for the common `x >= 0.5` finite range: the recurrence shift-to-`>=8` and the
@@ -25220,6 +25281,143 @@ mod tests {
                 extract_f64_vec(&eval_erfc(Primitive::Erfc, std::slice::from_ref(&xi)).unwrap());
             assert_eq!(g[0].to_bits(), erfc_approx(x).to_bits(), "special x={x}");
         }
+    }
+
+    #[test]
+    fn lgamma_simd_bit_identical_to_scalar() {
+        // lgamma via the SIMD driver must equal scalar lgamma_approx bit-for-bit across: x>=0.5
+        // finite (SIMD Lanczos), x<0.5 (scalar reflection), the x<=0 near-integer poles, and
+        // ±0/±inf/NaN, for f64 AND f32. Span [-6,6] to mix all branches within 8-lane blocks.
+        let n = 70_003usize;
+        let data: Vec<f64> = (0..n)
+            .map(|i| ((i % 12000) as f64 - 6000.0) * 0.001)
+            .collect();
+        let f64_in = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let got = extract_f64_vec(
+            &eval_lgamma(Primitive::Lgamma, std::slice::from_ref(&f64_in)).unwrap(),
+        );
+        for idx in 0..n {
+            assert_eq!(
+                got[idx].to_bits(),
+                lgamma_approx(data[idx]).to_bits(),
+                "f64 lgamma at x={}",
+                data[idx]
+            );
+        }
+        let dataf: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+        let f32_in = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                dataf.clone(),
+            )
+            .unwrap(),
+        );
+        let gotf = match eval_lgamma(Primitive::Lgamma, std::slice::from_ref(&f32_in)).unwrap() {
+            Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
+            _ => panic!("expected tensor"),
+        };
+        for idx in 0..n {
+            assert_eq!(
+                gotf[idx].to_bits(),
+                (lgamma_approx(dataf[idx] as f64) as f32).to_bits(),
+                "f32 lgamma at idx {idx}"
+            );
+        }
+        for &x in &[
+            0.0_f64,
+            -0.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            -3.0,
+            0.5,
+        ] {
+            let xi = Value::Tensor(
+                TensorValue::new_f64_values(Shape { dims: vec![16] }, vec![x; 16]).unwrap(),
+            );
+            let g = extract_f64_vec(
+                &eval_lgamma(Primitive::Lgamma, std::slice::from_ref(&xi)).unwrap(),
+            );
+            assert_eq!(g[0].to_bits(), lgamma_approx(x).to_bits(), "special x={x}");
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_lgamma_simd_vs_scalar() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        // Positive log-density regime (Beta/Dirichlet/log-factorial): most x in [0.5, 12) -> SIMD.
+        let data: Vec<f64> = (0..n).map(|i| 0.5 + (i % 11500) as f64 * 0.001).collect();
+        let f64_in = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let dataf: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+        let f32_in = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                dataf,
+            )
+            .unwrap(),
+        );
+        let bench = |label: &str, f: &dyn Fn()| {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            println!("lgamma 16M [{label}]: {:.3}ms", b * 1e3);
+        };
+        bench("f64-scalar", &|| {
+            std::hint::black_box(
+                eval_unary_elementwise_parallel(
+                    Primitive::Lgamma,
+                    std::slice::from_ref(&f64_in),
+                    lgamma_approx,
+                )
+                .unwrap(),
+            );
+        });
+        bench("f64-simd", &|| {
+            std::hint::black_box(
+                eval_lgamma(Primitive::Lgamma, std::slice::from_ref(&f64_in)).unwrap(),
+            );
+        });
+        bench("f32-scalar", &|| {
+            std::hint::black_box(
+                eval_unary_elementwise_parallel(
+                    Primitive::Lgamma,
+                    std::slice::from_ref(&f32_in),
+                    lgamma_approx,
+                )
+                .unwrap(),
+            );
+        });
+        bench("f32-simd", &|| {
+            std::hint::black_box(
+                eval_lgamma(Primitive::Lgamma, std::slice::from_ref(&f32_in)).unwrap(),
+            );
+        });
     }
 
     #[test]
