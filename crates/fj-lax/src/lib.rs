@@ -3018,6 +3018,39 @@ fn eval_bitwise_unary(primitive: Primitive, inputs: &[Value]) -> Result<Value, E
                     ));
                 }
             }
+            // Dense threaded fast path for the bit-count ops (PopulationCount/CLZ/CTZ): read the
+            // typed integer backing and map the count intrinsic into a dense I64 output, escaping
+            // the per-`Literal` generic loop below (24-byte Literal + enum dispatch per element).
+            // Bit-identical to `apply_bitwise_unary_literal_with_dtype` — same per-dtype bit width
+            // (I32 operates on the low 32 bits) and the same `i64::from(count)` result.
+            if matches!(
+                primitive,
+                Primitive::PopulationCount
+                    | Primitive::CountLeadingZeros
+                    | Primitive::CountTrailingZeros
+            ) {
+                use crate::arithmetic::threaded_unary_typed_map_to as tmap;
+                // Gated to I64: its de-box win is robust (1.9-5.6x vs the per-Literal loop). The
+                // cheaper-payload unsigned/i32 cases were MEASURED to reverse under load (U32 0.80x)
+                // because the threaded map's contention can outweigh the small de-box gain there —
+                // they keep the generic path.
+                let counts: Option<Vec<i64>> = match t.dtype {
+                    fj_core::DType::I64 => t.elements.as_i64_slice().map(|s| match primitive {
+                        Primitive::PopulationCount => tmap(s, &|v: i64| i64::from(v.count_ones())),
+                        Primitive::CountLeadingZeros => {
+                            tmap(s, &|v: i64| i64::from(v.leading_zeros()))
+                        }
+                        _ => tmap(s, &|v: i64| i64::from(v.trailing_zeros())),
+                    }),
+                    _ => None,
+                };
+                if let Some(out) = counts {
+                    return Ok(Value::Tensor(
+                        TensorValue::new_i64_values(t.shape.clone(), out)
+                            .map_err(EvalError::InvalidTensor)?,
+                    ));
+                }
+            }
             let out_dtype = unary_bitwise_output_dtype(primitive, t.dtype);
             let elements: Result<Vec<_>, _> = t
                 .elements
@@ -10052,6 +10085,127 @@ mod tests {
             assert!(
                 max_rel < 1e-10,
                 "N-D separable sum drifted (rank={rank}): max rel {max_rel:e}"
+            );
+        }
+    }
+
+    // Dense bit-count fast path (PopulationCount/CLZ/CTZ) is BIT-IDENTICAL to the per-Literal
+    // generic reference across all integer dtypes, and an A/B shows the de-box+thread win.
+    #[test]
+    fn bitcount_dense_matches_generic_and_ab() {
+        use std::time::Instant;
+        let p = BTreeMap::new();
+        let n = 1usize << 20;
+        // Build each integer tensor via its proper typed constructor (typed tensors densify to the
+        // backing `as_*_slice` the fast path reads); the per-Literal reference uses the SAME storage
+        // literals (`as_slice`) the generic loop would walk.
+        for dtype in [DType::I64, DType::I32, DType::U32, DType::U64] {
+            let shape = Shape {
+                dims: vec![n as u32],
+            };
+            let t = Value::Tensor(match dtype {
+                DType::I64 => TensorValue::new_i64_values(
+                    shape.clone(),
+                    (0..n)
+                        .map(|i| (i as i64).wrapping_mul(2_654_435_761) ^ ((i as i64) << 17))
+                        .collect(),
+                )
+                .unwrap(),
+                DType::I32 => TensorValue::new_i32_values(
+                    shape.clone(),
+                    (0..n)
+                        .map(|i| i64::from((i as i32).wrapping_mul(40_503)))
+                        .collect(),
+                )
+                .unwrap(),
+                DType::U32 => TensorValue::new_u32_values(
+                    shape.clone(),
+                    (0..n)
+                        .map(|i| (i as u32).wrapping_mul(2_654_435_761))
+                        .collect(),
+                )
+                .unwrap(),
+                _ => TensorValue::new_u64_values(
+                    shape.clone(),
+                    (0..n)
+                        .map(|i| (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+                        .collect(),
+                )
+                .unwrap(),
+            });
+            let lits: Vec<Literal> = t.as_tensor().unwrap().elements.iter().copied().collect();
+            for prim in [
+                Primitive::PopulationCount,
+                Primitive::CountLeadingZeros,
+                Primitive::CountTrailingZeros,
+            ] {
+                let got = eval_primitive(prim, std::slice::from_ref(&t), &p).unwrap();
+                let gvals: Vec<i64> = got
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::I64(v) => *v,
+                        other => panic!("expected i64 count, got {other:?}"),
+                    })
+                    .collect();
+                // Reference: the per-Literal generic op.
+                let want: Vec<i64> = lits
+                    .iter()
+                    .map(|&l| {
+                        match super::apply_bitwise_unary_literal_with_dtype(prim, l, Some(dtype)) {
+                            Some(Literal::I64(v)) => v,
+                            other => panic!("ref produced {other:?}"),
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    gvals, want,
+                    "bitcount {prim:?} {dtype:?} fast path != generic"
+                );
+            }
+            // A/B: dense fast path (eval_primitive) vs the per-Literal generic loop.
+            let best = |f: &dyn Fn() -> i64| -> u64 {
+                let mut bb = u64::MAX;
+                for _ in 0..5 {
+                    let t0 = Instant::now();
+                    let acc = f();
+                    std::hint::black_box(acc);
+                    bb = bb.min(t0.elapsed().as_nanos() as u64);
+                }
+                bb
+            };
+            let fast = best(&|| {
+                let v = eval_primitive(Primitive::PopulationCount, std::slice::from_ref(&t), &p)
+                    .unwrap();
+                match &v.as_tensor().unwrap().elements.as_slice()[0] {
+                    Literal::I64(x) => *x,
+                    _ => 0,
+                }
+            });
+            let generic = best(&|| {
+                let out: Vec<Literal> = lits
+                    .iter()
+                    .map(|&l| {
+                        super::apply_bitwise_unary_literal_with_dtype(
+                            Primitive::PopulationCount,
+                            l,
+                            Some(dtype),
+                        )
+                        .unwrap()
+                    })
+                    .collect();
+                match out[0] {
+                    Literal::I64(x) => x,
+                    _ => 0,
+                }
+            });
+            eprintln!(
+                "[popcount {dtype:?} {n}] generic={:.3}ms dense={:.3}ms ratio={:.2}x",
+                generic as f64 / 1e6,
+                fast as f64 / 1e6,
+                generic as f64 / fast as f64,
             );
         }
     }

@@ -46,7 +46,13 @@ fn main() {
     let n = 16_000_000usize;
     let data: Vec<f64> = (0..n).map(|i| 0.5 + (i % 9973) as f64 * 0.001).collect();
     let input = Value::Tensor(
-        TensorValue::new_f64_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32],
+            },
+            data.clone(),
+        )
+        .unwrap(),
     );
     let p = BTreeMap::new();
 

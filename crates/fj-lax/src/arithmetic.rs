@@ -6999,6 +6999,43 @@ pub(crate) fn threaded_unary_typed_map<T: Copy + Send + Sync + Default>(
     out
 }
 
+/// Two-type sibling of [`threaded_unary_typed_map`]: maps `&[T] -> Vec<U>` (e.g. the bit-count
+/// ops, which read an integer backing and emit `i64` counts). Same work-scaled chunked threading;
+/// each output element depends only on its input, so it is bit-identical to the serial map.
+pub(crate) fn threaded_unary_typed_map_to<T, U>(src: &[T], f: &(impl Fn(T) -> U + Sync)) -> Vec<U>
+where
+    T: Copy + Send + Sync,
+    U: Copy + Send + Sync + Default,
+{
+    let n = src.len();
+    let mut out = vec![U::default(); n];
+    if n < CHEAP_BINARY_PARALLEL_MIN || work_scaled_threads(n) <= 1 {
+        for (o, &v) in out.iter_mut().zip(src) {
+            *o = f(v);
+        }
+        return out;
+    }
+    let threads = work_scaled_threads(n);
+    let chunk = n.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut o_rest = out.as_mut_slice();
+        let mut x0 = 0usize;
+        while x0 < n {
+            let cnt = chunk.min(n - x0);
+            let (oblk, otail) = o_rest.split_at_mut(cnt);
+            o_rest = otail;
+            let sblk = &src[x0..x0 + cnt];
+            x0 += cnt;
+            scope.spawn(move || {
+                for (o, &v) in oblk.iter_mut().zip(sblk) {
+                    *o = f(v);
+                }
+            });
+        }
+    });
+    out
+}
+
 pub(crate) fn eval_unary_int_or_float(
     primitive: Primitive,
     inputs: &[Value],
