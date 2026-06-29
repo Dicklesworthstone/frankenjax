@@ -2,6 +2,25 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - NO-SHIP (measured +3.9% REGRESSION): radix-4 SoA twiddle-free j==0 butterfly — DO-NOT (BlackThrush)
+
+Attacked the biggest gap (batched pow4 FFT, `fft_batch_2048x256` ~14-18x vs JAX/pocketfft). In
+`soa_radix4_butterfly_stages` the `j==0` butterfly of every stage has twiddle W⁰=(1,0) (so W²ʲ=W³ʲ=(1,0)
+too) — the whole first radix-4 stage plus offset-0 of later stages, ~1/3 of all butterflies — yet the
+kernel still runs the 6 complex twiddle multiplies (the runtime twiddle value is opaque to the
+autovectorizer). Special-cased `j==0` with a twiddle-free lane loop (B/C/D pass through unchanged),
+branch OUTSIDE the lane loop to preserve SIMD width. BIT-IDENTICAL (×(1,0) is identity; FFT golden-digest
++ radix4 DFT-oracle, 60/60 fft tests pass).
+
+MEASURED (criterion stash-A/B, `frankenjax-cc`, `eval/fft_batch_2048x256_complex128_dense_input`):
+baseline **6.07 ms** → twiddle-free-j0 **6.31 ms = +3.9% (p=0.00) REGRESSION**. The per-`j` branch +
+duplicated lane-loop body disrupt the uniform stage loop (code-size / branch / scheduling) MORE than the
+skipped multiplies save — the autovectorizer already pipelines those 6 muls essentially for free in the
+unified loop. Reverted (fft.rs unchanged). SAME LESSON as the radix-4 SoA rejection: in this
+autovectorized SoA kernel, "fewer flops" loses when it fragments the uniform butterfly loop. DO-NOT
+re-attempt twiddle special-casing (j==0 or pure-imaginary W^{len/4}) in the SoA radix-2/4 kernels. The
+FFT gap stays the +fma/split-radix kernel floor (murmw, multi-session).
+
 ## 2026-06-29 - KEEP (2.12x): internal `complex_sin` helper joins the 4→2 libm lever (BlackThrush)
 
 Follow-up to the complex-trig 4→2-libm win: the INTERNAL `complex_sin((re,im))` helper (arithmetic.rs,
