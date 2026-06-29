@@ -2,6 +2,31 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - SURVEY (no code): vmap-dispatch serial-fallback vein EXHAUSTED after complex-dot + conv wins (BlackThrush)
+
+Land-or-dig after the vmap(conv) threading land (53fcbede): no unlanded bench-worktree win. Mined the
+"vmap batch rule falls to serial per-slice while a batched kernel exists" vein further (it gave
+vmap-complex-dot 4.1-5.0x and vmap-conv 2.4x). It is now exhausted for clean wins — four specific
+dead-ends confirmed so the next digger skips them:
+
+1. **`eval_dot_general` batched complex is ALREADY routed** — `batched_standard_complex_matmul`
+   (arithmetic.rs:13698) handles batched complex dot_general (the COMMON matmul lowering; the earlier
+   vmap-Dot complex fix was the niche `lax.dot` sibling). Real/integer/complex × batched/non-batched all
+   covered. No gap.
+2. **Complex conv is ALREADY im2col+GEMM** — `eval_conv` complex path uses `rank2_complex_matmul`
+   (tensor_ops.rs:12948 1D, 13354 2D), not a naive complex loop. No gap.
+3. **vmap(scan)/vmap(while) allowlist is a DEAD END** — `batch_scan`'s fallback `batch_passthrough_leading(Scan)`
+   calls `eval_primitive(Scan)`, which is `body_op`-only (add/mul/max/min/sub scalar scans — lib.rs:894);
+   those already take the `batch_scan_scalar_sequences` fast path, never the fallback. TENSOR-carry scans
+   (real sub-jaxpr body) go through `batch_scan_sub_jaxpr`/`batch_eval_jaxpr`, NOT `batch_passthrough_leading`.
+   So adding Scan/While to `passthrough_expensive_linalg` has NO EFFECT. DO-NOT.
+4. **`batch_dot_general` is fully covered** — every batched case reshapes the dimension-numbers and routes
+   through one `eval_primitive(DotGeneral)` (the optimized batched GEMM); no per-slice loop.
+
+The remaining `batch_passthrough_leading` non-allowlisted ops (Tile/Pad/DynamicSlice/SelectN) are
+cheap/BW-bound (threading won't help). vmap fan-out for expensive independent ops (linalg/conv/complex-dot)
+is DONE. Remaining vs-JAX losses stay non-contained: FFT butterfly kernel (murmw) + the +fma cluster.
+
 ## 2026-06-29 - KEEP (2.4x large / ~2x small): vmap(conv) batched-kernel fanned across threads via the expensive-passthrough allowlist (BlackThrush)
 
 Continuing the "serial per-slice → thread::scope fan-out" vein (after batched-linalg 2.6-5.1x and last
