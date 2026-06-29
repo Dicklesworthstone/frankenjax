@@ -2,6 +2,40 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - SESSION SUMMARY (ProudSalmon): contained frontier exhaustively swept; 2 wins landed, 4 levers reverted, 3 non-contained gates remain
+
+Authoritative index for this session's 18 entries below. Method: re-measure every vs-JAX bench
+ISOLATED (the batched/load-inflated sweep and stale "current Xms" comments produce phantom gaps —
+several flagged ops were actually WINS).
+
+LANDED (measured, conformance-GREEN, bit-exact):
+- `5d7887be` Concat materialization threaded (split/concat-view consume): serial 79.7ms -> 28.2ms
+  = 2.8x internal, 3.7x->1.23x vs JAX. (fj-core `concat_copy<T>`, all dtypes.)
+- `68af7f59` f64 middle/leading-axis max/min reduce threaded: 9.37ms -> 3.38ms = 2.77x internal,
+  1.67x JAX LOSS -> 1.28x WIN. (only serial inner-axis sibling; others were already threaded.)
+
+REVERTED (~0-gain or regression, bench-backed, stashes preserved):
+- forward cumsum 2-pass-total rescan == blocked scan (~1.0x).
+- fused bf16 NHWC maxpool == current f64 path (~1.0x; "26ms" target was STALE — really 0.75ms = WIN).
+- select f64x8 SIMD-blend 0.86x REGRESSION (BW-bound, scalar already saturates).
+- single-row pow4 FFT via batched radix-4 kernel 3x REGRESSION (SoA overhead at batch=1).
+
+SWEPT (isolate-measured or source-audited, NO contained lever): reduction, take/gather (f32 win;
+8-byte BW-floor 1.66x threaded), elementwise (select/select_n BW-floor 1.35/1.45x threaded; rest
+win), array-manip (ALL win 1.1-3.66x), sort/argsort (radix wins), linalg (1.3-30x wins), FFT (ALL
+batch paths pow2/pow4/bluestein/smooth threaded+SoA+tiled; 14.9x batched-pow2 biggest gap), scatter
+(win), one_hot (alloc-floor 1.23x), cumulative, transcendental/activation (wins/no-JAX-bench), conv
+(GEMM-FMA-floor), convert (threaded both dirs).
+
+THREE INDEPENDENT NON-CONTAINED GATES (the only residual headroom — none a per-crate session win):
+- `frankenjax-murmw`: FFT pocketfft-class kernel (radix-8 wide-SIMD butterflies; 14.9x; multi-session
+  pure-safe rewrite; NOT +fma — zero mul_add in fft.rs). Biggest single gap.
+- `frankenjax-cntiy`: `+fma` / scoped-unsafe-SIMD maintainer decision -> transcendental/GEMM/conv/
+  attention cluster.
+- `frankenjax-jjb1h`: eval-model output buffer donation (Arc::get_mut when strong_count==1; 1.62x
+  MEASURED via alloc_ceiling); architectural, cross-crate (fj-core+fj-lax+fj-interpreters).
+
+
 ## 2026-06-29 - DO-NOT-REDIG (FFT threading): ALL batch dispatch paths confirmed threaded; only the kernel (murmw) remains (ProudSalmon)
 
 Verified the LAST FFT dispatch path. `transform_batches_dense` routes: pow4 (SoA+tiled+threaded) /
