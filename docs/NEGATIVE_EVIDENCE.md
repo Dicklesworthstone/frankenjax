@@ -2,6 +2,34 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - GRAVEYARD-PASS: only remaining non-policy lever = eval-model buffer donation, prize MEASURED 1.62x (same-binary); allocator shortcut dead (ProudSalmon)
+
+Ran the prescribed `/alien-graveyard` against the biggest gaps. Two applicable canonical entries:
+- **§7.9 Modern Allocator Design (mimalloc/slab)** → maps to the per-call output-allocation frontier
+  (glibc munmaps allocs > 128KB MMAP_THRESHOLD on free, so each `eval_primitive` re-page-faults a
+  fresh large output; mimalloc/jemalloc would cache freed blocks). ALREADY TESTED-DEAD: the
+  `mimalloc-alloc` feature + `alloc_ceiling.rs` exist; my prior same-load A/B measured mimalloc
+  NEUTRAL-to-2x-WORSE (cross-build numbers were a load-differential mirage). The global-allocator
+  shortcut is DEAD — do not re-try.
+- **§FFT/transform** → only NTT (modular, not float FFT); no safe-Rust bit-exact float-FFT lever
+  beyond the SoA/radix routes already rejected for `frankenjax-murmw`. FFT stays policy-walled.
+
+PRIZE QUANTIFIED (trustworthy SAME-BINARY `alloc_ceiling` probe, contention-immune):
+| op (16M f64, 128MB out) | fresh-alloc | reused-buffer | ratio |
+|---|---:|---:|---:|
+| Neg | 21.41 ms | 13.20 ms | **1.62x** |
+| Reciprocal | 22.28 ms | (reused n/a this run) | ~1.6x |
+
+So the per-call fresh-output fault costs ~1.62x over a reused (pre-faulted) buffer on cheap BW-bound
+elementwise ops — this is XLA's buffer-aliasing advantage, and the ONLY remaining non-policy lever.
+The contained route (caching allocator) is dead; the real route is ARCHITECTURAL eval-model buffer
+donation: thread a uniquely-owned input buffer (Arc strong_count==1, mutate via `Arc::get_mut` in
+SAFE Rust) from `eval_jaxpr`'s liveness analysis into unary/elementwise kernels so they write
+in-place instead of allocating. Cross-crate (fj-core storage + fj-lax `eval_*_into` entry points +
+fj-interpreters dead-input dispatch), multi-session, NOT a single contained per-crate win — but now
+sized at a measured 1.62x ceiling, so the EV is concrete for whoever takes the architectural bead.
+No code change; tree clean, conformance GREEN.
+
 ## 2026-06-29 - DO-NOT-REDIG: sort confirmed radix-optimized; primitive-by-primitive dig exhausted this session (ProudSalmon)
 
 Picked integer/float SORT as a fresh "different primitive" lever (radix O(n) vs comparison O(n log n)).
