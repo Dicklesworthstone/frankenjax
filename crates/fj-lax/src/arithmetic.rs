@@ -11381,17 +11381,32 @@ fn erf_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     let one = Simd::splat(1.0);
     let ax = x.abs();
     let sign = x.simd_lt(Simd::splat(0.0)).select(Simd::splat(-1.0), one);
-    // branch 1: ax < 0.84375
-    let z1 = ax * ax;
-    let r1 = horner8(z1, &PP);
-    let s1 = one + z1 * horner8(z1, &QQ);
-    let b1 = sign * (ax + ax * r1 / s1);
-    // branch 2: 0.84375 <= ax < 1.25
-    let z2 = ax - one;
-    let p2 = horner8(z2, &PA);
-    let q2 = one + z2 * horner8(z2, &QA);
-    let b2 = sign * (Simd::splat(ERX) + p2 / q2);
-    let mut res = ax.simd_lt(Simd::splat(0.84375)).select(b1, b2);
+    // Per-group branch skip: erf clusters near 0 (the `ax < 0.84375` branch) in its hot uses (GELU,
+    // normal CDF, and erfc=1-erf), so when all 8 lanes are in one rational-branch regime the other
+    // branch's 2 horners + division are pure waste. Bit-identical (the skipped branch is discarded by
+    // the select regardless); the all/any movemask is ~2cyc vs the rationals. JAX/XLA is branchless.
+    let b1 = || {
+        // branch 1: ax < 0.84375
+        let z1 = ax * ax;
+        let r1 = horner8(z1, &PP);
+        let s1 = one + z1 * horner8(z1, &QQ);
+        sign * (ax + ax * r1 / s1)
+    };
+    let b2 = || {
+        // branch 2: 0.84375 <= ax < 1.25
+        let z2 = ax - one;
+        let p2 = horner8(z2, &PA);
+        let q2 = one + z2 * horner8(z2, &QA);
+        sign * (Simd::splat(ERX) + p2 / q2)
+    };
+    let m1 = ax.simd_lt(Simd::splat(0.84375));
+    let mut res = if m1.all() {
+        b1()
+    } else if !m1.any() {
+        b2()
+    } else {
+        m1.select(b1(), b2())
+    };
     // Scalar fallback for lanes the rationals don't cover: |x| >= 1.25 (incl. inf/NaN, which
     // compare false against 1.25) or x == 0 (erf_approx returns the signed zero).
     let simd_ok = ax.simd_lt(Simd::splat(1.25)) & x.simd_ne(Simd::splat(0.0));

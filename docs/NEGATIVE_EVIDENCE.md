@@ -2,6 +2,29 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - KEEP (LANDED, 5th win): erf per-group branch skip — 1.10x f64 / 1.15x f32 on erfc; mines the same vein as bessel (ProudSalmon)
+
+Mined the per-group branch-skip vein opened by the bessel win (below) into `erf_f64x8`: it computed
+BOTH fdlibm rational branches (b1: |x|<0.84375, b2: 0.84375<=|x|<1.25) — 2 horners + a division EACH —
+then `select`, even though erf clusters near 0 (its hot uses: exact GELU, normal CDF, and erfc=1-erf).
+Added the per-group `m1.all()`/`!m1.any()` skip (compute only the taken rational when the f64x8 group
+is homogeneous; else both+select). BIT-IDENTICAL (discarded branch never reaches the select; the scalar
+|x|>=1.25 tail-fallback is untouched). Benefits erf AND erfc.
+
+Same-session A/B (separate builds, SKIP confirmed stable over 2 runs), `bench_erfc_simd_vs_scalar`
+(input [-1.2,1.2], so ~70% b1 / 30% b2 — clustered, mixed only at boundaries):
+
+| op (16M) | no-skip | erf-skip | ratio |
+|---|---:|---:|---:|
+| erfc f64-simd | 23.12 ms | ~21.1 ms (20.70/21.55) | **1.10x** |
+| erfc f32-simd | 13.34 ms | ~11.6 ms (11.06/12.16) | **1.15x** |
+
+(Raw erf in GELU — inputs clustered near 0, almost all b1 — would skip b2 for nearly all groups, a
+larger win than this 0-1.2-spanning erfc bench shows.) Gates: rustfmt clean; `cargo test -p fj-lax
+--lib erf` 42 passed / 0 failed (bit-identical incl. scalar ref); `cargo test -p fj-conformance` GREEN.
+The branch-skip vein (compute only the taken regime-branch when a SIMD group is homogeneous; JAX/XLA is
+always branchless) is now mined in both bessel i0e/i1e and erf/erfc — the dual-branch SIMD special-fns.
+
 ## 2026-06-29 - KEEP (LANDED, 4th win): bessel i0e/i1e per-group branch skip — 1.20x/1.30x internal, narrows i0e 1.67x->1.28x vs JAX (ProudSalmon)
 
 After the 4x-unroll reject (below) showed i0e is THROUGHPUT-bound (both Cephes branches computed
