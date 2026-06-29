@@ -2,6 +2,19 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - NO-SHIP (unmeasurable on contended host): linalg complex norm² sqrt-elision — DO-NOT chase (BlackThrush)
+
+linalg.rs has 8 sites of `complex_abs(z).powi(2)` (column norms / `vᴴv` in complex QR/SVD/eigh) — i.e.
+`(sqrt(re²+im²))²`, a wasted sqrt-then-square; the answer is `re²+im²` directly (also 1 ULP MORE accurate).
+Added a `complex_norm_sq` helper and replaced all 8. CORRECT (lib 1651/0, complex eig/svd/qr pass) and
+strictly-less-work (cannot regress). But the END-TO-END impact is UNMEASURABLE: `bench_complex_qr_1024`
+varied **200 → 208 → 639 → 719 ms** across back-to-back separate-binary runs (3.6x rch-host contention
+variance), swamping the <4% the norm² could contribute (the column norm² is a tiny fraction of QR;
+the matrix rotations/GEMM dominate). First-run A/B suggested ~3.7% but is not reproducible under load.
+Reverted per "REVERT ~0-gain" — not a demonstrable measured win. The sqrt-then-square is real waste but
+its linalg-level effect is below the noise floor; not worth the churn. (If a quiesced host ever lets a
+<5% linalg micro-opt be measured, this is a safe correctness+perf cleanup to re-land.)
+
 ## 2026-06-29 - KEEP (2.77x): complex abs/sqrt/pow elide libm hypot via sqrt(re²+im²) (BlackThrush)
 
 Sibling of yesterday's `complex_log` hypot-elision (1.54x). The complex **Abs** primitive
