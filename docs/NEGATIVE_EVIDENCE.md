@@ -2,6 +2,15 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - DO-NOT-REDIG: erf_inv is FMA-walled, not a polynomial-SIMD lever — special-fn SIMD question fully closed (ProudSalmon)
+
+Checked `erf_inv` (the one remaining special-fn that LOOKED polynomial like erf): `erf_inv_approx`
+uses `.ln()` + 2x `.sqrt()` + a 3-iteration Newton loop with `.exp()` per step, so SIMD-izing it needs
+the FMA-gated SIMD `ln`/`exp` (`cntiy`), NOT a clean bit-exact polynomial kernel. Final special-fn SIMD
+map: POLYNOMIAL (erf, erfc, bessel_i0e/i1e via Chebyshev) = SIMD-driver DONE; TRANSCENDENTAL-DEPENDENT
+(erf_inv, lgamma, digamma, igamma, igammac, betainc, zeta, polygamma) = uniformly need SIMD ln/exp =
+`cntiy` +fma. No clean polynomial special-fn lever remains. No code change.
+
 ## 2026-06-29 - DO-NOT-REDIG: SIMD-unary-driver routing mined (the erfc lever); no unwired kernel remains (ProudSalmon)
 
 After landing erfc (route scalar unary -> `eval_unary_simd_dense_f64_parallel`), checked whether OTHER
