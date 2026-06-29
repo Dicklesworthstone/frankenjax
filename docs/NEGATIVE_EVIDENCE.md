@@ -2,6 +2,20 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - DONE-VS-JAX: sort_key_val (s2yc8) is a 68x WIN; the "13x slower" is INTERNAL (vs key-only), not a JAX gap (ProudSalmon)
+
+Re-measured `sortkeyval-s2yc8` (title "variadic sort is 13x slower than key-only"). `sort_key_val MIXED
+f32key+i64val [4096,4096] axis1` = **40.4ms vs JAX 2750ms = 68x WIN**. The "13x slower" is an INTERNAL
+ratio (the variadic carries a payload so it's ~13x slower than sorting keys ALONE) — but vs the actual
+parity target (JAX's slow XLA variadic sort), fj-lax CRUSHES it 68x via argsort+permute. Effectively
+done; only niche complex/half/u32/u64/bool operand tails remain (no bench, low-pri). Downgraded to P4.
+
+META-FINDING (reinforced): the perf-bead "Nx slower" titles are mostly INTERNAL comparisons or STALE,
+NOT vs-JAX gaps. This session re-measured every claimed-gap bead and ALL collapsed: h36uj 1.27x->1.08x
+parity, 72v5f "hundreds of ms"->1.73x WIN, s2yc8 "13x"->68x WIN, sum-pool win9 WIN. vs JAX, fj-lax wins
+the overwhelming majority; the only genuine vs-JAX losses are FFT (murmw), +fma cluster (cntiy), and
+alloc-floor (jjb1h). No code change.
+
 ## 2026-06-29 - ROOT-CAUSE: win5 sum-pool 2.27x = runtime-window non-unrolled loop; lever = const-window specialization (combinatorial/niche) (ProudSalmon)
 
 Read `reduce_window_rank3_f64_sum_xlane` (the rank-3 VALID f64 sum SIMD kernel). The win5-vs-win9
