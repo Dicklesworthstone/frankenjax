@@ -2,6 +2,22 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - SWEEP 100% COMPLETE: transcendental/activation/softmax have no contained vs-JAX gap; all vs-JAX benches now measured (ProudSalmon)
+
+Final family: transcendentals (exp/log/tanh/sigmoid/gelu) and softmax/logsumexp/attention have NO
+vs-JAX-target benches — only internal threaded-vs-sequential / SIMD-poly A/B harnesses (the elementwise
+transcendentals are known threaded WINS, e.g. logaddexp 1.62x measured this session). Attention /
+scaled_matmul is the matmul+exp cluster gated on `+fma` (bead `cntiy`), not a contained kernel lever.
+
+THIS COMPLETES THE vs-JAX BENCH SWEEP for the session — every op with a JAX comparison target has been
+isolate-measured: reduction, take/gather, elementwise, array-manip, sort, linalg, FFT, scatter,
+one_hot, cumulative, transcendental/activation. Result tally — fj-lax WINS or ties the large majority;
+the only losses are (a) FFT SIMD-butterfly kernel (14.9x batched pow2, biggest; policy/multi-session
+`murmw`), (b) eval-model alloc floor (one_hot 1.23x etc.; architectural `jjb1h`, 1.62x measured),
+(c) 8-byte gather / select memory-bandwidth floor (1.66x/1.35x, already threaded), (d) transcendental/
+GEMM/attention `+fma` cluster (`cntiy`). NO contained per-crate kernel lever remains. The next genuine
+work is a maintainer `+fma`/scoped-unsafe-SIMD decision or the multi-session `jjb1h`/`murmw` beads.
+
 ## 2026-06-29 - DO-NOT-REDIG (FFT): pow4 radix already used for 1024; no contained radix lever, 14.9x is the AVX-butterfly floor (ProudSalmon)
 
 Follow-up to the FFT blocker below: checked the `transform_batches_dense` dispatch — `n=1024` is a
