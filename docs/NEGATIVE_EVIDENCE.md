@@ -2,6 +2,26 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - REJECT (bench-backed): 4x-unroll of SIMD-unary driver REGRESSES i0e (register spill); gap is throughput not latency (ProudSalmon)
+
+Pursued the i0e/bessel gap (3gsc5-adjacent): lgamma 36.4 / digamma 32.0 / i0e 36.3ms vs JAX 19.9/17.3/
+21.7 = 1.67-1.85x. i0e is COMPUTE-bound (3.5 GB/s, far below memory) on the 30-step Clenshaw recurrence
+(`chbevl_f64x8`). Hypothesis: it's latency-bound, so 4x-unrolling the SIMD-unary driver's f64x8 inner
+loop (4 independent kernel evals -> ILP hides the recurrence latency, bit-identical) would speed it.
+Same-binary A/B (`FJ_SIMD_X1`), `bench_special_fns_throughput i0e 16M f64`:
+
+| path | best |
+|---|---:|
+| 1x (current) | 31.64 ms |
+| 4x-unroll | 32.48 ms |
+
+**Slight REGRESSION (0.97x).** Hypothesis WRONG: i0e is THROUGHPUT-bound, not latency-bound — `bessel_i0e_f64x8`
+computes BOTH Cephes branches (|x|<=8 and >8) branchlessly = 2x the Clenshaw work, and the f64x8 SIMD
+already schedules well; 4x-unroll just spills the 16 AVX registers (4 chains × b0/b1/b2). REVERTED. The
+i0e/lgamma/digamma residual (1.67-1.85x) is the no-FMA Clenshaw/Lanczos throughput + 2x branchless
+branch work -> folds into `cntiy` (+fma halves the mul+add poly ops), same as the rest of 3gsc5. No
+clean non-fma lever. (lgamma/digamma use the SCALAR Lanczos path, unaffected by the driver anyway.)
+
 ## 2026-06-29 - DONE-VS-JAX: sort_key_val (s2yc8) is a 68x WIN; the "13x slower" is INTERNAL (vs key-only), not a JAX gap (ProudSalmon)
 
 Re-measured `sortkeyval-s2yc8` (title "variadic sort is 13x slower than key-only"). `sort_key_val MIXED
