@@ -2,6 +2,32 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - CORRECTION (KEEP, ~2x): the "transcendental SIMD is FMA-blocked" claim is FALSE for f32 — 8-wide f32 SIMD exp WINS 2x without FMA (BlackThrush)
+
+This OVERTURNS my own three prior entries below (and `simd-poly-exp-fma-finding`) that declared the
+f32 transcendental cluster FMA-blocked. That finding was **f64-only**: `simd_poly_exp` (this file) is
+4-wide AVX2 with a degree-13 Horner → 0.79x without `+fma`. I never tested f32. Measured now
+(`bench_exp_block_f32_vs_libm`, single-thread 4M, NO `+fma`):
+- **f32 8-wide SIMD exp = 1.98-2.27x FASTER than scalar libm `expf`** (libm ~9.6-10.1ms vs simd8
+  ~4.4-4.8ms). The flip is structural: AVX2 packs 8 f32 lanes (vs 4 f64) AND f32 needs only a
+  degree-6 minimax poly (vs f64's 13) → ~4x less SIMD work relative to its libm, enough to beat the
+  per-op overhead WITHOUT FMA.
+- Accuracy ~1 ulp: **≤1.17e-7 max rel error over [-30,30]** (`exp_block_f32_accuracy`) — within
+  tolerance parity (NOT bit-identical to libm, like the f64 poly).
+
+Shipped `pub fn exp_block_f32` (Cephes `expf`: Cody-Waite ln2 reduction + degree-6 poly + 2^n
+exponent injection, explicit `*`/`+`) as reusable infrastructure + accuracy guard + A/B bench. NOT
+yet wired into an eval path (conformance unaffected).
+
+IMPLICATION — reopens the f32 transcendental frontier: this UNBLOCKS SIMD f32 exp/tanh/sigmoid/
+softplus and (with a companion 8-wide SIMD log) pow/zeta for any TOLERANCE-parity consumer, WITHOUT
+the `+fma` flag. The residual gate per consumer is now its own golden, not FMA: the `Exp`/`Tanh`/etc.
+PRIMITIVES carry frozen bit-exact goldens (+ transitive RNG reproducibility), so wiring there needs a
+golden-regen decision; but the special functions (zeta etc.) are TOLERANCE oracles with NO golden and
+can consume SIMD exp/log directly. Next bead: 8-wide f32 SIMD log, then route zeta's `(n+q).powf(-s)`
+= `exp(-s·ln(n+q))` through the SIMD pair to close its measured 2.4x JAX loss. (Meta-lesson, third
+time this run after igamma + the f64/f32 split: MEASURE the blocking assumption — do not inherit it.)
+
 ## 2026-06-29 - SWEEP-VS-JAX: common-op map confirms every contained lever is mined; losses are FMA- or BW-gated only (BlackThrush)
 
 Broad empirical sweep (4M f32 / [4096,4096], JAX 0.10.1 CPU jit, Zen3 5975WX) to find any HIDDEN
