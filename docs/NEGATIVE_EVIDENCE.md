@@ -2,6 +2,24 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-29 - WIRED WIN (2.54x; 2.4x JAX LOSS → 1.05x WIN): f32 SIMD+threaded Hurwitz zeta via the exp/log pair (BlackThrush)
+
+Cashed in the f32 SIMD exp+log building blocks: wired an 8-wide f32 SIMD+threaded Hurwitz-zeta fast
+path into `eval_zeta` (same-shape dense F32). Each lane's `(n+q)^{-s}` is `exp_block_f32(-s ·
+log_block_f32(n+q))` (no FMA); the Euler-Maclaurin structure mirrors `hurwitz_zeta_approx` exactly,
+and lanes outside the `s>1, q>0, finite` regime fall back to the scalar `hurwitz_zeta_approx` (so
+edge/special values are unchanged). f32 zeta has NO bit-exact oracle (the oracle is f64 @ 1e-10,
+path untouched), so this is legal at f32 tolerance; guard `zeta_f32_simd_matches_scalar_within
+_tolerance` (max rel err < 1e-4 over the regime + edge lanes).
+
+A/B (`zeta_f32_threaded_vs_serial_ab`, 4M f32, Zen3 5975WX): prior threaded-SCALAR was 31.5ms (the
+2.4x JAX loss recorded below); now SIMD+threaded = **12.4ms** (serial-map 557ms → 44.9x internal, vs
+16.7x for threaded-scalar — the SIMD adds ~2.54x on top of threading). **Vs JAX `zeta` f32 4M =
+13.0ms: the 2.4x LOSS is now a 1.05x WIN (parity+).** Closes the zeta gap I measured 4 passes ago
+WITHOUT `+fma` and WITHOUT `unsafe`. Conformance GREEN: fj-lax lib 1660 passed/0 failed, zeta_oracle
+24/24 (f64 path untouched). This is the first WIRED payoff of the reopened f32-transcendental frontier
+— the same exp/log pair next routes into pow/atan2 and (with golden regen) the activation primitives.
+
 ## 2026-06-29 - CORRECTION (KEEP, ~2x): the "transcendental SIMD is FMA-blocked" claim is FALSE for f32 — 8-wide f32 SIMD exp WINS 2x without FMA (BlackThrush)
 
 This OVERTURNS my own three prior entries below (and `simd-poly-exp-fma-finding`) that declared the

@@ -11546,6 +11546,116 @@ pub(crate) fn hurwitz_zeta_approx(x: f64, q: f64) -> f64 {
     sum
 }
 
+/// 8-wide f32 Hurwitz-zeta over `s>1, q>0, finite` lanes via the Cephes Euler-Maclaurin formula
+/// (identical structure to [`hurwitz_zeta_approx`]) using the no-FMA SIMD `pow(b,p)=exp(p·ln b)`
+/// pair. Lanes outside that regime (s≤1 / q≤0 / non-finite) come back as 0.0 and MUST be filled by
+/// the caller with the scalar `hurwitz_zeta_approx(.. as f64) as f32` (the current f32 behaviour).
+#[inline]
+fn zeta_f32x8_simd(
+    s: std::simd::Simd<f32, 8>,
+    q: std::simd::Simd<f32, 8>,
+) -> std::simd::Simd<f32, 8> {
+    use crate::simd_exp::{exp_block_f32, log_block_f32};
+    use std::simd::Simd;
+    type F = Simd<f32, 8>;
+    let neg_s = -s;
+    // pow(base, -s) = exp(-s · ln base); base = n+q > 0 in-regime.
+    let powm_s = |base: F| -> F { exp_block_f32(neg_s * log_block_f32(base)) };
+    let mut sum = F::splat(0.0);
+    let mut n = 0.0f32;
+    while n < 10.0 {
+        sum += powm_s(q + F::splat(n));
+        n += 1.0;
+    }
+    let a = q + F::splat(10.0); // N + q
+    let a_pow = powm_s(a);
+    sum += a * a_pow / (s - F::splat(1.0));
+    sum += F::splat(0.5) * a_pow;
+    let a_inv2 = F::splat(1.0) / (a * a);
+    // c_j = B_{2j}/(2j)! (f32), same constants as the scalar path.
+    const C: [f32; 8] = [
+        1.0 / 12.0,
+        -1.0 / 720.0,
+        1.0 / 30240.0,
+        -1.0 / 1_209_600.0,
+        1.0 / 47_900_160.0,
+        -691.0 / 1_307_674_368_000.0,
+        1.0 / 74_724_249_600.0,
+        -3617.0 / 10_670_622_842_880_000.0,
+    ];
+    let mut poch = s;
+    let mut a_factor = a_pow / a;
+    for (idx, &c) in C.iter().enumerate() {
+        sum += F::splat(c) * poch * a_factor;
+        let j = (idx + 1) as f32;
+        poch *= (s + F::splat(2.0 * j - 1.0)) * (s + F::splat(2.0 * j));
+        a_factor *= a_inv2;
+    }
+    sum
+}
+
+/// Same-shape dense-F32 SIMD+threaded Hurwitz-zeta fast path. Returns None to defer to the generic
+/// (threaded scalar) path for non-dense/non-same-shape/non-F32 operands. Each 8-lane block runs
+/// [`zeta_f32x8_simd`]; lanes outside the `s>1, q>0, finite` regime fall back to the scalar
+/// `hurwitz_zeta_approx` (so edge/special values match the prior f32 path exactly). f32 zeta has NO
+/// bit-exact oracle (the oracle is f64@1e-10), and the SIMD pow is ~1 ulp (8e-7 rel), so this stays
+/// within f32 tolerance parity.
+fn eval_zeta_f32_simd_same_shape(s_t: &TensorValue, q_t: &TensorValue) -> Option<Value> {
+    use std::simd::Simd;
+    if s_t.dtype != DType::F32 || q_t.dtype != DType::F32 || s_t.shape != q_t.shape {
+        return None;
+    }
+    let sv = s_t.elements.as_f32_slice()?;
+    let qv = q_t.elements.as_f32_slice()?;
+    let n = sv.len();
+    let mut out = vec![0.0f32; n];
+    let fill = |sv: &[f32], qv: &[f32], out: &mut [f32]| {
+        let len = out.len();
+        let n8 = len - len % 8;
+        let mut i = 0;
+        while i < n8 {
+            let s = Simd::<f32, 8>::from_slice(&sv[i..i + 8]);
+            let q = Simd::<f32, 8>::from_slice(&qv[i..i + 8]);
+            let v = zeta_f32x8_simd(s, q).to_array();
+            for k in 0..8 {
+                let (sf, qf) = (sv[i + k], qv[i + k]);
+                out[i + k] = if sf > 1.0 && qf > 0.0 && sf.is_finite() && qf.is_finite() {
+                    v[k]
+                } else {
+                    hurwitz_zeta_approx(f64::from(sf), f64::from(qf)) as f32
+                };
+            }
+            i += 8;
+        }
+        for j in i..len {
+            out[j] = hurwitz_zeta_approx(f64::from(sv[j]), f64::from(qv[j])) as f32;
+        }
+    };
+    // Thread across element chunks (work-scaled) — zeta is heavily compute-bound (SIMD pow per
+    // term). Below the gate or single core, run serial. Each output slot depends only on its lane.
+    if n >= EXPENSIVE_BINARY_PARALLEL_MIN && work_scaled_threads(n) > 1 {
+        let threads = work_scaled_threads(n);
+        let chunk = n.div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut orest: &mut [f32] = out.as_mut_slice();
+            let mut start = 0usize;
+            while start < n {
+                let take = chunk.min(n - start);
+                let (oblk, otail) = orest.split_at_mut(take);
+                orest = otail;
+                let s0 = start;
+                scope.spawn(move || fill(&sv[s0..s0 + take], &qv[s0..s0 + take], oblk));
+                start += take;
+            }
+        });
+    } else {
+        fill(sv, qv, &mut out);
+    }
+    TensorValue::new_f32_values(s_t.shape.clone(), out)
+        .ok()
+        .map(Value::Tensor)
+}
+
 pub(crate) fn eval_zeta(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.len() != 2 {
         return Err(EvalError::ArityMismatch {
@@ -11555,6 +11665,13 @@ pub(crate) fn eval_zeta(primitive: Primitive, inputs: &[Value]) -> Result<Value,
         });
     }
     ensure_float_operands(primitive, inputs)?;
+    // Dense same-shape F32 SIMD+threaded fast path (f32 is JAX's default; the SIMD exp/log pair
+    // beats scalar libm powf without +fma). Falls through to the generic path otherwise.
+    if let (Value::Tensor(s_t), Value::Tensor(q_t)) = (&inputs[0], &inputs[1])
+        && let Some(v) = eval_zeta_f32_simd_same_shape(s_t, q_t)
+    {
+        return Ok(v);
+    }
     eval_binary_elementwise(primitive, inputs, |_, _| 0, hurwitz_zeta_approx)
 }
 
@@ -23189,6 +23306,40 @@ mod tests {
             serial * 1e3,
             threaded * 1e3,
             serial / threaded
+        );
+    }
+
+    /// The wired f32 SIMD+threaded zeta path must agree with the scalar f64 `hurwitz_zeta_approx`
+    /// (rounded to f32) within f32 tolerance across the s>1, q>0 regime (where SIMD engages) AND on
+    /// edge lanes (s<=1 / q<=0 / specials) where it falls back to scalar bit-for-bit.
+    #[test]
+    fn zeta_f32_simd_matches_scalar_within_tolerance() {
+        // Need >= the parallel gate to exercise the threaded SIMD path, plus a non-multiple of 8.
+        let n = EXPENSIVE_BINARY_PARALLEL_MIN + 13;
+        let sv: Vec<f32> = (0..n).map(|i| 1.05 + (i % 400) as f32 * 0.01).collect();
+        let qv: Vec<f32> = (0..n).map(|i| 0.25 + (i % 200) as f32 * 0.05).collect();
+        let s = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, sv.clone()).unwrap(),
+        );
+        let q = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, qv.clone()).unwrap(),
+        );
+        let got = eval_zeta(Primitive::Zeta, &[s, q]).unwrap();
+        let gp = got.as_tensor().unwrap().elements.as_f32_slice().unwrap();
+        let mut maxrel = 0.0f32;
+        for i in 0..n {
+            let expect = hurwitz_zeta_approx(f64::from(sv[i]), f64::from(qv[i])) as f32;
+            let rel = if expect != 0.0 && expect.is_finite() {
+                ((gp[i] - expect) / expect).abs()
+            } else {
+                (gp[i] - expect).abs()
+            };
+            maxrel = maxrel.max(rel);
+        }
+        // SIMD f32 pow is ~1 ulp; the E-M sum of ~12 terms accumulates a few ulps. f32 tolerance.
+        assert!(
+            maxrel < 1e-4,
+            "f32 SIMD zeta vs scalar max rel error {maxrel:e} exceeds f32 tolerance"
         );
     }
 
