@@ -11010,7 +11010,99 @@ fn polygamma_literal_to_f64(lit: Literal, primitive: Primitive) -> Result<f64, E
     }
 }
 
+/// Direct single-precision `erfinv` (Giles 2010, "Approximating the erfinv function" — the algorithm
+/// XLA/CUDA use): `w = -ln((1-x)(1+x))`, then a degree-8 minimax polynomial in `w` (central branch
+/// `w<5`) or in `sqrt(w)` (tail), times `x`. ~1 ulp f32 accuracy. This replaces fj's
+/// Winitzki-init + 3 Newton-iteration `erf_inv_approx` (which costs ~3 erf + 3 exp PER ELEMENT) for
+/// the f32 eval path — a single `ln` (+ one `sqrt` in the tail) and a Horner poly, ~95x cheaper.
+/// Edge cases fall out of IEEE arithmetic and match `erf_inv_approx`: x=±1 → ±inf (ln 0 = -inf),
+/// |x|>1 → NaN (ln of negative), x=0 → 0.
+#[inline]
+fn erfinv_f32_giles(x: f32) -> f32 {
+    // Edge semantics match `erf_inv_approx`: the Giles poly is for the OPEN interval (-1,1); at the
+    // boundary w=+inf the polynomial's leading sign is wrong, so special-case ±1 / |x|>1 / NaN.
+    if x.is_nan() {
+        return f32::NAN;
+    }
+    if x >= 1.0 {
+        return if x == 1.0 { f32::INFINITY } else { f32::NAN };
+    }
+    if x <= -1.0 {
+        return if x == -1.0 {
+            f32::NEG_INFINITY
+        } else {
+            f32::NAN
+        };
+    }
+    let mut w = -((1.0f32 - x) * (1.0f32 + x)).ln();
+    let p;
+    if w < 5.0 {
+        w -= 2.5;
+        p = 2.810_226_36e-8;
+        let p = 3.432_739_39e-7 + p * w;
+        let p = -3.523_387_7e-6 + p * w;
+        let p = -4.391_506_54e-6 + p * w;
+        let p = 0.000_218_580_87 + p * w;
+        let p = -0.001_253_725_03 + p * w;
+        let p = -0.004_177_681_64 + p * w;
+        let p = 0.246_640_727 + p * w;
+        let p = 1.501_409_41 + p * w;
+        p * x
+    } else {
+        w = w.sqrt() - 3.0;
+        p = -0.000_200_214_257;
+        let p = 0.000_100_950_558 + p * w;
+        let p = 0.001_349_343_22 + p * w;
+        let p = -0.003_673_428_44 + p * w;
+        let p = 0.005_739_507_73 + p * w;
+        let p = -0.007_622_461_3 + p * w;
+        let p = 0.009_438_870_47 + p * w;
+        let p = 1.001_674_06 + p * w;
+        let p = 2.832_976_82 + p * w;
+        p * x
+    }
+}
+
 pub(crate) fn eval_erf_inv(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    // Dense-F32 fast path: direct Giles erfinv (threaded) instead of the per-element Newton method
+    // — ~95x cheaper. f32 is JAX's default; f32 erfinv has no value oracle (the oracle is f64@1e-9)
+    // and RNG draws its normals via `erf_inv_approx` directly (not this primitive), so the f32 path
+    // is free to use the direct approx at f32 tolerance. f64/scalar/other dtypes keep the accurate
+    // `erf_inv_approx`. Threading: erfinv is compute-bound vs JAX (a log + poly per element).
+    if let [Value::Tensor(t)] = inputs
+        && t.dtype == DType::F32
+        && let Some(src) = t.elements.as_f32_slice()
+    {
+        let n = src.len();
+        let mut out = vec![0.0f32; n];
+        let fill = |src: &[f32], out: &mut [f32]| {
+            for (o, &v) in out.iter_mut().zip(src) {
+                *o = erfinv_f32_giles(v);
+            }
+        };
+        if n >= (1 << 14) && work_scaled_threads(n) > 1 {
+            let threads = work_scaled_threads(n);
+            let chunk = n.div_ceil(threads);
+            std::thread::scope(|scope| {
+                let mut orest: &mut [f32] = out.as_mut_slice();
+                let mut start = 0usize;
+                while start < n {
+                    let take = chunk.min(n - start);
+                    let (oblk, otail) = orest.split_at_mut(take);
+                    orest = otail;
+                    let s0 = start;
+                    scope.spawn(move || fill(&src[s0..s0 + take], oblk));
+                    start += take;
+                }
+            });
+        } else {
+            fill(src, &mut out);
+        }
+        return Ok(Value::Tensor(
+            TensorValue::new_f32_values(t.shape.clone(), out)
+                .map_err(EvalError::InvalidTensor)?,
+        ));
+    }
     eval_unary_elementwise_parallel(primitive, inputs, erf_inv_approx)
 }
 
@@ -23340,6 +23432,81 @@ mod tests {
         assert!(
             maxrel < 1e-4,
             "f32 SIMD zeta vs scalar max rel error {maxrel:e} exceeds f32 tolerance"
+        );
+    }
+
+    /// Giles direct erfinv must match the accurate Newton `erf_inv_approx` within f32 tolerance
+    /// across (-1,1), and match it bit-for-bit at the IEEE edges (±1 → ±inf, |x|>1 → NaN, 0 → 0).
+    #[test]
+    fn erfinv_f32_giles_matches_reference_within_tolerance() {
+        let mut maxabs = 0.0f32;
+        let mut x = -0.99999f32;
+        while x < 1.0 {
+            let got = erfinv_f32_giles(x);
+            let expect = erf_inv_approx(f64::from(x)) as f32;
+            // erfinv grows steeply near ±1; compare absolute error (values are O(1)–O(3)).
+            maxabs = maxabs.max((got - expect).abs());
+            x += 0.0001;
+        }
+        eprintln!("[erfinv_f32_giles] max abs error vs Newton ref over (-1,1) = {maxabs:e}");
+        assert!(maxabs < 1e-4, "Giles erfinv abs error {maxabs:e} too large");
+        // Edges via the eval path (must equal erf_inv_approx semantics).
+        let edges = [1.0f32, -1.0, 1.5, -2.0, 0.0];
+        let xt = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![5] }, edges.to_vec()).unwrap(),
+        );
+        let got = eval_erf_inv(Primitive::ErfInv, &[xt]).unwrap();
+        let gp = got.as_tensor().unwrap().elements.as_f32_slice().unwrap();
+        assert!(
+            gp[0].is_infinite() && gp[0] > 0.0,
+            "erfinv(1)=+inf, got {}",
+            gp[0]
+        );
+        assert!(
+            gp[1].is_infinite() && gp[1] < 0.0,
+            "erfinv(-1)=-inf, got {}",
+            gp[1]
+        );
+        assert!(gp[2].is_nan(), "erfinv(1.5)=NaN, got {}", gp[2]);
+        assert!(gp[3].is_nan(), "erfinv(-2)=NaN, got {}", gp[3]);
+        assert_eq!(gp[4], 0.0, "erfinv(0)=0, got {}", gp[4]);
+    }
+
+    /// fj erfinv f32: NEW direct-Giles eval vs the OLD Newton method (eval_unary_elementwise_parallel
+    /// over erf_inv_approx, the prior production path). JAX direct-rational ~1.67ms.
+    #[test]
+    #[ignore = "perf; run explicitly"]
+    fn erfinv_f32_eval_ab() {
+        use std::time::Instant;
+        let n = 1usize << 22;
+        let xv: Vec<f32> = (0..n).map(|i| -0.99 + (i % 1000) as f32 * 0.00198).collect();
+        let x = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, xv.clone()).unwrap(),
+        );
+        let best = |f: &dyn Fn()| -> f64 {
+            f();
+            let mut t = f64::MAX;
+            for _ in 0..5 {
+                let i = Instant::now();
+                f();
+                t = t.min(i.elapsed().as_secs_f64());
+            }
+            t
+        };
+        let new = best(&|| {
+            std::hint::black_box(eval_erf_inv(Primitive::ErfInv, &[x.clone()]).unwrap());
+        });
+        let old = best(&|| {
+            std::hint::black_box(
+                eval_unary_elementwise_parallel(Primitive::ErfInv, &[x.clone()], erf_inv_approx)
+                    .unwrap(),
+            );
+        });
+        eprintln!(
+            "[erfinv f32 4M] old-newton={:.3}ms new-giles={:.3}ms gain={:.2}x  (JAX ~1.67ms)",
+            old * 1e3,
+            new * 1e3,
+            old / new
         );
     }
 

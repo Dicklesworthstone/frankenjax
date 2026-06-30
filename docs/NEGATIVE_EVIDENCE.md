@@ -2,6 +2,27 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-06-30 - WIRED WIN (33x; 95x JAX LOSS → 3x): replace fj's Newton erfinv with Giles direct rational on the f32 path (BlackThrush)
+
+Biggest measured gap found this run, and ALGORITHMIC not SIMD: `eval_erf_inv` f32 4M was **158ms**
+(Winitzki init + 3 Newton iters, each ~erf+exp PER ELEMENT) vs **JAX `erfinv` 1.67ms** = **95x LOSS**.
+JAX/XLA (and CUDA) use the Giles 2010 direct rational approx — a single `ln` (+one `sqrt` in the
+rare tail) and a degree-8 Horner poly. Wired `erfinv_f32_giles` into the dense-F32 eval path
+(threaded), leaving f64/scalar/other dtypes on the accurate Newton `erf_inv_approx`.
+
+LEGAL because: RNG draws normals via `erf_inv_approx` DIRECTLY (threefry.rs:535/559/1107), NOT this
+primitive — so RNG reproducibility goldens are untouched; and the erfinv oracle is f64@1e-9 (f32 has
+no value oracle). Accuracy guard `erfinv_f32_giles_matches_reference_within_tolerance`: **4.77e-7 max
+abs err** vs the Newton ref over (-1,1), and edges match bit-for-bit (±1→±inf, |x|>1→NaN, 0→0; the
+boundary needed an explicit guard since Giles' poly sign is wrong at w=+inf).
+
+A/B (`erfinv_f32_eval_ab`, 4M f32, Zen3 5975WX): old-Newton **167.6ms** → new-Giles **5.04ms = 33x**.
+Vs JAX 1.67ms: **95x loss → 3x**. Conformance GREEN: erf_inv_oracle 28/28 (f64 untouched), fj-lax lib
+1661/0. The residual 3x is now `ln`-COMPUTE-bound (scalar libm ln/element) → the clean follow-on is to
+route the Giles `.ln()` through `log_block_f32` (8-wide, already landed) to reach JAX parity — a
+genuine compute-bound SIMD target (unlike pow, this one has the multi-op poly to amortize). Meta: the
+gap was ALGORITHM (iterative vs direct), not the FMA/SIMD axis — measure the method, not just the lane width.
+
 ## 2026-06-29 - MEASURED-VS-JAX: betainc is a 9.8x WIN — settles the special-fn frontier (CFs win, only fixed-powf zeta lost) (BlackThrush)
 
 Applied the rule from the pow-revert entry to pick the next target by MEASURING, not assuming. betainc
