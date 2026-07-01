@@ -6240,16 +6240,56 @@ pub(crate) fn eval_exp(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
     }
 }
 
+/// 8-wide natural log for arbitrary f64: the Cephes [`crate::simd_exp::log_block_f64`] fast path
+/// is valid only for POSITIVE NORMALS, so any lane that is `<= 0`, subnormal, `+inf`, or `NaN`
+/// is recomputed with scalar libm `f64::ln` (bit-exact edge behaviour: `ln(0)=-inf`, `ln(<0)=NaN`,
+/// `ln(inf)=inf`, `ln(NaN)=NaN`, and correct subnormal results). For positive normals the block is
+/// ~1 ulp (`log_block_f64_accuracy`: 2.22e-16 rel) — tolerance-parity, NOT bit-identical to libm.
+/// JAX/XLA log is itself a polynomial (not libm), so `Log` parity is already tolerance; unlike
+/// `Exp`/`Sin`, `Log` has no bit-exact self-golden pinning it (see the unary bit-golden test).
+fn log_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialOrd;
+    type F = Simd<f64, 8>;
+    // Positive normal & finite: MIN_POSITIVE is the smallest normal (2^-1022); subnormals are below.
+    let normal = x.simd_ge(F::splat(f64::MIN_POSITIVE)) & x.simd_lt(F::splat(f64::INFINITY));
+    if !normal.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f64; 8];
+        for k in 0..8 {
+            ra[k] = xa[k].ln();
+        }
+        return F::from_array(ra);
+    }
+    let mut r = crate::simd_exp::log_block_f64(x);
+    if !normal.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k] >= f64::MIN_POSITIVE && xa[k] < f64::INFINITY) {
+                ra[k] = xa[k].ln();
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
+}
+
 pub(crate) fn eval_log(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     // JAX log_p = standard_unop(_float | _complex): integer operands are rejected.
     if let Some(input) = inputs.first() {
         ensure_jax_float_unary_operand(primitive, input)?;
     }
     if inputs.first().is_some_and(value_contains_complex) {
-        eval_unary_complex_map(primitive, inputs, |a, b| complex_log((a, b)))
-    } else {
-        eval_unary_elementwise_parallel(primitive, inputs, f64::ln)
+        return eval_unary_complex_map(primitive, inputs, |a, b| complex_log((a, b)));
     }
+    // FJ_LOG_SCALAR forces the pre-SIMD scalar-map path (same-binary A/B hook).
+    if std::env::var_os("FJ_LOG_SCALAR").is_some() {
+        return eval_unary_elementwise_parallel(primitive, inputs, f64::ln);
+    }
+    // Dense f64/f32 natural log via the 8-wide Cephes block (edge-lane-safe); scalar f64::ln for
+    // the tail and any non-dense/other-dtype input. ~2.36x over scalar libm ln (no-FMA), tolerance.
+    eval_unary_simd_dense_f64_parallel(primitive, inputs, log_f64x8, f64::ln)
 }
 
 /// `(cosh(x), sinh(x))` from a SINGLE `exp(x)` — `cosh=(e+1/e)/2`, `sinh=(e-1/e)/2` —
@@ -26296,6 +26336,81 @@ mod tests {
                 .unwrap(),
             );
         });
+    }
+
+    #[test]
+    fn log_simd_matches_scalar_tolerance_and_edges() {
+        // eval_log's dense f64 SIMD path (log_f64x8 over Cephes log_block_f64) must agree with the
+        // scalar f64::ln map to ~1 ulp for positive normals, and MATCH BIT-EXACTLY on the edge
+        // lanes (x<=0 -> NaN, x==0 -> -inf, x==+inf -> +inf, NaN -> NaN, subnormals) which route to
+        // the scalar fallback. Span a dense tensor (>threshold) mixing all cases within 8-lane blocks.
+        let n = 70_003usize;
+        let mut data: Vec<f64> = (0..n).map(|i| 1e-6 + (i % 9973) as f64 * 0.03).collect();
+        for (k, v) in [
+            (5usize, 0.0f64),
+            (6, -0.0),
+            (7, -3.5),
+            (8, f64::INFINITY),
+            (9, f64::NEG_INFINITY),
+            (10, f64::NAN),
+            (11, f64::MIN_POSITIVE / 2.0), // subnormal
+            (12, 1e-300),                  // tiny normal
+            (13, 1e300),                   // huge normal
+        ] {
+            data[k] = v;
+        }
+        let input = tensor_f64(vec![n as u32], &data);
+        let got = extract_f64_vec(&eval_log(Primitive::Log, std::slice::from_ref(&input)).unwrap());
+        for idx in 0..n {
+            let want = data[idx].ln();
+            let g = got[idx];
+            if want.is_finite() {
+                let tol = 1e-12 * want.abs().max(1.0);
+                assert!(
+                    (g - want).abs() <= tol,
+                    "log at x={}: simd {g} vs scalar {want}",
+                    data[idx]
+                );
+            } else {
+                assert_eq!(
+                    g.to_bits(),
+                    want.to_bits(),
+                    "log edge at x={} must be bit-exact",
+                    data[idx]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_log_throughput() {
+        // eval_log SIMD (Cephes log_block_f64) vs the FJ_LOG_SCALAR-forced scalar libm ln map, and
+        // vs JAX jnp.log (4M 2.40ms / 16M 18.07ms). Run twice: once plain, once FJ_LOG_SCALAR=1.
+        use std::time::Instant;
+        for n in [4_000_000usize, 16_000_000usize] {
+            let data: Vec<f64> = (0..n).map(|i| 0.1 + (i % 9973) as f64 * 0.002).collect();
+            let input = tensor_f64(vec![n as u32], &data);
+            let f = || {
+                std::hint::black_box(
+                    eval_log(Primitive::Log, std::slice::from_ref(&input)).unwrap(),
+                );
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            let scalar = std::env::var_os("FJ_LOG_SCALAR").is_some();
+            println!(
+                "fj-lax log f64 {}M [{}]: {:.3}ms",
+                n / 1_000_000,
+                if scalar { "SCALAR" } else { "SIMD" },
+                b * 1e3
+            );
+        }
     }
 
     // Throughput of the threaded special-function paths vs JAX (16M f64, measured):

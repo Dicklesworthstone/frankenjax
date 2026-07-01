@@ -2,6 +2,32 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - WIRED WIN (Log primitive: 1.53x @4M / 1.15x @16M): route dense eval_log through the SIMD Cephes log (BlackThrush)
+
+Follow-on to the `log_block_f64` land (below): the `Log` PRIMITIVE itself (`eval_log`) was pure scalar
+`f64::ln` mapped/threaded — NO SIMD. Unlike `Exp`/`Sin` (pinned by the bit-exact self-golden
+`unary_f64_tensor_fast_path_preserves_output_bits_and_golden`, which digests `x.exp()`/`x.sin()` bits),
+`Log` has NO bit-exact self-golden — verified by grep (no `log_bits` assertion, not in the unary
+bit-golden test) AND empirically: wiring the SIMD log left BOTH fj-lax lib (1662/0) and the FULL
+conformance suite (40 result groups, 0 failed) GREEN. So `Log` parity is tolerance (JAX/XLA log is its
+own polynomial, not libm anyway), and ~1 ulp is legal — the same relaxation class as the gamma/zeta wins.
+
+New `log_f64x8` = edge-lane-safe wrapper over `crate::simd_exp::log_block_f64`: positive-normal lanes
+take the Cephes block (~1 ulp), while `x<=0` / subnormal / `+inf` / `NaN` lanes route to scalar `f64::ln`
+(BIT-EXACT edges: `ln(0)=-inf`, `ln(<0)=NaN`, `ln(inf)=inf`, `ln(NaN)=NaN`, correct subnormals — proven
+by `log_simd_matches_scalar_tolerance_and_edges`). `eval_log` now routes its dense f64/f32 path through
+`eval_unary_simd_dense_f64_parallel(log_f64x8, f64::ln)`; complex + tail + other dtypes unchanged.
+`FJ_LOG_SCALAR` forces the pre-SIMD path (same-binary A/B).
+
+MEASURED (16M-data pattern, same binary, min-of-5):
+  - 4M f64: SCALAR 9.34ms → SIMD **6.12ms = 1.53x**; vs JAX `jnp.log` 2.40ms the loss narrows
+    **3.89x → 2.55x**.
+  - 16M f64: SCALAR 25.13ms → SIMD **21.78ms = 1.15x**; vs JAX 18.07ms **1.39x → 1.20x**. Smaller
+    because 16M f64 = 128 MB saturates DRAM bandwidth (both threaded paths BW-bound), masking the
+    compute win — the 4M regime (nearer cache) shows the true ~1.5x kernel speedup.
+The residual vs-JAX gap is the +fma-poly wall (JAX log is FMA-contracted; same wall as matmul/exp).
+Gates: fj-lax lib 1662/0, conformance green, fmt clean. `log_block_f64` reused verbatim — no new kernel.
+
 ## 2026-07-01 - WIRED WIN (lgamma 1.45x / digamma 1.15x): SIMD Cephes f64 log kills the per-lane scalar `.ln()` in the gamma kernels (BlackThrush)
 
 The prior frontier map named lgamma (1.83x-vs-JAX) and digamma (1.85x) as "ln-dominated: a SIMD kernel
