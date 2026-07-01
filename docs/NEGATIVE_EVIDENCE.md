@@ -2,6 +2,31 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - SURFACE / REVERTED: SIMD log2 wins 1.39x @4M but REGRESSES 0.95x @16M — glibc log2 is well-optimized, the log-family SIMD win STOPS at log2 (BlackThrush)
+
+Attempted to extend the `log_block_f64` win to the `Log2` primitive (the natural next log-family
+consumer). Built a correct `log2_block_f64`: same Cephes frexp + degree-5/5 mantissa rational as
+`log_block_f64`, but keeping the EXACT integer exponent `ef` separate — `log2(x) = ef + ln(m)·LOG2_E`
+— so at a power of two the reduced mantissa is exactly 0 ⇒ result is exactly `ef`, matching the
+oracle's `assert_eq!(log2(2)==1, log2(4)==2, log2(0.5)==-1)`. Kernel accuracy 2.98e-16 rel; exact at
+powers of two for k∈[-60,60]; edge lanes (x≤0/subnormal/±inf/NaN) route to scalar `f64::log2`.
+Correctness was GREEN (fj-lax lib 1666/0, log2_exp2_oracle green, edge test passed).
+
+BUT the A/B (median-of-3 interleaved, same binary, `FJ_LOG2_SCALAR`) shows it is NOT a uniform win:
+  - 4M f64: SCALAR 8.63ms → SIMD **6.22ms = 1.39x** (vs JAX `jnp.log2` 2.49ms: 3.46x → 2.50x). WIN.
+  - 16M f64: SCALAR 23.23ms → SIMD **24.55ms = 0.95x REGRESSION** (consistent: SIMD 24.2/24.6/24.9
+    vs scalar min 20.6). At 128 MB the op is DRAM-BW-bound, and — unlike glibc `log1p` (slow, 14.68ms
+    scalar @4M ⇒ SIMD won 1.79x) — glibc `log2` is already WELL-OPTIMIZED (8.63ms scalar @4M, ~2.2
+    ns/elem, faster than glibc `ln`'s 9.34ms), so at BW-bound sizes there is no compute headroom and
+    the SIMD kernel's extra work makes it net slower.
+
+DECISION: REVERTED (stashed, not dropped) rather than ship a large-tensor regression or a fragile
+host-specific size-gate. RULE distilled: the SIMD-Cephes-log win extends to a primitive ONLY when its
+scalar libm counterpart is SLOW (`ln`/`log1p`/`lgamma`·`ln`) — it does NOT extend to `log2`, whose
+glibc impl is fast enough that SIMD only helps in the cache-resident regime and regresses when
+BW-bound. Do NOT re-attempt log2 SIMD without a size-gate + a clear per-workload win. Gates on the
+reverted branch were green; working tree restored to HEAD; conformance unaffected.
+
 ## 2026-07-01 - WIRED WIN (Log1p primitive: 1.79x @4M / 1.13x @16M): SIMD Kahan-corrected log1p reuses log_block_f64 (BlackThrush)
 
 Third consumer of the `log_block_f64` kernel. `Log1p` (`eval_log1p`, was `eval_float_complex_unary(f64::ln_1p)`)
