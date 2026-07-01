@@ -6594,13 +6594,54 @@ fn simd_poly_tanh_f64_values(src: &[f64]) -> Vec<f64> {
     out
 }
 
+/// 8-wide `asinh(x) = sign(x)·log1p(t + t²/(1 + √(1+t²)))` with `t = |x|` — the standard cancellation-
+/// free form (accurate for small x: `t + t²/… ≈ t`, log1p recovers it). SIMD only for the safe regime
+/// `t < 1e150` (so `t²` cannot overflow) — `NaN`/`±inf`/huge-|x| lanes (where `NaN<1e150` and
+/// `inf<1e150` are both false, and t²→inf) route to scalar `f64::asinh` for exact edge behaviour
+/// (`asinh(±inf)=±inf`, `asinh(NaN)=NaN`, large-x → `ln(2|x|)`). Sign is copied from x via the sign bit
+/// (odd function; preserves `asinh(±0)=±0`). Tolerance parity vs libm.
+fn asinh_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
+    use std::simd::Simd;
+    use std::simd::StdFloat;
+    use std::simd::cmp::SimdPartialOrd;
+    use std::simd::num::SimdFloat;
+    type F = Simd<f64, 8>;
+    type U = Simd<u64, 8>;
+    let t = x.abs();
+    let ok = t.simd_lt(F::splat(1e150)); // false for NaN, +inf, and overflow-risk magnitudes
+    if !ok.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f64; 8];
+        for k in 0..8 {
+            ra[k] = xa[k].asinh();
+        }
+        return F::from_array(ra);
+    }
+    let s = (F::splat(1.0) + t * t).sqrt();
+    let mag = log1p_f64x8(t + (t * t) / (F::splat(1.0) + s));
+    // copysign(mag, x): magnitude from mag, sign bit from x. Odd function; keeps ±0 sign.
+    let signbit = U::splat(0x8000_0000_0000_0000);
+    let mut r = F::from_bits((mag.to_bits() & !signbit) | (x.to_bits() & signbit));
+    if !ok.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k].abs() < 1e150) {
+                ra[k] = xa[k].asinh();
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
+}
+
 pub(crate) fn eval_asinh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     // JAX asinh_p = standard_unop(_float | _complex): reject integer operands.
     if let Some(input) = inputs.first() {
         ensure_jax_float_unary_operand(primitive, input)?;
     }
     if inputs.first().is_some_and(value_contains_complex) {
-        eval_unary_complex_map(primitive, inputs, |a, b| {
+        return eval_unary_complex_map(primitive, inputs, |a, b| {
             // asinh(z) = -i·asin(i·z). Routing through the robust (Hull-Fairgrieve-Tang)
             // complex_asin avoids forming z² = (a²-b², 2ab), whose real part a*a - b*b
             // OVERFLOWED to inf for large |z| (e.g. asinh(1e200) gave inf instead of
@@ -6608,10 +6649,13 @@ pub(crate) fn eval_asinh(primitive: Primitive, inputs: &[Value]) -> Result<Value
             // (re, im) to (im, -re). Principal branches align (C99 Annex G / numpy).
             let s = complex_asin((-b, a));
             (s.1, -s.0)
-        })
-    } else {
-        eval_unary_elementwise_parallel(primitive, inputs, f64::asinh)
+        });
     }
+    // FJ_ASINH_SCALAR forces the pre-SIMD scalar-map path (same-binary A/B hook).
+    if std::env::var_os("FJ_ASINH_SCALAR").is_some() {
+        return eval_unary_elementwise_parallel(primitive, inputs, f64::asinh);
+    }
+    eval_unary_simd_dense_f64_parallel(primitive, inputs, asinh_f64x8, f64::asinh)
 }
 
 pub(crate) fn eval_acosh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
@@ -26500,6 +26544,75 @@ mod tests {
             } else {
                 assert_eq!(g.to_bits(), want.to_bits(), "log1p edge at x={x}");
             }
+        }
+    }
+
+    #[test]
+    fn asinh_simd_matches_scalar_tolerance_and_edges() {
+        // eval_asinh dense SIMD (sign(x)·log1p(t+t²/(1+√(1+t²)))) vs scalar f64::asinh: ~1 ulp on
+        // finite moderate x, bit-exact ±0 and edges (±inf, NaN, huge |x| via scalar fallback).
+        let mut data: Vec<f64> = (0..70_003usize)
+            .map(|i| -50.0 + (i % 9973) as f64 * 0.01)
+            .collect();
+        for (k, v) in [
+            (3usize, 0.0f64),
+            (4, -0.0),
+            (5, 1e-12),
+            (6, 1e8),
+            (7, -1e8),
+            (8, 1e200),
+            (9, f64::INFINITY),
+            (10, f64::NEG_INFINITY),
+            (11, f64::NAN),
+        ] {
+            data[k] = v;
+        }
+        let input = tensor_f64(vec![data.len() as u32], &data);
+        let got =
+            extract_f64_vec(&eval_asinh(Primitive::Asinh, std::slice::from_ref(&input)).unwrap());
+        for (idx, &x) in data.iter().enumerate() {
+            let want = x.asinh();
+            let g = got[idx];
+            if want == 0.0 {
+                assert_eq!(g.to_bits(), want.to_bits(), "asinh sign-of-zero at x={x}");
+            } else if want.is_finite() {
+                let tol = 1e-11 * want.abs().max(1.0);
+                assert!(
+                    (g - want).abs() <= tol,
+                    "asinh at x={x}: simd {g} vs scalar {want}"
+                );
+            } else {
+                assert_eq!(g.to_bits(), want.to_bits(), "asinh edge at x={x}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_asinh_throughput() {
+        use std::time::Instant;
+        for n in [4_000_000usize, 16_000_000usize] {
+            let data: Vec<f64> = (0..n).map(|i| 0.1 + (i % 9973) as f64 * 0.002).collect();
+            let input = tensor_f64(vec![n as u32], &data);
+            let f = || {
+                std::hint::black_box(
+                    eval_asinh(Primitive::Asinh, std::slice::from_ref(&input)).unwrap(),
+                );
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            let scalar = std::env::var_os("FJ_ASINH_SCALAR").is_some();
+            println!(
+                "fj-lax asinh f64 {}M [{}]: {:.3}ms",
+                n / 1_000_000,
+                if scalar { "SCALAR" } else { "SIMD" },
+                b * 1e3
+            );
         }
     }
 

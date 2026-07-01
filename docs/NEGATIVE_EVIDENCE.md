@@ -2,6 +2,19 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - WIRED WIN (Asinh primitive: 1.68x @4M / 1.35x @16M): SIMD asinh (cancellation-free log1p form) reusing log1p_f64x8 (BlackThrush)
+
+Fifth wired consumer; second inverse-hyperbolic. `Asinh` (`eval_asinh`, real path was threaded scalar
+`f64::asinh`). Not bit-exact pinned (asinh_oracle tolerance). `asinh_f64x8(x) = sign(x)·log1p(t +
+t²/(1+√(1+t²)))` with `t=|x|` — the cancellation-free form (accurate small-x). SIMD only for the safe
+regime `t < 1e150` (so `t²` can't overflow); `NaN`/`±inf`/huge-|x| lanes route to scalar `f64::asinh`
+(exact edges: `asinh(±inf)=±inf`, large-x → `ln(2|x|)`). Sign copied via the sign bit (odd fn, keeps
+`asinh(±0)=±0`). Needed the `t²`-overflow guard that atanh's bounded domain didn't.
+
+MEASURED (median-of-3, same binary, `FJ_ASINH_SCALAR`): 4M SCALAR 16.50ms → SIMD **9.82ms = 1.68x**
+(vs JAX `arcsinh` 5.41ms: 3.05x → 1.82x); 16M 31.31ms → **23.19ms = 1.35x** (clean, no BW regress).
+Gates: asinh_oracle 30/0, accuracy/edge test green, fmt clean. Reuses `log1p_f64x8`. (acosh remains.)
+
 ## 2026-07-01 - WIRED WIN (Atanh primitive: 1.89x @4M / 1.19x @16M, ~JAX PARITY): SIMD atanh via the single-log1p identity, reusing log1p_f64x8 (BlackThrush)
 
 Fourth wired consumer of the `log_block_f64` / `log1p_f64x8` machinery, and the first INVERSE-HYPERBOLIC:
