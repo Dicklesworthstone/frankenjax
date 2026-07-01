@@ -338,6 +338,49 @@ pub fn log_block_f64(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     r + ef * F::splat(LN2_HI)
 }
 
+/// 8-wide `exp` via the Cephes double `exp.c` degree-2/degree-3 RATIONAL (NOT the degree-13 Taylor
+/// of [`exp_block`]) — the hypothesis being that a SHORT rational wins no-FMA where the long Taylor
+/// lost (`exp_block` is 0.79x vs libm without FMA, but the degree-5 Cephes `log` won 2.36x). ~1 ulp,
+/// tolerance (not bit-identical to libm). For IN-RANGE `x` only; caller handles overflow/underflow/NaN.
+pub fn exp_cephes_block_f64(x: F64s) -> F64s {
+    #[allow(clippy::excessive_precision)]
+    const CEXP_C1: f64 = 6.931_457_519_531_25e-1; // ln2 hi
+    #[allow(clippy::excessive_precision)]
+    const CEXP_C2: f64 = 1.428_606_820_309_417_232_12e-6; // ln2 lo
+    #[allow(clippy::excessive_precision)]
+    const PP: [f64; 3] = [
+        1.261_771_930_748_105_908_78e-4,
+        3.029_944_077_074_419_613e-2,
+        9.999_999_999_999_999_999_1e-1,
+    ];
+    #[allow(clippy::excessive_precision)]
+    const QQ: [f64; 4] = [
+        3.001_985_051_386_644_550_42e-6,
+        2.524_483_403_496_841_041_92e-3,
+        2.272_655_482_081_550_287_66e-1,
+        2.0e0,
+    ];
+    // n = round(x/ln2); r = x - n*ln2 (Cody-Waite split).
+    let nf = (x * F64s::splat(LOG2E)).round();
+    let r = x - nf * F64s::splat(CEXP_C1) - nf * F64s::splat(CEXP_C2);
+    let xx = r * r;
+    // px = r·P(xx), P degree 2 (Horner).
+    let px = r * ((F64s::splat(PP[0]) * xx + F64s::splat(PP[1])) * xx + F64s::splat(PP[2]));
+    // den = Q(xx) − px, Q degree 3 (Horner).
+    let den = ((F64s::splat(QQ[0]) * xx + F64s::splat(QQ[1])) * xx + F64s::splat(QQ[2])) * xx
+        + F64s::splat(QQ[3])
+        - px;
+    // exp(r) = 1 + 2·px/den.
+    let er = F64s::splat(1.0) + F64s::splat(2.0) * (px / den);
+    // scale by 2^n via the exponent field (split n so subnormals/large behave).
+    let ni = nf.cast::<i64>();
+    let na = ni >> Simd::splat(1);
+    let nb = ni - na;
+    let two_a = F64s::from_bits(((na + Simd::splat(1023)) << Simd::splat(52)).cast::<u64>());
+    let two_b = F64s::from_bits(((nb + Simd::splat(1023)) << Simd::splat(52)).cast::<u64>());
+    er * two_a * two_b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,6 +566,75 @@ mod tests {
         eprintln!("[log_block_f64] max relative error vs libm over [0.01,1e6] = {maxrel:e}");
         // ~1 ulp Cephes rational; must sit far below the callers' 1e-10 oracle tolerances.
         assert!(maxrel < 1e-14, "f64 SIMD log rel err {maxrel:e} too large");
+    }
+
+    #[test]
+    fn exp_cephes_block_f64_accuracy() {
+        let mut maxrel = 0.0f64;
+        let mut x = -700.0f64;
+        while x <= 700.0 {
+            let mut arr = [0.0f64; 8];
+            for (j, a) in arr.iter_mut().enumerate() {
+                *a = x + j as f64 * 0.011;
+            }
+            let got = exp_cephes_block_f64(F64s::from_array(arr)).to_array();
+            for (j, &g) in got.iter().enumerate() {
+                let e = arr[j].exp();
+                if e.is_finite() && e > 0.0 {
+                    maxrel = maxrel.max(((g - e) / e).abs());
+                }
+            }
+            x += 0.017;
+        }
+        eprintln!("[exp_cephes_block_f64] max rel err vs libm over [-700,700] = {maxrel:e}");
+        assert!(maxrel < 1e-14, "cephes exp rel err {maxrel:e} too large");
+    }
+
+    #[test]
+    #[ignore = "perf; run explicitly"]
+    fn bench_exp_cephes_block_f64_vs_libm() {
+        let n = 1 << 22; // 4M f64, single-thread, NO-FMA — the hypothesis test.
+        let xs: Vec<f64> = (0..n).map(|i| -20.0 + (i as f64) * 1e-5).collect();
+        let mut out = vec![0.0f64; n];
+        let best = |f: &mut dyn FnMut()| -> f64 {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let cephes = best(&mut || {
+            let mut ch = xs.chunks_exact(8);
+            let mut oc = out.chunks_exact_mut(8);
+            for (c, o) in ch.by_ref().zip(oc.by_ref()) {
+                exp_cephes_block_f64(F64s::from_slice(c)).copy_to_slice(o);
+            }
+            std::hint::black_box(&out);
+        });
+        let taylor = best(&mut || {
+            let mut ch = xs.chunks_exact(8);
+            let mut oc = out.chunks_exact_mut(8);
+            for (c, o) in ch.by_ref().zip(oc.by_ref()) {
+                exp_block(F64s::from_slice(c)).copy_to_slice(o);
+            }
+            std::hint::black_box(&out);
+        });
+        let libm = best(&mut || {
+            for (o, &x) in out.iter_mut().zip(&xs) {
+                *o = x.exp();
+            }
+            std::hint::black_box(&out);
+        });
+        eprintln!(
+            "[exp f64 4M NO-FMA] libm={:.3}ms taylor13={:.3}ms cephes_rational={:.3}ms | cephes vs libm={:.2}x",
+            libm * 1e3,
+            taylor * 1e3,
+            cephes * 1e3,
+            libm / cephes
+        );
     }
 
     #[test]

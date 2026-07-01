@@ -52,7 +52,8 @@ use arithmetic::{
     eval_complex, eval_conj, eval_cos, eval_cosh, eval_digamma, eval_dot, eval_dot_general,
     eval_erf, eval_erf_inv, eval_erfc, eval_exp, eval_float_complex_unary, eval_fma, eval_igamma,
     eval_igammac, eval_imag, eval_integer_pow, eval_is_finite, eval_is_inf, eval_is_nan,
-    eval_lgamma, eval_log, eval_log1p, eval_neg, eval_nextafter, eval_polygamma, eval_real,
+    eval_lgamma, eval_log, eval_log1p, eval_logistic, eval_neg, eval_nextafter, eval_polygamma,
+    eval_real,
     eval_round,
     eval_select, eval_select_n, eval_signbit, eval_sin, eval_sinh, eval_tan, eval_tanh,
     eval_unary_elementwise_parallel, eval_unary_int_or_float, eval_zeta,
@@ -388,11 +389,7 @@ fn eval_primitive_inner(
             |x| x * x,
         ),
         Primitive::Reciprocal => eval_unary_elementwise_parallel(primitive, inputs, |x| 1.0 / x),
-        Primitive::Logistic => {
-            // Sigmoid is compute-bound (an exp per element), so thread it like the
-            // other transcendentals (exp/erf/tanh/…) instead of the serial path.
-            eval_float_complex_unary(primitive, inputs, |x| 1.0 / (1.0 + (-x).exp()))
-        }
+        Primitive::Logistic => eval_logistic(primitive, inputs),
         Primitive::Erf => eval_erf(primitive, inputs),
         Primitive::Erfc => eval_erfc(primitive, inputs),
         Primitive::Lgamma => eval_lgamma(primitive, inputs),

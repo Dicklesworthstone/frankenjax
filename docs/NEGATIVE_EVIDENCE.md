@@ -2,6 +2,26 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - FINDING + WIRED WIN: the "exp SIMD loses no-FMA (0.79x)" verdict is STALE (pre-AVX2); Cephes rational exp is 2.59x → Logistic 1.43x @4M (BlackThrush)
+
+MAJOR re-measurement. The `simd-poly-exp-fma-finding` (exp_block 0.79x vs libm without FMA) PREDATES the
+AVX2 build flag (ce0faf72). Re-measured now (`bench_exp_cephes_block_f64_vs_libm`, 4M f64, single-thread,
+NO-FMA): libm exp **16.71ms**, degree-13 Taylor `exp_block` **9.18ms (1.82x!)**, and the new Cephes `exp.c`
+degree-2/degree-3 RATIONAL `exp_cephes_block_f64` **6.45ms = 2.59x over libm** (accuracy 3.10e-16, ~1 ulp).
+The SHORT rational wins big no-FMA — same lesson as the degree-5 Cephes log (2.36x). So the WHOLE exp-based
+family reopens for the non-golden-locked ops (exp itself stays libm-pinned by its self-golden).
+
+First consumer wired: `Logistic` (sigmoid, ubiquitous in ML) — `eval_logistic` was scalar libm
+`1/(1+exp(-x))` threaded. Not golden-pinned (VJP tol 1e-5). `logistic_f64x8` uses `exp_cephes_block_f64(-x)`
+for `|x| < 709`; saturated tails (`|x|≥709` ⇒ 0/1), `±inf`, `NaN` route to scalar `logistic_scalar`
+(correct via inf-arithmetic). MEASURED (median-of-3, `FJ_LOGISTIC_SCALAR`): 4M SCALAR 10.20ms → SIMD
+**7.15ms = 1.43x**; 16M 23.10ms → **21.33ms = 1.08x** (BW-bound; positive, no regress). Gates: fj-lax lib
+1669/0, full conformance green, fmt clean.
+
+NEXT (same vein, non-golden-locked, need per-op edge handling): sinh/cosh (0.5·(e±1/e), overflow guard),
+exp2 (but exact-power pitfall like log2 — check exp2_oracle), expm1 (small-x cancellation — use the
+rational's `2px/den` directly, don't subtract 1). exp/expm1 self-golden status must be checked per-op.
+
 ## 2026-07-01 - WIRED WIN (Acosh primitive: 1.63x @4M / 1.22x @16M): SIMD acosh (cancellation-free log1p form) — completes the inverse-hyperbolic trio (BlackThrush)
 
 Sixth wired consumer; completes asinh/acosh/atanh. `Acosh` (`eval_acosh`, real path was threaded scalar

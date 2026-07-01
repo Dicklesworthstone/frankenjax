@@ -6731,6 +6731,58 @@ fn atanh_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     F::splat(0.5) * log1p_f64x8(arg)
 }
 
+/// Scalar sigmoid `1/(1+exp(-x))` — the pre-SIMD reference (and the fallback for edge lanes / tail).
+fn logistic_scalar(x: f64) -> f64 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+/// 8-wide `logistic(x) = 1/(1+exp(-x))` using the SIMD Cephes rational exp
+/// ([`crate::simd_exp::exp_cephes_block_f64`], 2.59x over libm exp no-FMA). SIMD only for `|x| < 709`
+/// (where `exp(±x)` is finite); the saturated tails (`|x| ≥ 709` ⇒ 0 or 1), `±inf`, and `NaN` route
+/// to scalar [`logistic_scalar`] (which is correct there via inf-arithmetic). ~1–2 ulp, tolerance.
+fn logistic_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialOrd;
+    use std::simd::num::SimdFloat;
+    type F = Simd<f64, 8>;
+    let ok = x.abs().simd_lt(F::splat(709.0)); // false for NaN, ±inf, saturated tails
+    if !ok.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f64; 8];
+        for k in 0..8 {
+            ra[k] = logistic_scalar(xa[k]);
+        }
+        return F::from_array(ra);
+    }
+    let e = crate::simd_exp::exp_cephes_block_f64(-x);
+    let mut r = F::splat(1.0) / (F::splat(1.0) + e);
+    if !ok.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k].abs() < 709.0) {
+                ra[k] = logistic_scalar(xa[k]);
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
+}
+
+pub(crate) fn eval_logistic(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    // JAX logistic_p = standard_unop(_float | _complex): integer operands rejected. Complex + tail +
+    // other-dtype fall through to eval_unary_elementwise_parallel (which dispatches complex by
+    // primitive via complex_unary_elementwise → complex_logistic), preserving prior behaviour.
+    if let Some(input) = inputs.first() {
+        ensure_jax_float_unary_operand(primitive, input)?;
+    }
+    // FJ_LOGISTIC_SCALAR forces the pre-SIMD scalar-map path (same-binary A/B hook).
+    if std::env::var_os("FJ_LOGISTIC_SCALAR").is_some() {
+        return eval_unary_elementwise_parallel(primitive, inputs, logistic_scalar);
+    }
+    eval_unary_simd_dense_f64_parallel(primitive, inputs, logistic_f64x8, logistic_scalar)
+}
+
 pub(crate) fn eval_atanh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     // JAX atanh_p = standard_unop(_float | _complex): reject integer operands.
     if let Some(input) = inputs.first() {
@@ -26582,6 +26634,73 @@ mod tests {
             } else {
                 assert_eq!(g.to_bits(), want.to_bits(), "log1p edge at x={x}");
             }
+        }
+    }
+
+    #[test]
+    fn logistic_simd_matches_scalar_tolerance_and_edges() {
+        // eval_logistic dense SIMD (Cephes exp) vs scalar 1/(1+exp(-x)): ~1-2 ulp on the active
+        // region, and correct saturated tails / edges (x->+inf =>1, x->-inf =>0, NaN, big |x|).
+        let mut data: Vec<f64> = (0..70_003usize)
+            .map(|i| -30.0 + (i % 9973) as f64 * 0.006)
+            .collect();
+        for (k, v) in [
+            (3usize, 0.0f64),
+            (4, 800.0),
+            (5, -800.0),
+            (6, 709.5),
+            (7, -709.5),
+            (8, f64::INFINITY),
+            (9, f64::NEG_INFINITY),
+            (10, f64::NAN),
+        ] {
+            data[k] = v;
+        }
+        let input = tensor_f64(vec![data.len() as u32], &data);
+        let got = extract_f64_vec(
+            &eval_logistic(Primitive::Logistic, std::slice::from_ref(&input)).unwrap(),
+        );
+        for (idx, &x) in data.iter().enumerate() {
+            let want = 1.0 / (1.0 + (-x).exp());
+            let g = got[idx];
+            if want.is_nan() {
+                assert!(g.is_nan(), "logistic NaN at x={x}");
+            } else {
+                let tol = 1e-12 * want.abs().max(1e-300) + 1e-15;
+                assert!(
+                    (g - want).abs() <= tol,
+                    "logistic at x={x}: simd {g} vs scalar {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_logistic_throughput() {
+        use std::time::Instant;
+        for n in [4_000_000usize, 16_000_000usize] {
+            let data: Vec<f64> = (0..n).map(|i| -8.0 + (i % 9973) as f64 * 0.0016).collect();
+            let input = tensor_f64(vec![n as u32], &data);
+            let f = || {
+                std::hint::black_box(
+                    eval_logistic(Primitive::Logistic, std::slice::from_ref(&input)).unwrap(),
+                );
+            };
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            let scalar = std::env::var_os("FJ_LOGISTIC_SCALAR").is_some();
+            println!(
+                "fj-lax logistic f64 {}M [{}]: {:.3}ms",
+                n / 1_000_000,
+                if scalar { "SCALAR" } else { "SIMD" },
+                b * 1e3
+            );
         }
     }
 
