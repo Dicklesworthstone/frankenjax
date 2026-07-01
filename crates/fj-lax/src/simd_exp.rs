@@ -266,6 +266,78 @@ pub fn log_block_f32(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     r + ef * F::splat(LN2_HI)
 }
 
+/// 8-wide `f64` natural log for NORMAL POSITIVE inputs — Cephes double-precision `log`
+/// (degree-5/5 rational on the reduced mantissa + frexp exponent reconstruction). Accurate
+/// to ~1 ulp (`log_block_f64_accuracy`: < 1e-15 relative), i.e. WELL within JAX/XLA tolerance
+/// parity. This is the f64 sibling of [`log_block_f32`] and the lever that vectorizes the
+/// per-lane scalar `.ln()` still called inside `lgamma_f64x8` / `digamma_f64x8` (those kernels
+/// are already SIMD for the series but were bottlenecked on scalar libm `ln`).
+///
+/// CONTRACT (mirrors [`exp_block`]): pure arithmetic + one `select` for the `m < SQRTH` branch;
+/// only the SQRTH split uses a compare/select. Edge cases (`x <= 0`, subnormal, ±inf, NaN) are
+/// the CALLER's responsibility — the gamma kernels only feed it strictly-positive normals
+/// (digamma's shifted arg `>= 8`; lgamma's `t >= LANCZOS_G` and Lanczos `acc > 0`), and route
+/// any non-SIMD lane to the scalar fallback. Not bit-identical to glibc `ln` (differs ~1 ulp);
+/// the callers' parity is tolerance-based (their conformance oracles assert `< 1e-10`).
+pub fn log_block_f64(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialOrd;
+    use std::simd::num::SimdInt;
+    use std::simd::num::SimdUint;
+    type F = Simd<f64, 8>;
+    type U = Simd<u64, 8>;
+    type I = Simd<i64, 8>;
+    const SQRTH: f64 = 0.707_106_781_186_547_524_4;
+    const LN2_HI: f64 = 0.693_359_375;
+    #[allow(clippy::excessive_precision)]
+    const LN2_LO: f64 = -2.121_944_400_546_905_827_679e-4;
+    // Cephes `log.c` P (degree-5, 6 coeffs) / Q (monic degree-6, 5 stored coeffs) rational.
+    #[allow(clippy::excessive_precision)]
+    const P: [f64; 6] = [
+        1.018_756_638_045_809_317_96e-4,
+        4.974_949_949_767_470_014_25e-1,
+        4.705_791_198_788_817_258_54e0,
+        1.449_892_253_416_109_308_46e1,
+        1.793_686_785_078_198_163_13e1,
+        7.708_387_337_558_853_916_66e0,
+    ];
+    #[allow(clippy::excessive_precision)]
+    const Q: [f64; 5] = [
+        1.128_735_871_891_674_505_90e1,
+        4.522_791_458_375_322_211_05e1,
+        8.298_752_669_127_766_032_11e1,
+        7.115_447_506_185_638_944_66e1,
+        2.312_516_201_267_653_405_83e1,
+    ];
+    // frexp via bits: m ∈ [0.5,1), e integer, x = m·2^e (valid for positive normals).
+    let bits = x.to_bits();
+    let e = ((bits >> U::splat(52)) & U::splat(0x7ff)).cast::<i64>() - I::splat(1022);
+    let m_bits = (bits & U::splat(0x000f_ffff_ffff_ffff)) | U::splat(1022u64 << 52);
+    let mut m = F::from_bits(m_bits);
+    let mut ef = e.cast::<f64>();
+    // Bring m around 1 into [sqrt(0.5), sqrt(2)): if m < SQRTH, m = 2m - 1 (e-=1), else m -= 1.
+    let lo = m.simd_lt(F::splat(SQRTH));
+    ef -= lo.select(F::splat(1.0), F::splat(0.0));
+    m = m + lo.select(m, F::splat(0.0)) - F::splat(1.0);
+    let z = m * m;
+    // polevl(m, P, 5): P[0]·m^5 + … + P[5].
+    let mut pp = F::splat(P[0]);
+    for &c in &P[1..] {
+        pp = pp * m + F::splat(c);
+    }
+    // p1evl(m, Q, 5): monic — m^5 + Q[0]·m^4 + … + Q[4].
+    let mut qq = m + F::splat(Q[0]);
+    for &c in &Q[1..] {
+        qq = qq * m + F::splat(c);
+    }
+    let mut y = m * (z * pp / qq);
+    y += ef * F::splat(LN2_LO);
+    y -= F::splat(0.5) * z;
+    let r = m + y;
+    r + ef * F::splat(LN2_HI)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +495,73 @@ mod tests {
         }
         eprintln!("[log_block_f32] max relative error vs libm over [0.01,100] = {maxrel:e}");
         assert!(maxrel < 5e-6, "f32 SIMD log rel err {maxrel:e} too large");
+    }
+
+    #[test]
+    fn log_block_f64_accuracy() {
+        use std::simd::Simd;
+        let mut maxrel = 0.0f64;
+        // Sweep the gamma-kernel-relevant range: digamma feeds shifted args in ~[8,16); lgamma
+        // feeds t >= LANCZOS_G (~7) and Lanczos acc (~O(1)..O(100)). Cover [0.01, 1e6] broadly.
+        let mut x = 0.01f64;
+        while x <= 1_000_000.0 {
+            let mut arr = [0.0f64; 8];
+            for (j, a) in arr.iter_mut().enumerate() {
+                *a = x * (1.0 + j as f64 * 3e-4);
+            }
+            let got = log_block_f64(Simd::from_array(arr)).to_array();
+            for (j, &g) in got.iter().enumerate() {
+                let e = arr[j].ln();
+                if e != 0.0 {
+                    maxrel = maxrel.max(((g - e) / e).abs());
+                } else {
+                    maxrel = maxrel.max((g - e).abs());
+                }
+            }
+            x *= 1.0009;
+        }
+        eprintln!("[log_block_f64] max relative error vs libm over [0.01,1e6] = {maxrel:e}");
+        // ~1 ulp Cephes rational; must sit far below the callers' 1e-10 oracle tolerances.
+        assert!(maxrel < 1e-14, "f64 SIMD log rel err {maxrel:e} too large");
+    }
+
+    #[test]
+    #[ignore = "perf; run explicitly"]
+    fn bench_log_block_f64_vs_libm() {
+        use std::simd::Simd;
+        let n = 1 << 22; // 4M f64, single-thread, NO-FMA — the honest A/B for the lgamma/digamma lever.
+        let xs: Vec<f64> = (0..n).map(|i| 8.0 + (i as f64) * 1e-4).collect();
+        let mut out = vec![0.0f64; n];
+        let best = |f: &mut dyn FnMut()| -> f64 {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let simd = best(&mut || {
+            let mut ch = xs.chunks_exact(8);
+            let mut oc = out.chunks_exact_mut(8);
+            for (c, o) in ch.by_ref().zip(oc.by_ref()) {
+                log_block_f64(Simd::from_slice(c)).copy_to_slice(o);
+            }
+            std::hint::black_box(&out);
+        });
+        let libm = best(&mut || {
+            for (o, &x) in out.iter_mut().zip(&xs) {
+                *o = x.ln();
+            }
+            std::hint::black_box(&out);
+        });
+        eprintln!(
+            "[log f64 4M, single-thread, NO-FMA] libm={:.3}ms simd8={:.3}ms speedup={:.2}x",
+            libm * 1e3,
+            simd * 1e3,
+            libm / simd
+        );
     }
 
     // pow(b,p) = exp(p·ln b) via the SIMD pair — the building block for zeta's (n+q)^{-s}.

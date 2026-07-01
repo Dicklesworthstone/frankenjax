@@ -10662,17 +10662,13 @@ fn lgamma_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
         acc += F::splat(coeff) / (z + F::splat(idx as f64));
     }
     let t = z + F::splat(LANCZOS_G) + half;
-    // ln(t), ln(acc) per lane via scalar libm — bit-identical to the scalar `t.ln()`/`acc.ln()`.
-    let ta = t.to_array();
-    let aa = acc.to_array();
-    let mut lnt = [0.0f64; 8];
-    let mut lnacc = [0.0f64; 8];
-    for k in 0..8 {
-        lnt[k] = ta[k].ln();
-        lnacc[k] = aa[k].ln();
-    }
-    let lnt = F::from_array(lnt);
-    let lnacc = F::from_array(lnacc);
+    // ln(t), ln(acc) 8-wide via the SIMD Cephes log — the TWO scalar libm calls per lane were the
+    // measured bottleneck of the residual ~1.8x-vs-JAX lgamma gap (ln-dominated). For every simd_ok
+    // lane (x>=0.5) both args are positive normals: t = x + LANCZOS_G - 0.5 >= LANCZOS_G, and the
+    // Lanczos acc > 0 (same as the scalar path, which also takes acc.ln()). ~1 ulp, tolerance-parity
+    // (NOT bit-identical to scalar `.ln()`). Non-simd_ok lanes are overwritten by scalar lgamma_approx.
+    let lnt = crate::simd_exp::log_block_f64(t);
+    let lnacc = crate::simd_exp::log_block_f64(acc);
     // Same op order/association as scalar: 0.5*ln(2π) + (z+0.5)*ln(t) - t + ln(acc).
     let c = F::splat(0.5 * (2.0 * std::f64::consts::PI).ln());
     let mut res = c + (z + half) * lnt - t + lnacc;
@@ -10698,10 +10694,11 @@ pub(crate) fn eval_lgamma(primitive: Primitive, inputs: &[Value]) -> Result<Valu
 }
 
 /// 8-wide `digamma` for the common `x >= 0.5` finite range: the recurrence shift-to-`>=8` and the
-/// asymptotic series vectorize (bit-identical per lane — same ascending-order subtractions + same
-/// op order); `ln(shifted)` is taken per-lane via scalar libm (bit-identical). Lanes with `x < 0.5`
-/// (reflection), non-finite, or the `x<=0` near-integer pole fall back to scalar [`digamma_approx`],
-/// so every lane equals the scalar form. digamma's hot uses (KL/entropy gradients) sit at x>=0.5.
+/// asymptotic series vectorize (same ascending-order subtractions + same op order), and `ln(shifted)`
+/// is taken 8-wide via the SIMD Cephes [`crate::simd_exp::log_block_f64`] (~1 ulp, tolerance-parity —
+/// no longer scalar-`.ln()` bit-identical). Lanes with `x < 0.5` (reflection), non-finite, or the
+/// `x<=0` near-integer pole fall back to scalar [`digamma_approx`]. digamma's hot uses (KL/entropy
+/// gradients) sit at x>=0.5.
 fn digamma_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -10740,13 +10737,13 @@ fn digamma_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     let inv6 = inv4 * inv2;
     let inv8 = inv4 * inv4;
     let inv10 = inv8 * inv2;
-    // ln(shifted) per lane via scalar libm — bit-identical to the scalar `shifted.ln()`.
-    let sh = shifted.to_array();
-    let mut lnv = [0.0f64; 8];
-    for k in 0..8 {
-        lnv[k] = sh[k].ln();
-    }
-    let ln = F::from_array(lnv);
+    // ln(shifted) 8-wide via the SIMD Cephes log (crate::simd_exp::log_block_f64). This was the
+    // last scalar libm call in the kernel and the measured bottleneck of the residual ~1.7x-vs-JAX
+    // digamma gap (ln-dominated). shifted >= 8 for every simd_ok lane (positive normal), so the
+    // block is ~1 ulp accurate there; non-simd_ok lanes get overwritten by scalar digamma_approx
+    // below, so their (finite) log garbage is discarded. Tolerance-parity, NOT bit-identical to
+    // scalar `.ln()` (differs ~1 ulp; digamma's conformance oracles assert < 1e-10).
+    let ln = crate::simd_exp::log_block_f64(shifted);
     let mut res = result + ln - half * inv - inv2 / F::splat(12.0) + inv4 / F::splat(120.0)
         - inv6 / F::splat(252.0)
         + inv8 / F::splat(240.0)
@@ -26406,9 +26403,10 @@ mod tests {
     }
 
     #[test]
-    fn lgamma_parallel_bit_identical() {
-        // A large dense-F64 tensor (>65_536) engages the threaded transcendental
-        // path; it must equal the serial elementwise map bit-for-bit.
+    fn lgamma_parallel_tolerance() {
+        // A large dense-F64 tensor (>65_536) engages the threaded SIMD transcendental path; it must
+        // agree with the serial scalar elementwise map to ~1 ulp. (No longer bit-identical: the
+        // kernel now takes ln(t)/ln(acc) via the SIMD Cephes log_block_f64, tolerance-parity.)
         let n = 70_000usize;
         let data: Vec<f64> = (0..n).map(|i| 0.5 + (i % 997) as f64 * 0.01).collect();
         let input = tensor_f64(vec![n as u32], &data);
@@ -26419,14 +26417,14 @@ mod tests {
         );
         assert_eq!(parallel.len(), serial.len());
         for idx in 0..n {
-            assert_eq!(
-                parallel[idx].to_bits(),
-                serial[idx].to_bits(),
-                "mismatch at {idx}"
+            let (p, s) = (parallel[idx], serial[idx]);
+            let tol = 1e-12 * s.abs().max(1.0);
+            assert!(
+                (p - s).abs() <= tol,
+                "mismatch at {idx} (x={}): simd {p} vs scalar {s}",
+                data[idx]
             );
         }
-        // also spot-check vs a direct reference value
-        assert_eq!(parallel[0].to_bits(), lgamma_approx(data[0]).to_bits());
     }
 
     #[test]
@@ -26696,10 +26694,12 @@ mod tests {
     }
 
     #[test]
-    fn lgamma_simd_bit_identical_to_scalar() {
-        // lgamma via the SIMD driver must equal scalar lgamma_approx bit-for-bit across: x>=0.5
-        // finite (SIMD Lanczos), x<0.5 (scalar reflection), the x<=0 near-integer poles, and
-        // ±0/±inf/NaN, for f64 AND f32. Span [-6,6] to mix all branches within 8-lane blocks.
+    fn lgamma_simd_tolerance_to_scalar() {
+        // lgamma via the SIMD driver must agree with scalar lgamma_approx across: x>=0.5 finite
+        // (SIMD Lanczos + SIMD Cephes log — ~1 ulp tolerance, NOT bit-identical), x<0.5 (scalar
+        // reflection — exact), the x<=0 near-integer poles, and ±0/±inf/NaN, for f64 AND f32. Span
+        // [-6,6] to mix all branches within 8-lane blocks. Non-finite results are matched bit-exact
+        // (they hit the scalar fallback); finite results are matched to a tight relative tolerance.
         let n = 70_003usize;
         let data: Vec<f64> = (0..n)
             .map(|i| ((i % 12000) as f64 - 6000.0) * 0.001)
@@ -26717,12 +26717,23 @@ mod tests {
             &eval_lgamma(Primitive::Lgamma, std::slice::from_ref(&f64_in)).unwrap(),
         );
         for idx in 0..n {
-            assert_eq!(
-                got[idx].to_bits(),
-                lgamma_approx(data[idx]).to_bits(),
-                "f64 lgamma at x={}",
-                data[idx]
-            );
+            let want = lgamma_approx(data[idx]);
+            let g = got[idx];
+            if want.is_finite() {
+                let tol = 1e-11 * want.abs().max(1.0);
+                assert!(
+                    (g - want).abs() <= tol,
+                    "f64 lgamma at x={}: simd {g} vs scalar {want}",
+                    data[idx]
+                );
+            } else {
+                assert_eq!(
+                    g.to_bits(),
+                    want.to_bits(),
+                    "f64 lgamma nonfinite at x={}",
+                    data[idx]
+                );
+            }
         }
         let dataf: Vec<f32> = data.iter().map(|&v| v as f32).collect();
         let f32_in = Value::Tensor(
@@ -26739,11 +26750,17 @@ mod tests {
             _ => panic!("expected tensor"),
         };
         for idx in 0..n {
-            assert_eq!(
-                gotf[idx].to_bits(),
-                (lgamma_approx(dataf[idx] as f64) as f32).to_bits(),
-                "f32 lgamma at idx {idx}"
-            );
+            let want = lgamma_approx(dataf[idx] as f64) as f32;
+            let g = gotf[idx];
+            if want.is_finite() {
+                let tol = 1e-5 * want.abs().max(1.0);
+                assert!(
+                    (g - want).abs() <= tol,
+                    "f32 lgamma at idx {idx}: simd {g} vs scalar {want}"
+                );
+            } else {
+                assert_eq!(g.to_bits(), want.to_bits(), "f32 lgamma nonfinite at idx {idx}");
+            }
         }
         for &x in &[
             0.0_f64,
@@ -26760,7 +26777,13 @@ mod tests {
             let g = extract_f64_vec(
                 &eval_lgamma(Primitive::Lgamma, std::slice::from_ref(&xi)).unwrap(),
             );
-            assert_eq!(g[0].to_bits(), lgamma_approx(x).to_bits(), "special x={x}");
+            let want = lgamma_approx(x);
+            if want.is_finite() {
+                let tol = 1e-11 * want.abs().max(1.0);
+                assert!((g[0] - want).abs() <= tol, "special x={x}: {} vs {want}", g[0]);
+            } else {
+                assert_eq!(g[0].to_bits(), want.to_bits(), "special x={x}");
+            }
         }
     }
 

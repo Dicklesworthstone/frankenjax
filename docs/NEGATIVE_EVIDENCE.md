@@ -2,6 +2,39 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - WIRED WIN (lgamma 1.45x / digamma 1.15x): SIMD Cephes f64 log kills the per-lane scalar `.ln()` in the gamma kernels (BlackThrush)
+
+The prior frontier map named lgamma (1.83x-vs-JAX) and digamma (1.85x) as "ln-dominated: a SIMD kernel
+with SCALAR-ln-per-lane only speeds the poly" — i.e. the residual gap was the scalar libm `ln` still
+called inside the already-SIMD `lgamma_f64x8` / `digamma_f64x8` (lgamma takes TWO `ln`/lane — `ln(t)` +
+`ln(acc)`; digamma one). This lands the missing lever: a new `crate::simd_exp::log_block_f64` — the f64
+sibling of the existing `log_block_f32`, Cephes double-precision `log` (degree-5/5 rational on the
+frexp-reduced mantissa). No FMA, no unsafe, `#![forbid(unsafe_code)]`-clean.
+
+CRITICAL no-FMA check FIRST (the `exp_block` lesson: SIMD-poly f64 exp is 0.79x — SLOWER — without FMA,
+because glibc `exp` is well-tuned and the degree-13 Horner de-fuses). The degree-5 Cephes log is short
+enough to win anyway:
+  - `bench_log_block_f64_vs_libm` (4M f64, single-thread, NO-FMA): libm `ln` 15.17ms vs SIMD8 6.43ms =
+    **2.36x**. (Unlike exp — the shorter rational + `ln`'s cheaper reduction flip the no-FMA verdict.)
+  - Accuracy `log_block_f64_accuracy`: max rel err **2.22e-16** (~1 ulp) over [0.01, 1e6] vs libm.
+
+Wired into both kernels (replacing the `to_array()`→scalar-`.ln()`-loop→`from_array()`). Measured, same
+binary / same host (16M f64), min-of-5:
+  - **lgamma**: forced-scalar 35.19ms → SIMD-log 24.32ms = **1.45x** internal; vs JAX `gammaln` 17.08ms
+    the loss narrows **1.83x → 1.42x**.
+  - **digamma**: forced-scalar 30.42ms → SIMD-log 26.55ms = **1.15x** internal; vs JAX `digamma` 15.85ms
+    **1.85x → 1.68x**. (Smaller win — digamma is dominated by the data-dependent shift-to-`>=8` loop,
+    so the single `ln` is a smaller fraction; lgamma's fixed 9-term Lanczos + 2 `ln` makes `ln` the
+    bigger slice.)
+
+Parity is TOLERANCE (confirmed: every lgamma/digamma conformance oracle asserts `< 1e-10`/`1e-4`; RNG
+threefry does NOT use them), so ~1 ulp divergence from scalar `.ln()` is legal — same relaxation class
+as the shipped zeta exp/log win. Non-simd_ok lanes (x<0.5 reflection / poles / non-finite) still route
+to the scalar fallback (bit-exact). The two fj-lax internal `*_bit_identical_to_scalar` lgamma tests
+relaxed to tolerance (finite: rel `1e-11` f64 / `1e-5` f32; non-finite: still bit-exact — scalar path).
+Gates: fj-lax lib 1662/0, fmt clean, conformance green. The residual lgamma/digamma gap is now the
+no-FMA Lanczos/asymptotic-series throughput (same +fma wall as the rest of heavy-compute).
+
 ## 2026-06-30 - WIRED WIN (33x; 95x JAX LOSS → 3x): replace fj's Newton erfinv with Giles direct rational on the f32 path (BlackThrush)
 
 Biggest measured gap found this run, and ALGORITHMIC not SIMD: `eval_erf_inv` f32 4M was **158ms**
