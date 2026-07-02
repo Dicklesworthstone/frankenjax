@@ -2,6 +2,21 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - WIRED WIN (native-f32 Atanh: 2.63x vs scalar ORIG); exp-f32 confirmed bit-pinned (BlackThrush)
+
+Sixth consumer of `eval_unary_simd_dense_f32_native`, first native-f32 inverse-hyperbolic — unlocked by
+`log1p_f32x8` (landed just before). `atanh_f32x8 = 0.5·log1p_f32(2x/(1−x))`, the f32 sibling of
+`atanh_f64x8`; log1p_f32x8 self-handles the domain edges (`±1 ⇒ ±inf`, `|x|>1 ⇒ NaN`, `±0 ⇒ ±0`).
+MEASURED (4M f32, `FJ_ATANH_SCALAR` A/B): scalar-ORIG 13.24ms → NATIVE **5.04ms = 2.63x**. Gates: fj-lax
+lib green, full conformance green, few-ulp f32 accuracy test green.
+
+CHECKED (blocker): native-f32 `exp` is NOT available — `exp` f32 is BIT-PINNED (arithmetic.rs ~28857
+asserts f32 exp == `(f64::exp(x as f64) as f32).to_bits()`), same as the f64 exp self-golden. A native
+`exp_block_f32` (tolerance) would break it → deferred (contentious, exp is the deliberately-pinned op).
+
+Native-f32 vein tally: tanh 2.27x, logistic 2.02x, cosh 2.24x, log 2.04x, log1p 3.45x, atanh 2.63x.
+Next (log1p-based, clean): asinh/acosh f32 via `log1p_f32x8` + sqrt (like their f64 forms).
+
 ## 2026-07-01 - WIRED WIN (native-f32 Log1p: 3.45x vs scalar ORIG): fifth native-f32 consumer (BlackThrush)
 
 Fifth consumer of `eval_unary_simd_dense_f32_native`. `Log1p` f32 (JAX default dtype) was routing through

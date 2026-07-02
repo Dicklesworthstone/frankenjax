@@ -7162,6 +7162,15 @@ fn atanh_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     F::splat(0.5) * log1p_f64x8(arg)
 }
 
+/// NATIVE-f32 `atanh(x) = 0.5·log1p(2x/(1−x))` — the f32 sibling of [`atanh_f64x8`], reusing
+/// [`log1p_f32x8`] (which self-handles the domain edges: `x→1⁻ ⇒ +inf`, `x=-1 ⇒ -inf`, `|x|>1 ⇒ NaN`,
+/// `±0 ⇒ ±0`). Runs entirely in f32. ~f32 tolerance.
+fn atanh_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
+    type F = std::simd::Simd<f32, 8>;
+    let arg = (F::splat(2.0) * x) / (F::splat(1.0) - x);
+    F::splat(0.5) * log1p_f32x8(arg)
+}
+
 /// Scalar sigmoid `1/(1+exp(-x))` — the pre-SIMD reference (and the fallback for edge lanes / tail).
 fn logistic_scalar(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
@@ -7274,7 +7283,11 @@ pub(crate) fn eval_atanh(primitive: Primitive, inputs: &[Value]) -> Result<Value
     if std::env::var_os("FJ_ATANH_SCALAR").is_some() {
         return eval_unary_elementwise_parallel(primitive, inputs, f64::atanh);
     }
-    // Dense f64/f32 via the SIMD log1p pair; scalar f64::atanh for the tail / other dtypes.
+    // Native-f32 fast path (JAX default dtype), ~2x the widen-to-f64 path.
+    if let Some(v) = eval_unary_simd_dense_f32_native(inputs, atanh_f32x8, f32::atanh) {
+        return v;
+    }
+    // Dense f64 via the SIMD log1p; scalar f64::atanh for the tail / other dtypes.
     eval_unary_simd_dense_f64_parallel(primitive, inputs, atanh_f64x8, f64::atanh)
 }
 
@@ -27164,6 +27177,72 @@ mod tests {
                 assert_eq!(g.to_bits(), want.to_bits(), "log1p edge at x={x}");
             }
         }
+    }
+
+    #[test]
+    fn atanh_f32_native_matches_scalar_tolerance_and_edges() {
+        // eval_atanh native-f32 path (atanh_f32x8) vs scalar f32 atanh: few-ulp f32 on (-1,1),
+        // bit-exact ±0, edges (±1 -> ±inf, |x|>1 -> NaN) via log1p_f32x8's per-lane edge handling.
+        let n = 300_003usize;
+        let mut data: Vec<f32> = (0..n).map(|i| -0.999 + (i % 9973) as f32 * 0.0002).collect();
+        for (k, v) in [
+            (3usize, 0.0f32),
+            (4, -0.0),
+            (5, 1.0),
+            (6, -1.0),
+            (7, 2.5),
+            (8, 1e-7),
+            (9, f32::NAN),
+        ] {
+            data[k] = v;
+        }
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+        );
+        let got = match eval_atanh(Primitive::Atanh, std::slice::from_ref(&input)).unwrap() {
+            Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
+            _ => panic!("expected f32 tensor"),
+        };
+        for (idx, &x) in data.iter().enumerate() {
+            let want = x.atanh();
+            let g = got[idx];
+            if want == 0.0 {
+                assert_eq!(g.to_bits(), want.to_bits(), "atanh f32 sign-of-zero at x={x}");
+            } else if want.is_finite() {
+                assert!(
+                    (g - want).abs() <= 1e-5 * want.abs().max(1.0),
+                    "atanh f32 at x={x}: simd {g} vs scalar {want}"
+                );
+            } else {
+                assert_eq!(g.to_bits(), want.to_bits(), "atanh f32 edge at x={x}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_atanh_f32_throughput() {
+        use std::time::Instant;
+        let n = 4_000_000usize;
+        let data: Vec<f32> = (0..n).map(|i| 0.001 + (i % 9973) as f32 * 1e-4).collect();
+        let input =
+            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let f = || {
+            std::hint::black_box(eval_atanh(Primitive::Atanh, std::slice::from_ref(&input)).unwrap());
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..5 {
+            let s = Instant::now();
+            f();
+            b = b.min(s.elapsed().as_secs_f64());
+        }
+        let scalar = std::env::var_os("FJ_ATANH_SCALAR").is_some();
+        println!(
+            "fj-lax atanh f32 4M [{}]: {:.3}ms",
+            if scalar { "SCALAR-ORIG" } else { "NATIVE" },
+            b * 1e3
+        );
     }
 
     #[test]
