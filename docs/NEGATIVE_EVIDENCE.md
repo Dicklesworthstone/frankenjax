@@ -2,6 +2,18 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - WIN (modest): Pow f32 ~1.3x FASTER than JAX; native-f32 binary Pow deferred (~2x, bit-pin risk) (BlackThrush)
+
+`Pow` (x^y = exp(y·log x), 2 transcendentals/elem) is the last common expensive elementwise op. fj Pow f32 threads
+via `is_expensive_binary` but WIDENS to f64 (scalar `powf`) — yet that already beats JAX, which under-parallelizes
+pow moderately: JAX 0.10.x CPU f32 16M x^y=20.7ms, x^2.5=23.6ms; fj = **x^y ~16.0ms (median of 6, ~1.3x FASTER)**,
+**x^2.5 ~15.5ms (~1.5x)** (`bench_pow_f32_vs_jax`, record-only). Margin is contention-fragile (one run spiked to
+21ms = parity; median over 6 runs is stable ~16ms), so it is a MODEST win, not a headline. A native-f32 binary Pow
+(`exp_block_f32(y·log_f32x8(x))` for x>0 & finite, scalar `f32::powf` fallback for the edges) would roughly HALVE
+fj's time → ~2x vs JAX, but is DEFERRED: it needs a new binary-f32-SIMD driver (the native-f32 driver is unary) and
+the reverted native-f32 Atan2 (2026-07-02) shows binary-f32 native kernels hit a threaded==serial bit-pin — check
+for a Pow-f32 bit-pin before attempting. So: pow f32 is a shipped modest win + a scoped follow-up for a bigger one.
+
 ## 2026-07-02 - WIN: f32 igamma/igammac 16-131x FASTER than JAX (default dtype) + NEGATIVE complex transcendentals LOSE (BlackThrush)
 
 Two findings from extending the special-fn / transcendental sweeps to the f32 and complex dtypes:

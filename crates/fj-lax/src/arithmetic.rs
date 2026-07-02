@@ -18171,6 +18171,40 @@ mod tests {
         time_it("tan (JAX 22.9ms)", Primitive::Tan);
     }
 
+    // Pow f32 vs JAX (measured JAX 0.10.x CPU f32 16M: x^y 20.7ms, x^2.5 23.6ms). fj Pow f32 threads
+    // via is_expensive_binary but WIDENS to f64 (scalar `powf`); measure whether that already wins.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_pow_f32_vs_jax() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let xs: Vec<f32> = (0..n).map(|i| (i % 50000) as f32 * 0.0001 + 0.1).collect();
+        let ys: Vec<f32> = (0..n).map(|i| (i % 3000) as f32 * 0.001 + 0.5).collect();
+        let sh = Shape {
+            dims: vec![n as u32],
+        };
+        let xt = Value::Tensor(TensorValue::new_f32_values(sh.clone(), xs).unwrap());
+        let yt = Value::Tensor(TensorValue::new_f32_values(sh.clone(), ys).unwrap());
+        let p = BTreeMap::new();
+        let time_it = |label: &str, args: &[Value]| {
+            let f = || {
+                let v = crate::eval_primitive(Primitive::Pow, args, &p).unwrap();
+                v.as_tensor().unwrap().elements.as_f32_slice().unwrap()[123]
+            };
+            std::hint::black_box(f());
+            let mut best = f64::MAX;
+            for _ in 0..6 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                best = best.min(s.elapsed().as_secs_f64());
+            }
+            println!("fj {label}: {:.2}ms", best * 1e3);
+        };
+        time_it("pow x^y f32 (JAX 20.7ms)", &[xt.clone(), yt.clone()]);
+        let c = Value::Scalar(Literal::F32Bits(2.5f32.to_bits()));
+        time_it("pow x^2.5 f32 (JAX 23.6ms)", &[xt.clone(), c]);
+    }
+
     // Existing native-f32 kernels (shipped 07-01, measured only vs the fj scalar/widen baseline) vs
     // JAX 0.10.x CPU f32 16M. XLA under-parallelizes compute-bound f32 transcendentals, so fj's
     // 8-wide-SIMD + threaded native-f32 wins with NO code change here (record-only bench).
