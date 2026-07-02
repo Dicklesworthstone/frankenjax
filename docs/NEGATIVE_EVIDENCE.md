@@ -10919,3 +10919,12 @@ window size — fj w8=10.88, w16=10.92, w32=10.88, **w64=7.68 ms**. vs JAX: w16 
 **36.6x FASTER**. Verified vs brute-force reference (`rw4d_nhwc_separable_sum_matches_bruteforce`) + 48
 reduce_window tests green. f64/half NHWC siblings are the natural follow-up. Surveyed + REJECTED as XLA-tuned
 this session: scatter-add (~9ms), int conv (33ms), bf16 matmul (2.9ms), cummax (already parallel in fj).
+
+## 2026-07-02 - WIN: f64 sibling of 4D NHWC separable sum-pool — up to 25.5x FASTER than JAX (BlackThrush)
+
+Completed the rank-4 NHWC separable sum-pool (46921b3f was f32) with the f64 sibling
+`separable_reduce_window_sum_4d_nhwc_f64` (native-f64 accumulation, same VALID/unit-stride batched-2D
+separability). JAX f64 reduce_window sum is the same naive O(k^2): [4,256,256,16] win(1,w,w,1) w16=27.41ms,
+w32=78ms, w64=273ms. fj now FLAT in window: w16=11.80, w32=11.12, **w64=10.70 ms** = vs JAX **2.3x / 7.0x /
+25.5x FASTER**. Verified vs brute-force reference (`rw4d_nhwc_separable_sum_f64_matches_bruteforce`, 1e-9 rel)
++ rw4d tests green. f32+f64 NHWC box-sum now both O(k); half/strided/SAME-pad remain naive (follow-up).

@@ -3989,6 +3989,82 @@ fn separable_reduce_window_sum_4d_nhwc_f32(
     Some(output)
 }
 
+/// f64 sibling of [`separable_reduce_window_sum_4d_nhwc_f32`] — native-f64 accumulation, same
+/// VALID/unit-stride NHWC box-sum separability (O(k) not O(k^2)). Tolerance-equal (reassociates),
+/// finite-gated.
+#[allow(clippy::too_many_arguments)]
+fn separable_reduce_window_sum_4d_nhwc_f64(
+    tensor: &TensorValue,
+    dims: [usize; 4],
+    out_h: usize,
+    out_w: usize,
+    window_h: usize,
+    window_w: usize,
+) -> Option<Vec<f64>> {
+    let [bn, h, w, c] = dims;
+    if window_h < 2 || window_w < 2 || window_h.saturating_mul(window_w) < 25 {
+        return None;
+    }
+    if out_h + window_h != h + 1 || out_w + window_w != w + 1 {
+        return None;
+    }
+    let src = tensor.elements.as_f64_slice()?;
+    if src.len() != bn * h * w * c || !src.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let row_c = out_w * c;
+    let mut output = vec![0.0f64; bn * out_h * row_c];
+    let mut hsum = vec![0.0f64; h * row_c];
+    let mut vsum = vec![0.0f64; row_c];
+    let mut acc = vec![0.0f64; c];
+    for n in 0..bn {
+        let in_base = n * h * w * c;
+        for pr in 0..h {
+            let src_row = in_base + pr * w * c;
+            let hrow = &mut hsum[pr * row_c..(pr + 1) * row_c];
+            acc.iter_mut().for_each(|a| *a = 0.0);
+            for j in 0..window_w {
+                let s = src_row + j * c;
+                for (a, &v) in acc.iter_mut().zip(&src[s..s + c]) {
+                    *a += v;
+                }
+            }
+            for (o, &a) in hrow[0..c].iter_mut().zip(&acc) {
+                *o = a;
+            }
+            for oc in 1..out_w {
+                let add = src_row + (oc + window_w - 1) * c;
+                let sub = src_row + (oc - 1) * c;
+                for ch in 0..c {
+                    acc[ch] += src[add + ch] - src[sub + ch];
+                }
+                let d = &mut hrow[oc * c..(oc + 1) * c];
+                for (o, &a) in d.iter_mut().zip(&acc) {
+                    *o = a;
+                }
+            }
+        }
+        vsum.iter_mut().for_each(|v| *v = 0.0);
+        for wr in 0..window_h {
+            let hrow = &hsum[wr * row_c..(wr + 1) * row_c];
+            for (v, &hh) in vsum.iter_mut().zip(hrow) {
+                *v += hh;
+            }
+        }
+        let obase = n * out_h * row_c;
+        output[obase..obase + row_c].copy_from_slice(&vsum);
+        for or in 1..out_h {
+            let add = &hsum[(or + window_h - 1) * row_c..(or + window_h) * row_c];
+            let sub = &hsum[(or - 1) * row_c..or * row_c];
+            for ((v, &a), &s) in vsum.iter_mut().zip(add).zip(sub) {
+                *v += a - s;
+            }
+            output[obase + or * row_c..obase + (or + 1) * row_c].copy_from_slice(&vsum);
+        }
+    }
+    Some(output)
+}
+
 /// Rank-3 separable running-window-SUM for VALID (pad 0), unit-stride f64 sum pooling
 /// (volumetric/3D `reduce_window` add). Replaces the naive O(out·∏window) tap loop in
 /// [`reduce_window_rank3_f64_sum_xlane`] with three O(input) add-new-subtract-old running
@@ -7769,6 +7845,40 @@ fn eval_reduce_window(
             .map_err(EvalError::InvalidTensor)?,
         ));
     }
+    // f64 sibling of the rank-4 NHWC separable sum path.
+    if no_base_dilation
+        && no_window_dilation
+        && tensor.dtype == fj_core::DType::F64
+        && rank == 4
+        && reduce_window_sum_like(reduce_op)
+        && window_dims[0] == 1
+        && window_dims[3] == 1
+        && strides.iter().all(|&s| s == 1)
+        && pad_lows.iter().all(|&p| p == 0)
+        && let Some(output) = separable_reduce_window_sum_4d_nhwc_f64(
+            tensor,
+            [
+                tensor.shape.dims[0] as usize,
+                tensor.shape.dims[1] as usize,
+                tensor.shape.dims[2] as usize,
+                tensor.shape.dims[3] as usize,
+            ],
+            out_dims[1] as usize,
+            out_dims[2] as usize,
+            window_dims[1],
+            window_dims[2],
+        )
+    {
+        return Ok(Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: out_dims.to_vec(),
+                },
+                output,
+            )
+            .map_err(EvalError::InvalidTensor)?,
+        ));
+    }
 
     // dense_float odometer was ~58-200x JAX. SIMD across C with an f64 accumulator preserving the
     // row-major tap order (bit-identical to the odometer despite float non-associativity, since
@@ -9757,6 +9867,56 @@ mod tests {
             max_rel < 1e-5,
             "separable f32 sum-pool drifted: {max_rel:e}"
         );
+    }
+
+    #[test]
+    fn rw4d_nhwc_separable_sum_f64_matches_bruteforce() {
+        let (bn, h, w, c) = (2usize, 13usize, 11usize, 4usize);
+        let (wh, ww) = (5usize, 5usize);
+        let data: Vec<f64> = (0..bn * h * w * c)
+            .map(|i| (((i * 7 + 3) % 97) as f64) * 0.03125 - 1.5)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![bn as u32, h as u32, w as u32, c as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let mut p = BTreeMap::new();
+        p.insert("reduce_op".to_owned(), "sum".to_owned());
+        p.insert("window_dimensions".to_owned(), format!("1,{wh},{ww},1"));
+        p.insert("window_strides".to_owned(), "1,1,1,1".to_owned());
+        let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&x), &p).unwrap();
+        let got = got.as_tensor().unwrap();
+        let (oh, ow) = (h - wh + 1, w - ww + 1);
+        assert_eq!(
+            got.shape.dims,
+            vec![bn as u32, oh as u32, ow as u32, c as u32]
+        );
+        let out = got.elements.as_f64_slice().unwrap();
+        for n in 0..bn {
+            for r in 0..oh {
+                for col in 0..ow {
+                    for ch in 0..c {
+                        let mut acc = 0.0f64;
+                        for dh in 0..wh {
+                            for dw in 0..ww {
+                                let idx = ((n * h + r + dh) * w + col + dw) * c + ch;
+                                acc += data[idx];
+                            }
+                        }
+                        let o = out[((n * oh + r) * ow + col) * c + ch];
+                        assert!(
+                            (o - acc).abs() <= 1e-9 * acc.abs().max(1.0),
+                            "f64 mismatch n{n} r{r} c{col} ch{ch}: got {o} want {acc}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
