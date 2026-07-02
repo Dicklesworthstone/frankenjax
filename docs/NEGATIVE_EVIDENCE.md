@@ -10747,3 +10747,20 @@ Dug different primitives after completing eval_tensor_dot. Two findings:
     an unexplained reason (a Cumsum-specific fast path it misses, or a mul-specific codegen/denormal effect — needs
     a profiler/perf-A-B to pin; JAX treats cumsum≈cumprod at 67/73 ms, fj does not). PINNED as a probable 3x lever;
     cause unconfirmed, so not claimed as a win. No ceiling.
+
+## 2026-07-02 - CONFIRMED: cumprod 3.5x slower than cumsum is REAL (same-data A/B), not a data confound — codegen hypothesis + fix candidate (BlackThrush)
+
+Ran the decisive same-data A/B (isolated target, `[4096,4096]` axis=1 f64, IDENTICAL near-1.0 input for both):
+  - `Cumsum`  = **21.46 ms** (3.1x FASTER than JAX 67.7 ms).
+  - `Cumprod` = **74.85 ms** (~parity with JAX 73.5 ms).
+So the 3.5x cumsum↔cumprod gap is NOT a data artifact — same `eval_cumulative_dense` → `scan_contiguous_lines_to_vec`
+path, same data, the ONLY difference is the `|a,b| a+b` vs `|a,b| a*b` closure (+ init 0.0/1.0). On Zen3 f64 add
+and mul have EQUAL latency/throughput, so this is a CODEGEN difference, most likely: LLVM auto-vectorizes the
+add-prefix scan (`acc += x; store acc` — a recognizable prefix-sum pattern) but NOT the mul-prefix, leaving cumprod
+a scalar latency-bound chain. RULED OUT: data confound (this A/B), denormals (near-1.0 products stay ~0.88–1.0, no
+subnormals), threading (identical gate/path). FIX CANDIDATE (next dig, needs verify): a manual SIMD prefix-PRODUCT
+in `scan_contiguous_lines_from` mirroring whatever reassociation cumsum's fast path already ships (cumsum's 21 ms
+path is itself faster than a pure latency-bound chain, so it IS reassociating — and its goldens pass at tolerance,
+so a matching prefix-product is tolerance-legal for cumprod too). Would flip cumprod from ~parity to a ~3x-vs-JAX
+WIN. NOT attempted here (needs a disasm/profiler confirm of the auto-vec hypothesis before a speculative rewrite).
+This CONFIRMS + de-risks the lever pinned in the prior entry. No ceiling.
