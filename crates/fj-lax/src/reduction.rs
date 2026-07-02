@@ -3870,7 +3870,7 @@ where
 /// (`narrow` = identity) and F32 (`narrow` = `as f32`, never rounded mid-scan) serial
 /// contracts.
 #[allow(clippy::too_many_arguments)]
-fn scan_leading_axis_to_vec<S: Copy, T: Copy>(
+fn scan_leading_axis_to_vec<S: Copy, T: Copy + Default>(
     src: &[S],
     rows: usize,
     cols: usize,
@@ -3881,7 +3881,10 @@ fn scan_leading_axis_to_vec<S: Copy, T: Copy>(
     fill: T,
     op: impl Fn(f64, f64) -> f64,
 ) -> Vec<T> {
-    let mut out = vec![fill; rows * cols];
+    let _ = fill; // fill is irrelevant: scan_row overwrites every element. Zeroed alloc
+    // (calloc) dodges the single-threaded memset+page-fault that non-zero fill (cumprod
+    // init=1.0 / cummax ±inf) hit — see NEGATIVE_EVIDENCE 2026-07-02 cumprod calloc fix.
+    let mut out = vec![T::default(); rows * cols];
     let mut acc = vec![init; cols];
     let scan_row = |k: usize, out: &mut [T], acc: &mut [f64]| {
         let base = k * cols;
@@ -3929,7 +3932,7 @@ fn scan_leading_axis_to_vec_threaded<S, T>(
 ) -> Vec<T>
 where
     S: Copy + Sync,
-    T: Copy + Send + Sync,
+    T: Copy + Send + Sync + Default,
 {
     let rows_per = rows.div_ceil(threads.max(1)).max(1);
     let nblocks = rows.div_ceil(rows_per);
@@ -3975,7 +3978,8 @@ where
         }
     }
     // Pass 3: each slab re-scans DIRECTIONALLY from its cols-wide carry, writing its contiguous output slab.
-    let mut out = vec![fill; rows * cols];
+    let _ = fill; // fill irrelevant (Pass 3 overwrites every element); zeroed alloc callocs.
+    let mut out = vec![T::default(); rows * cols];
     std::thread::scope(|scope| {
         let mut rest: &mut [T] = out.as_mut_slice();
         for (b, carry) in carries.iter().enumerate() {

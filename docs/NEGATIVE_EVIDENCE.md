@@ -10781,3 +10781,14 @@ calloc, dodging the memset+fault. RESULT: production `Cumprod [4096,4096] axis=1
 BONUS: fixes ALL non-zero-init cumulative scans — cummax/cummin (init ±inf) hit the same memset. LESSON: `vec![v; n]`
 with a runtime NON-zero `v` memsets+faults single-threaded; if the buffer is fully overwritten, use a zeroed
 (calloc) alloc. simd8-across-rows was a red herring (strided loads, 29 ms — slower). No ceiling.
+
+## 2026-07-02 - WIN (perf vs JAX): leading/middle-axis cumprod 3.9x FASTER — same calloc fix extended (BlackThrush)
+
+Applied the calloc lesson (prior entry) to the OTHER cumulative path. `scan_leading_axis_to_vec` +
+`scan_leading_axis_to_vec_threaded` (axis==0 leading-axis and middle-axis cumulative scans) also allocated the
+output `vec![fill; rows*cols]` then FULLY overwrote it — so non-zero `fill` (cumprod 1.0, cummax/cummin ±inf)
+memset+page-faulted the 128 MB buffer single-threaded. Fixed both to `vec![T::default(); rows*cols]` (+ `T: Default`
+bound; zero-default → calloc). RESULT: `Cumprod [4096,4096] axis=0 f64` = **23.87 ms** vs JAX `jnp.cumprod axis=0`
+**92.27 ms** = **~3.9x FASTER**. Middle-axis cumprod calls the same fixed function → also covered; cummax/cummin
+(±inf) along leading/middle axes likewise. Bit-identical (buffer fully overwritten), 31/0 cumulative tests. With
+the last-axis fix (103f2337), ALL cumprod/cummax/cummin axes now dodge the non-zero-init memset. No ceiling.
