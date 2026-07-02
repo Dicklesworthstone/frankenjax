@@ -11032,3 +11032,16 @@ sort=**25.90ms (60.6x)** / argsort=**33.63ms (58.9x)**. No code change — the w
 radix vs XLA's comparison sort (same family as the 1-D sort wins). Follow-up lever (LOW priority, already 94x):
 keys-only PER-SLICE for multi-slice value sort (`radix_keys_u32_slice_4pass`, 4B vs 16B pairs) would widen it
 ~1.5x — not worth touching the hot shared path while fj already wins 94x.
+
+## 2026-07-02 - NO-SHIP: keys-only PER-SLICE batched f32 value sort REGRESSES (BlackThrush)
+
+Tested the follow-up flagged last entry: replace the per-slice (u64 key, u32 index) pairs radix with keys-only
+(sort u32 total-order KEYS, rebuild value from the sorted key) for multi-slice f32 VALUE sort, via a new
+`for_each_contiguous_sort_slice_keys32` helper + `radix_keys_u32_slice_4pass`. MEASURED SLOWER: fj Sort f32
+[4096,4096] axis=-1 **24.20 → 29.19 ms**; [65536,256] 25.90 → 26.92 ms. WHY: per-slice slices (4096 elems =
+16KB keys / 64KB pairs) are L2-RESIDENT → the sort is compute-bound, not traffic-bound, so the extra
+transform (`f32_total_order_key`) + reconstruct (`f32_from_total_order_key`) passes COST more than the 4x traffic
+cut SAVES. Keys-only only wins DRAM-bound (the single 16M+ slice path, which already uses it). Bit-exact verified
+(asc+desc) before rejecting on speed. REVERTED (tensor_ops.rs back to HEAD, 0 diff). RULE: keys-only is a
+DRAM-traffic optimization — do NOT apply it per-slice where slices are cache-resident. fj batched sort already
+wins 58-94x on the pairs path; leave it.
