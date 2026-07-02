@@ -10473,3 +10473,28 @@ kernel that would need a radix-4 variant too. Est. ~1.08x (the measured radix-4 
 of prime-length FFTs — niche, hence deferred. Radix-8 for the mixed-radix (same primitive) is marginal over the
 landed radix-4 (val-10: 4 vs 5 passes) with real W_8-twiddle correctness risk — low EV. NO CEILING: FFT
 native-real-kernel + Bluestein-radix-4 + matmul/cholesky FMA-floor all remain open, just multi-session/policy.
+
+## 2026-07-02 - SURFACE + REVERT: Bluestein-internal radix-4 is a REGRESSION (2.1x slower single-row, 1.11x batched) + breaks a golden — retracts last turn's pinned lever (BlackThrush)
+
+Implemented the Bluestein-internal-radix-4 lever pinned last turn: a `ConvFft` enum ({R2(Radix2Plan),
+R4(Radix4Plan)}) routing BOTH the per-row (`BluesteinPlan::apply_into`) and the SoA-batched
+(`transform_batches_bluestein_vectorized`) convolution FFTs through radix-4 when `m = next_pow2(2n-1)` is a power
+of four; `FJ_BLUESTEIN_NO4` A/B gate; single-row R4 apply built from `vectorized_pow4_block(batch=1)`. Added pow4-m
+prime benches (n=1031 → m=4096=4^6). Same-binary A/B in an isolated target:
+  - `eval/fft_1031_prime_pow4m` (single row): radix-4 **214.79 µs** vs radix-2 **102.21 µs** = **2.10x SLOWER**.
+  - `eval/fft_batch_256x1031_prime_pow4m` (batched SoA): radix-4 **6.262 ms** vs radix-2 **5.664 ms** = **1.11x SLOWER**.
+
+WHY IT LOSES (unlike the mixed-radix radix-4 that DID win ~1.08x): (1) single-row radix-4 needs the SoA framing
+(split interleaved → re/im, base-4 digit-reversal, per-call `vec![0.0; m]` ×2, transpose back) which is pure
+overhead at w=1 with zero vectorization benefit → 2.1x. (2) even batched (w=8 tile), `soa_radix4_butterfly_stages`
+underperforms the well-autovectorized `vectorized_pow2_block` — radix-4's half-the-stages doesn't beat radix-2's
+tighter inner loop here. The mixed-radix win came from the RECURSIVE per-node butterfly on a memory-bound buffer,
+a different regime.
+
+ALSO CORRECTS last turn's claim that "Bluestein output is not golden-pinned": it IS — `threaded_bluestein_batch_
+rfft_matches_serial_row_block` hard-pins the n=257 (m=1024=4^6) Bluestein RFFT output via digest
+`11378141…628292e` (confined to that test + one .beads note, no e2e), which radix-4 changes (tolerance-equal, 59/60
+oracle tests pass, but not bit-equal). So the lever would ALSO require regenerating a reproducibility golden — not
+worth it for a regression. REVERTED (stash `bluestein-radix4-REGRESSION…`). NET: the radix-4 pass-reduction vein is
+CLOSED beyond the landed mixed-radix win — SoA radix-2 is already optimal for the pow2/Bluestein FFT paths. No
+ceiling: FFT native-real-kernel + matmul/cholesky FMA-floor remain the (multi-session/policy) open gaps.
