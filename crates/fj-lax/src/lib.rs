@@ -56,6 +56,7 @@ use arithmetic::{
     eval_lgamma, eval_log, eval_log1p, eval_logistic, eval_neg, eval_nextafter, eval_polygamma,
     eval_real,
     eval_round,
+    eval_rsqrt,
     eval_select, eval_select_n, eval_signbit, eval_sin, eval_sinh, eval_tan, eval_tanh,
     eval_unary_elementwise_parallel, eval_unary_int_or_float, eval_zeta,
 };
@@ -341,7 +342,7 @@ fn eval_primitive_inner(
         // compute-bound and thread like the other transcendentals; the parallel path falls
         // back to the identical serial dense map below the threshold (bit-for-bit identical).
         Primitive::Sqrt => eval_float_complex_unary(primitive, inputs, f64::sqrt),
-        Primitive::Rsqrt => eval_float_complex_unary(primitive, inputs, |x| 1.0 / x.sqrt()),
+        Primitive::Rsqrt => eval_rsqrt(primitive, inputs),
         Primitive::Floor => eval_unary_elementwise_parallel(primitive, inputs, f64::floor),
         Primitive::Ceil => eval_unary_elementwise_parallel(primitive, inputs, f64::ceil),
         Primitive::Round => eval_round(primitive, inputs, params),

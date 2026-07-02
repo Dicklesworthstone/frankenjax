@@ -2,6 +2,24 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - WIRED WIN (native-f32 Rsqrt: 1.31x); DIFFERENT class (non-transcendental, normalization) (BlackThrush)
+
+Pivoted OFF transcendentals to a different, ubiquitous ML op: `Rsqrt` (1/√x — RMSNorm/LayerNorm).
+It routed through `eval_float_complex_unary(|x| 1/x.sqrt())` whose f32 path is scalar-widened
+(`op(x as f64) as f32` per element). New `rsqrt_f32x8 = 1.0/x.sqrt()` runs entirely in f32 (SIMD `sqrt`
++ reciprocal); NO edge handling — IEEE `sqrt`/div already give `x<0→NaN`, `x=+0→+inf`, `+inf→+0`, `NaN`
+(matches JAX's own native-f32 rsqrt). Not bit-pinned. MEASURED (4M f32, `FJ_RSQRT_SCALAR` A/B): scalar
+3.24ms → NATIVE **2.47ms = 1.31x** (modest — rsqrt is cheap/BW-bound and the widened loop partially
+autovectorizes `sqrt`; still a clean win on a hot op). Gates: fj-lax lib 1687/0, full conformance green
+(rsqrt oracle accepts ~1-ulp native), f32 accuracy+edge test green.
+
+NOTE (native-f32 special-fn boundary, this session): most special-fn f32 paths are BIT-PINNED to the
+widened-f64 scalar (erf, erfc, exp, bessel i0e/i1e — grep `(<fn>_approx(x as f64) as f32).to_bits()`),
+so native f32 there needs test-relaxation. lgamma f32 is CANCELLATION-blocked (Lanczos). trigamma/
+polygamma f32 OUTPUT F64 (legacy), so native-f32 intermediate would degrade the f64 output. digamma was
+the one unpinned+stable+f32-output special-fn (shipped). Native-f32 vein (12): tanh/logistic/cosh/log/
+log1p/atanh/asinh/acosh/expm1/sinh/digamma (2.0-3.7x) + rsqrt 1.31x.
+
 ## 2026-07-01 - WIRED WIN (native-f32 Digamma: 3.08x); lgamma-f32 BLOCKED by Lanczos cancellation (BlackThrush)
 
 Eleventh consumer of `eval_unary_simd_dense_f32_native`, first native-f32 SPECIAL function. `digamma_f32x8`

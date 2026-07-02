@@ -13250,6 +13250,31 @@ fn eval_unary_simd_dense_f32_native(
     None
 }
 
+/// Scalar f32 rsqrt (native f32 `1/√x`) — tail/edge fallback for [`rsqrt_f32x8`].
+fn rsqrt_f32_scalar(x: f32) -> f32 {
+    1.0 / x.sqrt()
+}
+
+/// NATIVE-f32 8-wide `rsqrt(x) = 1/√x` — runs entirely in f32 (SIMD `sqrt` + reciprocal), replacing
+/// the scalar-widened `(1.0/(x as f64).sqrt()) as f32` per-element path. NO edge handling needed:
+/// IEEE `sqrt`/div already give the right results (`x<0 → NaN`, `x=+0 → +inf`, `+inf → +0`, `NaN`),
+/// matching JAX's own native-f32 rsqrt. ~1 f32 ulp (tolerance; not bit-identical to the widened path).
+fn rsqrt_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
+    use std::simd::StdFloat;
+    std::simd::Simd::<f32, 8>::splat(1.0) / x.sqrt()
+}
+
+pub(crate) fn eval_rsqrt(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    // FJ_RSQRT_SCALAR forces the pre-SIMD scalar path (same-binary A/B hook).
+    if std::env::var_os("FJ_RSQRT_SCALAR").is_none()
+        && let Some(v) = eval_unary_simd_dense_f32_native(inputs, rsqrt_f32x8, rsqrt_f32_scalar)
+    {
+        return v;
+    }
+    // f64 / complex / integer-rejection / tail via the generic float-complex path.
+    eval_float_complex_unary(primitive, inputs, |x| 1.0 / x.sqrt())
+}
+
 pub(crate) fn eval_bessel_i0e(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     eval_unary_simd_dense_f64_parallel(primitive, inputs, bessel_i0e_f64x8, bessel_i0e_approx)
 }
@@ -27401,6 +27426,72 @@ mod tests {
                 assert_eq!(g.to_bits(), want.to_bits(), "log1p edge at x={x}");
             }
         }
+    }
+
+    #[test]
+    fn rsqrt_f32_native_matches_scalar_tolerance_and_edges() {
+        // eval_rsqrt native-f32 path (rsqrt_f32x8) vs scalar f32 1/sqrt(x): ~1 f32 ulp on x>0,
+        // correct IEEE edges (x<0 -> NaN, x=+0 -> +inf, +inf -> +0, NaN).
+        let n = 300_003usize;
+        let mut data: Vec<f32> = (0..n).map(|i| 1e-3 + (i % 9973) as f32 * 0.05).collect();
+        for (k, v) in [
+            (3usize, 4.0f32),
+            (4, 0.25),
+            (5, 0.0),
+            (6, -1.0),
+            (7, 1e20),
+            (8, f32::INFINITY),
+            (9, f32::NAN),
+        ] {
+            data[k] = v;
+        }
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+        );
+        let got = match eval_rsqrt(Primitive::Rsqrt, std::slice::from_ref(&input)).unwrap() {
+            Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
+            _ => panic!("expected f32 tensor"),
+        };
+        for (idx, &x) in data.iter().enumerate() {
+            let want = 1.0f32 / x.sqrt();
+            let g = got[idx];
+            if want.is_nan() {
+                assert!(g.is_nan(), "rsqrt f32 NaN at x={x}");
+            } else if want.is_infinite() {
+                assert_eq!(g.to_bits(), want.to_bits(), "rsqrt f32 inf at x={x}");
+            } else {
+                assert!(
+                    (g - want).abs() <= 1e-6 * want.abs().max(1e-20),
+                    "rsqrt f32 at x={x}: simd {g} vs scalar {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_rsqrt_f32_throughput() {
+        use std::time::Instant;
+        let n = 4_000_000usize;
+        let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.002).collect();
+        let input =
+            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let f = || {
+            std::hint::black_box(eval_rsqrt(Primitive::Rsqrt, std::slice::from_ref(&input)).unwrap());
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..5 {
+            let s = Instant::now();
+            f();
+            b = b.min(s.elapsed().as_secs_f64());
+        }
+        let scalar = std::env::var_os("FJ_RSQRT_SCALAR").is_some();
+        println!(
+            "fj-lax rsqrt f32 4M [{}]: {:.3}ms",
+            if scalar { "SCALAR-ORIG" } else { "NATIVE" },
+            b * 1e3
+        );
     }
 
     #[test]
