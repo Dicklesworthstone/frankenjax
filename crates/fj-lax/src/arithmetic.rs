@@ -6287,9 +6287,44 @@ pub(crate) fn eval_log(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
     if std::env::var_os("FJ_LOG_SCALAR").is_some() {
         return eval_unary_elementwise_parallel(primitive, inputs, f64::ln);
     }
+    // Native-f32 fast path (JAX's default dtype), ~2x the widen-to-f64 path.
+    if let Some(v) = eval_unary_simd_dense_f32_native(inputs, log_f32x8, f32::ln) {
+        return v;
+    }
     // Dense f64/f32 natural log via the 8-wide Cephes block (edge-lane-safe); scalar f64::ln for
     // the tail and any non-dense/other-dtype input. ~2.36x over scalar libm ln (no-FMA), tolerance.
     eval_unary_simd_dense_f64_parallel(primitive, inputs, log_f64x8, f64::ln)
+}
+
+/// NATIVE-f32 8-wide natural log via the Cephes [`crate::simd_exp::log_block_f32`] — runs entirely in
+/// f32 (no widen to f64), the f32 sibling of [`log_f64x8`]. `log_block_f32` is valid only for POSITIVE
+/// NORMALS, so `x <= 0` / subnormal / `+inf` / `NaN` lanes route to scalar `f32::ln` (exact edges:
+/// `ln(0)=-inf`, `ln(<0)=NaN`, `ln(inf)=inf`). ~f32 tolerance (`log_block_f32` is < 5e-6 rel).
+fn log_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialOrd;
+    type F = Simd<f32, 8>;
+    let normal = x.simd_ge(F::splat(f32::MIN_POSITIVE)) & x.simd_lt(F::splat(f32::INFINITY));
+    if !normal.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f32; 8];
+        for k in 0..8 {
+            ra[k] = xa[k].ln();
+        }
+        return F::from_array(ra);
+    }
+    let mut r = crate::simd_exp::log_block_f32(x);
+    if !normal.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k] >= f32::MIN_POSITIVE && xa[k] < f32::INFINITY) {
+                ra[k] = xa[k].ln();
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
 }
 
 /// 8-wide `log1p` via the Kahan/Goldberg correction `log1p(x) = x·ln(u)/(u−1)` with `u = 1+x`,
@@ -27084,6 +27119,70 @@ mod tests {
                 assert_eq!(g.to_bits(), want.to_bits(), "log1p edge at x={x}");
             }
         }
+    }
+
+    #[test]
+    fn log_f32_native_matches_scalar_tolerance_and_edges() {
+        // eval_log native-f32 path (log_f32x8) vs scalar f32 ln: few-ulp f32 relative on positive
+        // normals, bit-exact edges (x<=0 -> NaN, x==0 -> -inf, +inf -> +inf, NaN) via scalar fallback.
+        let n = 300_003usize;
+        let mut data: Vec<f32> = (0..n).map(|i| 1e-3 + (i % 9973) as f32 * 0.03).collect();
+        for (k, v) in [
+            (3usize, 0.0f32),
+            (4, -0.0),
+            (5, -2.5),
+            (6, 1e-30),
+            (7, 1e30),
+            (8, f32::INFINITY),
+            (9, f32::NAN),
+        ] {
+            data[k] = v;
+        }
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+        );
+        let got = match eval_log(Primitive::Log, std::slice::from_ref(&input)).unwrap() {
+            Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
+            _ => panic!("expected f32 tensor"),
+        };
+        for (idx, &x) in data.iter().enumerate() {
+            let want = x.ln();
+            let g = got[idx];
+            if want.is_finite() {
+                assert!(
+                    (g - want).abs() <= 1e-6 * want.abs().max(1.0),
+                    "log f32 at x={x}: simd {g} vs scalar {want}"
+                );
+            } else {
+                assert_eq!(g.to_bits(), want.to_bits(), "log f32 edge at x={x}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_log_f32_throughput() {
+        use std::time::Instant;
+        let n = 4_000_000usize;
+        let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.002).collect();
+        let input =
+            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let f = || {
+            std::hint::black_box(eval_log(Primitive::Log, std::slice::from_ref(&input)).unwrap());
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..5 {
+            let s = Instant::now();
+            f();
+            b = b.min(s.elapsed().as_secs_f64());
+        }
+        let scalar = std::env::var_os("FJ_LOG_SCALAR").is_some();
+        println!(
+            "fj-lax log f32 4M [{}]: {:.3}ms (JAX f32 0.852ms)",
+            if scalar { "SCALAR-ORIG" } else { "NATIVE" },
+            b * 1e3
+        );
     }
 
     #[test]

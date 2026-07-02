@@ -2,6 +2,18 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - WIRED WIN (native-f32 Log: 2.04x vs scalar ORIG): fourth native-f32 consumer (BlackThrush)
+
+Fourth consumer of `eval_unary_simd_dense_f32_native`. `Log` f32 (JAX's default dtype) was routing
+through widen-to-f64. New `log_f32x8` = the Cephes [`log_block_f32`] (already used by zeta) run natively
+in f32; positive-normal lanes take the block, `x≤0`/subnormal/`+inf`/`NaN` → scalar `f32::ln` (exact
+edges). Log has no bit-exact self-golden, so tolerance-legal.
+
+MEASURED (4M f32, `FJ_LOG_SCALAR` A/B): scalar-ORIG 8.05ms → NATIVE **3.95ms = 2.04x** (vs JAX f32
+0.852ms: ~9.5x → ~4.6x). Gates: fj-lax lib green, full conformance green, few-ulp f32 accuracy test
+green. Native-f32 vein tally: tanh 2.27x, logistic 2.02x, cosh 2.24x, log 2.04x — all reuse the
+`*_block_f32` building blocks via the shared helper. Residual vs JAX = no-FMA + f32x8-vs-f32x16 floor.
+
 ## 2026-07-01 - WIRED WIN (native-f32 Cosh: 2.24x vs scalar ORIG): third native-f32 consumer (BlackThrush)
 
 Third consumer of `eval_unary_simd_dense_f32_native` (after tanh, logistic). `Cosh` f32 was routing
