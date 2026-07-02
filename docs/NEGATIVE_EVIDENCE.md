@@ -2,6 +2,19 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - WIRED WIN (native-f32 Atan: 4.80x vs scalar ORIG): 14th native-f32 consumer (BlackThrush)
+
+`Atan` f32 widened f32→f64 (`atan_f64x8`). New `atan_f32x8` = Cephes single-precision `atanf`: reduce
+`|x|` via `tan(3π/8)`/`tan(π/8)` then a degree-4 poly in `z=x²` (shorter than the f64 rational; f32 needs
+fewer terms), sign via copysign. SIMD for finite x; `±inf`/`NaN` → scalar `f32::atan`. Not bit-pinned.
+MEASURED (4M f32, `FJ_ATAN_SCALAR` A/B): scalar-ORIG (libm f64::atan map) 13.73ms → NATIVE **2.86ms =
+4.80x** (the widened-f64 SIMD path sat between). Gates: fj-lax lib green, full conformance green, f32
+accuracy+edge test green.
+
+Native-f32 vein (14): tanh/logistic/cosh/log/log1p/atanh/asinh/acosh/expm1/sinh/digamma (2.0-3.7x) +
+rsqrt 1.31x + cbrt 5.67x + atan 4.80x. Confirms the lesson: ops with a branchy/libcall scalar path
+(cbrt, atan, transcendentals) give the biggest native-f32 wins.
+
 ## 2026-07-01 - WIRED WIN (native-f32 Cbrt: 5.67x vs scalar ORIG): biggest f32 win — scalar cbrt didn't autovectorize (BlackThrush)
 
 `Cbrt` f32 fell to `eval_unary_elementwise_parallel(fast_cbrt_f64)`, i.e. scalar `fast_cbrt_f64(x as f64)

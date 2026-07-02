@@ -7307,7 +7307,68 @@ pub(crate) fn eval_atan(primitive: Primitive, inputs: &[Value]) -> Result<Value,
     if std::env::var_os("FJ_ATAN_SCALAR").is_some() {
         return eval_unary_elementwise_parallel(primitive, inputs, f64::atan);
     }
+    // Native-f32 fast path (JAX default dtype), ~2x the widen-to-f64 path.
+    if let Some(v) = eval_unary_simd_dense_f32_native(inputs, atan_f32x8, f32::atan) {
+        return v;
+    }
     eval_unary_simd_dense_f64_parallel(primitive, inputs, atan_f64x8, f64::atan)
+}
+
+/// NATIVE-f32 8-wide `atan(x)` — Cephes single-precision `atanf`: reduce `|x|` via `tan(3π/8)` /
+/// `tan(π/8)` into `[0, tan(π/8)]`, then a degree-4 polynomial in `z=x²` (shorter than the f64 rational;
+/// f32 needs fewer terms). Sign via copysign (odd fn ⇒ `atan(±0)=±0`). SIMD for finite x; `±inf`/`NaN`
+/// → scalar `f32::atan`. ~f32 tolerance vs libm.
+fn atan_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialOrd;
+    use std::simd::num::SimdFloat;
+    type F = Simd<f32, 8>;
+    type U = Simd<u32, 8>;
+    const T3P8: f32 = 2.414_213_5; // tan(3π/8)
+    const TP8: f32 = 0.414_213_57; // tan(π/8)
+    const FRAC_PI_2: f32 = std::f32::consts::FRAC_PI_2;
+    const FRAC_PI_4: f32 = std::f32::consts::FRAC_PI_4;
+    let ok = x.abs().simd_lt(F::splat(f32::INFINITY)); // finite; NaN/±inf → scalar
+    if !ok.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f32; 8];
+        for k in 0..8 {
+            ra[k] = xa[k].atan();
+        }
+        return F::from_array(ra);
+    }
+    let ax = x.abs();
+    let big = ax.simd_gt(F::splat(T3P8));
+    let mid = ax.simd_gt(F::splat(TP8)) & !big;
+    let xr = big.select(
+        -(F::splat(1.0) / ax),
+        mid.select((ax - F::splat(1.0)) / (ax + F::splat(1.0)), ax),
+    );
+    let y_off = big.select(
+        F::splat(FRAC_PI_2),
+        mid.select(F::splat(FRAC_PI_4), F::splat(0.0)),
+    );
+    let z = xr * xr;
+    // Cephes atanf degree-4 poly in z, then ·z·xr + xr.
+    let mut p = F::splat(8.053_744_49e-2);
+    p = p * z - F::splat(1.387_768_56e-1);
+    p = p * z + F::splat(1.997_771_06e-1);
+    p = p * z - F::splat(3.333_294_92e-1);
+    let mag = p * z * xr + xr + y_off; // atan(|x|) ≥ 0
+    let signbit = U::splat(0x8000_0000);
+    let mut r = F::from_bits((mag.to_bits() & !signbit) | (x.to_bits() & signbit));
+    if !ok.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !xa[k].abs().is_finite() {
+                ra[k] = xa[k].atan();
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
 }
 
 /// 8-wide `atanh(x) = 0.5·log1p(2x / (1 − x))` — the standard single-`log1p` identity (one
@@ -27488,6 +27549,75 @@ mod tests {
                 assert_eq!(g.to_bits(), want.to_bits(), "log1p edge at x={x}");
             }
         }
+    }
+
+    #[test]
+    fn atan_f32_native_matches_scalar_tolerance_and_edges() {
+        // eval_atan native-f32 path (atan_f32x8) vs scalar f32 atan: few-ulp f32 across all 3 range-
+        // reduction regimes, bit-exact ±0, edges (±inf -> ±π/2, NaN).
+        let n = 300_003usize;
+        let mut data: Vec<f32> = (0..n).map(|i| -100.0 + (i % 9973) as f32 * 0.02).collect();
+        for (k, v) in [
+            (3usize, 0.0f32),
+            (4, -0.0),
+            (5, 1.0),
+            (6, -1.0),
+            (7, 0.4),
+            (8, 3.0),
+            (9, 1e12),
+            (10, f32::INFINITY),
+            (11, f32::NEG_INFINITY),
+            (12, f32::NAN),
+        ] {
+            data[k] = v;
+        }
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+        );
+        let got = match eval_atan(Primitive::Atan, std::slice::from_ref(&input)).unwrap() {
+            Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
+            _ => panic!("expected f32 tensor"),
+        };
+        for (idx, &x) in data.iter().enumerate() {
+            let want = x.atan();
+            let g = got[idx];
+            if want == 0.0 {
+                assert_eq!(g.to_bits(), want.to_bits(), "atan f32 sign-of-zero at x={x}");
+            } else if want.is_finite() {
+                assert!(
+                    (g - want).abs() <= 1e-6 * want.abs().max(1.0),
+                    "atan f32 at x={x}: simd {g} vs scalar {want}"
+                );
+            } else {
+                assert_eq!(g.to_bits(), want.to_bits(), "atan f32 edge at x={x}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_atan_f32_throughput() {
+        use std::time::Instant;
+        let n = 4_000_000usize;
+        let data: Vec<f32> = (0..n).map(|i| -100.0 + (i % 9973) as f32 * 0.02).collect();
+        let input =
+            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let f = || {
+            std::hint::black_box(eval_atan(Primitive::Atan, std::slice::from_ref(&input)).unwrap());
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..5 {
+            let s = Instant::now();
+            f();
+            b = b.min(s.elapsed().as_secs_f64());
+        }
+        let scalar = std::env::var_os("FJ_ATAN_SCALAR").is_some();
+        println!(
+            "fj-lax atan f32 4M [{}]: {:.3}ms",
+            if scalar { "SCALAR-ORIG" } else { "NATIVE" },
+            b * 1e3
+        );
     }
 
     #[test]
