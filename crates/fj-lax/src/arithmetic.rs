@@ -18095,6 +18095,40 @@ mod tests {
             let v = eval_betainc(Primitive::Betainc, &[a.clone(), b.clone(), u.clone()]).unwrap();
             v.as_tensor().unwrap().elements.as_f64_slice().unwrap()[123]
         });
+        // f32 = JAX's DEFAULT float dtype, and its incomplete-gamma is even SLOWER there (igamma
+        // 461.7ms, igammac 4041.4ms). fj's binary expensive path threads f32 too (is_expensive_binary
+        // -> eval_same_shape_f32_expensive_parallel, computed in f64, output f32). (betainc's ternary
+        // path always emits f64 regardless of input dtype, so its f32 case is omitted here.)
+        let to_f32 = |v: &Value| {
+            let s: Vec<f32> = v
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .unwrap()
+                .iter()
+                .map(|&x| x as f32)
+                .collect();
+            Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    s,
+                )
+                .unwrap(),
+            )
+        };
+        let a32 = to_f32(&a);
+        let x32 = to_f32(&x);
+        time_it("fj igamma  f32 (JAX 461.7ms)", &|| {
+            let v = eval_igamma(Primitive::Igamma, &[a32.clone(), x32.clone()]).unwrap();
+            f64::from(v.as_tensor().unwrap().elements.as_f32_slice().unwrap()[123])
+        });
+        time_it("fj igammac f32 (JAX 4041.4ms)", &|| {
+            let v = eval_igammac(Primitive::Igammac, &[a32.clone(), x32.clone()]).unwrap();
+            f64::from(v.as_tensor().unwrap().elements.as_f32_slice().unwrap()[123])
+        });
     }
 
     // sin/cos f32 vs JAX (measured JAX 0.10.x CPU f32 16M: sin 27.1ms, cos 24.6ms — XLA's f32
@@ -18183,6 +18217,52 @@ mod tests {
         t("sinh (JAX 10.5)", Primitive::Sinh, &wide);
         t("tanh (JAX 12.0)", Primitive::Tanh, &wide);
         t("log2 (JAX 12.9)", Primitive::Log2, &pos);
+    }
+
+    // Complex64 transcendentals vs JAX 0.10.x CPU c64 16M (cexp 37.6ms, clog 22.5ms, csin 37.3ms,
+    // ctanh 39.4ms). XLA under-parallelizes complex transcendentals (each is several real libm calls);
+    // fj threads them (threaded_complex_unary_map, computed in f64). Record-only, no code change.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_complex_transcendental_vs_jax() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let vals: Vec<(f64, f64)> = (0..n)
+            .map(|i| {
+                let re = (i % 401) as f64 * 0.01 - 2.0; // [-2, 2]
+                let im = (i % 601) as f64 * 0.01 - 3.0; // [-3, 3]
+                (re, im)
+            })
+            .collect();
+        let zt = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex64,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                vals,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::new();
+        let t = |label: &str, prim: Primitive| {
+            let f = || {
+                let v = crate::eval_primitive(prim, std::slice::from_ref(&zt), &p).unwrap();
+                v.as_tensor().unwrap().elements.as_complex_slice().unwrap()[123].0
+            };
+            std::hint::black_box(f());
+            let mut best = f64::MAX;
+            for _ in 0..6 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                best = best.min(s.elapsed().as_secs_f64());
+            }
+            println!("fj {label}: {:.2}ms", best * 1e3);
+        };
+        t("cexp (JAX 37.6)", Primitive::Exp);
+        t("clog (JAX 22.5)", Primitive::Log);
+        t("csin (JAX 37.3)", Primitive::Sin);
+        t("ctanh (JAX 39.4)", Primitive::Tanh);
     }
 
     #[test]

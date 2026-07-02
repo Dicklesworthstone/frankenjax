@@ -2,6 +2,26 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - WIN: f32 igamma/igammac 16-131x FASTER than JAX (default dtype) + NEGATIVE complex transcendentals LOSE (BlackThrush)
+
+Two findings from extending the special-fn / transcendental sweeps to the f32 and complex dtypes:
+
+**WIN (f32 igamma/igammac)** — completes the igamma win (4408dc95) for JAX's DEFAULT float dtype, where XLA's
+incomplete-gamma is even SLOWER than f64: JAX 0.10.x CPU f32 8M igamma=461.7ms, igammac=**4041.4ms** (2x its own
+f64 igammac; the worst JAX number in this ledger). fj's expensive-binary path threads f32 too
+(`is_expensive_binary` -> `eval_same_shape_f32_expensive_parallel`, computed in f64, output f32): fj f32
+igamma=**28ms = ~16x FASTER**, igammac=**31ms = ~131x FASTER** (`bench_special_binary_vs_jax`, record-only, no code
+change). (betainc's ternary path always emits f64 regardless of input dtype — a separate dtype-fidelity quirk — so
+its f32 case is omitted.)
+
+**NEGATIVE (complex transcendentals)** — hypothesis "fj threads complex-unary so it beats XLA's slow complex
+transcendentals" is FALSE. JAX 0.10.x CPU c64 16M: cexp=37.6ms, clog=22.5ms, csin=37.3ms, ctanh=39.4ms; fj =
+**66/65/69/68ms = 0.35-0.58x, fj LOSES**. Root cause: fj's Complex64 is stored as f64 PAIRS (16 B/elem vs JAX's
+8) and computed with SCALAR f64 libm (exp/sin_cos), so 2x the memory traffic + non-vectorized transcendentals beat
+the threading gain. Fixing needs native-f32 complex storage + SIMD complex kernels (big rearchitecture, niche) —
+NOT pursued. RULE: fj's f64-backed complex + scalar-libm transcendentals lose to XLA's f32-native vectorized
+complex; do not chase complex elementwise perf vs JAX. (`bench_complex_transcendental_vs_jax`)
+
 ## 2026-07-02 - WIN: native-f32 SIMD Tan ~1.9x FASTER than JAX — completes the native-f32 trig family (BlackThrush)
 
 Last common trig op still widening f32→f64. Tan is an EXPENSIVE-poly f32 op (JAX 0.10.x CPU f32 16M tan = 22.9ms,
