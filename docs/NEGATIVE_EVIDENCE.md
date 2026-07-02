@@ -2,6 +2,21 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - WIN: existing native-f32 asin/acos/atan/cbrt 1.8-2.6x FASTER than JAX (never measured vs JAX until now) (BlackThrush)
+
+Corollary of the sin/cos win (ec585058): the 07-01 native-f32 sweep (16+ ops) was only benchmarked vs the fj
+scalar/widen baseline ("vs scalar ORIG"), NEVER vs JAX. XLA under-parallelizes the EXPENSIVE f32 transcendentals, so
+those existing kernels already beat JAX — measured (`bench_native_f32_transcendental_vs_jax`, f32 16M, no code change):
+- **asin: fj 12.0-12.9ms vs JAX 30.7ms = ~2.5x FASTER**
+- **acos: fj 13.2-14.2ms vs JAX 31.3ms = ~2.3x**
+- **atan: fj 11.2-11.4ms vs JAX 27.2ms = ~2.4x**
+- **cbrt: fj 11.9-12.0ms vs JAX 22.0ms = ~1.8x**
+BOUNDARY (recorded in the same bench): the CHEAP f32 transcendentals are XLA-parallelized fine, so fj native-f32 only
+TIES or LOSES there — sinh fj 13.4 vs JAX 10.5 = **0.78x LOSES**, tanh 12.1 vs 12.0 = parity, log2 11.5 vs 12.9 = 1.12x,
+atanh 12.3 vs 14.6 = 1.19x. RULE refined: fj native-f32 beats JAX ~2x ONLY on the EXPENSIVE-poly f32 ops (inverse-trig,
+cbrt, sin/cos — JAX 22-31ms); the cheap ones (sinh/tanh/exp/log/log2, JAX 10-13ms) JAX already parallelizes, so fj is
+parity-to-loss. Record-only (existing threaded-SIMD kernels); ~1 ulp accuracy already covered by their 07-01 tests.
+
 ## 2026-07-02 - WIN: native-f32 SIMD Sin/Cos ~2.2x FASTER than JAX (the last common trig gap) (BlackThrush)
 
 Sin/Cos were the only ubiquitous transcendentals still MISSING a native-f32 kernel (the 07-01 native-f32 sweep did

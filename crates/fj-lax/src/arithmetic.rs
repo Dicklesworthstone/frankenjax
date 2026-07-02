@@ -18076,6 +18076,54 @@ mod tests {
         time_it("cos (JAX 24.6ms)", Primitive::Cos);
     }
 
+    // Existing native-f32 kernels (shipped 07-01, measured only vs the fj scalar/widen baseline) vs
+    // JAX 0.10.x CPU f32 16M. XLA under-parallelizes compute-bound f32 transcendentals, so fj's
+    // 8-wide-SIMD + threaded native-f32 wins with NO code change here (record-only bench).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_native_f32_transcendental_vs_jax() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let mk = |f: &dyn Fn(usize) -> f32| -> Value {
+            let xs: Vec<f32> = (0..n).map(f).collect();
+            Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    xs,
+                )
+                .unwrap(),
+            )
+        };
+        let unit = mk(&|i| (i % 20001) as f32 * 0.00009 - 0.9); // [-0.9, 0.9]
+        let wide = mk(&|i| (i % 40001) as f32 * 0.0001 - 2.0); // [-2, 2]
+        let pos = mk(&|i| (i % 50000) as f32 * 0.0001 + 0.1); // [0.1, 5.1]
+        let p = BTreeMap::new();
+        let t = |label: &str, prim: Primitive, x: &Value| {
+            let f = || {
+                let v = crate::eval_primitive(prim, std::slice::from_ref(x), &p).unwrap();
+                v.as_tensor().unwrap().elements.as_f32_slice().unwrap()[123]
+            };
+            std::hint::black_box(f());
+            let mut best = f64::MAX;
+            for _ in 0..6 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                best = best.min(s.elapsed().as_secs_f64());
+            }
+            println!("fj {label}: {:.2}ms", best * 1e3);
+        };
+        t("asin (JAX 30.7)", Primitive::Asin, &unit);
+        t("acos (JAX 31.3)", Primitive::Acos, &unit);
+        t("atan (JAX 27.2)", Primitive::Atan, &wide);
+        t("cbrt (JAX 22.0)", Primitive::Cbrt, &wide);
+        t("atanh (JAX 14.6)", Primitive::Atanh, &unit);
+        t("sinh (JAX 10.5)", Primitive::Sinh, &wide);
+        t("tanh (JAX 12.0)", Primitive::Tanh, &wide);
+        t("log2 (JAX 12.9)", Primitive::Log2, &pos);
+    }
+
     #[test]
     fn sin_cos_f32_native_matches_libm() {
         // n >= 1<<20 so the native-f32 SIMD kernels fire (dense_unary_threads > 1). Compare to the
