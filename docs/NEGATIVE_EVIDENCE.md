@@ -10792,3 +10792,16 @@ bound; zero-default → calloc). RESULT: `Cumprod [4096,4096] axis=0 f64` = **23
 **92.27 ms** = **~3.9x FASTER**. Middle-axis cumprod calls the same fixed function → also covered; cummax/cummin
 (±inf) along leading/middle axes likewise. Bit-identical (buffer fully overwritten), 31/0 cumulative tests. With
 the last-axis fix (103f2337), ALL cumprod/cummax/cummin axes now dodge the non-zero-init memset. No ceiling.
+
+## 2026-07-02 - SURFACE: calloc vein beyond cumulative is NOT productive — pooling parity + init-read-blocked, pad already-callocs (BlackThrush)
+
+Probed the `vec![non_zero; N]`-memset lever (cumprod calloc win) in OTHER primitives. It does NOT generalize:
+  - **reduce_window / pooling** (`vec![init=±inf; out_total]`): the SIMD kernel `simd_channel_block_f64` READS
+    `out[o]` as the max/min accumulator seed (lib.rs:5966 `a = from_slice(out_chunk)`), so `init` is needed (the
+    all-padding-window case), NOT write-only → cannot calloc. And it's not a gap anyway: fj maxpool `[1,256,256,64]`
+    3x3/2 VALID f64 = **1.34 ms** vs JAX `lax.reduce_window` **1.12 ms** = ~parity (XLA-CPU pooling is tuned).
+  - **pad** (`vec![pad; out_total]`, dense paths): pad is a runtime f64, so the COMMON zero-pad case already hits
+    `SpecFromElem` is_zero → calloc; only non-zero pad memsets, and that value is needed for the border. No lever.
+So the calloc win is specific to WRITE-ONLY output buffers with a non-zero fill — which in practice is the
+cumulative scans (out written from a separate acc), now fully fixed (103f2337 + 533c646f, all axes/dtypes via the
+generic `T::default()`). Reductions/pooling/pad all either read the init (accumulator) or already calloc. No ceiling.
