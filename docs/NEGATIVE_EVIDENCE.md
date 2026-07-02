@@ -11010,3 +11010,13 @@ Complex128/NaN keep the comparison path). RESULT: fj complex64 sort 4M **780 →
 JAX 1368ms = **9.05x FASTER** (was 1.75x). Verified BIT-EXACT asc + desc vs a lexicographic total_cmp reference
 (`dense_complex64_sort_matches_lexicographic_large`, 1M, 17 reals × 5 imag ties) + 13 sort tests green.
 Keys-only value sort now covers i64/f64/f32/u32/u64/i32 + complex64.
+
+## 2026-07-02 - WIN: van Herk NHWC max/min pool f64 — turns a LOSS into up to 17x FASTER than JAX (BlackThrush)
+
+Completed the NHWC max/min pool family with f64 (`separable_reduce_window_maxmin_4d_nhwc_f64`, native f64, no
+widen). fj's deque path LOSES to JAX at small f64 windows (deque 85.63/82.22/60.63ms vs JAX 24.78/77.55/263.43ms
+= w16 0.29x LOSS, w32 0.94x, w64 4.3x). van Herk (block prefix+suffix maxima, SIMD f64x8) makes it flat:
+w16=21.83/w32=16.31/w64=15.21ms = vs JAX **1.14x / 4.75x / 17.3x FASTER** (all windows now win). BIT-IDENTICAL
+(to_bits) max+min vs brute-force (`rw4d_nhwc_vanherk_maxmin_f64_matches_bruteforce`, c=16) + rw4d tests green
+(f64 slower than f32's 8ms — Simd<f64,8> is 2x256-bit, half throughput — but a clean win). NHWC POOLING FAMILY
+NOW COMPLETE: sum (f32/f64/bf16/f16) + max/min (f32/f64/bf16/f16), all O(k) separable, all beating JAX.

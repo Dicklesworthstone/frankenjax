@@ -4149,6 +4149,136 @@ fn op_c_rowwide(
     }
 }
 
+/// f64 sibling of [`separable_reduce_window_maxmin_4d_nhwc_f32`] — native f64 (no widen), same van
+/// Herk separable extremum. fj's deque path LOSES to JAX at small windows (w16 85 vs 24ms). Bit-
+/// identical to the naive fold for finite inputs; finite-gated (NaN keeps the deque path).
+#[allow(clippy::too_many_arguments)]
+fn separable_reduce_window_maxmin_4d_nhwc_f64(
+    tensor: &TensorValue,
+    dims: [usize; 4],
+    out_h: usize,
+    out_w: usize,
+    window_h: usize,
+    window_w: usize,
+    is_max: bool,
+) -> Option<Vec<f64>> {
+    use std::simd::Simd;
+    use std::simd::num::SimdFloat;
+    let [bn, h, w, c] = dims;
+    if window_h < 2 || window_w < 2 || window_h.saturating_mul(window_w) < 25 {
+        return None;
+    }
+    if out_h + window_h != h + 1 || out_w + window_w != w + 1 {
+        return None;
+    }
+    let src = tensor.elements.as_f64_slice()?;
+    if src.len() != bn * h * w * c || !src.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let cw = c - c % 8;
+    let vop = |a: Simd<f64, 8>, b: Simd<f64, 8>| {
+        if is_max { a.simd_max(b) } else { a.simd_min(b) }
+    };
+    let sop = |a: f64, b: f64| if is_max { a.max(b) } else { a.min(b) };
+    let row_c = out_w * c;
+    let mut output = vec![0.0f64; bn * out_h * row_c];
+    let mut hmax = vec![0.0f64; h * row_c];
+    let mut pref = vec![0.0f64; w * c];
+    let mut suf = vec![0.0f64; w * c];
+    let mut prefh = vec![0.0f64; h * row_c];
+    let mut sufh = vec![0.0f64; h * row_c];
+    macro_rules! op_c {
+        ($dstbuf:expr, $d:expr, $abuf:expr, $a:expr, $bbuf:expr, $b:expr) => {{
+            let mut ci = 0;
+            while ci < cw {
+                let av = Simd::<f64, 8>::from_slice(&$abuf[$a + ci..$a + ci + 8]);
+                let bv = Simd::<f64, 8>::from_slice(&$bbuf[$b + ci..$b + ci + 8]);
+                vop(av, bv).copy_to_slice(&mut $dstbuf[$d + ci..$d + ci + 8]);
+                ci += 8;
+            }
+            while ci < c {
+                $dstbuf[$d + ci] = sop($abuf[$a + ci], $bbuf[$b + ci]);
+                ci += 1;
+            }
+        }};
+    }
+    macro_rules! op_row {
+        ($buf:expr, $db:expr, $ab:expr, $bbuf:expr, $bb:expr) => {{
+            let mut k = 0;
+            while k + 8 <= row_c {
+                let av = Simd::<f64, 8>::from_slice(&$buf[$ab + k..$ab + k + 8]);
+                let bv = Simd::<f64, 8>::from_slice(&$bbuf[$bb + k..$bb + k + 8]);
+                vop(av, bv).copy_to_slice(&mut $buf[$db + k..$db + k + 8]);
+                k += 8;
+            }
+            while k < row_c {
+                $buf[$db + k] = sop($buf[$ab + k], $bbuf[$bb + k]);
+                k += 1;
+            }
+        }};
+    }
+    for n in 0..bn {
+        let in_base = n * h * w * c;
+        for r in 0..h {
+            let rb = in_base + r * w * c;
+            for j in 0..w {
+                let db = j * c;
+                if j % window_w == 0 {
+                    pref[db..db + c].copy_from_slice(&src[rb + db..rb + db + c]);
+                } else {
+                    op_c!(pref, db, pref, (j - 1) * c, src, rb + db);
+                }
+            }
+            for j in (0..w).rev() {
+                let db = j * c;
+                if j % window_w == window_w - 1 || j == w - 1 {
+                    suf[db..db + c].copy_from_slice(&src[rb + db..rb + db + c]);
+                } else {
+                    op_c!(suf, db, suf, (j + 1) * c, src, rb + db);
+                }
+            }
+            let hb = r * row_c;
+            for o in 0..out_w {
+                op_c!(hmax, hb + o * c, suf, o * c, pref, (o + window_w - 1) * c);
+            }
+        }
+        for r in 0..h {
+            let rb = r * row_c;
+            if r % window_h == 0 {
+                prefh[rb..rb + row_c].copy_from_slice(&hmax[rb..rb + row_c]);
+            } else {
+                op_row!(prefh, rb, (r - 1) * row_c, hmax, rb);
+            }
+        }
+        for r in (0..h).rev() {
+            let rb = r * row_c;
+            if r % window_h == window_h - 1 || r == h - 1 {
+                sufh[rb..rb + row_c].copy_from_slice(&hmax[rb..rb + row_c]);
+            } else {
+                op_row!(sufh, rb, (r + 1) * row_c, hmax, rb);
+            }
+        }
+        let obase = n * out_h * row_c;
+        for o in 0..out_h {
+            let sr = o * row_c;
+            let pr = (o + window_h - 1) * row_c;
+            let ob = obase + o * row_c;
+            let mut k = 0;
+            while k + 8 <= row_c {
+                let s = Simd::<f64, 8>::from_slice(&sufh[sr + k..sr + k + 8]);
+                let p = Simd::<f64, 8>::from_slice(&prefh[pr + k..pr + k + 8]);
+                vop(s, p).copy_to_slice(&mut output[ob + k..ob + k + 8]);
+                k += 8;
+            }
+            while k < row_c {
+                output[ob + k] = sop(sufh[sr + k], prefh[pr + k]);
+                k += 1;
+            }
+        }
+    }
+    Some(output)
+}
+
 /// Half-precision (bf16/f16) sibling of [`separable_reduce_window_maxmin_4d_nhwc_f32`] — XLA is
 /// catastrophic here (no vectorized half compare: JAX bf16 maxpool w64 ~1.28s, f16 ~0.9s). Maps each
 /// finite half bit-pattern to a TOTAL-ORDER u16 key (sign-flip: positives set bit15, negatives
@@ -8225,6 +8355,41 @@ fn eval_reduce_window(
             .map_err(EvalError::InvalidTensor)?,
         ));
     }
+    // f64 sibling of the rank-4 NHWC van Herk max/min path (fj's deque loses at small windows).
+    if no_base_dilation
+        && no_window_dilation
+        && tensor.dtype == fj_core::DType::F64
+        && rank == 4
+        && matches!(reduce_op, "max" | "min")
+        && window_dims[0] == 1
+        && window_dims[3] == 1
+        && strides.iter().all(|&s| s == 1)
+        && pad_lows.iter().all(|&p| p == 0)
+        && let Some(output) = separable_reduce_window_maxmin_4d_nhwc_f64(
+            tensor,
+            [
+                tensor.shape.dims[0] as usize,
+                tensor.shape.dims[1] as usize,
+                tensor.shape.dims[2] as usize,
+                tensor.shape.dims[3] as usize,
+            ],
+            out_dims[1] as usize,
+            out_dims[2] as usize,
+            window_dims[1],
+            window_dims[2],
+            reduce_op == "max",
+        )
+    {
+        return Ok(Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: out_dims.to_vec(),
+                },
+                output,
+            )
+            .map_err(EvalError::InvalidTensor)?,
+        ));
+    }
     // bf16/f16 rank-4 NHWC MAX/MIN: van Herk on total-order u16 keys (SIMD), placed before the deque
     // path. XLA is catastrophic on half maxpool (JAX bf16 w64 ~1.28s); the deque widens half→f64.
     if no_base_dilation
@@ -10697,6 +10862,60 @@ mod tests {
                             (o - acc).abs() <= 1e-9 * acc.abs().max(1.0),
                             "f64 mismatch n{n} r{r} c{col} ch{ch}: got {o} want {acc}"
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rw4d_nhwc_vanherk_maxmin_f64_matches_bruteforce() {
+        let (bn, h, w, c) = (2usize, 13usize, 11usize, 16usize);
+        let (wh, ww) = (5usize, 5usize);
+        let data: Vec<f64> = (0..bn * h * w * c)
+            .map(|i| (((i * 13 + 5) % 101) as f64) * 0.02 - 1.0)
+            .collect();
+        for opname in ["max", "min"] {
+            let x = Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![bn as u32, h as u32, w as u32, c as u32],
+                    },
+                    data.clone(),
+                )
+                .unwrap(),
+            );
+            let mut p = BTreeMap::new();
+            p.insert("reduce_op".to_owned(), opname.to_owned());
+            p.insert("window_dimensions".to_owned(), format!("1,{wh},{ww},1"));
+            p.insert("window_strides".to_owned(), "1,1,1,1".to_owned());
+            let got =
+                eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&x), &p).unwrap();
+            let got = got.as_tensor().unwrap();
+            let (oh, ow) = (h - wh + 1, w - ww + 1);
+            let out = got.elements.as_f64_slice().unwrap();
+            for n in 0..bn {
+                for r in 0..oh {
+                    for col in 0..ow {
+                        for ch in 0..c {
+                            let mut acc = if opname == "max" { f64::MIN } else { f64::MAX };
+                            for dh in 0..wh {
+                                for dw in 0..ww {
+                                    let v = data[((n * h + r + dh) * w + col + dw) * c + ch];
+                                    acc = if opname == "max" {
+                                        acc.max(v)
+                                    } else {
+                                        acc.min(v)
+                                    };
+                                }
+                            }
+                            let o = out[((n * oh + r) * ow + col) * c + ch];
+                            assert_eq!(
+                                o.to_bits(),
+                                acc.to_bits(),
+                                "f64 {opname} n{n} r{r} c{col} ch{ch}"
+                            );
+                        }
                     }
                 }
             }
