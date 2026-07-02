@@ -381,6 +381,47 @@ pub fn exp_cephes_block_f64(x: F64s) -> F64s {
     er * two_a * two_b
 }
 
+/// 8-wide `expm1(x) = exp(x) − 1` via the same Cephes rational as [`exp_cephes_block_f64`], but with
+/// the CANCELLATION-FREE reconstruction `expm1(x) = 2ⁿ·(exp(r)−1) + (2ⁿ−1)`. The rational computes
+/// `exp(r)−1 = 2·px/den` DIRECTLY (not `exp(r)` then `−1`), so for `n == 0` (small x) the result is
+/// exactly that — ~1 ulp even at `x = 1e-15` (the naive `exp(x)−1` would lose all bits there). ~1 ulp,
+/// tolerance. For IN-RANGE `x` only (`|x| < 709`); caller routes overflow/underflow/±inf/NaN to scalar.
+pub fn expm1_cephes_block_f64(x: F64s) -> F64s {
+    #[allow(clippy::excessive_precision)]
+    const CEXP_C1: f64 = 6.931_457_519_531_25e-1;
+    #[allow(clippy::excessive_precision)]
+    const CEXP_C2: f64 = 1.428_606_820_309_417_232_12e-6;
+    #[allow(clippy::excessive_precision)]
+    const PP: [f64; 3] = [
+        1.261_771_930_748_105_908_78e-4,
+        3.029_944_077_074_419_613e-2,
+        9.999_999_999_999_999_999_1e-1,
+    ];
+    #[allow(clippy::excessive_precision)]
+    const QQ: [f64; 4] = [
+        3.001_985_051_386_644_550_42e-6,
+        2.524_483_403_496_841_041_92e-3,
+        2.272_655_482_081_550_287_66e-1,
+        2.0e0,
+    ];
+    let nf = (x * F64s::splat(LOG2E)).round();
+    let r = x - nf * F64s::splat(CEXP_C1) - nf * F64s::splat(CEXP_C2);
+    let xx = r * r;
+    let px = r * ((F64s::splat(PP[0]) * xx + F64s::splat(PP[1])) * xx + F64s::splat(PP[2]));
+    let den = ((F64s::splat(QQ[0]) * xx + F64s::splat(QQ[1])) * xx + F64s::splat(QQ[2])) * xx
+        + F64s::splat(QQ[3])
+        - px;
+    let er_m1 = F64s::splat(2.0) * (px / den); // exp(r) − 1, computed directly (no cancellation)
+    let ni = nf.cast::<i64>();
+    let na = ni >> Simd::splat(1);
+    let nb = ni - na;
+    let two_a = F64s::from_bits(((na + Simd::splat(1023)) << Simd::splat(52)).cast::<u64>());
+    let two_b = F64s::from_bits(((nb + Simd::splat(1023)) << Simd::splat(52)).cast::<u64>());
+    let two_n = two_a * two_b;
+    // expm1(x) = 2ⁿ·exp(r) − 1 = 2ⁿ·(er_m1 + 1) − 1 = 2ⁿ·er_m1 + (2ⁿ − 1).
+    two_n * er_m1 + (two_n - F64s::splat(1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,6 +629,40 @@ mod tests {
         }
         eprintln!("[exp_cephes_block_f64] max rel err vs libm over [-700,700] = {maxrel:e}");
         assert!(maxrel < 1e-14, "cephes exp rel err {maxrel:e} too large");
+    }
+
+    #[test]
+    fn expm1_cephes_block_f64_accuracy() {
+        // Must hit the tight expm1_oracle band: RELATIVE ~1e-14 across the range, incl. tiny x where
+        // naive exp(x)-1 would lose all bits (expm1(1e-15)≈1e-15, rel 1e-14). Bit-exact ±0.
+        let mut maxrel = 0.0f64;
+        // dense sweep + explicit tiny magnitudes.
+        let mut xs: Vec<f64> = Vec::new();
+        let mut x = -650.0f64;
+        while x <= 650.0 {
+            xs.push(x);
+            x += 0.019;
+        }
+        for &v in &[
+            1e-15, -1e-15, 1e-12, -1e-10, 1e-8, 0.5, -0.5, 1.0, -1.0, 40.0, -40.0,
+        ] {
+            xs.push(v);
+        }
+        for chunk in xs.chunks(8) {
+            let mut arr = [0.0f64; 8];
+            arr[..chunk.len()].copy_from_slice(chunk);
+            let got = expm1_cephes_block_f64(F64s::from_array(arr)).to_array();
+            for (j, &v) in chunk.iter().enumerate() {
+                let want = v.exp_m1();
+                if want != 0.0 && want.is_finite() {
+                    maxrel = maxrel.max(((got[j] - want) / want).abs());
+                }
+            }
+        }
+        eprintln!("[expm1_cephes_block_f64] max rel err vs libm = {maxrel:e}");
+        assert!(maxrel < 1e-14, "cephes expm1 rel err {maxrel:e} too large");
+        // NOTE: the raw kernel does NOT preserve the sign of a −0 result (the reconstruction
+        // `1·(−0) + 0 = +0`); the ±0 sign is restored by the `x==0 → x` select in `expm1_f64x8`.
     }
 
     #[test]

@@ -2,6 +2,20 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - WIRED WIN (Expm1 primitive: 1.95x @4M / 1.25x @16M): SIMD expm1 via cancellation-free Cephes reconstruction (BlackThrush)
+
+Fourth consumer of the Cephes exp vein, via a new `expm1_cephes_block_f64` (reuses the exp.c rational
+reduction but reconstructs `expm1(x) = 2ⁿ·(exp(r)−1) + (2ⁿ−1)`). The rational computes `exp(r)−1 =
+2·px/den` DIRECTLY, so no `exp(x)−1` cancellation — kernel rel-err 3.64e-16, incl. `expm1(1e-15)` to
+~1 ulp. `expm1` not golden-pinned but the oracle band is TIGHT (`expm1(1e-15)≈1e-15` rel 1e-14, `±0`
+bit-exact); all 39 oracle cases PASS. `expm1_f64x8`: SIMD for `|x|<709`; `x≥709`(→+inf), `x≤−709`(→−1),
+`±inf`, `NaN` → scalar `f64::exp_m1`; a `x==0 → x` select restores the ±0 sign the raw reconstruction
+drops (`1·−0 + 0 = +0`).
+
+MEASURED (median-of-3, `FJ_EXPM1_SCALAR`): 4M SCALAR 14.48ms → SIMD **7.42ms = 1.95x**; 16M 29.48ms →
+**23.61ms = 1.25x**. Gates: fj-lax lib 1673/0, full conformance green (expm1_oracle 39/0), fmt clean.
+`expm1_cephes_block_f64` also unlocks `sinh` (= `0.5·(expm1(x)−expm1(−x))`, cancellation-free) — next.
+
 ## 2026-07-01 - WIRED WIN (Tanh primitive: 2.43x @4M / 1.30x @16M): UNGATE the SIMD tanh via Cephes rational exp (BlackThrush)
 
 Third consumer of `exp_cephes_block_f64`, and the highest-value (tanh is a top-tier ML activation).
