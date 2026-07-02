@@ -10343,3 +10343,16 @@ Validation:
     `single_row_smooth_fft_routes_mixed_radix_matching_dft`, `iterative_mixed_radix_matches_recursive_to_tolerance`
     — all tolerance-vs-DFT oracles, so the radix-4 output is verified against the direct transform).
   - `rustfmt --edition 2024 --check crates/fj-lax/src/fft.rs`: green.
+
+### 2026-07-02 follow-up: radix-4 mixed-radix A/B captured (cross-invocation, indicative ~2.3x) (BlackThrush)
+
+The stash/rebuild baseline bench (deferred above) actually completed post-ship:
+  - Baseline (radix-2-only `mixed_radix_ping`): `eval/fft_batch_128x1000_complex128` **5.6271 ms**
+    (`[5.3637, 5.6271, 5.9221] ms`); `eval/fft_1000_complex128` (single row) **31.648 us**.
+  - Candidate (radix-4): `eval/fft_batch_128x1000_complex128` **2.4726 ms** (`[2.4253, 2.4726, 2.5298] ms`).
+  - Apparent ratio **~2.28x faster**. CAVEAT — treat as INDICATIVE, not definitive: baseline and candidate ran in
+    SEPARATE `rch exec` invocations, and (a) this repo's rch bench timings drift 20–60% cross-invocation, (b) the
+    FFT method lesson is that host load INFLATES timings (never deflates). ~2.28x is larger than a one-pass-of-six
+    saving alone predicts, so part of it is likely a load-inflated baseline; the candidate 2.4726 ms is the stable,
+    trustworthy number. A same-invocation A/B (both binaries benched back-to-back) is the confirm-lever. Regardless
+    of the exact multiple, the direction is a clear WIN and correctness is proven (60/0 tolerance-vs-DFT).
