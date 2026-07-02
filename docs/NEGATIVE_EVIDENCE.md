@@ -11020,3 +11020,15 @@ w16=21.83/w32=16.31/w64=15.21ms = vs JAX **1.14x / 4.75x / 17.3x FASTER** (all w
 (to_bits) max+min vs brute-force (`rw4d_nhwc_vanherk_maxmin_f64_matches_bruteforce`, c=16) + rw4d tests green
 (f64 slower than f32's 8ms — Simd<f64,8> is 2x256-bit, half throughput — but a clean win). NHWC POOLING FAMILY
 NOW COMPLETE: sum (f32/f64/bf16/f16) + max/min (f32/f64/bf16/f16), all O(k) separable, all beating JAX.
+
+## 2026-07-02 - WIN (measured, existing code): batched row sort/argsort 58-94x FASTER than JAX (BlackThrush)
+
+Recorded a large UNDOCUMENTED win. JAX `jnp.sort`/`jnp.argsort` along the last axis of a 2-D array is a
+per-row COMPARISON sort — very slow: f32 [4096,4096] sort=2276ms/argsort=2830ms; [65536,256]
+sort=1568ms/argsort=1980ms. fj's multi-slice path already routes each row through the per-slice radix
+(`radix_pairs_ascending_u32` for f32, 4-pass), threaded across rows (`for_each_contiguous_sort_slice`), so it
+DEMOLISHES JAX: fj [4096,4096] sort=**24.20ms (94x)** / argsort=**34.56ms (81.9x)**; [65536,256]
+sort=**25.90ms (60.6x)** / argsort=**33.63ms (58.9x)**. No code change — the win is the existing per-slice
+radix vs XLA's comparison sort (same family as the 1-D sort wins). Follow-up lever (LOW priority, already 94x):
+keys-only PER-SLICE for multi-slice value sort (`radix_keys_u32_slice_4pass`, 4B vs 16B pairs) would widen it
+~1.5x — not worth touching the hot shared path while fj already wins 94x.
