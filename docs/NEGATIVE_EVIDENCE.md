@@ -10406,3 +10406,21 @@ kernels, not 1-op-per-element memory-bound ones (cf. f32 pow ~0-gain, exp2/atan2
 the SIMD source (arithmetic.rs + lib.rs → stash `xlogy-simd-nearparity-1.02x-revert-BlackThrush`); KEPT
 `bench_xlogy_4m_f64_vec` as a permanent throughput guard. NO CEILING — a compute-bound / cache-resident xlogy
 regime (or an FMA-enabled build) could still flip it; not chased here.
+
+## 2026-07-02 - SURFACE (infra-blocked): rch worker toolchain drift (E0514) blocked the definitive radix-4 mixed-radix A/B (BlackThrush)
+
+Attempted to firm up the landed radix-4 mixed-radix FFT win (17776c0a, currently recorded as indicative ~2.3x
+from a CROSS-invocation A/B) into a definitive SAME-invocation number. Added a cached `FJ_MIXED_RADIX_NO4` A/B
+hook to `mixed_radix_ping` (OnceLock-read once; forces the pre-radix-4 smallest-prime-only split so candidate vs
+baseline run in ONE binary). But every `rch exec` build now fails with `error[E0514]: found crate 'fj_core'
+compiled by an incompatible version of rustc`: the shared `CARGO_TARGET_DIR` holds artifacts from nightly
+`4c9d2bfe4 (2026-07-01)` while the current worker compiler is `f46ec5218 (2026-06-30)` — deps generic-array /
+num-traits / alloca / fj-core are all stale-NEWER than the compiler. This is the known
+`project_rch_shared_target_toolchain_drift` recurrence (a `cargo clean` on the worker is the fix, not a code
+change); earlier builds THIS session (xlogy A/B + oracle) succeeded before the worker nightly rolled back.
+
+Since I cannot build, I cannot verify the hook compiles or run the A/B, so I did NOT commit the (unverified)
+source — it is stashed: `git stash list` → "WIP FJ_MIXED_RADIX_NO4 A/B hook ... BlackThrush". NEXT SESSION (once
+rch rebuilds clean): `git stash apply`, then same-binary A/B on `eval/fft_batch_128x1000_complex128` with/without
+`FJ_MIXED_RADIX_NO4=1` to replace the indicative ~2.3x with a trustworthy ratio. The radix-4 win itself remains
+landed and correct (60/0 tolerance-vs-DFT). No ceiling — this is a pending measurement, not a limit.
