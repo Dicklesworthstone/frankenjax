@@ -10695,3 +10695,18 @@ RESULT: `eval Dot [1024,1024]@[1024,1024] i64` = **17.23 ms** (was 13,928 ms) �
 LESSON: audit every dtype through the `Dot`/`DotGeneral` fast-path dispatch — a kernel can exist and be imported
 yet not be WIRED for a given dtype. NOTE: u32/u64/i32 via `Dot` may share this gap (only f64+i64 wired now) —
 next audit. No ceiling.
+
+## 2026-07-02 - WIN: complete eval_tensor_dot dtype coverage — u64 Dot 14.1x FASTER than JAX; f32 Dot 14s→16ms regression fix (BlackThrush)
+
+Extended the i64 Dot fix (0bc8d2af) to f32 + u32/u64 in `eval_tensor_dot` (the `Dot` primitive, emitted by the
+frontend + fj-ad). Both fell to the per-element odometer (~14 s for 1024³).
+  - **u64/u32** (`rank2_u64_matmul_dot`, wrapping = BIT-IDENTICAL to the odometer, via `dot_u64_elements` +
+    `rank2_u64_matmul` + `u64_matmul_output`): fj **286.74 ms** vs JAX `jnp.matmul` uint64 **4055.06 ms** =
+    **~14.1x FASTER** (XLA has no integer BLAS; kernel is single-threaded, hence 14x not the 230x threaded-i64 got).
+  - **f32** (`rank2_f32_matmul_dot`, promote→`matmul_2d`→round, tolerance-consistent with the f64 Dot path — the
+    f32 odometer already accumulates in f64): **14,935 ms → 16.17 ms** (~865x internal). NOT a vs-JAX win — JAX f32
+    is native-f32 BLAS+FMA at **1.61 ms**, so fj stays ~10x behind on the FMA/f64-promote floor; this is a
+    catastrophic-regression FIX, bringing f32 Dot to the same floor as DotGeneral f32.
+51 dot tests green + new guards `f32_dot_fast_path_matches_expected`, `u64_dot_fast_path_matches_expected`,
+`i64_dot_fast_path_matches_expected`. STILL UNWIRED in Dot: complex (rank2_complex_matmul), i32 (i64+narrow) — next.
+No ceiling.

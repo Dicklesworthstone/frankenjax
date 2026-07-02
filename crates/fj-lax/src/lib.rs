@@ -15283,6 +15283,51 @@ mod tests {
         assert_eq!(vals, vec![58, 64, 139, 154]);
     }
 
+    // Guards the f32 Dot fast path (rank2_f32_matmul_dot): [[1,2,3],[4,5,6]] @
+    // [[7,8],[9,10],[11,12]] in f32 = [[58,64],[139,154]] (exact for these small ints).
+    #[test]
+    fn f32_dot_fast_path_matches_expected() {
+        let a = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape { dims: vec![2, 3] },
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            )
+            .unwrap(),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape { dims: vec![3, 2] },
+                vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+        let vals: Vec<f32> = out.as_tensor().unwrap().elements.as_f32_slice().unwrap().to_vec();
+        assert_eq!(vals, vec![58.0, 64.0, 139.0, 154.0]);
+    }
+
+    // Guards the u32/u64 Dot fast path (rank2_u64_matmul_dot): [[1,2,3],[4,5,6]] @
+    // [[7,8],[9,10],[11,12]] in u64 = [58,64,139,154].
+    #[test]
+    fn u64_dot_fast_path_matches_expected() {
+        let a = Value::Tensor(
+            TensorValue::new_u64_values(Shape { dims: vec![2, 3] }, vec![1, 2, 3, 4, 5, 6]).unwrap(),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_u64_values(Shape { dims: vec![3, 2] }, vec![7, 8, 9, 10, 11, 12])
+                .unwrap(),
+        );
+        let out = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+        let vals: Vec<u64> = out
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_u64().unwrap())
+            .collect();
+        assert_eq!(vals, vec![58, 64, 139, 154]);
+    }
+
     #[test]
     fn cumsum_1d() {
         // cumsum([1, 2, 3, 4]) = [1, 3, 6, 10]

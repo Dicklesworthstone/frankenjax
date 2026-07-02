@@ -14105,6 +14105,65 @@ fn rank2_i64_matmul_dot(
     )?)))
 }
 
+/// Dense rank-2 f32 matmul fast path for the `Dot` primitive. f32 is JAX's DEFAULT
+/// dtype, yet `eval_tensor_dot` had no f32 kernel — so f32 `dot`/`matmul` (incl. the
+/// AD path, which emits `Dot`) fell to the per-element odometer. Promote to f64, run
+/// the blocked [`matmul_2d`], round back to f32 — tolerance-consistent with the f64
+/// `Dot` path (the generic f32 odometer already accumulates in f64: `sum = 0.0_f64`),
+/// and MORE accurate than JAX's f32-BLAS. Returns `None` for non-f32/non-rank-2/boxed.
+fn rank2_f32_matmul_dot(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    output_dims: &[u32],
+) -> Result<Option<Value>, EvalError> {
+    if lhs.dtype != DType::F32 || rhs.dtype != DType::F32 || lhs.rank() != 2 || rhs.rank() != 2 {
+        return Ok(None);
+    }
+    let m = lhs.shape.dims[0] as usize;
+    let k = lhs.shape.dims[1] as usize;
+    let n = rhs.shape.dims[1] as usize;
+    let (Some(a32), Some(b32)) = (lhs.elements.as_f32_slice(), rhs.elements.as_f32_slice()) else {
+        return Ok(None);
+    };
+    let a: Vec<f64> = a32.iter().map(|&x| x as f64).collect();
+    let b: Vec<f64> = b32.iter().map(|&x| x as f64).collect();
+    let out_f64 = matmul_2d(&a, m, k, &b, n);
+    let out_f32: Vec<f32> = out_f64.iter().map(|&x| x as f32).collect();
+    Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+        Shape {
+            dims: output_dims.to_vec(),
+        },
+        out_f32,
+    )?)))
+}
+
+/// Dense rank-2 unsigned (u32/u64) matmul fast path for the `Dot` primitive. Integer
+/// matmul has no BLAS in XLA either, so — like i64 — this WINS vs JAX outright. Extracts
+/// both (boxed) operands to `u64`, runs the wrapping [`rank2_u64_matmul`], and narrows to
+/// the output width via [`u64_matmul_output`] — BIT-IDENTICAL to the generic unsigned
+/// odometer it replaces. `None` for non-unsigned/non-rank-2.
+fn rank2_u64_matmul_dot(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    output_dims: &[u32],
+) -> Result<Option<Value>, EvalError> {
+    let out_dtype = match dot_output_kind(lhs, rhs) {
+        DotOutputKind::Integral(dt @ (DType::U32 | DType::U64)) => dt,
+        _ => return Ok(None),
+    };
+    if lhs.rank() != 2 || rhs.rank() != 2 {
+        return Ok(None);
+    }
+    let m = lhs.shape.dims[0] as usize;
+    let k = lhs.shape.dims[1] as usize;
+    let n = rhs.shape.dims[1] as usize;
+    let (Some(a), Some(b)) = (dot_u64_elements(lhs), dot_u64_elements(rhs)) else {
+        return Ok(None);
+    };
+    let values = rank2_u64_matmul(&a, m, k, &b, n);
+    Ok(Some(u64_matmul_output(out_dtype, values, output_dims)?))
+}
+
 /// Transpose a contiguous row-major `[rows, cols]` f64 matrix to `[cols, rows]`.
 fn transpose_rows_cols_f64(data: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     let mut out = vec![0.0_f64; rows * cols];
@@ -15070,6 +15129,12 @@ fn eval_tensor_dot(
         return Ok(value);
     }
     if let Some(value) = rank2_i64_matmul_dot(lhs, rhs, &output_dims)? {
+        return Ok(value);
+    }
+    if let Some(value) = rank2_f32_matmul_dot(lhs, rhs, &output_dims)? {
+        return Ok(value);
+    }
+    if let Some(value) = rank2_u64_matmul_dot(lhs, rhs, &output_dims)? {
         return Ok(value);
     }
 
