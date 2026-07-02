@@ -10663,3 +10663,17 @@ that gave the trustworthy RNG/gamma numbers), which eliminates the shared-worker
     XLA-CPU's scan, consistent with the sum/argmax/sort seq-axis wins.) No new code — resolves an open ambiguity.
     METHOD: for any vs-JAX ratio that flips sign across runs, re-measure on an isolated local target before
     trusting it. No ceiling.
+
+## 2026-07-02 - WIN (parity, verified): random_chi2 + random_t already JAX-faithful via the gamma fix — guard oracles added (BlackThrush)
+
+Audited the remaining gamma-composing samplers. Both were ALREADY correct once gamma became faithful — no code
+change needed, and I proved it with element-wise oracles:
+  - `random_chi2` = `2*gamma(key, df/2)`; JAX `_chisquare` = `2*exp(loggamma(key, df/2))`. Since
+    `exp(loggamma(k,a)) == gamma(k,a)` value-wise (same key/draws; the log-space boost `exp(log1p(-u)/a)` equals
+    the plain boost `(1-u)^(1/a)`), and both split the key into `count` per-element streams, the values match.
+  - `random_t` = `z / sqrt(chi2/df)` with `(key1,key2)=split(key)`, `z=normal(key1)`, `chi2=2*gamma(key2,df/2)` →
+    `z*sqrt((df/2)/gamma)`; JAX `_t` = `n*sqrt((df/2)/gamma)` with `(key_n,key_g)=split(key)` — identical formula
+    AND key schedule.
+VERIFIED element-for-element vs JAX-f32 `chisquare(PRNGKey(0),4,(6,))` and `t(PRNGKey(0),5,(6,))`: new oracle
+`random_chi2_and_t_match_jax_reference_f32` GREEN to 1e-4. So the gamma fidelity fix (8241ad8e) transitively made
+chi2/t/beta/dirichlet all JAX-faithful; guard tests now pin chi2+t too. No ceiling.

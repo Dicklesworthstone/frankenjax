@@ -2762,6 +2762,42 @@ mod tests {
     }
 
     #[test]
+    fn random_chi2_and_t_match_jax_reference_f32() {
+        // jax.random.chisquare/t(PRNGKey(0), df, (6,)) in DEFAULT f32 mode. Both compose
+        // the (now-faithful) gamma: chi2 = 2*gamma(df/2); t = z*sqrt((df/2)/gamma).
+        let chi2_df4: [f64; 6] = [
+            3.1795756816864014,
+            3.5198826789855957,
+            2.25801420211792,
+            7.948668003082275,
+            5.909200191497803,
+            3.9576170444488525,
+        ];
+        let got_chi2 = random_chi2(random_key(0), 6, 4.0);
+        for (i, (&w, &g)) in chi2_df4.iter().zip(got_chi2.iter()).enumerate() {
+            assert!(
+                (w - g).abs() <= 1e-4 * w.abs().max(1.0),
+                "chi2(df=4) elem {i}: JAX-f32 {w} vs fj {g}"
+            );
+        }
+        let t_df5: [f64; 6] = [
+            0.758949875831604,
+            -2.055917739868164,
+            -1.281833529472351,
+            -1.5719773769378662,
+            -0.555972695350647,
+            0.6316303610801697,
+        ];
+        let got_t = random_t(random_key(0), 6, 5.0);
+        for (i, (&w, &g)) in t_df5.iter().zip(got_t.iter()).enumerate() {
+            assert!(
+                (w - g).abs() <= 1e-4 * w.abs().max(1.0),
+                "t(df=5) elem {i}: JAX-f32 {w} vs fj {g}"
+            );
+        }
+    }
+
+    #[test]
     fn random_dirichlet_matches_jax_reference_f32() {
         // jax.random.dirichlet(PRNGKey(0), [1,2,3], (4,)) in DEFAULT f32 mode (4 rows x 3).
         let want: [f64; 12] = [
