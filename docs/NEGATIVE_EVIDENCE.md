@@ -2,6 +2,22 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - NEGATIVE: JAX single full-SVD is slow at ALL sizes but is NOT a fj win (parity + rejected lever) (BlackThrush)
+
+Chased the "single (non-batched) pinv/lstsq slow in JAX" thread (probe: pinv[1024,512]=1233ms, lstsq=1643ms) down to
+its root: JAX 0.10.x CPU **full SVD** (compute_uv=True) is pathologically slow at EVERY size — svd[512,512]=713ms,
+[1024,512]=1674ms, [2048,1024]=9722ms, [1024,1024]=6653ms — whereas svdvals-only[512,512]=19.7ms is fast. XLA-CPU
+uses a slow ITERATIVE full-SVD (Jacobi-ish), not LAPACK gesdd. BUT this is NOT a new fj lever:
+1. **QR single is ALREADY WON ~30x** (SlateHarrier `bench_qr_2048_vs_jax`, 2026-06-27) — same XLA-CPU-slow root.
+2. **SVD single is a known ~PARITY-LOSS**: fj svd[1024,1024]=3049ms vs JAX 2470 = 1.23x SLOWER (both iterative
+   bidiag+QR / Jacobi; SlateHarrier `bench_svd_eigh_1024_vs_jax`). fj's SVD kernel is not faster than XLA's here.
+3. **Tall-SVD via QR-preprocess (A=QR then SVD of R) was already REJECTED** (cc+codex; A⁺=R⁺Qᵀ correct but 1.0x,
+   Jacobi flop-bound) — so the rectangular [m≫n] cases have no cheap win either.
+CAVEAT: measured under host load avg ~57/64 cores (heavy multi-agent contention) — my fresh JAX numbers are ~2.7x
+inflated vs SlateHarrier's uncontended run (my svd[1024,1024]=6653ms vs their JAX 2470ms), so sub-2x SVD/eigh
+comparisons are UNRELIABLE right now; trust the same-session A/B numbers on record, not cross-invocation deltas.
+NET: single-linalg is fully mapped — QR won, SVD/eigh parity-loss, QR-preprocess rejected. Not a contained lever.
+
 ## 2026-07-02 - NEGATIVE / BOUNDARY: structural-lever sweep — no new winnable primitive (all done/blocked/quirk) (BlackThrush)
 
 After the elementwise wins (gcd i64/i32, igamma family) swept the STRUCTURAL space (vmap-over-slow-linalg / conv /
