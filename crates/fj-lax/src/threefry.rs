@@ -126,6 +126,19 @@ pub fn random_split(key: PRNGKey) -> (PRNGKey, PRNGKey) {
     (PRNGKey(child1), PRNGKey(child2))
 }
 
+/// N-way key split: derive `n` independent child keys, matching JAX's
+/// `random.split(key, n)`. JAX's threefry split is prefix-stable (child `i` depends
+/// only on `i`, so `split(key,n)[i] == split(key,m)[i]`), which the 2-way
+/// [`random_split`] already exploits via counter `[0, i]`; this generalizes it to
+/// arbitrary `n`. Verified against `jax.random.split(PRNGKey(0), {2,3})` bit-for-bit
+/// (see `random_split_n_matches_jax`).
+#[must_use]
+pub fn random_split_n(key: PRNGKey, n: usize) -> Vec<PRNGKey> {
+    (0..n)
+        .map(|i| PRNGKey(threefry2x32(key.0, [0, i as u32])))
+        .collect()
+}
+
 /// Mix additional data into a key, producing a derived key.
 ///
 /// Matches JAX's `random.fold_in(key, data)`.
@@ -2653,6 +2666,22 @@ mod tests {
         let key = random_key(42);
         let vals = random_gamma(key, 100, 2.0);
         assert!(vals.iter().all(|&v| v > 0.0 || v.is_nan()));
+    }
+
+    #[test]
+    fn random_split_n_matches_jax() {
+        // jax.random.split(random.PRNGKey(0), n) — bit-for-bit reference from the venv.
+        let s2 = random_split_n(random_key(0), 2);
+        assert_eq!(s2[0].0, [1797259609, 2579123966]);
+        assert_eq!(s2[1].0, [928981903, 3453687069]);
+        let s3 = random_split_n(random_key(0), 3);
+        // Prefix-stable: first two keys equal split(key,2).
+        assert_eq!(s3[0].0, s2[0].0);
+        assert_eq!(s3[1].0, s2[1].0);
+        assert_eq!(s3[2].0, [4146024105, 2718843009]);
+        // Consistent with the 2-way random_split.
+        let (a, b) = random_split(random_key(0));
+        assert_eq!((s2[0].0, s2[1].0), (a.0, b.0));
     }
 
     /// STRICT element-wise parity oracle for `random_gamma` vs `jax.random.gamma`.
