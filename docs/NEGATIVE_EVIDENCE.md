@@ -2,6 +2,46 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - NEGATIVE/BOUNDARY: alien-graveyard yields NO applicable different-primitive FFT lever; every classic DSP variant collapses onto an already-measured no-ship (TealMarten)
+
+The biggest MEASURED unowned gap is still batched FFT (fft_batch_128x1000 23.5x, fft_batch_2048x256 42.7x vs JAX/pocketfft;
+see `project_fft_jax_loss_frontier`). Per the "different-primitive, not ceiling-framing" protocol I routed this gap
+through `/alien-graveyard` (canonical `alien_cs_graveyard.md`, 501KB, 130+ entries) instead of re-attempting a schedule
+already in the no-ship list. Two concrete findings, recorded so the next digger does NOT re-run this same route:
+
+1. **The graveyard has ZERO complex-float FFT entry.** The ONLY transform primitive it catalogs is the NTT (Number
+   Theoretic Transform over Z_q) — and only inside the FHE (§11.1) and ZK/Groth16 (§~3641) recipes, i.e. modular
+   integer arithmetic for polynomial multiplication. NTT does NOT apply to fj-lax's complex128 DFT: JAX-parity is a
+   1e-9 FLOAT tolerance, not exact ring arithmetic, so there is no legal path to swap the complex butterfly for a
+   number-theoretic one. The graveyard offers no uplift here.
+
+2. **The classic DSP levers (PFA / split-radix / Winograd-FFT) each map DIRECTLY onto a root cause fj already MEASURED
+   as a no-ship on this host** (`#![forbid(unsafe)]`, no `+fma`, portable_simd, Zen3 5975WX, contended rch swarm).
+   None dodges the actual wall, which is *autovectorization*, not *flop count*:
+   - **Good-Thomas PFA** for the 23.5x case (n=1000=8·125): the coprime split is 8×125, so the length-125 sub-transform
+     is radix-5 (5³). Non-radix-2 strided per-lane access is EXACTLY what the recursive AND iterative mixed-radix SoA
+     no-ships proved memory-bound + non-autovectorizing here (0.50-0.69x and 0.15x respectively, `mixed_radix_*_soa`).
+     PFA removes inter-stage twiddles but keeps the strided radix-5 access → same wall.
+   - **Split-radix** interleaves radix-2 and radix-4 L-shaped butterflies → an IRREGULAR stage loop. This is the same
+     shape as the radix-4 SoA no-ship (0.69x: "fewer passes ≠ faster — worse locality + heavier per-butterfly work")
+     and the twiddle-free-j==0 no-ship (+3.9% regression: "fewer flops loses when it fragments the uniform butterfly
+     loop"). Split-radix fragments the loop MORE, not less.
+   - **Winograd-FFT** = many small nested GEMMs → identical to the Winograd-CONV no-ship (`project_winograd_conv_f23_regresses`,
+     0.70x: "flop reduction loses if it fragments one efficient kernel"). Small-GEMM fragmentation beats the flop saving.
+
+   The one FLAT/iterative kernel that DOES vectorize on this host is radix-2, and its SoA form is already shipped
+   (pow2/rfft/irfft ~1.7x) + Bluestein-via-radix-2 (3x). Everything non-flat has been measured to lose.
+
+**BLOCKER surfaced (concrete, not a ceiling):** the residual FFT gap is genuinely gated by two maintainer/arch decisions,
+NOT by algorithm choice: (a) the global `+fma` policy (pocketfft's butterflies use hardware FMA — see the FMA-policy
+ledger `cntiy`), and (b) a scoped-`unsafe` SIMD module for hand-written radix-3/4/5 intrinsics (pocketfft's real win),
+which the crate's `#![forbid(unsafe)]` forbids. The only pure-Rust/portable-SIMD/tolerance-legal lever left is a
+from-scratch native split-radix REAL FFT — a multi-session, pow2-golden-refreshing rewrite that the "do NOT rush big
+swings, parity absolute" protocol says not to attempt in one session. No contained lever exists; recording the route as
+closed. LESSON: `/alien-graveyard` is a systems/DB/distributed corpus — it has NO leverage on a bit-exact numerical
+transcendental/transform kernel library that is already SIMD/algorithm-mined; do not re-route FFT/GEMM/special-fn gaps
+through it expecting a new primitive.
+
 ## 2026-07-02 - MODEST: native-f64 SIMD Sin/Cos — turns the prior f64 LOSS into ~parity vs JAX (f64x8 gain is small) (BlackThrush)
 
 Tested the f64-SIMD-trig follow-up scoped last turn (1c675a1e flagged fj f64 sin LOSING 0.86x). Added `sin_f64x8`/
