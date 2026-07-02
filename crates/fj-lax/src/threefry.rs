@@ -1038,48 +1038,88 @@ pub fn random_beta(key: PRNGKey, count: usize, a: f64, b: f64) -> Vec<f64> {
 /// Generate Poisson-distributed samples.
 ///
 /// Matches `jax.random.poisson(key, lam, shape)`.
-/// Uses inverse transform method for small lambda, normal approximation for large.
+/// Matches `jax.random.poisson`: Knuth's algorithm for `lam < 10`, Hörmann's
+/// transformed-rejection (PTRS) for `lam >= 10` (jax `_poisson`). Both paths are
+/// VECTORIZED over the whole array sharing one evolving key (JAX draws a count-sized
+/// `uniform(subkey, shape)` block per iteration — NOT a per-element key split, unlike
+/// gamma). Replaces the prior non-JAX shared-pool Knuth + normal-approximation.
 #[must_use]
 pub fn random_poisson(key: PRNGKey, count: usize, lam: f64) -> Vec<u64> {
     if lam <= 0.0 {
         return vec![0; count];
     }
-
-    let uniforms = random_uniform(key, count * 100, 0.0, 1.0);
-
-    let mut result = Vec::with_capacity(count);
-
-    if lam < 30.0 {
-        // Inverse transform method
-        let exp_neg_lam = (-lam).exp();
-
-        for i in 0..count {
-            let mut k = 0u64;
-            let mut p = 1.0;
-            let base_idx = i * 50;
-
-            loop {
-                let u_idx = (base_idx + k as usize) % uniforms.len();
-                p *= uniforms[u_idx];
-                if p <= exp_neg_lam || k >= 1000 {
-                    break;
-                }
-                k += 1;
-            }
-            result.push(k);
-        }
+    if lam < 10.0 {
+        poisson_knuth(key, count, lam)
     } else {
-        // Normal approximation for large lambda
-        let normals = random_normal(key, count);
-        let sqrt_lam = lam.sqrt();
+        poisson_rejection(key, count, lam)
+    }
+}
 
-        for &n in &normals {
-            let sample = lam + sqrt_lam * n;
-            result.push(sample.round().max(0.0) as u64);
+/// Vectorized Knuth (jax `_poisson_knuth`), log-space. Each iteration splits the key,
+/// draws a count-sized uniform block, and for every element still accumulating
+/// (`log_prod > -lam`) increments `k`; `log_prod += log(u)` unconditionally. Result is
+/// `k - 1`. Loops until no element is still accumulating.
+fn poisson_knuth(key: PRNGKey, count: usize, lam: f64) -> Vec<u64> {
+    let mut rng = key;
+    let mut k = vec![0i64; count];
+    let mut log_prod = vec![0.0f64; count];
+    // JAX max_iters = int-max; small lam converges in a handful of iterations. This cap
+    // only bounds the (astronomically unlikely) tail and never triggers for lam < 10.
+    for _ in 0..10_000 {
+        if !log_prod.iter().any(|&lp| lp > -lam) {
+            break;
+        }
+        let s = random_split_n(rng, 2);
+        rng = s[0];
+        let u = random_uniform(s[1], count, 0.0, 1.0);
+        for i in 0..count {
+            if log_prod[i] > -lam {
+                k[i] += 1;
+            }
+            log_prod[i] += u[i].ln();
         }
     }
+    k.iter().map(|&ki| (ki - 1).max(0) as u64).collect()
+}
 
-    result
+/// Vectorized Hörmann transformed-rejection (jax `_poisson_rejection`). Each iteration
+/// splits the key 3-way, draws two count-sized uniform blocks, and accepts per element
+/// via the squeeze/log tests; loops until every element is accepted.
+fn poisson_rejection(key: PRNGKey, count: usize, lam: f64) -> Vec<u64> {
+    let log_lam = lam.ln();
+    let b = 0.931 + 2.53 * lam.sqrt();
+    let a = -0.059 + 0.02483 * b;
+    let inv_alpha = 1.1239 + 1.1328 / (b - 3.4);
+    let v_r = 0.9277 - 3.6224 / (b - 2.0);
+
+    let mut rng = key;
+    let mut k_out = vec![-1.0f64; count];
+    let mut accepted = vec![false; count];
+    for _ in 0..10_000 {
+        if accepted.iter().all(|&x| x) {
+            break;
+        }
+        let s = random_split_n(rng, 3);
+        rng = s[0];
+        let u_blk = random_uniform(s[1], count, 0.0, 1.0);
+        let v_blk = random_uniform(s[2], count, 0.0, 1.0);
+        for i in 0..count {
+            let u = u_blk[i] - 0.5;
+            let v = v_blk[i];
+            let u_shifted = 0.5 - u.abs();
+            let k = ((2.0 * a / u_shifted + b) * u + lam + 0.43).floor();
+            let s_val = (v * inv_alpha / (a / (u_shifted * u_shifted) + b)).ln();
+            let t = -lam + k * log_lam - crate::arithmetic::lgamma_approx(k + 1.0);
+            let accept1 = u_shifted >= 0.07 && v <= v_r;
+            let reject = k < 0.0 || (u_shifted < 0.013 && v > u_shifted);
+            let accept2 = s_val <= t;
+            if accept1 || (!reject && accept2) {
+                k_out[i] = k;
+                accepted[i] = true;
+            }
+        }
+    }
+    k_out.iter().map(|&k| k.max(0.0) as u64).collect()
 }
 
 /// Generate truncated normal samples in (lower, upper).
@@ -2661,6 +2701,20 @@ mod tests {
         let key = random_key(42);
         let vals = random_gamma(key, 100, 2.0);
         assert!(vals.iter().all(|&v| v > 0.0 || v.is_nan()));
+    }
+
+    #[test]
+    fn random_poisson_matches_jax_reference_f32() {
+        // jax.random.poisson(random.PRNGKey(0), lam, (8,)) in DEFAULT f32 mode.
+        // lam=3 -> Knuth path, lam=30 -> PTRS rejection path.
+        let cases: [(f64, [u64; 8]); 2] = [
+            (3.0, [0, 0, 4, 4, 1, 2, 2, 6]),
+            (30.0, [22, 27, 23, 36, 25, 32, 36, 29]),
+        ];
+        for (lam, want) in cases {
+            let got = random_poisson(random_key(0), 8, lam);
+            assert_eq!(got, want.to_vec(), "poisson(lam={lam}) vs JAX-f32");
+        }
     }
 
     #[test]

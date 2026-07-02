@@ -10582,3 +10582,18 @@ conformance random_distributions_oracle 18/0 (statistical tests still pass). bet
 inherit the faithful per-element streams. Build via isolated target (rch E0514 drift). This closes the
 gamma-parity front opened 2026-07-02; poisson/geometric remain (geometric already faithful; poisson still
 shared-pool — next). No ceiling.
+
+## 2026-07-02 - WIN (parity): random_poisson rewritten to faithful JAX (Knuth<10 + PTRS rejection) — EXACT integer match vs JAX-f32 (BlackThrush)
+
+Second sampler landed same session. `random_poisson` now matches `jax.random.poisson` exactly: Knuth (log-space,
+`lam<10`) and Hörmann transformed-rejection PTRS (`lam>=10`), both VECTORIZED over the array sharing one evolving
+key (JAX draws a count-sized `uniform(subkey,shape)` block per iteration — NOT per-element split, unlike gamma).
+Replaces the non-JAX shared-pool Knuth + normal-approximation (wrong algorithm for large lam). VERIFIED
+element-for-element vs JAX-f32 `random.poisson(PRNGKey(0),lam,(8,))`: oracle `random_poisson_matches_jax_reference_f32`
+GREEN with EXACT integer equality for lam=3 (Knuth: [0,0,4,4,1,2,2,6]) AND lam=30 (PTRS: [22,27,23,36,25,32,36,29]).
+The integer-output precision risk (f64 arith incl. `lgamma`/`log` in the PTRS accept test vs XLA-f32) did NOT
+materialize — all 8 match exactly both paths. Full suite green: fj-lax poisson 3/0, conformance stat oracle 18/0.
+Replicates JAX's vectorized-while overwrite semantics (`k_out = select(accept,k,k_out)` keeps updating accepted
+elements until the global loop ends). With gamma (8241ad8e) this closes the two hardest rejection samplers; the
+RNG derived-distribution parity front is now essentially complete (geometric/exp/gumbel/laplace already faithful).
+No ceiling.
