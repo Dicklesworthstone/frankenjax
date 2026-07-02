@@ -10313,3 +10313,33 @@ Validation:
   - `rustfmt --edition 2024 --check crates/fj-lax/src/fft.rs`: green.
   - `cargo bench --release` is not accepted by this Cargo for `bench` (`unexpected argument '--release'`), so the
     repo's already-used release-profile equivalent was used: `cargo bench -p fj-lax --profile release ...`.
+
+## 2026-07-02 - SHIP: radix-4 butterfly in the mixed-radix (non-pow2 smooth) FFT — halves passes on the 2-heavy factors (BlackThrush)
+
+The recursive mixed-radix kernel (`mixed_radix_ping`, the production path for smooth non-power-of-two lengths —
+powers of two never reach it, so this is the TOLERANCE path with NO golden digest exposure) split every length
+by its SMALLEST prime factor. For a 2-heavy length like 1000 = 2^3·5^3 that meant three separate radix-2 passes
+over the work buffers for the 8-part. The prior ledger finding "threading the mixed-radix non-pow2 FFT is ~0-gain
+(memory-bound, not compute-bound)" (2026-06-27, SlateHarrier) points straight at the right lever: if the kernel is
+memory-bound, the win is FEWER SWEEPS over the buffers, not more parallelism. A radix-4 butterfly does exactly
+that — one radix-4 pass replaces two radix-2 passes (1000 now factors as 4·2·5·5·5 instead of 2·2·2·5·5·5),
+halving the buffer sweeps for the power-of-two-rich factors and applying the quarter rotation W_4 once instead of
+two W_2 stages. Standard DIT radix-4: with j = W_4 = roots[big_n/4] (sign carried by the transform direction),
+t0=u0+u2, t1=u0-u2, t2=u1+u3, t3=u1-u3 → X[s]=t0+t2, X[s+2m]=t0-t2, X[s+m]=t1+j·t3, X[s+3m]=t1-j·t3. The a=0/a=2
+outputs use the exact ±1 (j²=-1) rather than a rounded W_4², so it agrees with the direct DFT to floating
+tolerance while touching the buffers in a single pass.
+
+Evidence (candidate, `rch exec -- cargo bench -p fj-lax --profile release --bench lax_baseline`):
+  - `eval/fft_batch_128x1000_complex128`: **2.4726 ms mean** (`[2.4253, 2.4726, 2.5298] ms`).
+  - HONEST LIMITATION: the same-binary A/B baseline capture (git-stash the change, rebuild, re-bench) was cut off
+    by the session time box, so this entry does NOT claim a measured speedup ratio — only the correctness proof and
+    the candidate timing are landed. The change is a textbook pass-reduction on a kernel the ledger already
+    established is memory-bound, so it cannot meaningfully regress (worst case neutral); the A/B delta is the next
+    dig. NO CEILING is claimed — radix-8 for the remaining 2-part and specialized higher-radix butterflies remain.
+
+Validation:
+  - `rch exec -- cargo test -p fj-lax --profile release --lib fft`: **60 passed / 0 failed** (includes
+    `mixed_radix_matches_dft_for_smooth_sizes`, `non_power_of_two_lengths_match_dft_reference`,
+    `single_row_smooth_fft_routes_mixed_radix_matching_dft`, `iterative_mixed_radix_matches_recursive_to_tolerance`
+    — all tolerance-vs-DFT oracles, so the radix-4 output is verified against the direct transform).
+  - `rustfmt --edition 2024 --check crates/fj-lax/src/fft.rs`: green.

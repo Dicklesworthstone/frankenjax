@@ -1278,7 +1278,17 @@ fn mixed_radix_ping(
         return;
     }
 
-    let p = smallest_prime_factor(nn);
+    // Peel a factor of 4 ahead of the smallest prime factor whenever `nn` allows:
+    // one radix-4 pass replaces two radix-2 passes, halving the number of sweeps
+    // over the (memory-bound) work buffers and trimming twiddle multiplies (the
+    // quarter rotation W_4 is applied once instead of the two W_2 stages). This is
+    // the tolerance path (smooth non-power-of-two lengths — powers of two never
+    // reach mixed_radix), so no golden digest is affected.
+    let p = if nn.is_multiple_of(4) {
+        4
+    } else {
+        smallest_prime_factor(nn)
+    };
     let m = nn / p;
 
     // Recurse: sub-DFT r -> scratch[r*m..], using out[r*m..] as its workspace.
@@ -1317,6 +1327,45 @@ fn mixed_radix_ping(
             let wi = tr * o_im + ti * o_re;
             lo[s] = (e_re + wr, e_im + wi);
             hi[s] = (e_re - wr, e_im - wi);
+        }
+        return;
+    }
+
+    // Specialized radix-4 butterfly (decimation-in-time). Twiddle the three
+    // non-trivial sub-DFTs (u_r = W_nn^{r·s}·F_r[s]), then combine via the
+    // length-4 DFT. With j = W_4 = roots[big_n/4] (≈(0,±1), sign carried by the
+    // transform direction), the four outputs collapse into two real add/sub pairs
+    // plus a single complex multiply by j:
+    //   t0 = u0+u2, t1 = u0−u2, t2 = u1+u3, t3 = u1−u3
+    //   X[s]     = t0+t2,  X[s+2m] = t0−t2
+    //   X[s+m]   = t1 + j·t3,  X[s+3m] = t1 − j·t3
+    // The a=0/a=2 outputs use the exact ±1 (j²=−1) rather than a rounded W_4²,
+    // so this agrees with the direct DFT to floating tolerance while touching the
+    // buffers in one pass. Pulling j from the roots table keeps the inverse sign
+    // exact (matching radix-2/3/5).
+    if p == 4 {
+        let (jr, ji) = roots[big_n / 4]; // W_4 = (cos, ±sin) with the transform's sign
+        let (m2, m3) = (2 * m, 3 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let tw = |r: usize, a: (f64, f64)| {
+                let (tr, ti) = roots[r * s * s_tw];
+                (tr * a.0 - ti * a.1, tr * a.1 + ti * a.0)
+            };
+            let u1 = tw(1, scratch[m + s]);
+            let u2 = tw(2, scratch[m2 + s]);
+            let u3 = tw(3, scratch[m3 + s]);
+            let t0 = (u0.0 + u2.0, u0.1 + u2.1);
+            let t1 = (u0.0 - u2.0, u0.1 - u2.1);
+            let t2 = (u1.0 + u3.0, u1.1 + u3.1);
+            let t3 = (u1.0 - u3.0, u1.1 - u3.1);
+            // j·t3 (complex multiply by the quarter rotation)
+            let jt3r = jr * t3.0 - ji * t3.1;
+            let jt3i = jr * t3.1 + ji * t3.0;
+            out[s] = (t0.0 + t2.0, t0.1 + t2.1);
+            out[m + s] = (t1.0 + jt3r, t1.1 + jt3i);
+            out[m2 + s] = (t0.0 - t2.0, t0.1 - t2.1);
+            out[m3 + s] = (t1.0 - jt3r, t1.1 - jt3i);
         }
         return;
     }
