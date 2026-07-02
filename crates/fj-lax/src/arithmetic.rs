@@ -11087,6 +11087,68 @@ fn fast_cbrt_slice_into(out: &mut [f64], src: &[f64]) {
 /// `eval_unary_elementwise_parallel`) and run the 8-wide SIMD kernel within each block.
 /// Returns `None` for non-dense-f64 (caller falls back to the generic scalar-parallel path).
 /// Bit-identical to the scalar path (`fast_cbrt_slice_into` matches `fast_cbrt_f64`).
+/// Scalar f32 cbrt — the widened reference (f64 bit-trick rounded to f32), for the native-f32 tail/edge.
+fn cbrt_f32_scalar(x: f32) -> f32 {
+    fast_cbrt_f64(x as f64) as f32
+}
+
+/// NATIVE-f32 8-wide `cbrt(x)` — f32 bit-trick initial guess + 3 Halley iterations (cubic convergence,
+/// so 3 iters reach f32 precision even from the rough bit-trick seed), run entirely in f32. Positive-
+/// normal lanes use the kernel; `0` / subnormal / `±inf` / `NaN` → scalar `cbrt_f32_scalar`. Sign via
+/// copysign (odd fn). ~f32 tolerance (few ulp) vs libm; matches JAX's own f32 cbrt (tolerance parity).
+fn cbrt_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
+    use std::simd::Simd;
+    use std::simd::StdFloat;
+    use std::simd::cmp::SimdPartialOrd;
+    use std::simd::num::SimdFloat;
+    type F = Simd<f32, 8>;
+    type U = Simd<u32, 8>;
+    const MAGIC: u32 = 0x2A51_1CC1; // f32 cbrt initial-guess constant (≈ (2/3)·127·2^23)
+    let a = x.abs();
+    let ok = a.simd_ge(F::splat(f32::MIN_POSITIVE)) & a.simd_lt(F::splat(f32::INFINITY));
+    if !ok.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f32; 8];
+        for k in 0..8 {
+            ra[k] = cbrt_f32_scalar(xa[k]);
+        }
+        return F::from_array(ra);
+    }
+    let bits = a.to_bits() / U::splat(3) + U::splat(MAGIC);
+    let mut y = F::from_bits(bits);
+    for _ in 0..3 {
+        let y3 = y * y * y;
+        y = y * (y3 + F::splat(2.0) * a) / (F::splat(2.0) * y3 + a);
+    }
+    let mut r = y.copysign(x);
+    if !ok.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k].abs() >= f32::MIN_POSITIVE && xa[k].abs() < f32::INFINITY) {
+                ra[k] = cbrt_f32_scalar(xa[k]);
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
+}
+
+pub(crate) fn eval_cbrt(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    // Dense f64 uses the 8-wide SIMD bit-trick cbrt (bit-identical to scalar fast_cbrt_f64).
+    if let [Value::Tensor(t)] = inputs
+        && t.dtype == DType::F64
+        && let Some(result) = cbrt_dense_f64_parallel(t)
+    {
+        return result;
+    }
+    // Native-f32 fast path (JAX default dtype), ~2x the widen-to-f64 scalar path.
+    if let Some(v) = eval_unary_simd_dense_f32_native(inputs, cbrt_f32x8, cbrt_f32_scalar) {
+        return v;
+    }
+    eval_unary_elementwise_parallel(primitive, inputs, fast_cbrt_f64)
+}
+
 pub(crate) fn cbrt_dense_f64_parallel(tensor: &TensorValue) -> Option<Result<Value, EvalError>> {
     let src = tensor.elements.as_f64_slice()?;
     let n = src.len();
@@ -27426,6 +27488,90 @@ mod tests {
                 assert_eq!(g.to_bits(), want.to_bits(), "log1p edge at x={x}");
             }
         }
+    }
+
+    #[test]
+    fn cbrt_f32_native_matches_scalar_tolerance_and_edges() {
+        // eval_cbrt native-f32 path (cbrt_f32x8) vs scalar f32 cbrt: few-ulp f32 across the range
+        // (incl. negatives, odd fn), correct edges (0, ±inf, NaN, subnormal via scalar).
+        let n = 300_003usize;
+        let mut data: Vec<f32> = (0..n).map(|i| -1000.0 + (i % 9973) as f32 * 0.2).collect();
+        for (k, v) in [
+            (3usize, 8.0f32),
+            (4, -27.0),
+            (5, 0.0),
+            (6, -0.0),
+            (7, 1e-20),
+            (8, 1e20),
+            (9, f32::INFINITY),
+            (10, f32::NEG_INFINITY),
+            (11, f32::NAN),
+        ] {
+            data[k] = v;
+        }
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+        );
+        let got = match eval_cbrt(Primitive::Cbrt, std::slice::from_ref(&input)).unwrap() {
+            Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
+            _ => panic!("expected f32 tensor"),
+        };
+        for (idx, &x) in data.iter().enumerate() {
+            let want = x.cbrt();
+            let g = got[idx];
+            if want.is_nan() {
+                assert!(g.is_nan(), "cbrt f32 NaN at x={x}");
+            } else if want.is_infinite() {
+                assert_eq!(g.to_bits(), want.to_bits(), "cbrt f32 inf at x={x}");
+            } else {
+                assert!(
+                    (g - want).abs() <= 1e-5 * want.abs().max(1e-20),
+                    "cbrt f32 at x={x}: simd {g} vs scalar {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_cbrt_f32_throughput() {
+        use std::time::Instant;
+        let n = 4_000_000usize;
+        let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.5).collect();
+        let input =
+            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let f = || {
+            std::hint::black_box(eval_cbrt(Primitive::Cbrt, std::slice::from_ref(&input)).unwrap());
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..5 {
+            let s = Instant::now();
+            f();
+            b = b.min(s.elapsed().as_secs_f64());
+        }
+        println!("fj-lax cbrt f32 4M [NATIVE]: {:.3}ms", b * 1e3);
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_cbrt_f32_scalar_ref() {
+        // The pre-native widened scalar path, for the A/B ratio.
+        use std::time::Instant;
+        let n = 4_000_000usize;
+        let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.5).collect();
+        let f = || {
+            let out: Vec<f32> = data.iter().map(|&v| fast_cbrt_f64(v as f64) as f32).collect();
+            std::hint::black_box(out);
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..5 {
+            let s = Instant::now();
+            f();
+            b = b.min(s.elapsed().as_secs_f64());
+        }
+        println!("fj-lax cbrt f32 4M [SCALAR-ORIG]: {:.3}ms", b * 1e3);
     }
 
     #[test]

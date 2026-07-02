@@ -48,7 +48,7 @@ pub(crate) fn new_boxed(
 
 use arithmetic::{
     ensure_float_or_complex_operands, eval_abs, eval_acosh, eval_asinh, eval_atan, eval_atanh,
-    eval_bessel_i0e, eval_bessel_i1e, eval_betainc, eval_binary_elementwise, eval_clamp,
+    eval_bessel_i0e, eval_bessel_i1e, eval_betainc, eval_binary_elementwise, eval_cbrt, eval_clamp,
     eval_complex, eval_conj, eval_cos, eval_cosh, eval_digamma, eval_dot, eval_dot_general,
     eval_erf, eval_erf_inv, eval_erfc, eval_exp, eval_expm1, eval_float_complex_unary, eval_fma,
     eval_igamma,
@@ -578,18 +578,7 @@ fn eval_primitive_inner(
         Primitive::ExpandDims => eval_expand_dims(inputs, params),
         Primitive::Tile => eval_tile(inputs, params),
         // Special math
-        Primitive::Cbrt => {
-            // Dense f64 uses the 8-wide SIMD cbrt (bit-identical to the scalar fast path,
-            // ~1.12-1.40x); every other dtype/shape falls to the guarded scalar-parallel path.
-            if let [Value::Tensor(t)] = inputs
-                && t.dtype == fj_core::DType::F64
-                && let Some(result) = arithmetic::cbrt_dense_f64_parallel(t)
-            {
-                result
-            } else {
-                eval_unary_elementwise_parallel(primitive, inputs, arithmetic::fast_cbrt_f64)
-            }
-        }
+        Primitive::Cbrt => eval_cbrt(primitive, inputs),
         Primitive::IsFinite => eval_is_finite(primitive, inputs),
         Primitive::IsNan => eval_is_nan(primitive, inputs),
         Primitive::IsInf => eval_is_inf(primitive, inputs),

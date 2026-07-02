@@ -2,6 +2,22 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - WIRED WIN (native-f32 Cbrt: 5.67x vs scalar ORIG): biggest f32 win — scalar cbrt didn't autovectorize (BlackThrush)
+
+`Cbrt` f32 fell to `eval_unary_elementwise_parallel(fast_cbrt_f64)`, i.e. scalar `fast_cbrt_f64(x as f64)
+as f32` per element — and `fast_cbrt_f64` has BRANCHES (x==0, out-of-range) that block autovectorization,
+so it was FULLY scalar (18.74ms/4M). New `cbrt_f32x8` = f32 bit-trick seed (magic 0x2A511CC1) + 3 Halley
+iterations (cubic convergence ⇒ 3 iters reach f32 precision from the rough seed), branch-free 8-wide;
+`0`/subnormal/`±inf`/`NaN` → scalar. Sign via copysign. Not bit-pinned. `eval_cbrt` also keeps the f64
+SIMD bit-trick path. MEASURED (4M f32, native vs scalar-ORIG): **18.74ms → 3.31ms = 5.67x** — biggest f32
+win of the session (the scalar baseline was branch-serial, not just widened). Gates: fj-lax lib green, full
+conformance green, f32 accuracy+edge test green.
+
+Native-f32 vein (13): tanh/logistic/cosh/log/log1p/atanh/asinh/acosh/expm1/sinh/digamma (2.0-3.7x) +
+rsqrt 1.31x + cbrt 5.67x. LESSON: the biggest f32 wins are ops whose SCALAR path has branches/libcalls
+that block LLVM autovectorization (cbrt, the transcendentals) — not the trivially-autovectorizing ones
+(rsqrt/sqrt/reciprocal, ~1.3x/BW-bound). Hunt: f32 ops routing to a branchy/libcall scalar map.
+
 ## 2026-07-01 - WIRED WIN (native-f32 Rsqrt: 1.31x); DIFFERENT class (non-transcendental, normalization) (BlackThrush)
 
 Pivoted OFF transcendentals to a different, ubiquitous ML op: `Rsqrt` (1/√x — RMSNorm/LayerNorm).
