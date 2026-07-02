@@ -10448,3 +10448,28 @@ rising to ~1.08x for 2-heavy lengths like 3072. Radix-4 stays landed (correct, z
 `FJ_MIXED_RADIX_NO4` A/B hook. METHOD LESSON (reinforced): cross-invocation FFT baselines inflate under host load —
 only same-binary, and here only an isolated-target build, gives a trustworthy ratio. No ceiling: radix-8 would
 collapse the residual odd 2-power but is marginal on these valuations (not chased).
+
+## 2026-07-02 - SURFACE: contained frontier re-probed (5 primitives) — all done/blocked; pin Bluestein-internal-radix-4 as the one untapped tolerance-safe lever (multi-session) (BlackThrush)
+
+Land-or-dig sweep with a reliable isolated-target build (rch still flapping E0514). Probed for a NEW contained
+different-primitive lever; every candidate is already optimal or blocked:
+  - TopK: already `select_nth_unstable` + partial sort (O(n + k log k)) — optimal, not a full sort.
+  - searchsorted/digitize: not a standalone primitive (only an internal threefry-choice helper).
+  - einsum (2-operand): fully GEMM-routed already ([[einsum GEMM routing]]).
+  - complex transcendentals (exp/log/sin: 3 real-transcendentals/elem, compute-bound): already dense + threaded
+    (`eval_unary_complex_map`, COMPLEX_UNARY_PARALLEL_MIN); no SIMD lever — sincos/exp SIMD is FMA-policy-blocked.
+  - i64 matmul + tensor_contraction: `rank2_i64_matmul` contiguous i-k-j threaded kernel already replaces the
+    strided odometer. Elementwise SIMD stays memory-bound (cf. xlogy ~1.02x this session).
+
+ONE genuinely untapped, tolerance-safe (NOT golden-pinned) lever remains: **Bluestein's two internal convolution
+FFTs run radix-2 (`Radix2Plan`), but ~half of prime lengths have `m = next_pow2(2n-1)` already a power of FOUR**
+(the even-exponent octaves: n∈(256,512]→m=1024, n∈(1024,2048]→m=4096, …) and could use `Radix4Plan` for FREE (no
+padding). VERIFIED ready test case: **n=1031 (prime) → 2n−1=2061 → m=4096=4^6**, so `bench_fft_1031_prime` would
+demonstrate it (the existing prime bench n=1009 → m=2048=2^11 is NOT pow4, can't). SCOPE (why not shipped now,
+multi-session): `Radix4Plan` is SoA-batch-only (`soa_radix4_butterfly_stages` on split re/im) — there is NO
+single-row interleaved `apply_into` like `Radix2Plan`, so `BluesteinPlan` (per-row, interleaved `(f64,f64)`) can't
+drop it in, and the batched SoA Bluestein path (`transform_batches_bluestein_vectorized`) has its own flat radix-2
+kernel that would need a radix-4 variant too. Est. ~1.08x (the measured radix-4 pass-reduction benefit) on ~half
+of prime-length FFTs — niche, hence deferred. Radix-8 for the mixed-radix (same primitive) is marginal over the
+landed radix-4 (val-10: 4 vs 5 passes) with real W_8-twiddle correctness risk — low EV. NO CEILING: FFT
+native-real-kernel + Bluestein-radix-4 + matmul/cholesky FMA-floor all remain open, just multi-session/policy.
