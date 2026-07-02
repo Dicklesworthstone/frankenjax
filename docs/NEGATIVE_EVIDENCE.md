@@ -2,6 +2,20 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - WIRED WIN (native-f32 Sinh: 3.66x vs scalar ORIG): tenth native-f32 consumer (BlackThrush)
+
+Tenth consumer of `eval_unary_simd_dense_f32_native`, unlocked by `expm1_block_f32`. `sinh_f32x8 =
+0.5·(expm1_f32(x) − expm1_f32(−x))` — f32 sibling of `sinh_f64x8`, cancellation-free (both `expm1(±x)
+≈ ±x` for small x). SIMD for `|x| < 88`; `|x|≥88`/`±inf`/`NaN` → scalar `f32::sinh`; `x==0→x` restores
+`sinh(±0)=±0`. MEASURED (4M f32, `FJ_SINH_SCALAR` A/B): scalar-ORIG 23.30ms → NATIVE **6.37ms = 3.66x**
+(biggest f32 win — libm sinh scalar is very slow). Gates: fj-lax lib green, full conformance green,
+few-ulp f32 accuracy green.
+
+Native-f32 vein tally (10): tanh 2.27x, logistic 2.02x, cosh 2.24x, log 2.04x, log1p 3.45x, atanh 2.63x,
+asinh 2.50x, acosh 1.65x, expm1 3.15x, sinh 3.66x — the entire exp/log/hyperbolic/inverse-hyperbolic
+transcendental family is now native-f32. Remaining f32 gaps are BIT-PINNED (exp, erf, sin/cos) or need
+dedicated new poly kernels (lgamma/digamma/bessel f32) — a distinct, larger effort.
+
 ## 2026-07-01 - WIRED WIN (native-f32 Expm1: 3.15x vs scalar ORIG); erf-f32 confirmed bit-pinned (BlackThrush)
 
 Ninth consumer of `eval_unary_simd_dense_f32_native`, via a new `expm1_block_f32` in simd_exp.rs. It

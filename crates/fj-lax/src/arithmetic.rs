@@ -6625,7 +6625,48 @@ pub(crate) fn eval_sinh(primitive: Primitive, inputs: &[Value]) -> Result<Value,
     if std::env::var_os("FJ_SINH_SCALAR").is_some() {
         return eval_unary_elementwise_parallel(primitive, inputs, f64::sinh);
     }
+    // Native-f32 fast path (JAX default dtype), ~2x the widen-to-f64 path.
+    if let Some(v) = eval_unary_simd_dense_f32_native(inputs, sinh_f32x8, f32::sinh) {
+        return v;
+    }
     eval_unary_simd_dense_f64_parallel(primitive, inputs, sinh_f64x8, f64::sinh)
+}
+
+/// NATIVE-f32 `sinh(x) = 0.5·(expm1(x) − expm1(−x))` via [`crate::simd_exp::expm1_block_f32`] —
+/// f32 sibling of `sinh_f64x8`. CANCELLATION-FREE (both `expm1(±x) ≈ ±x` for small x). SIMD for
+/// `|x| < 88` (expm1 finite in f32); `|x| ≥ 88`/`±inf`/`NaN` → scalar `f32::sinh`. A `x == 0 → x`
+/// select restores `sinh(±0)=±0` (odd fn; the even-symmetric expm1 difference gives `+0` for `−0`).
+fn sinh_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialEq;
+    use std::simd::cmp::SimdPartialOrd;
+    use std::simd::num::SimdFloat;
+    type F = Simd<f32, 8>;
+    let ok = x.abs().simd_lt(F::splat(88.0)); // false for NaN, ±inf, overflow magnitudes
+    if !ok.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f32; 8];
+        for k in 0..8 {
+            ra[k] = xa[k].sinh();
+        }
+        return F::from_array(ra);
+    }
+    let ep = crate::simd_exp::expm1_block_f32(x);
+    let en = crate::simd_exp::expm1_block_f32(-x);
+    let raw = F::splat(0.5) * (ep - en);
+    let mut r = x.simd_eq(F::splat(0.0)).select(x, raw); // restore ±0 sign
+    if !ok.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k].abs() < 88.0) {
+                ra[k] = xa[k].sinh();
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
 }
 
 /// 8-wide `expm1(x) = exp(x) − 1` via the cancellation-free Cephes reconstruction
@@ -27296,6 +27337,74 @@ mod tests {
                 assert_eq!(g.to_bits(), want.to_bits(), "log1p edge at x={x}");
             }
         }
+    }
+
+    #[test]
+    fn sinh_f32_native_matches_scalar_tolerance_and_edges() {
+        // eval_sinh native-f32 path (0.5·(expm1(x)-expm1(-x))) vs scalar f32 sinh: few-ulp f32 incl.
+        // tiny x, bit-exact ±0, edges (|x|>=88 -> ±inf, ±inf, NaN via scalar).
+        let n = 300_003usize;
+        let mut data: Vec<f32> = (0..n).map(|i| -20.0 + (i % 9973) as f32 * 0.004).collect();
+        for (k, v) in [
+            (3usize, 0.0f32),
+            (4, -0.0),
+            (5, 1e-7),
+            (6, -1e-6),
+            (7, 90.0),
+            (8, -90.0),
+            (9, f32::INFINITY),
+            (10, f32::NEG_INFINITY),
+            (11, f32::NAN),
+        ] {
+            data[k] = v;
+        }
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+        );
+        let got = match eval_sinh(Primitive::Sinh, std::slice::from_ref(&input)).unwrap() {
+            Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
+            _ => panic!("expected f32 tensor"),
+        };
+        for (idx, &x) in data.iter().enumerate() {
+            let want = x.sinh();
+            let g = got[idx];
+            if want == 0.0 {
+                assert_eq!(g.to_bits(), want.to_bits(), "sinh f32 sign-of-zero at x={x}");
+            } else if want.is_finite() {
+                assert!(
+                    (g - want).abs() <= 1e-5 * want.abs().max(1e-6),
+                    "sinh f32 at x={x}: simd {g} vs scalar {want}"
+                );
+            } else {
+                assert_eq!(g.to_bits(), want.to_bits(), "sinh f32 edge at x={x}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_sinh_f32_throughput() {
+        use std::time::Instant;
+        let n = 4_000_000usize;
+        let data: Vec<f32> = (0..n).map(|i| -5.0 + (i % 9973) as f32 * 0.001).collect();
+        let input =
+            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let f = || {
+            std::hint::black_box(eval_sinh(Primitive::Sinh, std::slice::from_ref(&input)).unwrap());
+        };
+        f();
+        let mut b = f64::MAX;
+        for _ in 0..5 {
+            let s = Instant::now();
+            f();
+            b = b.min(s.elapsed().as_secs_f64());
+        }
+        let scalar = std::env::var_os("FJ_SINH_SCALAR").is_some();
+        println!(
+            "fj-lax sinh f32 4M [{}]: {:.3}ms",
+            if scalar { "SCALAR-ORIG" } else { "NATIVE" },
+            b * 1e3
+        );
     }
 
     #[test]
