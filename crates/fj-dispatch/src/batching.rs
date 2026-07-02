@@ -16497,6 +16497,24 @@ mod tests {
             }
             println!("fj batched {tag} [512,64,64]: {:.2}ms", tm * 1e3);
         }
+        // Non-symmetric eig (multi-output): general real matrix.
+        let make_eig = || {
+            vec![BatchTracer::batched(
+                Value::Tensor(TensorValue::new_f32_values(shape.clone(), genm.clone()).unwrap()),
+                0,
+            )]
+        };
+        let _ = apply_batch_rule_multi(Primitive::Eig, &make_eig(), &params).unwrap();
+        let mut tm = f64::MAX;
+        for _ in 0..3 {
+            let inp = make_eig();
+            let s = Instant::now();
+            let _ = std::hint::black_box(
+                apply_batch_rule_multi(Primitive::Eig, &inp, &params).unwrap(),
+            );
+            tm = tm.min(s.elapsed().as_secs_f64());
+        }
+        println!("fj batched eig [512,64,64]: {:.2}ms", tm * 1e3);
     }
 
     #[test]

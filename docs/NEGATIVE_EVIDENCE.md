@@ -11095,3 +11095,15 @@ compute-bound, isolated-target). Existing threaded code (committed reproducible 
 `bench_batch_eigh_svd_vs_jax` in fj-dispatch); ledger record. NOTE: XLA vmap(inv) [512,64,64] is also slow
 (438ms) but fj has no Inv primitive. svd's smaller margin = fj's per-item svd (one-sided Jacobi/bidiag) is
 nearly as costly as JAX's, so threading only ~1.6x; a faster svd kernel would widen it (linalg = codex zone).
+
+## 2026-07-02 - NEGATIVE: batched NON-symmetric eig LOSES to JAX ~3x (kernel-bound) + is convergence-confounded (BlackThrush)
+
+Extended the batched-linalg bench (57dd29e0) with non-symmetric `eig`. fj batched eig [512,64,64] = **1322ms** vs
+JAX vmap(eig) **409ms = fj 0.31x (LOSES 3.2x)**. Contrast: fj WINS symmetric eigh 5.0x and svd 1.6x. Two takeaways:
+(1) JAX's vmap(eig) IS well-parallelized/tuned (LAPACK sgeev batched) — unlike its vmap(eigh) which is slow — so
+eig is NOT a fj win; fj's real-Schur Francis double-shift + inverse-iteration is genuinely costlier than sgeev.
+(2) METHOD CAVEAT: non-symmetric eig timing is HIGHLY convergence-sensitive to the input matrix, and this bench
+feeds fj a structured (mod-97) matrix vs JAX's iid-random — so the exact ratio is not apples-to-apples. RULE: do
+NOT chase batched-eig as a JAX win, and don't trust fj-vs-JAX eig head-to-heads (convergence-confounded); eigh/svd
+(symmetric/general, reliable convergence) are the trustworthy batched-linalg comparisons. Bench kept as the
+eigh-win/eig-loss contrast (`bench_batch_eigh_svd_vs_jax`).
