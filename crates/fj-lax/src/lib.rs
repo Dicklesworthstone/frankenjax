@@ -4065,6 +4065,90 @@ fn separable_reduce_window_sum_4d_nhwc_f64(
     Some(output)
 }
 
+/// bf16 sibling of [`separable_reduce_window_sum_4d_nhwc_f32`] — the DOMINANT mixed-precision CNN
+/// pooling dtype, where XLA is especially slow (no vectorized bf16 accumulate: JAX w64 ~1.2s). Widens
+/// bf16→f64 per tap (exactly as the fused odometer path does), runs the two O(input) separable running
+/// sums, rounds f64→bf16 once per output row via `round_f64_slice_to_bf16`. VALID/unit-stride,
+/// finite-gated; tolerance-equal (reassociates — coarse bf16 rounding absorbs the f64 reorder).
+#[allow(clippy::too_many_arguments)]
+fn separable_reduce_window_sum_4d_nhwc_bf16(
+    tensor: &TensorValue,
+    dims: [usize; 4],
+    out_h: usize,
+    out_w: usize,
+    window_h: usize,
+    window_w: usize,
+) -> Option<Vec<u16>> {
+    let [bn, h, w, c] = dims;
+    if window_h < 2 || window_w < 2 || window_h.saturating_mul(window_w) < 25 {
+        return None;
+    }
+    if out_h + window_h != h + 1 || out_w + window_w != w + 1 {
+        return None;
+    }
+    let bits = tensor.elements.as_half_float_slice()?;
+    if bits.len() != bn * h * w * c {
+        return None;
+    }
+    let dec = |b: u16| -> f64 { f64::from(f32::from_bits((b as u32) << 16)) };
+    if !bits.iter().all(|&b| dec(b).is_finite()) {
+        return None;
+    }
+    let row_c = out_w * c;
+    let mut output = vec![0u16; bn * out_h * row_c];
+    let mut hsum = vec![0.0f64; h * row_c];
+    let mut vsum = vec![0.0f64; row_c];
+    let mut acc = vec![0.0f64; c];
+    for n in 0..bn {
+        let in_base = n * h * w * c;
+        for pr in 0..h {
+            let src_row = in_base + pr * w * c;
+            let hrow = &mut hsum[pr * row_c..(pr + 1) * row_c];
+            acc.iter_mut().for_each(|a| *a = 0.0);
+            for j in 0..window_w {
+                let s = src_row + j * c;
+                for (a, &b) in acc.iter_mut().zip(&bits[s..s + c]) {
+                    *a += dec(b);
+                }
+            }
+            for (o, &a) in hrow[0..c].iter_mut().zip(&acc) {
+                *o = a;
+            }
+            for oc in 1..out_w {
+                let add = src_row + (oc + window_w - 1) * c;
+                let sub = src_row + (oc - 1) * c;
+                for ch in 0..c {
+                    acc[ch] += dec(bits[add + ch]) - dec(bits[sub + ch]);
+                }
+                let d = &mut hrow[oc * c..(oc + 1) * c];
+                for (o, &a) in d.iter_mut().zip(&acc) {
+                    *o = a;
+                }
+            }
+        }
+        vsum.iter_mut().for_each(|v| *v = 0.0);
+        for wr in 0..window_h {
+            let hrow = &hsum[wr * row_c..(wr + 1) * row_c];
+            for (v, &hh) in vsum.iter_mut().zip(hrow) {
+                *v += hh;
+            }
+        }
+        let obase = n * out_h * row_c;
+        output[obase..obase + row_c]
+            .copy_from_slice(&crate::arithmetic::round_f64_slice_to_bf16(&vsum));
+        for or in 1..out_h {
+            let add = &hsum[(or + window_h - 1) * row_c..(or + window_h) * row_c];
+            let sub = &hsum[(or - 1) * row_c..or * row_c];
+            for ((v, &a), &s) in vsum.iter_mut().zip(add).zip(sub) {
+                *v += a - s;
+            }
+            output[obase + or * row_c..obase + (or + 1) * row_c]
+                .copy_from_slice(&crate::arithmetic::round_f64_slice_to_bf16(&vsum));
+        }
+    }
+    Some(output)
+}
+
 /// Rank-3 separable running-window-SUM for VALID (pad 0), unit-stride f64 sum pooling
 /// (volumetric/3D `reduce_window` add). Replaces the naive O(out·∏window) tap loop in
 /// [`reduce_window_rank3_f64_sum_xlane`] with three O(input) add-new-subtract-old running
@@ -7930,6 +8014,45 @@ fn eval_reduce_window(
         }
     }
 
+    // bf16 rank-4 NHWC SUM: separable O(k) path — XLA is especially slow on bf16 pooling (no
+    // vectorized bf16 accumulate; JAX w64 ~1.2s). Placed before the fused O(k^2) bf16 path below;
+    // SUM only (max/min keep the fused deque/SIMD path). VALID + unit stride, else None → fused path.
+    if no_base_dilation
+        && no_window_dilation
+        && output_dtype == fj_core::DType::BF16
+        && tensor.dtype == fj_core::DType::BF16
+        && reduce_window_sum_like(reduce_op)
+        && rank == 4
+        && window_dims[0] == 1
+        && window_dims[3] == 1
+        && strides.iter().all(|&s| s == 1)
+        && pad_lows.iter().all(|&p| p == 0)
+        && let Some(obits) = separable_reduce_window_sum_4d_nhwc_bf16(
+            tensor,
+            [
+                tensor.shape.dims[0] as usize,
+                tensor.shape.dims[1] as usize,
+                tensor.shape.dims[2] as usize,
+                tensor.shape.dims[3] as usize,
+            ],
+            out_dims[1] as usize,
+            out_dims[2] as usize,
+            window_dims[1],
+            window_dims[2],
+        )
+    {
+        return Ok(Value::Tensor(
+            TensorValue::new_half_float_values(
+                fj_core::DType::BF16,
+                Shape {
+                    dims: out_dims.to_vec(),
+                },
+                obits,
+            )
+            .map_err(EvalError::from)?,
+        ));
+    }
+
     // FUSED bf16 channel-last pooling (max/min/sum): widen bf16→f32/f64 INLINE per tap (no f64
     // intermediate), threaded across output blocks. The materialized-widen path below was bounded
     // by the 51MB intermediate; this reads only the half-size bf16 input → ~8x (26ms→~3ms single
@@ -9867,6 +9990,64 @@ mod tests {
             max_rel < 1e-5,
             "separable f32 sum-pool drifted: {max_rel:e}"
         );
+    }
+
+    #[test]
+    fn rw4d_nhwc_separable_sum_bf16_matches_bruteforce() {
+        let (bn, h, w, c) = (2usize, 13usize, 11usize, 4usize);
+        let (wh, ww) = (5usize, 5usize);
+        let vals: Vec<f32> = (0..bn * h * w * c)
+            .map(|i| (((i * 7 + 3) % 97) as f32) * 0.03125 - 1.5)
+            .collect();
+        // bf16 round-trip the inputs so the reference sums the SAME values the kernel sees.
+        let bf = |v: f32| -> f32 { f32::from_bits((f32::to_bits(v) >> 16) << 16) };
+        let bits: Vec<u16> = vals
+            .iter()
+            .map(|&v| (f32::to_bits(v) >> 16) as u16)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_half_float_values(
+                fj_core::DType::BF16,
+                Shape {
+                    dims: vec![bn as u32, h as u32, w as u32, c as u32],
+                },
+                bits,
+            )
+            .unwrap(),
+        );
+        let mut p = BTreeMap::new();
+        p.insert("reduce_op".to_owned(), "sum".to_owned());
+        p.insert("window_dimensions".to_owned(), format!("1,{wh},{ww},1"));
+        p.insert("window_strides".to_owned(), "1,1,1,1".to_owned());
+        let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&x), &p).unwrap();
+        let got = got.as_tensor().unwrap();
+        let (oh, ow) = (h - wh + 1, w - ww + 1);
+        assert_eq!(
+            got.shape.dims,
+            vec![bn as u32, oh as u32, ow as u32, c as u32]
+        );
+        let obits = got.elements.as_half_float_slice().unwrap();
+        for n in 0..bn {
+            for r in 0..oh {
+                for col in 0..ow {
+                    for ch in 0..c {
+                        let mut acc = 0.0f64;
+                        for dh in 0..wh {
+                            for dw in 0..ww {
+                                let idx = ((n * h + r + dh) * w + col + dw) * c + ch;
+                                acc += f64::from(bf(vals[idx]));
+                            }
+                        }
+                        let oi = ((n * oh + r) * ow + col) * c + ch;
+                        let o = f64::from(f32::from_bits((u32::from(obits[oi])) << 16));
+                        assert!(
+                            (o - acc).abs() <= 0.03 * acc.abs().max(1.0),
+                            "bf16 mismatch n{n} r{r} c{col} ch{ch}: got {o} want {acc}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

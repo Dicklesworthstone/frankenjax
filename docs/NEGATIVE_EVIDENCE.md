@@ -10928,3 +10928,15 @@ separability). JAX f64 reduce_window sum is the same naive O(k^2): [4,256,256,16
 w32=78ms, w64=273ms. fj now FLAT in window: w16=11.80, w32=11.12, **w64=10.70 ms** = vs JAX **2.3x / 7.0x /
 25.5x FASTER**. Verified vs brute-force reference (`rw4d_nhwc_separable_sum_f64_matches_bruteforce`, 1e-9 rel)
 + rw4d tests green. f32+f64 NHWC box-sum now both O(k); half/strided/SAME-pad remain naive (follow-up).
+
+## 2026-07-02 - WIN: bf16 4D NHWC separable sum-pool — up to 141x FASTER than JAX (BlackThrush)
+
+Extended the rank-4 NHWC separable sum-pool (f32 46921b3f, f64 a8aeb4ac) to bf16 — the DOMINANT mixed-precision
+CNN dtype, and XLA's WORST reduce_window case: JAX bf16 [4,256,256,16] win(1,w,w,1) stride1 VALID is naive
+O(k^2) AND has no vectorized bf16 accumulate → w16=110.59ms, w32=400.18ms, w64=**1196.35ms** (~4x slower than
+its f32). `separable_reduce_window_sum_4d_nhwc_bf16` widens bf16→f64 per tap (as the fused odometer does), runs
+the two O(input) running sums, rounds f64→bf16 per output row via `round_f64_slice_to_bf16`; placed BEFORE the
+fused O(k^2) bf16 path (SUM only — max/min keep the deque path). fj FLAT in window: w16=10.45, w32=12.33,
+**w64=8.45 ms** = vs JAX **10.6x / 32.5x / 141.6x FASTER**. Verified vs brute-force bf16 reference
+(`rw4d_nhwc_separable_sum_bf16_matches_bruteforce`, tolerance-gated for coarse bf16 rounding) + rw4d tests green.
+NHWC box-sum now O(k) for f32/f64/bf16; f16 + strided/SAME-pad remain (follow-up).
