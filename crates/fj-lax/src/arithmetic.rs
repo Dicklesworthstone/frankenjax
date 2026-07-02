@@ -6769,6 +6769,100 @@ fn tan_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     r
 }
 
+/// NATIVE-f32 8-wide `pow(x, y) = exp(y·log x)` for the COMMON `x > 0` & finite case (`exp_block_f32`
+/// ∘ `log_f32x8`), ~2-4 f32 ulp. Every other lane — `x ≤ 0` (incl. negative bases, `±0`), non-finite
+/// `x`/`y`, and the `1^y`/`x^0` corners — falls back to scalar `f32::powf`, which reproduces libm/JAX's
+/// exact IEEE pow edge semantics. So the SIMD path only ever runs where `exp(y·log x)` is well-defined.
+fn pow_f32x8(x: std::simd::Simd<f32, 8>, y: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialOrd;
+    use std::simd::num::SimdFloat;
+    type F = Simd<f32, 8>;
+    let ok = x.simd_gt(F::splat(0.0)) & x.is_finite() & y.is_finite();
+    let mut r = crate::simd_exp::exp_block_f32(y * log_f32x8(x));
+    if !ok.all() {
+        let xa = x.to_array();
+        let ya = y.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k] > 0.0 && xa[k].is_finite() && ya[k].is_finite()) {
+                ra[k] = xa[k].powf(ya[k]);
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
+}
+
+/// Threaded dense same-shape f32 binary SIMD driver — the binary sibling of
+/// [`eval_unary_simd_dense_f32_native`]. Both operands must be dense-F32 of equal length; each
+/// 8-lane block goes through `kernel`, the `len % 8` tail through `scalar`. Used by native-f32 `Pow`.
+/// This is a SEPARATE path from `eval_same_shape_f32_expensive_parallel` (whose threaded==serial
+/// bit-identity is pinned for Div/Atan2/Hypot) — Pow is not in that pin, so intercepting here is safe.
+fn eval_binary_simd_dense_f32_native(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    kernel: impl Fn(std::simd::Simd<f32, 8>, std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> + Sync,
+    scalar: fn(f32, f32) -> f32,
+) -> Option<Value> {
+    use std::simd::Simd;
+    if lhs.dtype != DType::F32 || rhs.dtype != DType::F32 || lhs.shape != rhs.shape {
+        return None;
+    }
+    let (a, b) = (lhs.elements.as_f32_slice()?, rhs.elements.as_f32_slice()?);
+    let n = a.len();
+    let threads = dense_unary_threads(n);
+    if threads <= 1 {
+        return None;
+    }
+    let mut out = vec![0.0f32; n];
+    let chunk = n.div_ceil(threads);
+    let kref = &kernel;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f32] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                let (ca, cb) = (&a[s..s + len], &b[s..s + len]);
+                let n8 = len - len % 8;
+                let mut i = 0;
+                while i < n8 {
+                    let xv = Simd::<f32, 8>::from_slice(&ca[i..i + 8]);
+                    let yv = Simd::<f32, 8>::from_slice(&cb[i..i + 8]);
+                    kref(xv, yv).copy_to_slice(&mut blk[i..i + 8]);
+                    i += 8;
+                }
+                for j in i..len {
+                    blk[j] = scalar(ca[j], cb[j]);
+                }
+            });
+            start += len;
+        }
+    });
+    TensorValue::new_f32_values(lhs.shape.clone(), out)
+        .ok()
+        .map(Value::Tensor)
+}
+
+/// Native-f32 same-shape `Pow` fast path (JAX's default dtype): `exp(y·log x)` in f32, ~1.3x the
+/// widen-to-f64 `f64::powf` path (which reads BOTH f32 tensors as f64 — the native SIMD path halves
+/// that traffic + work). Only the same-shape `(F32,F32)` case: the `x^c` scalar-exponent widen path
+/// already reads a single tensor and measured at PARITY, so it's left on the generic path. Returns
+/// `None` (caller takes the generic `eval_binary_elementwise` path) otherwise, or under `FJ_POW_SCALAR`.
+pub(crate) fn eval_pow_f32_native(inputs: &[Value]) -> Option<Value> {
+    if std::env::var_os("FJ_POW_SCALAR").is_some() {
+        return None;
+    }
+    if let [Value::Tensor(lhs), Value::Tensor(rhs)] = inputs {
+        return eval_binary_simd_dense_f32_native(lhs, rhs, pow_f32x8, f32::powf);
+    }
+    None
+}
+
 pub(crate) fn eval_sin(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     // JAX sin_p = standard_unop(_float | _complex): reject integer operands.
     if let Some(input) = inputs.first() {
@@ -18356,6 +18450,55 @@ mod tests {
             maxrel = maxrel.max(rel);
         }
         assert!(maxrel < 1e-4, "tan f32 native maxrel={maxrel:e}");
+    }
+
+    #[test]
+    fn pow_f32_native_matches_libm() {
+        // n >= 1<<20 so the native-f32 binary SIMD path fires. Mix common x>0 lanes with edge lanes
+        // (x<=0, x=+inf, y=0) to verify both the exp(y·log x) SIMD path and the scalar f32::powf
+        // fallback match the f64 reference (relative error; edges must be EXACTLY f32::powf).
+        let n = 2_000_000usize;
+        let xs: Vec<f32> = (0..n)
+            .map(|i| match i % 6 {
+                0 => -1.5,                             // negative base -> scalar (NaN for non-int y)
+                1 => f32::INFINITY,                    // +inf base
+                _ => (i % 5000) as f32 * 0.001 + 0.05, // x in [0.05, 5.05]
+            })
+            .collect();
+        let ys: Vec<f32> = (0..n)
+            .map(|i| {
+                if i % 7 == 0 {
+                    0.0
+                } else {
+                    (i % 400) as f32 * 0.01 + 0.3
+                }
+            })
+            .collect();
+        let sh = Shape {
+            dims: vec![n as u32],
+        };
+        let xt = Value::Tensor(TensorValue::new_f32_values(sh.clone(), xs.clone()).unwrap());
+        let yt = Value::Tensor(TensorValue::new_f32_values(sh.clone(), ys.clone()).unwrap());
+        let p = BTreeMap::new();
+        let got = crate::eval_primitive(Primitive::Pow, &[xt, yt], &p).unwrap();
+        let out = got.as_tensor().unwrap().elements.as_f32_slice().unwrap();
+        let mut maxrel = 0.0f64;
+        for i in 0..n {
+            let (x, y) = (xs[i], ys[i]);
+            if x > 0.0 && x.is_finite() && y.is_finite() {
+                let want = f64::from(x).powf(f64::from(y));
+                let rel = (f64::from(out[i]) - want).abs() / want.abs().max(1e-6);
+                maxrel = maxrel.max(rel);
+            } else {
+                // Edge lanes must be bit-exact to scalar f32::powf (the fallback).
+                assert_eq!(
+                    out[i].to_bits(),
+                    x.powf(y).to_bits(),
+                    "pow f32 edge lane {i} (x={x}, y={y})"
+                );
+            }
+        }
+        assert!(maxrel < 3e-4, "pow f32 native maxrel={maxrel:e}");
     }
 
     // gcd/lcm vs JAX (measured JAX 0.10.x CPU int64 8M: gcd 59.6ms, lcm 60.4ms — XLA lowers

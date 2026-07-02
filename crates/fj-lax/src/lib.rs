@@ -277,12 +277,20 @@ fn eval_primitive_inner(
         Primitive::Max => eval_binary_elementwise(primitive, inputs, |a, b| a.max(b), jax_max_f64),
         Primitive::Min => eval_binary_elementwise(primitive, inputs, |a, b| a.min(b), jax_min_f64),
         Primitive::Fma => eval_fma(primitive, inputs),
-        Primitive::Pow => eval_binary_elementwise(
-            primitive,
-            inputs,
-            |a, b| (a as f64).powf(b as f64) as i64,
-            f64::powf,
-        ),
+        Primitive::Pow => {
+            // Native-f32 same-shape fast path (JAX default dtype): exp(y·log x) in f32, ~2x the
+            // widen-to-f64 `f64::powf`. Separate from the bit-pinned f32 expensive-binary path.
+            if let Some(v) = crate::arithmetic::eval_pow_f32_native(inputs) {
+                Ok(v)
+            } else {
+                eval_binary_elementwise(
+                    primitive,
+                    inputs,
+                    |a, b| (a as f64).powf(b as f64) as i64,
+                    f64::powf,
+                )
+            }
+        }
         Primitive::Hypot => eval_binary_elementwise(
             primitive,
             inputs,

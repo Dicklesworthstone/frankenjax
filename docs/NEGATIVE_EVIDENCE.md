@@ -2,6 +2,22 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - WIN (modest, real code): native-f32 same-shape Pow x^y ~1.3x A/B — FIRST binary-f32-SIMD kernel (BlackThrush)
+
+Follow-up to the pow-widen record (27354f28). The reverted native-f32 Atan2 established that the f32
+expensive-BINARY path is bit-pinned threaded==serial — but only for Div/Atan2/Hypot (the shared test
+`f32_expensive_binary_threaded_bit_identical_and_faster`); **Pow is NOT in that pin** (verified crate-wide), so a
+SEPARATE native path is safe. Added `pow_f32x8(x,y) = exp_block_f32(y·log_f32x8(x))` for x>0 & finite lanes (every
+edge — x≤0, ±inf, y=0, negative base — falls back to scalar `f32::powf`, so IEEE pow semantics are exact), a new
+threaded `eval_binary_simd_dense_f32_native` driver (the binary sibling of the unary one), and an `eval_pow_f32_native`
+intercept in the lib.rs Pow dispatch before the generic path. RESULT (same-binary A/B, `FJ_POW_SCALAR`, f32 16M
+`x^y`): NATIVE ~14.8ms vs WIDEN ~18.7ms = **~1.3x** (the widen path reads BOTH tensors as f64; native halves that);
+vs JAX 20.7ms = **~1.4x**. Accuracy: common lanes ~2-4 f32 ulp vs f64 `powf`, edge lanes bit-exact to `f32::powf`
+(`pow_f32_native_matches_libm`). fj-lax lib suite green (1724). NOTE: the `x^c` SCALAR-exponent case measured at
+PARITY (its widen path already reads one tensor) so it is LEFT on the generic path — native only helps `x^y`.
+The `eval_binary_simd_dense_f32_native` driver is reusable for future binary native-f32 ops (once their bit-pin, if
+any, is relaxed). Modest + contention-noisy, but a real correct same-binary win and the first binary-f32-SIMD kernel.
+
 ## 2026-07-02 - WIN (modest): Pow f32 ~1.3x FASTER than JAX; native-f32 binary Pow deferred (~2x, bit-pin risk) (BlackThrush)
 
 `Pow` (x^y = exp(y·log x), 2 transcendentals/elem) is the last common expensive elementwise op. fj Pow f32 threads
