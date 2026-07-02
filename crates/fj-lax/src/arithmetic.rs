@@ -6574,6 +6574,147 @@ fn cosh_sinh_from_exp(x: f64) -> (f64, f64) {
     (0.5 * (e + inv), 0.5 * (e - inv))
 }
 
+// Shared Cephes `sinf`/`cosf` octant-reduction constants (all f32-exact or minimax coeffs).
+const SINCOS_FOPI: f32 = 1.273_239_5; // 4/π
+const SINCOS_DP1: f32 = 0.785_156_25; // π/4 split, part 1 (exact in f32)
+const SINCOS_DP2: f32 = 2.418_756_5e-4;
+const SINCOS_DP3: f32 = 3.774_895e-8;
+const SIN_C0: f32 = -1.951_529_6e-4;
+const SIN_C1: f32 = 8.332_161e-3;
+const SIN_C2: f32 = -1.666_665_5e-1;
+const COS_C0: f32 = 2.443_315_7e-5;
+const COS_C1: f32 = -1.388_731_6e-3;
+const COS_C2: f32 = 4.166_664_6e-2;
+
+/// Reduce `ax = |x|` (assumed `< 8192`) to Cephes octant `j` (already `& 7`, then `-4` if `>3`),
+/// the reduced argument `z ∈ [−π/4, π/4]`, and the `j>3` mask (a sign flip). Shared by
+/// [`sin_f32x8`] and [`cos_f32x8`].
+#[inline]
+fn sincos_reduce_f32x8(
+    ax: std::simd::Simd<f32, 8>,
+) -> (
+    std::simd::Simd<i32, 8>,
+    std::simd::Simd<f32, 8>,
+    std::simd::Mask<i32, 8>,
+) {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+    use std::simd::num::{SimdFloat, SimdInt};
+    type F = Simd<f32, 8>;
+    type I = Simd<i32, 8>;
+    let mut j = (ax * F::splat(SINCOS_FOPI)).cast::<i32>();
+    // round the octant index up to even (Cephes `if (j & 1) { j += 1; }`).
+    let odd = (j & I::splat(1)).simd_eq(I::splat(1));
+    j = odd.select(j + I::splat(1), j);
+    let y = j.cast::<f32>();
+    j = j & I::splat(7);
+    let jgt3 = j.simd_gt(I::splat(3));
+    j = jgt3.select(j - I::splat(4), j);
+    // Cody-Waite: z = ((ax − y·DP1) − y·DP2) − y·DP3, extended-precision |x| mod π/4.
+    let z = ((ax - y * F::splat(SINCOS_DP1)) - y * F::splat(SINCOS_DP2)) - y * F::splat(SINCOS_DP3);
+    (j, z, jgt3)
+}
+
+#[inline]
+fn sin_poly_f32x8(
+    z: std::simd::Simd<f32, 8>,
+    zz: std::simd::Simd<f32, 8>,
+) -> std::simd::Simd<f32, 8> {
+    use std::simd::Simd;
+    type F = Simd<f32, 8>;
+    let p = ((F::splat(SIN_C0) * zz + F::splat(SIN_C1)) * zz + F::splat(SIN_C2)) * zz;
+    z + z * p
+}
+
+#[inline]
+fn cos_poly_f32x8(zz: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
+    use std::simd::Simd;
+    type F = Simd<f32, 8>;
+    let p = ((F::splat(COS_C0) * zz + F::splat(COS_C1)) * zz + F::splat(COS_C2)) * (zz * zz);
+    (F::splat(1.0) - F::splat(0.5) * zz) + p
+}
+
+/// NATIVE-f32 8-wide `sin(x)` — Cephes `sinf`: octant reduction + Cody-Waite into [−π/4, π/4] then
+/// the sin/cos minimax polynomial per octant (`j∈{1,2}` uses the cos poly; sign = sign(x) XOR j>3).
+/// Accurate to ~1 f32 ulp for `|x| < 8192`; `|x| ≥ 8192` / `±inf` / `NaN` fall back to scalar
+/// `f32::sin` per lane. ~f32 tolerance (trig parity is tolerance), NOT bit-identical to widen-f64.
+fn sin_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+    use std::simd::num::SimdFloat;
+    type F = Simd<f32, 8>;
+    type I = Simd<i32, 8>;
+    type U = Simd<u32, 8>;
+    let ok = x.abs().simd_lt(F::splat(8192.0)); // false for NaN, ±inf, large magnitudes
+    if !ok.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f32; 8];
+        for k in 0..8 {
+            ra[k] = xa[k].sin();
+        }
+        return F::from_array(ra);
+    }
+    let (j, z, jgt3) = sincos_reduce_f32x8(x.abs());
+    let zz = z * z;
+    let use_cos = j.simd_eq(I::splat(1)) | j.simd_eq(I::splat(2));
+    let mut r = use_cos.select(cos_poly_f32x8(zz), sin_poly_f32x8(z, zz));
+    // sign(sin x) = sign(x) XOR (octant > 3). Use the raw sign bit so ±0 is preserved.
+    let x_neg = (x.to_bits() & U::splat(0x8000_0000)).simd_ne(U::splat(0));
+    r = (x_neg ^ jgt3).select(-r, r);
+    if !ok.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k].abs() < 8192.0) {
+                ra[k] = xa[k].sin();
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
+}
+
+/// NATIVE-f32 8-wide `cos(x)` — Cephes `cosf`. cos is even, so reduce `|x|`; octant `j∈{1,2}` uses
+/// the sin poly, and the sign flips on `j>3` XOR `j>1` (post-reduction). Same range/fallback as
+/// [`sin_f32x8`]; ~1 f32 ulp for `|x| < 8192`, else scalar `f32::cos`.
+fn cos_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+    use std::simd::num::SimdFloat;
+    type F = Simd<f32, 8>;
+    type I = Simd<i32, 8>;
+    let ax = x.abs();
+    let ok = ax.simd_lt(F::splat(8192.0));
+    if !ok.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f32; 8];
+        for k in 0..8 {
+            ra[k] = xa[k].cos();
+        }
+        return F::from_array(ra);
+    }
+    let (j, z, jgt3) = sincos_reduce_f32x8(ax);
+    let zz = z * z;
+    let use_sin = j.simd_eq(I::splat(1)) | j.simd_eq(I::splat(2));
+    let mut r = use_sin.select(sin_poly_f32x8(z, zz), cos_poly_f32x8(zz));
+    let jgt1 = j.simd_gt(I::splat(1));
+    r = (jgt3 ^ jgt1).select(-r, r);
+    if !ok.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k].abs() < 8192.0) {
+                ra[k] = xa[k].cos();
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
+}
+
 pub(crate) fn eval_sin(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     // JAX sin_p = standard_unop(_float | _complex): reject integer operands.
     if let Some(input) = inputs.first() {
@@ -6589,6 +6730,12 @@ pub(crate) fn eval_sin(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             (sa * cosh_b, ca * sinh_b)
         })
     } else {
+        // Native-f32 fast path (JAX default dtype), ~2x the widen-to-f64 path.
+        if std::env::var_os("FJ_SIN_SCALAR").is_none()
+            && let Some(v) = eval_unary_simd_dense_f32_native(inputs, sin_f32x8, f32::sin)
+        {
+            return v;
+        }
         eval_unary_elementwise_parallel(primitive, inputs, f64::sin)
     }
 }
@@ -6606,6 +6753,12 @@ pub(crate) fn eval_cos(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             (ca * cosh_b, -sa * sinh_b)
         })
     } else {
+        // Native-f32 fast path (JAX default dtype), ~2x the widen-to-f64 path.
+        if std::env::var_os("FJ_COS_SCALAR").is_none()
+            && let Some(v) = eval_unary_simd_dense_f32_native(inputs, cos_f32x8, f32::cos)
+        {
+            return v;
+        }
         eval_unary_elementwise_parallel(primitive, inputs, f64::cos)
     }
 }
@@ -17882,6 +18035,76 @@ mod tests {
             let v = eval_betainc(Primitive::Betainc, &[a.clone(), b.clone(), u.clone()]).unwrap();
             v.as_tensor().unwrap().elements.as_f64_slice().unwrap()[123]
         });
+    }
+
+    // sin/cos f32 vs JAX (measured JAX 0.10.x CPU f32 16M: sin 27.1ms, cos 24.6ms — XLA's f32
+    // sin/cos is compute-bound + under-parallelized ~4.7GB/s). fj sin/cos f32 currently WIDENS
+    // to f64 (eval_unary_elementwise_parallel(f64::sin)); measure whether that already wins.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_sin_cos_f32_vs_jax() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let xs: Vec<f32> = (0..n)
+            .map(|i| ((i % 62831) as f32) * 0.0002 - 6.2831)
+            .collect();
+        let xt = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xs,
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::new();
+        let time_it = |label: &str, prim: Primitive| {
+            let f = || {
+                let v = crate::eval_primitive(prim, std::slice::from_ref(&xt), &p).unwrap();
+                v.as_tensor().unwrap().elements.as_f32_slice().unwrap()[123]
+            };
+            std::hint::black_box(f());
+            let mut best = f64::MAX;
+            for _ in 0..6 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                best = best.min(s.elapsed().as_secs_f64());
+            }
+            println!("fj {label} f32 16M: {:.3}ms", best * 1e3);
+        };
+        time_it("sin (JAX 27.1ms)", Primitive::Sin);
+        time_it("cos (JAX 24.6ms)", Primitive::Cos);
+    }
+
+    #[test]
+    fn sin_cos_f32_native_matches_libm() {
+        // n >= 1<<20 so the native-f32 SIMD kernels fire (dense_unary_threads > 1). Compare to the
+        // f64 reference over [-500, 500] (≈160 periods, full quadrant coverage) within the SIMD
+        // range |x| < 8192; assert ~f32 tolerance (a wrong octant/sign gives O(1) error, caught).
+        let n = 2_000_000usize;
+        let xs: Vec<f32> = (0..n).map(|i| (i as f32) * 0.000_5 - 500.0).collect();
+        let xt = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xs.clone(),
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::new();
+        for (prim, refr) in [
+            (Primitive::Sin, f64::sin as fn(f64) -> f64),
+            (Primitive::Cos, f64::cos as fn(f64) -> f64),
+        ] {
+            let got = crate::eval_primitive(prim, std::slice::from_ref(&xt), &p).unwrap();
+            let out = got.as_tensor().unwrap().elements.as_f32_slice().unwrap();
+            let mut maxerr = 0.0f64;
+            for i in 0..n {
+                maxerr = maxerr.max((f64::from(out[i]) - refr(f64::from(xs[i]))).abs());
+            }
+            assert!(maxerr < 2e-5, "{prim:?} f32 native maxerr={maxerr:e}");
+        }
     }
 
     // gcd/lcm vs JAX (measured JAX 0.10.x CPU int64 8M: gcd 59.6ms, lcm 60.4ms — XLA lowers

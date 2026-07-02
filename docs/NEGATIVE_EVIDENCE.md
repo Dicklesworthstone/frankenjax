@@ -2,6 +2,21 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - WIN: native-f32 SIMD Sin/Cos ~2.2x FASTER than JAX (the last common trig gap) (BlackThrush)
+
+Sin/Cos were the only ubiquitous transcendentals still MISSING a native-f32 kernel (the 07-01 native-f32 sweep did
+asin/acos/atan/sinh/cbrt/log2/… but skipped sin/cos — they need octant range-reduction, unlike the others). Real
+`eval_sin`/`eval_cos` f32 WIDENED to f64 (`eval_unary_elementwise_parallel(f64::sin)`). Meanwhile XLA's own f32
+sin/cos is compute-bound and UNDER-parallelized: JAX 0.10.x CPU f32 16M sin=27.1ms, cos=24.6ms (~4.7GB/s). Added
+`sin_f32x8`/`cos_f32x8` = Cephes `sinf`/`cosf` (octant `j=⌊4/π·|x|⌋` rounded even, Cody-Waite 3-part reduction into
+[−π/4,π/4], sin/cos minimax polys selected + sign-flipped per octant), threaded via the existing
+`eval_unary_simd_dense_f32_native` driver; `|x|≥8192`/`±inf`/`NaN` fall back to scalar `f32::sin` per lane. RESULT
+(`bench_sin_cos_f32_vs_jax`, 16M): fj sin **11.5-11.9ms** vs JAX 27.1ms = **~2.3x FASTER**; cos **11.5-12.3ms** vs
+JAX 24.6ms = **~2.1x** (and ~1.8x over fj's own prior widen path 20.9ms). Accuracy ~1 f32 ulp, verified vs f64
+reference over [−500,500] (`sin_cos_f32_native_matches_libm`, tol 2e-5 — a wrong octant/sign gives O(1) error).
+fj-lax lib suite green (1722 passed). No RNG/golden dep on sin/cos (tolerance-only). Tan not done (poles + sin/cos
+ratio; less common). This completes native-f32 for the common trig family.
+
 ## 2026-07-02 - NEGATIVE: JAX single full-SVD is slow at ALL sizes but is NOT a fj win (parity + rejected lever) (BlackThrush)
 
 Chased the "single (non-batched) pinv/lstsq slow in JAX" thread (probe: pinv[1024,512]=1233ms, lstsq=1643ms) down to
