@@ -10649,3 +10649,17 @@ So the whole rejection-sampler family is now parity-faithful (element-wise oracl
 XLA-CPU's vmap'd while-loop. NOTE (method): jax.nn.softmax [4096,4096] f64 first measured 76.9 ms but log_softmax
 (near-identical op) was 23.0 ms and fj log_softmax 21.5 ms (~parity) — the 76.9 ms was a host-load anomaly, so
 softmax is NOT a 3x win; sanity-check surprising ratios (cf. the FFT load-inflation lesson). No ceiling.
+
+## 2026-07-02 - RESOLVED: cumsum vs JAX is a clean 3.07x WIN (isolated target removes the worker-confound) (BlackThrush)
+
+The prior cumsum entry (`project_cumsum_worker_confound_and_blocked_noship`) flagged the vs-JAX ratio as
+WORKER-CONFOUNDED (a "2.15x loss" that flipped to "2.43x win" on the same code across shared rch workers), leaving
+it ambiguous. Re-measured on an ISOLATED local target (matched nightly, private CARGO_TARGET_DIR — the same setup
+that gave the trustworthy RNG/gamma numbers), which eliminates the shared-worker variance:
+  - `eval_primitive(Cumsum, [4096,4096] f64, axis=1)` = **22.09 ms** (best of 7).
+  - `jnp.cumsum(x, axis=-1)` same shape, f64: **67.73 ms** (median of 7).
+  - **fj is ~3.07x FASTER than JAX** — cumsum is a clean WIN, NOT a loss. The confound was pure shared-worker
+    timing noise; the isolated target is the reliable comparator. (fj's threaded contiguous-block cumsum beats
+    XLA-CPU's scan, consistent with the sum/argmax/sort seq-axis wins.) No new code — resolves an open ambiguity.
+    METHOD: for any vs-JAX ratio that flips sign across runs, re-measure on an isolated local target before
+    trusting it. No ceiling.
