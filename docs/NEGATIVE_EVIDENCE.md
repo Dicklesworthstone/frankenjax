@@ -10356,3 +10356,28 @@ The stash/rebuild baseline bench (deferred above) actually completed post-ship:
     saving alone predicts, so part of it is likely a load-inflated baseline; the candidate 2.4726 ms is the stable,
     trustworthy number. A same-invocation A/B (both binaries benched back-to-back) is the confirm-lever. Regardless
     of the exact multiple, the direction is a clear WIN and correctness is proven (60/0 tolerance-vs-DFT).
+
+## 2026-07-02 - SURFACE (blocked): XLogY/XLog1PY still scalar per-element ln in the threaded path — SIMD-log lever drafted, blocked on Mask::select trait-drift (BlackThrush)
+
+Different-primitive dig after the radix-4 FFT ship. `Primitive::XLogY`/`XLog1PY` (lib.rs dispatch) route dense
+same-shape F64 through `eval_same_shape_f64_expensive_parallel`, which is THREADED but still calls the scalar
+closure `|x,y| if x==0 {0} else {x*y.ln()}` — one libm `ln` PER ELEMENT. fj-lax already has the 8-wide Cephes
+`log_f64x8` / `log1p_f64x8` (edge-lane-safe, ~1 ulp) that gave `eval_log` ~2.36x over scalar libm ln (no-FMA).
+xlogy parity is TOLERANCE (oracle asserts `<1e-14`, no bit-golden — same class as Log), so the transcendental
+can be vectorized. Estimated ~1.4-1.8x on dense-f64 xlogy/xlog1py (the `ln` dominates the multiply+mask).
+
+DRAFTED (stashed, not landed): `eval_xlogy_family_simd_dense_f64(inputs, edge_y, simd_log, scalar)` — threaded
+dense-f64 kernel: `prod = x * log_f64x8(y)`, then two edge masks bit-exact to the oracle's `assert_eq` pins:
+`x==0 ⇒ 0.0` (overrides `0·±inf`/`0·nan`) and `y==edge_y ⇒ x·0.0` (`edge_y`=1.0 xlogy / 0.0 xlog1py; libm
+`ln(edge)=0` exactly but the SIMD block may round to ε, so force the scalar product). Wired behind
+`FJ_XLOGY_SCALAR` for a same-binary A/B. Ragged tail + f32/int/broadcast/complex fall through unchanged.
+
+BLOCKER: the two mask selects (`y.simd_eq(edge).select(x*zero, prod)` and `x.simd_eq(zero).select(zero, r1)`)
+fail to compile on the rch worker nightly: `error[E0599]: no method named 'select' found for struct Mask<T,N>`.
+This is the known portable-SIMD select/compare trait-drift-across-nightlies hazard (see
+`project_simd_poly_exp_fma_finding` memory: "avoid masks"). FIX for the next dig (small): replace the
+`Mask::select` calls with branchless arithmetic on the mask as a `Simd` (`m.to_int().cast::<f64>()` blend) OR
+handle the two edges scalar-per-lane inside the SIMD loop via `to_array()` only when `simd_eq(...).any()` (edges
+are rare, so the fast lane stays vectorized). Then rebuild, run `xlogy_oracle` (green) + the `FJ_XLOGY_SCALAR`
+same-binary A/B on a large dense-f64 array. WIP stash: `git stash list` → "WIP XLogY SIMD ... BlackThrush".
+NO CEILING — this is a live, small, high-confidence lever, just trait-blocked this session.
