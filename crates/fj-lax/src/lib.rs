@@ -15258,6 +15258,31 @@ mod tests {
         assert_eq!(vals, vec![i64::MAX, i64::MIN, i64::MIN + 1]);
     }
 
+    // Guards the i64 Dot fast path (rank2_i64_matmul_dot): a non-trivial int64 matmul
+    // via Primitive::Dot must equal the hand-computed product (and thus the generic
+    // odometer it now bypasses). [[1,2,3],[4,5,6]] @ [[7,8],[9,10],[11,12]].
+    #[test]
+    fn i64_dot_fast_path_matches_expected() {
+        let a = Value::Tensor(
+            TensorValue::new_i64_values(Shape { dims: vec![2, 3] }, vec![1, 2, 3, 4, 5, 6])
+                .unwrap(),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_i64_values(Shape { dims: vec![3, 2] }, vec![7, 8, 9, 10, 11, 12])
+                .unwrap(),
+        );
+        let out = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+        let vals: Vec<i64> = out
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_i64().unwrap())
+            .collect();
+        // row0: [1*7+2*9+3*11, 1*8+2*10+3*12] = [58, 64]; row1: [139, 154].
+        assert_eq!(vals, vec![58, 64, 139, 154]);
+    }
+
     #[test]
     fn cumsum_1d() {
         // cumsum([1, 2, 3, 4]) = [1, 3, 6, 10]

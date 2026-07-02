@@ -14075,6 +14075,36 @@ fn rank2_f64_matmul(
     )?)))
 }
 
+/// Dense rank-2 i64 matmul fast path for the `Dot` primitive. Mirrors
+/// [`rank2_f64_matmul`] but routes to the threaded contiguous i-k-j
+/// [`rank2_i64_matmul`] kernel (wrapping arithmetic — BIT-IDENTICAL to the generic
+/// `dot_accumulate` odometer this replaces). Without it, `dot`/`matmul` on int64
+/// fell to the per-element odometer: 1024³ i64 measured ~14 s vs JAX ~4 s (XLA has
+/// no BLAS for integers either, so the kernel WINS outright). Returns `None` for
+/// non-i64/non-rank-2/boxed inputs so the caller keeps the generic path.
+fn rank2_i64_matmul_dot(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    output_dims: &[u32],
+) -> Result<Option<Value>, EvalError> {
+    if lhs.dtype != DType::I64 || rhs.dtype != DType::I64 || lhs.rank() != 2 || rhs.rank() != 2 {
+        return Ok(None);
+    }
+    let m = lhs.shape.dims[0] as usize;
+    let k = lhs.shape.dims[1] as usize;
+    let n = rhs.shape.dims[1] as usize;
+    let (Some(a), Some(b)) = (lhs.elements.as_i64_slice(), rhs.elements.as_i64_slice()) else {
+        return Ok(None);
+    };
+    let values = rank2_i64_matmul(a, m, k, b, n);
+    Ok(Some(Value::Tensor(TensorValue::new_i64_values(
+        Shape {
+            dims: output_dims.to_vec(),
+        },
+        values,
+    )?)))
+}
+
 /// Transpose a contiguous row-major `[rows, cols]` f64 matrix to `[cols, rows]`.
 fn transpose_rows_cols_f64(data: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     let mut out = vec![0.0_f64; rows * cols];
@@ -15037,6 +15067,9 @@ fn eval_tensor_dot(
     output_dims.push(columns as u32);
 
     if let Some(value) = rank2_f64_matmul(lhs, rhs, &output_dims)? {
+        return Ok(value);
+    }
+    if let Some(value) = rank2_i64_matmul_dot(lhs, rhs, &output_dims)? {
         return Ok(value);
     }
 

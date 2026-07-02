@@ -10677,3 +10677,21 @@ change needed, and I proved it with element-wise oracles:
 VERIFIED element-for-element vs JAX-f32 `chisquare(PRNGKey(0),4,(6,))` and `t(PRNGKey(0),5,(6,))`: new oracle
 `random_chi2_and_t_match_jax_reference_f32` GREEN to 1e-4. So the gamma fidelity fix (8241ad8e) transitively made
 chi2/t/beta/dirichlet all JAX-faithful; guard tests now pin chi2+t too. No ceiling.
+
+## 2026-07-02 - WIN (perf vs JAX): wire i64 matmul fast path into the Dot primitive — 808x internal, ~230x FASTER than JAX (BlackThrush)
+
+Dug a genuinely different primitive: INTEGER matmul. XLA's tuned BLAS is float-only, so `jnp.matmul` on int64
+falls to a slow XLA loop (**~3958 ms for 1024³**). fj had the threaded contiguous `rank2_i64_matmul` kernel AND it
+was even IMPORTED into arithmetic.rs — but `eval_tensor_dot` (the `Dot` primitive) only wired `rank2_f64_matmul`,
+so int64 `dot`/`matmul` fell to the per-element `dot_accumulate` ODOMETER (~13 ns/op): **1024³ i64 = 14,935 ms**,
+~3.5x SLOWER than JAX's already-slow loop.
+
+FIX: added `rank2_i64_matmul_dot` (mirrors `rank2_f64_matmul`; dense-i64, rank-2 both, wrapping arithmetic =
+BIT-IDENTICAL to the odometer it replaces) and wired it right after the f64 fast path in `eval_tensor_dot`.
+
+RESULT: `eval Dot [1024,1024]@[1024,1024] i64` = **17.23 ms** (was 13,928 ms) — **808x internal speedup**, and now
+**~230x FASTER than JAX** (17.23 vs 3958.61 ms). Correctness: 48 dot tests green + new guard
+`i64_dot_fast_path_matches_expected` (hand-computed product) + the existing `rank2_i64_matmul_matches_generic`.
+LESSON: audit every dtype through the `Dot`/`DotGeneral` fast-path dispatch — a kernel can exist and be imported
+yet not be WIRED for a given dtype. NOTE: u32/u64/i32 via `Dot` may share this gap (only f64+i64 wired now) —
+next audit. No ceiling.
