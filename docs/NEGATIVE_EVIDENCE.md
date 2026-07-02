@@ -11071,3 +11071,15 @@ there, but w32/w64 win big. Verified bit-exact vs a centered-window brute-force 
 bruteforce`) + all existing SAME-pad tests green. SUM only — max/min SAME needs a ±inf sentinel that trips the
 finite gate (follow-up: pad with a finite below-min/above-max sentinel). NHWC pooling: VALID (all dtypes, sum+max/min)
 + NCHW (reshape) + SAME (sum) now O(k).
+
+## 2026-07-02 - WIN: SAME-pad NHWC MAX/MIN pool — up to 26x FASTER than JAX, all windows (BlackThrush)
+
+Follow-up to the SAME-sum win (c48e444e): SAME-pad max/min. Blocker was the ±inf pad identity tripping the van
+Herk finite gate. FIX: pad with a FINITE sentinel = min(input) for max / max(input) for min
+(`nhwc_pool_pad_sentinel`, one finite-checked pass, f32/f64/bf16/f16) — the input's own extremum never beats a
+real tap, so a SAME max/min pool becomes a VALID one, bit-exactly; then recurse VALID → van Herk. JAX SAME
+maxpool [4,256,256,16] w16=34.94/w32=133.69/w64=**629.29ms**. fj SAME maxpool **16.12/18.44/24.14ms** = vs JAX
+**2.17x / 7.25x / 26.1x FASTER** (ALL windows, unlike SAME-sum's w16 near-parity — van Herk max is cheaper than
+the running-sum + smaller pad overhead). Verified BIT-EXACT (to_bits) max+min vs centered-window brute-force
+(`rw4d_same_pad_maxmin_matches_bruteforce`) + 12 SAME tests green. Non-finite input keeps the deque (NaN canon).
+NHWC pooling now O(k) for VALID (sum+max/min, 4 dtypes) + SAME (sum+max/min) + NCHW (reshape).
