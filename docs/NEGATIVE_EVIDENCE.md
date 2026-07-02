@@ -10875,3 +10875,17 @@ requirement; NaN→u32::MAX many-to-one keeps the pairs path via a cheap one-pas
 -0.0 vs +0.0, ±inf, subnormal MIN_POSITIVE, dups) asc+desc vs `total_cmp` reference
 (`radix_keys_f32_value_sort_matches_comparison_large`, 1M) + all 40 sort tests green. Keys-only now covers
 i64+f64+f32 value sorts; argsort/multi-slice/NaN-f32 keep pairs; u32/u64 integer next. No ceiling.
+
+## 2026-07-02 - WIN: keys-only u32 value sort 4.6x FASTER than JAX; u64 near-parity (BlackThrush)
+
+Completed keys-only across the integer/unsigned value-sort dtypes. Unlike float sort (XLA comparison-based,
+2720ms), XLA's INTEGER sort is already radix-tuned: JAX u32/int32/u64 16M ≈ 740-749 ms (vs its 2720ms float
+sort). Even so fj's keys-only radix beats it on u32. Unsigned value = its own radix key (no total-order
+transform), so `sort_along_axis_dense_u32/u64` sort KEYS directly (u32 = 4 bytes/elem vs 16-byte pairs = 4x
+cut; u64 = 8 bytes vs 16 = 2x cut), reusing `radix_keys_u32_ascending_parallel` (new) / `radix_keys_ascending_parallel`.
+RESULTS (16M): fj u32 = **162.60 ms** vs JAX **749.35 ms** = **4.6x FASTER**; fj u64 = 670.92 ms vs JAX 743.63 ms
+= **1.11x** (near-parity — XLA's u64 radix is well-tuned; keys-only is still ~2x faster than fj's own pairs
+baseline, so kept as an internal win). Verified BIT-EXACT asc+desc (0/MAX/dups) vs `sort()` reference
+(`radix_keys_unsigned_value_sort_matches_comparison_large`) + 41 sort tests green. Keys-only value-sort family
+now COMPLETE for i64/f64/f32/u32/u64; argsort/multi-slice keep pairs. NOTE for future: XLA integer sort is
+radix-tuned (~740ms) — only u32 (4x traffic cut) clears it comfortably; do not expect big i64/u64 sort wins.

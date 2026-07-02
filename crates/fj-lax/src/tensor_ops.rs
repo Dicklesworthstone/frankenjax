@@ -10182,6 +10182,20 @@ fn sort_along_axis_dense_u32(
         return Ok(None);
     }
     let outer_count = total / axis_dim;
+    // KEYS-ONLY u32 value sort: the unsigned value IS its own radix key, so for one large
+    // contiguous slice with no index output we sort u32 KEYS directly (4 bytes/elem) instead
+    // of (u64 key, u32 index) pairs (16 bytes) — a 4x traffic cut. Descending = key ^ u32::MAX.
+    if axis_stride == 1 && !return_indices && use_parallel_radix(outer_count, axis_dim) {
+        let desc_mask: u32 = if descending { u32::MAX } else { 0 };
+        let mut keys: Vec<u32> = values.iter().map(|&v| v ^ desc_mask).collect();
+        let mut scratch: Vec<u32> = Vec::new();
+        radix_keys_u32_ascending_parallel(&mut keys, &mut scratch);
+        let out: Vec<u32> = keys.iter().map(|&k| k ^ desc_mask).collect();
+        return Ok(Some(Value::Tensor(
+            TensorValue::new_u32_values(tensor.shape.clone(), out)
+                .map_err(EvalError::InvalidTensor)?,
+        )));
+    }
 
     let out_value = if axis_stride == 1 {
         if return_indices {
@@ -10293,6 +10307,18 @@ fn sort_along_axis_dense_u64(
     }
     let outer_count = total / axis_dim;
     let parallel = use_parallel_radix(outer_count, axis_dim);
+    // KEYS-ONLY u64 value sort: the unsigned value is its own radix key, so sort u64 KEYS
+    // directly (8 bytes/elem) instead of (u64 key, u32 index) pairs (16 bytes) — 2x traffic.
+    if axis_stride == 1 && !return_indices && parallel {
+        let mut keys: Vec<u64> = values.iter().map(|&v| v ^ key_mask).collect();
+        let mut scratch: Vec<u64> = Vec::new();
+        radix_keys_ascending_parallel(&mut keys, &mut scratch);
+        let out: Vec<u64> = keys.iter().map(|&k| k ^ key_mask).collect();
+        return Ok(Some(Value::Tensor(
+            TensorValue::new_u64_values(tensor.shape.clone(), out)
+                .map_err(EvalError::InvalidTensor)?,
+        )));
+    }
 
     let out_value = if axis_stride == 1 {
         if return_indices {
@@ -26094,6 +26120,86 @@ mod tests {
             got_desc.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
             want_desc.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
             "keys-only f32 value sort descending"
+        );
+    }
+
+    #[test]
+    fn radix_keys_unsigned_value_sort_matches_comparison_large() {
+        // >= PARALLEL_RADIX_MIN_PAIRS so the keys-only unsigned value-sort path fires.
+        // Covers u32 and u64, ascending + descending, with 0/MAX/dups.
+        let n = 1_000_000usize;
+        let u32_data: Vec<u32> = (0..n)
+            .map(|i| match i % 11 {
+                0 => 0,
+                1 => u32::MAX,
+                2 => 1,
+                _ => ((i as u64).wrapping_mul(2654435761) & 0xffff_ffff) as u32,
+            })
+            .collect();
+        let u32_extract = |val: &Value| -> Vec<u32> {
+            val.as_tensor()
+                .unwrap()
+                .elements
+                .as_u32_slice()
+                .unwrap()
+                .to_vec()
+        };
+        let mk32 = || {
+            Value::Tensor(
+                TensorValue::new_u32_values(Shape::vector(n as u32), u32_data.clone()).unwrap(),
+            )
+        };
+        let mut want32 = u32_data.clone();
+        want32.sort();
+        let asc = params(&[("dimension", "0"), ("descending", "false")]);
+        assert_eq!(
+            u32_extract(&eval_sort(Primitive::Sort, &[mk32()], &asc).unwrap()),
+            want32,
+            "keys-only u32 value sort ascending"
+        );
+        let mut want32_desc = u32_data.clone();
+        want32_desc.sort_by(|a, b| b.cmp(a));
+        let desc = params(&[("dimension", "0"), ("descending", "true")]);
+        assert_eq!(
+            u32_extract(&eval_sort(Primitive::Sort, &[mk32()], &desc).unwrap()),
+            want32_desc,
+            "keys-only u32 value sort descending"
+        );
+
+        let u64_data: Vec<u64> = (0..n)
+            .map(|i| match i % 11 {
+                0 => 0,
+                1 => u64::MAX,
+                2 => 1,
+                _ => (i as u64).wrapping_mul(2654435761).wrapping_add(i as u64),
+            })
+            .collect();
+        let u64_extract = |val: &Value| -> Vec<u64> {
+            val.as_tensor()
+                .unwrap()
+                .elements
+                .as_u64_slice()
+                .unwrap()
+                .to_vec()
+        };
+        let mk64 = || {
+            Value::Tensor(
+                TensorValue::new_u64_values(Shape::vector(n as u32), u64_data.clone()).unwrap(),
+            )
+        };
+        let mut want64 = u64_data.clone();
+        want64.sort();
+        assert_eq!(
+            u64_extract(&eval_sort(Primitive::Sort, &[mk64()], &asc).unwrap()),
+            want64,
+            "keys-only u64 value sort ascending"
+        );
+        let mut want64_desc = u64_data.clone();
+        want64_desc.sort_by(|a, b| b.cmp(a));
+        assert_eq!(
+            u64_extract(&eval_sort(Primitive::Sort, &[mk64()], &desc).unwrap()),
+            want64_desc,
+            "keys-only u64 value sort descending"
         );
     }
 
