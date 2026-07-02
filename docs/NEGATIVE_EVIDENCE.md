@@ -2,6 +2,19 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - SURFACE / REVERTED: native-f32 Exp2 is near-parity (1.01x) — its widened baseline is already fast (BlackThrush)
+
+Tested native-f32 `exp2` (correct: `2ⁿ·exp_block_f32(r·ln2)`, exact at integer powers — accuracy test
+green incl. exp2(10)==1024). But A/B (4M f32, `FJ_EXP2_SCALAR`): scalar-ORIG **6.02ms** → NATIVE
+**5.94ms = 1.01x** — NEAR-ZERO. REVERTED (stashed, not dropped).
+
+CONTRAST with the log2-f32 win (2.04x, just landed): log2's f32 widened-scalar baseline was SLOW (7.82ms
+— `f64::log2` per element, branchy), so native won; but exp2's f32 baseline is already FAST (6.02ms — the
+widened `f64::exp2` map autovectorizes / is cheap here), leaving no headroom. So the "f64-reverted ⇒ f32
+wins" heuristic is NOT automatic — it holds only when the f32 SCALAR baseline is actually slow (branchy/
+libcall, no autovec). Refined rule: measure the f32 scalar baseline; native-f32 wins iff that baseline is
+NOT already autovectorized/fast. exp2 f32 joins log2/exp2-f64 as a documented parity/regression revert.
+
 ## 2026-07-01 - WIRED WIN (native-f32 Log2: 2.04x) — f32 WINS where f64 log2 REGRESSED/reverted (BlackThrush)
 
 `Log2` f32 widened to slow scalar `f64::log2`. New `log2_block_f32` (f32 sibling of the reverted
