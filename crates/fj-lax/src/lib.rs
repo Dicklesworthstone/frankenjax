@@ -335,14 +335,25 @@ fn eval_primitive_inner(
         Primitive::Exp2 => eval_float_complex_unary(primitive, inputs, f64::exp2),
         // Sinc carries a sin + div per element (compute-bound), so thread it like
         // the other transcendentals instead of the serial path.
-        Primitive::Sinc => eval_unary_elementwise_parallel(primitive, inputs, |x| {
-            if x == 0.0 {
-                1.0
+        Primitive::Sinc => {
+            // Native-f32 fast path (JAX default dtype): sin(πx)/(πx) in f32, ~2x the widen-to-f64 path.
+            if let Some(v) = crate::arithmetic::eval_unary_simd_dense_f32_native(
+                inputs,
+                crate::arithmetic::sinc_f32x8,
+                crate::arithmetic::sinc_f32_scalar,
+            ) {
+                v
             } else {
-                let pi_x = std::f64::consts::PI * x;
-                pi_x.sin() / pi_x
+                eval_unary_elementwise_parallel(primitive, inputs, |x| {
+                    if x == 0.0 {
+                        1.0
+                    } else {
+                        let pi_x = std::f64::consts::PI * x;
+                        pi_x.sin() / pi_x
+                    }
+                })
             }
-        }),
+        }
         // sqrt / rsqrt are div-/sqrt-unit-bound (NOT pipelined like add/mul), so they are
         // compute-bound and thread like the other transcendentals; the parallel path falls
         // back to the identical serial dense map below the threshold (bit-for-bit identical).

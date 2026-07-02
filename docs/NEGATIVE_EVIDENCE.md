@@ -2,6 +2,18 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - WIN: native-f32 Sinc ~2.1x FASTER than JAX (reuses sin_f32x8) (BlackThrush)
+
+Sinc `sin(πx)/(πx)` is sin-bound, so it inherits sin/cos's under-parallelization in XLA: JAX 0.10.x CPU f32 16M
+sinc = **27.6ms**. fj's Sinc widened f32→f64; added `sinc_f32x8(x) = sin_f32x8(π·x)/(π·x)` (reusing the trig kernel
+shipped earlier today), `x=0 → 1`, non-finite → scalar `sinc_f32_scalar`, wired via the existing unary native-f32
+driver in the Sinc dispatch. RESULT (`bench_sin_cos_f32_vs_jax`, f32 16M): fj sinc **~13.4ms** vs JAX 27.6ms =
+**~2.1x FASTER**. Accuracy ~1-2 f32 ulp of `sin(πx)/(πx)` incl. the x=0 lane (`sinc_f32_native_matches_libm`, tol
+1e-5). fj-lax lib suite green (1726). No bit-pin (the existing sinc parallel==serial test is F64 and bypasses the
+dispatch). NOTE: the same sweep found zeta f32=57ms & polygamma f32=45ms (data-dependent series, XLA can't
+vectorize — fj already threads them, a record-only follow-up like igamma) and erf/erfc f32=10-13ms (XLA-vectorized,
+NOT wins). logaddexp/logaddexp2/xlogy f32=14ms are XLA-parallelized (only 1-2 transcendentals) → parity, not wins.
+
 ## 2026-07-02 - WIN: native-f32 Atan2 ~2.7x FASTER than JAX — UN-blocks the reverted atan2 via the new binary driver (BlackThrush)
 
 Revives the native-f32 Atan2 that was REVERTED earlier today (blocked by the shared bit-pin

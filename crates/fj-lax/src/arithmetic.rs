@@ -6877,6 +6877,43 @@ pub(crate) fn eval_atan2_f32_native(inputs: &[Value]) -> Option<Value> {
     None
 }
 
+/// Scalar f32 `sinc(x) = sin(πx)/(πx)` (JAX/numpy normalized sinc, `sinc(0)=1`) — the native-f32
+/// tail/edge fallback for [`sinc_f32x8`], computed entirely in f32 to match the SIMD lanes.
+pub(crate) fn sinc_f32_scalar(x: f32) -> f32 {
+    if x == 0.0 {
+        1.0
+    } else {
+        let pi_x = std::f32::consts::PI * x;
+        pi_x.sin() / pi_x
+    }
+}
+
+/// NATIVE-f32 8-wide normalized `sinc(x) = sin(πx)/(πx)` via [`sin_f32x8`] (JAX under-parallelizes
+/// f32 sinc ~28ms/16M since it is sin-bound). `x = 0 → 1`; non-finite `x` → scalar `sinc_f32_scalar`
+/// (`±inf → NaN`, matching libm). ~1-2 f32 ulp of `sin(πx)/(πx)`; parity is tolerance.
+pub(crate) fn sinc_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialEq;
+    use std::simd::num::SimdFloat;
+    type F = Simd<f32, 8>;
+    let pi_x = F::splat(std::f32::consts::PI) * x;
+    let mut r = sin_f32x8(pi_x) / pi_x;
+    // x == 0 (⇒ 0/0 = NaN above) → 1; non-finite → scalar. `ok` = finite & nonzero.
+    let ok = x.is_finite() & x.simd_ne(F::splat(0.0));
+    if !ok.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k].is_finite() && xa[k] != 0.0) {
+                ra[k] = sinc_f32_scalar(xa[k]);
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
+}
+
 pub(crate) fn eval_sin(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     // JAX sin_p = standard_unop(_float | _complex): reject integer operands.
     if let Some(input) = inputs.first() {
@@ -13923,7 +13960,7 @@ fn eval_unary_simd_dense_f64_parallel(
 /// exp/log-family f32 paths where f32 is JAX's default dtype and the widen path is ~11x slower than
 /// JAX-native-f32. Returns `Some(_)` only for a dense-F32 tensor above the threading threshold; the
 /// caller falls through to the f64/widened path (which also covers the sub-threshold + tail cases).
-fn eval_unary_simd_dense_f32_native(
+pub(crate) fn eval_unary_simd_dense_f32_native(
     inputs: &[Value],
     kernel: impl Fn(std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> + Sync,
     scalar: fn(f32) -> f32,
@@ -18312,6 +18349,7 @@ mod tests {
         time_it("sin (JAX 27.1ms)", Primitive::Sin);
         time_it("cos (JAX 24.6ms)", Primitive::Cos);
         time_it("tan (JAX 22.9ms)", Primitive::Tan);
+        time_it("sinc (JAX 27.6ms)", Primitive::Sinc);
     }
 
     // Pow f32 vs JAX (measured JAX 0.10.x CPU f32 16M: x^y 20.7ms, x^2.5 23.6ms). fj Pow f32 threads
@@ -18548,6 +18586,41 @@ mod tests {
             }
         }
         assert!(maxrel < 3e-4, "pow f32 native maxrel={maxrel:e}");
+    }
+
+    #[test]
+    fn sinc_f32_native_matches_libm() {
+        // n >= 1<<20 fires the native path. Compare to sin(arg)/arg where arg = the f32 π·x (this
+        // isolates the sin_f32x8 poly + division; the π·x rounding is inherent and shared with JAX).
+        // Includes the exact x=0 lane (⇒ 1).
+        let n = 2_000_000usize;
+        let xs: Vec<f32> = (0..n)
+            .map(|i| {
+                if i == 7 {
+                    0.0
+                } else {
+                    (i as f32) * 0.00005 - 50.0
+                }
+            })
+            .collect();
+        let sh = Shape {
+            dims: vec![n as u32],
+        };
+        let xt = Value::Tensor(TensorValue::new_f32_values(sh.clone(), xs.clone()).unwrap());
+        let p = BTreeMap::new();
+        let got = crate::eval_primitive(Primitive::Sinc, std::slice::from_ref(&xt), &p).unwrap();
+        let out = got.as_tensor().unwrap().elements.as_f32_slice().unwrap();
+        let mut maxerr = 0.0f64;
+        for i in 0..n {
+            let want = if xs[i] == 0.0 {
+                1.0
+            } else {
+                let arg = f64::from(std::f32::consts::PI * xs[i]);
+                arg.sin() / arg
+            };
+            maxerr = maxerr.max((f64::from(out[i]) - want).abs());
+        }
+        assert!(maxerr < 1e-5, "sinc f32 native maxerr={maxerr:e}");
     }
 
     #[test]
