@@ -18309,6 +18309,37 @@ mod tests {
             let v = eval_igammac(Primitive::Igammac, &[a32.clone(), x32.clone()]).unwrap();
             f64::from(v.as_tensor().unwrap().elements.as_f32_slice().unwrap()[123])
         });
+        // zeta / polygamma f32 (JAX 57.3 / 45.3ms — Euler-Maclaurin series, data-dependent, XLA can't
+        // vectorize). Reads output as f64 (polygamma's path emits f64) or f32 (zeta) generically.
+        let read0 = |v: &Value| -> f64 {
+            let t = v.as_tensor().unwrap();
+            if let Some(s) = t.elements.as_f32_slice() {
+                f64::from(s[123])
+            } else {
+                t.elements.as_f64_slice().unwrap()[123]
+            }
+        };
+        let s32 = Value::Tensor(
+            TensorValue::new_f32_values(
+                shape.clone(),
+                (0..n).map(|i| (i % 400) as f32 * 0.005 + 2.0).collect(),
+            )
+            .unwrap(),
+        );
+        let q32 = Value::Tensor(
+            TensorValue::new_f32_values(
+                shape.clone(),
+                (0..n).map(|i| (i % 400) as f32 * 0.005 + 1.5).collect(),
+            )
+            .unwrap(),
+        );
+        time_it("fj zeta f32 (JAX 57.3ms)", &|| {
+            read0(&eval_zeta(Primitive::Zeta, &[s32.clone(), q32.clone()]).unwrap())
+        });
+        let n2 = Value::Scalar(Literal::I64(2));
+        time_it("fj polygamma2 f32 (JAX 45.3ms)", &|| {
+            read0(&eval_polygamma(Primitive::Polygamma, &[n2.clone(), x32.clone()]).unwrap())
+        });
     }
 
     // sin/cos f32 vs JAX (measured JAX 0.10.x CPU f32 16M: sin 27.1ms, cos 24.6ms — XLA's f32

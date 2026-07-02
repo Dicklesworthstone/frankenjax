@@ -2,6 +2,19 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - WIN: f32 Zeta ~1.7-2.6x FASTER than JAX (record-only); NEGATIVE polygamma LOSES (BlackThrush)
+
+Closing the zeta/polygamma follow-up flagged by the sinc sweep. Both are Euler-Maclaurin / Hurwitz-zeta series
+(data-dependent, XLA can't vectorize), so JAX is slow: JAX 0.10.x CPU f32 16M zeta=57.3ms, polygamma(2)=45.3ms.
+- **WIN Zeta**: fj threads it (`is_expensive_binary`); fj f32 8M = **21.7-34ms (contention-noisy) vs JAX 57.3ms =
+  ~1.7-2.6x FASTER** (median ~1.7x). Record-only, existing threaded code (`bench_special_binary_vs_jax`).
+- **NEGATIVE polygamma**: fj is ALREADY threaded (`threaded_dense_polygamma`) but **LOSES** — fj f32 8M = 137ms vs
+  JAX 45.3ms = **0.33x**. Root cause is ALGORITHMIC, not threading: fj's `polygamma_approx` runs a much heavier
+  per-element series (~548ns/elem thread-equiv) than JAX's. Fixing needs a faster polygamma series (niche, algorithm
+  work) — NOT pursued. RULE refinement: "fj threads data-dependent special fns" only WINS when fj's per-element
+  series is competitive with JAX's — igamma/igammac/betainc/zeta win; polygamma's heavier series loses despite
+  threading. This completes the special-function-vs-JAX sweep (igamma/igammac/betainc/zeta WIN, polygamma LOSE).
+
 ## 2026-07-02 - WIN: native-f32 Sinc ~2.1x FASTER than JAX (reuses sin_f32x8) (BlackThrush)
 
 Sinc `sin(πx)/(πx)` is sin-bound, so it inherits sin/cos's under-parallelization in XLA: JAX 0.10.x CPU f32 16M
