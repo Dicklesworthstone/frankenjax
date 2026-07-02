@@ -10550,3 +10550,20 @@ JAX's DEFAULT f32-mode `gamma(PRNGKey(0),2.0,(8,))` = `[1.5898,1.7599,1.1290,3.9
 GREEN-LIT (all key primitives verified JAX-faithful) — remaining work is purely the `_gamma_one` loop translation
 (n-way split + per-element Marsaglia-Tsang while-loop + boost), a bounded next-session task with a ready oracle. No
 ceiling.
+
+### 2026-07-02 follow-up 3: random_split_n LANDED (JAX-bit-exact); gamma_one port's remaining risk = f32 rejection-boundary precision (BlackThrush)
+
+Landed `random_split_n(key,n) = threefry2x32(key,[0,i])` — bit-exact vs `jax.random.split(PRNGKey(0),{2,3})`
+(prefix-stable, 3rd key [4146024105,2718843009]) — the n-way split JAX's per-element samplers need. Gamma port
+primitives now ALL JAX-verified: n-way split (bit-exact), scalar `uniform` (f32-exact), scalar `normal` (~3e-7).
+
+REMAINING gamma_one risk (identified, for the next session): `_gamma_one` accepts via
+`log(U) >= X/2 + d(1-V+log(V))` — the accept/reject decision hinges on `log` values. JAX computes gamma in **f32**
+(XLA's polynomial `log`), fj in f64 (libm/SIMD `log`); near the acceptance boundary these can DISAGREE, flipping
+accept↔reject for an element → it then consumes a different draw count → GROSS divergence (not ~1e-4). So a naive
+f64 gamma_one will match JAX-f32 on most elements but can miss boundary cases. The robust port computes gamma_one
+in **f32** using `random_uniform(k,1)[0] as f32` / `random_normal(k,1)[0] as f32` draws AND f32 arithmetic, but
+even then Rust `f32::ln` vs XLA-f32 `log` may differ — so element-wise parity likely needs matching XLA's f32 log
+polynomial in the cond, or accepting a documented tolerance with occasional boundary misses. Oracle
+(`random_gamma_matches_jax_reference_f32`, tol 1e-4) is ready to iterate against. This is the crux to solve; the
+plumbing (split + draws) is done.
