@@ -11045,3 +11045,16 @@ cut SAVES. Keys-only only wins DRAM-bound (the single 16M+ slice path, which alr
 (asc+desc) before rejecting on speed. REVERTED (tensor_ops.rs back to HEAD, 0 diff). RULE: keys-only is a
 DRAM-traffic optimization — do NOT apply it per-slice where slices are cache-resident. fj batched sort already
 wins 58-94x on the pairs path; leave it.
+
+## 2026-07-02 - WIN (partial): NCHW pooling via reshape-reuse — sum up to 3.4x FASTER than JAX (BlackThrush)
+
+DIFFERENT LAYOUT (channels-first, used by PyTorch-ported models). fj had NO NCHW pooling fast path — window
+[1,1,wh,ww] fails the NHWC branches' `window_dims[3]==1` gate, so NCHW fell to the deque/generic O(k²) and LOST
+badly to JAX (fj sum [4,16,256,256] w16=84/w32=73/w64=48ms vs JAX 8.63/35.54/87.44; max 79/81/73 vs 13/29/73).
+KEY: NCHW [N,C,H,W] is BIT-IDENTICAL in memory to NHWC [N*C,H,W,1], so a zero-copy reshape (Arc-shared elements)
++ recursion reuses ALL the O(k) separable/van Herk NHWC kernels; output [N*C,oh,ow,1] reshapes back to [N,C,oh,ow].
+RESULT (flat, no regression): fj NCHW sum 25.18/25.08/25.88ms = vs JAX **0.34x (w16 LOSS) / 1.42x / 3.38x**;
+max 57.24/59.93/64.12ms = **0.23x / 0.49x / 1.14x**. PARTIAL win: the c=1 reshape loses channel-SIMD, so it wins
+JAX only at LARGE windows (sum w32+, max w64); small windows improve fj (84→25ms) but still favor JAX's cheap
+small-k O(k²). Verified bit-exact sum/max/min vs brute-force (`nchw_pool_reshape_matches_bruteforce`) + rw4d
+green. Follow-up for an all-window NCHW win: a dedicated kernel with SIMD ACROSS ROWS (strided) instead of c=1.

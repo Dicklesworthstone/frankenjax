@@ -8317,6 +8317,50 @@ fn eval_reduce_window(
         ));
     }
 
+    // NCHW pooling: [N,C,H,W] window (1,1,wh,ww) is bit-identical in memory to NHWC [N*C,H,W,1]
+    // window (1,wh,ww,1). Reshape (Arc-shared elements, no copy) + recurse to reuse the O(k)
+    // separable/van Herk NHWC kernels, then reshape output [N*C,oh,ow,1] -> [N,C,oh,ow]. The
+    // reshaped window (1,wh,ww,1) has window_dims[1]>1 so it can't re-enter this branch (no loop).
+    if no_base_dilation
+        && no_window_dilation
+        && rank == 4
+        && matches!(reduce_op, "sum" | "max" | "min")
+        && window_dims[0] == 1
+        && window_dims[1] == 1
+        && window_dims[2] > 1
+        && window_dims[3] > 1
+        && strides.iter().all(|&s| s == 1)
+        && pad_lows.iter().all(|&p| p == 0)
+    {
+        let d = &tensor.shape.dims;
+        let (n, c) = (d[0], d[1]);
+        let reshaped = TensorValue {
+            dtype: tensor.dtype,
+            shape: Shape {
+                dims: vec![n * c, d[2], d[3], 1],
+            },
+            elements: tensor.elements.clone(),
+        };
+        let mut p2 = params.clone();
+        p2.insert(
+            "window_dimensions".to_owned(),
+            format!("1,{},{},1", window_dims[2], window_dims[3]),
+        );
+        p2.insert("window_strides".to_owned(), "1,1,1,1".to_owned());
+        if let Value::Tensor(t) = eval_reduce_window(primitive, &[Value::Tensor(reshaped)], &p2)?
+            && t.shape.dims.len() == 4
+        {
+            let od = &t.shape.dims; // [N*C, oh, ow, 1]
+            return Ok(Value::Tensor(TensorValue {
+                dtype: t.dtype,
+                shape: Shape {
+                    dims: vec![n, c, od[1], od[2]],
+                },
+                elements: t.elements,
+            }));
+        }
+    }
+
     // f32 rank-4 NHWC MAX/MIN: van Herk O(k) separable extremum (SIMD across C, f32-native, no f64
     // widen), placed BEFORE the general deque path (O(n) but a heavy ~100ms f32→f64-widen + branchy
     // constant that LOSES to JAX at small windows). VALID + unit stride, finite-gated (extremum is
@@ -10994,6 +11038,70 @@ mod tests {
                                     "{dt:?} {opname} mismatch n{n} r{r} c{col} ch{ch}"
                                 );
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nchw_pool_reshape_matches_bruteforce() {
+        // NCHW [N,C,H,W] window (1,1,wh,ww) routed through the NHWC kernels via reshape.
+        let (n, c, h, w) = (2usize, 3usize, 13usize, 11usize);
+        let (wh, ww) = (5usize, 5usize);
+        let data: Vec<f32> = (0..n * c * h * w)
+            .map(|i| (((i * 13 + 5) % 101) as f32) * 0.02 - 1.0)
+            .collect();
+        for opname in ["sum", "max", "min"] {
+            let x = Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: vec![n as u32, c as u32, h as u32, w as u32],
+                    },
+                    data.clone(),
+                )
+                .unwrap(),
+            );
+            let mut p = BTreeMap::new();
+            p.insert("reduce_op".to_owned(), opname.to_owned());
+            p.insert("window_dimensions".to_owned(), format!("1,1,{wh},{ww}"));
+            p.insert("window_strides".to_owned(), "1,1,1,1".to_owned());
+            let got =
+                eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&x), &p).unwrap();
+            let got = got.as_tensor().unwrap();
+            let (oh, ow) = (h - wh + 1, w - ww + 1);
+            assert_eq!(
+                got.shape.dims,
+                vec![n as u32, c as u32, oh as u32, ow as u32]
+            );
+            let out = got.elements.as_f32_slice().unwrap();
+            for ni in 0..n {
+                for ci in 0..c {
+                    for r in 0..oh {
+                        for col in 0..ow {
+                            let mut acc = match opname {
+                                "sum" => 0.0f64,
+                                "max" => f64::MIN,
+                                _ => f64::MAX,
+                            };
+                            for dh in 0..wh {
+                                for dw in 0..ww {
+                                    let v = f64::from(
+                                        data[(((ni * c + ci) * h + r + dh) * w) + col + dw],
+                                    );
+                                    acc = match opname {
+                                        "sum" => acc + v,
+                                        "max" => acc.max(v),
+                                        _ => acc.min(v),
+                                    };
+                                }
+                            }
+                            let o = f64::from(out[(((ni * c + ci) * oh + r) * ow) + col]);
+                            assert!(
+                                (o - acc).abs() <= 1e-4 * acc.abs().max(1.0),
+                                "NCHW {opname} n{ni} c{ci} r{r} col{col}: got {o} want {acc}"
+                            );
                         }
                     }
                 }
