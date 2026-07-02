@@ -2,6 +2,25 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - NEGATIVE / BOUNDARY: the "XLA-can't-vectorize" lever is mined out — winnable ops all shipped (BlackThrush)
+
+After the Gcd (~3x) and igamma/igammac/betainc (11-59x) wins, swept the rest of the elementwise-transcendental
+and integer-arith space for the SAME lever (fj threads a per-element op that XLA lowers to a slow non-vectorized
+path). Measured JAX 0.10.x CPU f64 8M unless noted — ALL XLA-vectorized / memory-bound, so fj's threaded SCALAR
+libm path CANNOT beat them (do NOT chase): digamma **3.1ms**, lgamma **3.3ms**, gamma **3.9ms**, erfinv **2.0ms**,
+i0e **1.3ms**, i1e **2.0ms**, polygamma(n=2) **20ms** (2.5ns/elem = vectorized), zeta **22ms**; remainder/mod f64
+**21ms**, fmod **24.6ms**, floor_divide i64 **16ms**, remainder i64 **28ms**, remainder f32 **20ms** (all
+~1-2ns/elem = BW-bound, and fj already threads Rem/Div); complex log f32 **5.8ms**. The ONLY un-won JAX-slow
+outlier is complex `z**2.3` f32 = **34.9ms**, and fj's threaded complex-pow (~1 hypot+atan2+powf+sincos/elem)
+estimates ~32ms ≈ parity — a coin-flip below the repo's 2x ship bar, NOT pursued.
+
+RULE (crisp): fj beats JAX on an elementwise op IFF XLA cannot SIMD-vectorize it — i.e. the per-element work has
+DATA-DEPENDENT convergence/iteration (igamma/igammac/betainc series & continued fractions) or is a data-dependent
+`while_loop` (gcd/lcm Euclidean). Every op with a FIXED-length rational/polynomial/Chebyshev approximation
+(digamma/lgamma/erf/erfinv/bessel/logistic/tanh/exp/log/…) or a BW-bound single op (mod/div/add) is XLA-vectorized
+and is NOT a fj target. Both winnable families are now shipped (d9435567, 4408dc95). This class is exhausted;
+next fj-vs-JAX gaps are the structural big-swings already on record (FFT mixed-radix kernel; interpreter compile).
+
 ## 2026-07-02 - WIN: threaded special-function binaries 11-59x FASTER than JAX (igamma/igammac/betainc) (BlackThrush)
 
 Same lever as the Gcd win (XLA stuck on a slow non-vectorizable path; fj threads it), but on the special
