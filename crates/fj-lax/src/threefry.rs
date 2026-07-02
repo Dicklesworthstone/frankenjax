@@ -139,6 +139,42 @@ pub fn random_split_n(key: PRNGKey, n: usize) -> Vec<PRNGKey> {
         .collect()
 }
 
+/// 2^-23, the mantissa-bits uniform step (see `random_uniform_serial_simd`).
+const INV_2POW23_SCALAR: f64 = 1.0 / 8_388_608.0;
+
+/// Allocation-free single uniform in `[0,1)` from `key` (the index-0 draw), bit-identical
+/// to `random_uniform(key,1,0.0,1.0)[0]`: `bits = threefry(key,[0,0])[0]^[1]`, then
+/// `(bits>>9)·2^-23`. The per-element rejection samplers (`gamma_one`) draw one value at a
+/// time; routing each through the batch `random_uniform` (Vec alloc + threading setup)
+/// made `random_gamma` ~145x slower than JAX. These scalar helpers keep the EXACT bits.
+fn scalar_unit_uniform(key: PRNGKey) -> f64 {
+    let [w0, w1] = threefry2x32(key.0, [0, 0]);
+    let bits = w0 ^ w1;
+    ((bits >> 9) as f64) * INV_2POW23_SCALAR
+}
+
+/// Allocation-free single uniform in `[minval, maxval)`.
+fn scalar_uniform(key: PRNGKey, minval: f64, maxval: f64) -> f64 {
+    minval + scalar_unit_uniform(key) * (maxval - minval)
+}
+
+/// Allocation-free single standard normal, bit-identical to `random_normal(key,1)[0]`
+/// (uniform over `[nextafter_f32(-1,0), 1)` then `√2·erf_inv`).
+fn scalar_normal(key: PRNGKey) -> f64 {
+    let lo = f64::from(f32::from_bits((-1.0_f32).to_bits() - 1));
+    let u = scalar_uniform(key, lo, 1.0);
+    std::f64::consts::SQRT_2 * crate::arithmetic::erf_inv_approx(u)
+}
+
+/// 3-way split with no heap allocation, matching `random_split_n(key,3)`.
+fn scalar_split3(key: PRNGKey) -> [PRNGKey; 3] {
+    [
+        PRNGKey(threefry2x32(key.0, [0, 0])),
+        PRNGKey(threefry2x32(key.0, [0, 1])),
+        PRNGKey(threefry2x32(key.0, [0, 2])),
+    ]
+}
+
 /// Mix additional data into a key, producing a derived key.
 ///
 /// Matches JAX's `random.fold_in(key, data)`.
@@ -983,34 +1019,32 @@ fn gamma_one(key: PRNGKey, alpha_orig: f64, log_space: bool) -> f64 {
     let d = alpha - 1.0 / 3.0;
     let c = (1.0 / 3.0) / d.sqrt();
 
-    let pre = random_split_n(key, 2);
-    let mut k = pre[0];
-    let subkey = pre[1];
+    let (mut k, subkey) = random_split(key);
 
     // while_loop over state (key, X, V, U); the condition is JAX's REJECT test, so the
     // initial (X=0, V=1, U=2) enters the loop, and it exits on the first ACCEPT.
     let (mut xx, mut vv, mut uu) = (0.0f64, 1.0f64, 2.0f64);
     while uu >= 1.0 - 0.0331 * xx * xx && uu.ln() >= 0.5 * xx + d * (1.0 - vv + vv.ln()) {
-        let s3 = random_split_n(k, 3);
+        let s3 = scalar_split3(k);
         k = s3[0];
         // inner loop: redraw the normal until v = 1 + x*c > 0.
         let mut ik = s3[1];
         let mut x = 0.0f64;
         let mut v = -1.0f64;
         while v <= 0.0 {
-            let isk = random_split_n(ik, 2);
-            ik = isk[0];
-            x = random_normal(isk[1], 1)[0];
+            let (nik, subk) = random_split(ik);
+            ik = nik;
+            x = scalar_normal(subk);
             v = 1.0 + x * c;
         }
         xx = x * x;
         vv = v * v * v;
-        uu = random_uniform(s3[2], 1, 0.0, 1.0)[0];
+        uu = scalar_uniform(s3[2], 0.0, 1.0);
     }
 
     if log_space {
         // log_samples = -Exponential(subkey) = log1p(-uniform(subkey)); boost only for a<1.
-        let log_samples = (-random_uniform(subkey, 1, 0.0, 1.0)[0]).ln_1p();
+        let log_samples = (-scalar_uniform(subkey, 0.0, 1.0)).ln_1p();
         let log_boost = if !boost || log_samples == 0.0 {
             0.0
         } else {
@@ -1018,7 +1052,7 @@ fn gamma_one(key: PRNGKey, alpha_orig: f64, log_space: bool) -> f64 {
         };
         d.ln() + vv.ln() + log_boost
     } else if boost {
-        let s = 1.0 - random_uniform(subkey, 1, 0.0, 1.0)[0];
+        let s = 1.0 - scalar_uniform(subkey, 0.0, 1.0);
         d * vv * s.powf(1.0 / alpha_orig)
     } else {
         d * vv

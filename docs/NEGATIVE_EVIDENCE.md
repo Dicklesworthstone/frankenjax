@@ -10620,3 +10620,20 @@ loggamma + per-row softmax. VERIFIED element-for-element vs JAX-f32 `random.diri
 (8241ad8e) + poisson (9a12efa6) + beta (d928fd55) + dirichlet all JAX-faithful with element-wise oracles, on top
 of the already-faithful core (uniform/normal/split) + inverse-transform samplers (exp/gumbel/laplace/geometric).
 The whole jax.random derived surface now matches JAX to f32 tolerance. No ceiling.
+
+## 2026-07-02 - WIN (perf vs JAX): allocation-free scalar draws in gamma_one — random_gamma 313x faster, now 2.16x FASTER than JAX (BlackThrush)
+
+The faithful per-element `gamma_one` (landed 8241ad8e) routed EACH single draw through the batch machinery —
+`random_uniform(k,1)`/`random_normal(k,1)`/`random_split_n(k,{2,3})` — every one allocating a Vec + running the
+threading/SIMD setup for ONE value. MEASURED: `random_gamma(key,100_000,2.0)` = **14,935 ms** vs JAX-CPU
+`random.gamma(key,2.0,(100k,))` = **103 ms** → ~145x SLOWER (a regression the parity fix introduced).
+
+FIX: added allocation-free scalar helpers — `scalar_unit_uniform`/`scalar_uniform` (`bits=threefry(key,[0,0])[0]^[1]`,
+`(bits>>9)·2^-23`), `scalar_normal` (√2·erf_inv over the JAX normal domain), `scalar_split3` — each BIT-IDENTICAL
+to the batch path's index-0 draw, and swapped them into `gamma_one` (2-way split via existing `random_split`).
+
+RESULT: `random_gamma(key,100_000,2.0)` = **47.74 ms** (best of 7) — **313x** internal speedup, and now
+**~2.16x FASTER than JAX** (47.74 vs 103.21 ms). Parity UNCHANGED (gamma/beta/dirichlet oracles green — bits are
+identical); beta/dirichlet inherit the speedup (they call `gamma_one`). fj-lax rng 43/0. Isolated-target build
+(rch E0514 drift). Lesson: per-element rejection samplers must use scalar (Vec-free) draws, never `random_*(k,1)`.
+No ceiling.
