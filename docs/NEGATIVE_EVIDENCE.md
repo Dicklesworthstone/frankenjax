@@ -2,6 +2,22 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - WIN: threaded Gcd/Lcm (compute-bound integer binop) ~3.1x FASTER than JAX (DIFFERENT PRIMITIVE) (BlackThrush)
+
+New primitive from the boundary sweep (53c3383a probed gcd/lcm = zero coverage). `Gcd`/`Lcm` run an
+iterative Euclidean remainder loop (~10-20 integer `%` per element) so they are COMPUTE-bound, but they route
+through `eval_binary_elementwise`'s i64 path whose threaded fast path (`eval_same_shape_i64_parallel`) is gated
+at the HIGH `CHEAP_BINARY_PARALLEL_MIN` = 8.4M (tuned for memory-bound i64 arith that only wins past L3). Below
+8.4M they fell to the dense-but-SERIAL `eval_same_shape_i64_binop` — so an 8M gcd ran single-threaded and LOST to
+JAX. FIX: `eval_same_shape_i64_expensive_parallel` — a threaded dense-i64 path gated to Gcd/Lcm at the LOW
+`EXPENSIVE_BINARY_PARALLEL_MIN` = 65_536 (same as the transcendental/Div binaries), inserted BEFORE the cheap
+i64-parallel call. Integer `int_op` is exact (no FP reassociation), so the threaded output is BIT-FOR-BIT
+identical to the serial loop for any chunk partition (guarded by `gcd_lcm_threaded_matches_serial_reference`).
+RESULT (same-binary A/B, `bench_gcd_threaded_vs_serial`, i64 8M): serial dense **263-276ms → threaded 15-20ms**
+(~15x A/B). vs JAX 0.10.x CPU int64 8M gcd = **59.6ms → fj ~15-20ms = ~3.1x FASTER**. JAX lowers gcd to a
+parallelized `while_loop` Euclidean; fj's tight threaded remainder loop beats it. fj-lax lib suite green
+(1720 passed). Same-shape I64 only for now (scalar-broadcast / int32 gcd stay on the serial path — follow-up).
+
 ## 2026-07-02 - SURFACE / REVERTED: native-f32 Atan2 (~1.5x) is BLOCKED by a threaded==serial bit-pin (BlackThrush)
 
 First BINARY-f32 attempt. Built `atan2_f32x8` (base `atan_f32x8(y/x)` + copysign-π quadrant, x=0/±inf/NaN

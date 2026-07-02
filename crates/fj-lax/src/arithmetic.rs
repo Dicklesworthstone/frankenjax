@@ -839,6 +839,19 @@ pub(crate) fn eval_binary_elementwise(
                 {
                     return Ok(value);
                 }
+                // Compute-bound integer binops (Gcd/Lcm: an iterative Euclidean
+                // remainder loop, ~10-20 `%` ops per element) thread at the low
+                // EXPENSIVE threshold like the transcendentals — NOT the high
+                // CHEAP threshold (8.4M) that `eval_same_shape_i64_parallel` uses
+                // for memory-bound i64 arith. Must precede that call so Gcd/Lcm
+                // fan out at moderate sizes instead of running dense-but-serial.
+                if lhs.dtype == DType::I64
+                    && rhs.dtype == DType::I64
+                    && let Some(value) =
+                        eval_same_shape_i64_expensive_parallel(primitive, lhs, rhs, &int_op)
+                {
+                    return Ok(value);
+                }
                 if lhs.dtype == DType::I64
                     && rhs.dtype == DType::I64
                     && let Some(value) = eval_same_shape_i64_parallel(lhs, rhs, &int_op)
@@ -2285,6 +2298,63 @@ fn eval_same_shape_i64_parallel(
     let (a, b) = (lhs.elements.as_i64_slice()?, rhs.elements.as_i64_slice()?);
     let n = a.len();
     if n < CHEAP_BINARY_PARALLEL_MIN {
+        return None;
+    }
+    let threads = work_scaled_threads(n);
+    if threads <= 1 {
+        return None;
+    }
+    let mut out = vec![0i64; n];
+    let chunk = n.div_ceil(threads);
+    let op_ref = int_op;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [i64] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                for (i, o) in blk.iter_mut().enumerate() {
+                    *o = op_ref(a[s + i], b[s + i]);
+                }
+            });
+            start += len;
+        }
+    });
+    TensorValue::new_i64_values(lhs.shape.clone(), out)
+        .ok()
+        .map(Value::Tensor)
+}
+
+/// Threaded dense-i64 path for the COMPUTE-bound integer binops (Gcd/Lcm). Unlike
+/// [`eval_same_shape_i64_parallel`] (memory-bound i64 arith, gated at the high
+/// `CHEAP_BINARY_PARALLEL_MIN` = 8.4M so it only wins once the working set spills
+/// past L3), Gcd/Lcm run an iterative Euclidean remainder loop — ~10-20 integer
+/// `%` ops per element — so they are compute-bound and thread profitably at the
+/// same low `EXPENSIVE_BINARY_PARALLEL_MIN` (65_536) as the transcendental/Div
+/// binaries. Integer `int_op` is exact (no FP reassociation), so the threaded
+/// output is BIT-FOR-BIT identical to the serial `eval_same_shape_i64_binop` for
+/// any chunk partition — same `int_op`, same element order, same dense-I64 output.
+/// `FJ_GCD_LCM_SERIAL` forces the pre-thread serial path (same-binary A/B hook).
+/// Returns `None` (fall through to the serial/cheap paths) for non-Gcd/Lcm ops,
+/// non-dense I64 storage, sub-threshold `n`, or a single-thread machine.
+fn eval_same_shape_i64_expensive_parallel(
+    primitive: Primitive,
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    int_op: &(impl Fn(i64, i64) -> i64 + Sync),
+) -> Option<Value> {
+    if !matches!(primitive, Primitive::Gcd | Primitive::Lcm) {
+        return None;
+    }
+    if std::env::var_os("FJ_GCD_LCM_SERIAL").is_some() {
+        return None;
+    }
+    let (a, b) = (lhs.elements.as_i64_slice()?, rhs.elements.as_i64_slice()?);
+    let n = a.len();
+    if n < EXPENSIVE_BINARY_PARALLEL_MIN {
         return None;
     }
     let threads = work_scaled_threads(n);
@@ -7441,7 +7511,10 @@ fn asin_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     let big_arg = s / (F::splat(1.0) - s * s).sqrt();
     let arg = big.select(big_arg, small_arg);
     let av = atan_f32x8(arg);
-    let mag = big.select(F::splat(std::f32::consts::FRAC_PI_2) - F::splat(2.0) * av, av);
+    let mag = big.select(
+        F::splat(std::f32::consts::FRAC_PI_2) - F::splat(2.0) * av,
+        av,
+    );
     let signbit = U::splat(0x8000_0000);
     let mut r = F::from_bits((mag.to_bits() & !signbit) | (x.to_bits() & signbit));
     if !ok.all() {
@@ -8516,9 +8589,7 @@ pub(crate) fn eval_unary_int_or_float(
                             (re / magnitude, im / magnitude)
                         }
                     }),
-                    Primitive::Square => {
-                        threaded_complex_unary_map(src, &|z| complex_mul(z, z))
-                    }
+                    Primitive::Square => threaded_complex_unary_map(src, &|z| complex_mul(z, z)),
                     _ => {
                         return Err(EvalError::TypeMismatch {
                             primitive,
@@ -12332,8 +12403,7 @@ pub(crate) fn eval_erf_inv(primitive: Primitive, inputs: &[Value]) -> Result<Val
             fill(src, &mut out);
         }
         return Ok(Value::Tensor(
-            TensorValue::new_f32_values(t.shape.clone(), out)
-                .map_err(EvalError::InvalidTensor)?,
+            TensorValue::new_f32_values(t.shape.clone(), out).map_err(EvalError::InvalidTensor)?,
         ));
     }
     eval_unary_elementwise_parallel(primitive, inputs, erf_inv_approx)
@@ -16943,12 +17013,19 @@ mod tests {
         let n = 1usize << 22;
         // moderate |z| (the common non-overflow HFT branch), mixed sign of im.
         let data: Vec<(f64, f64)> = (0..n)
-            .map(|i| (((i % 397) as f64) * 0.02 - 4.0, ((i % 521) as f64) * 0.02 - 5.0))
+            .map(|i| {
+                (
+                    ((i % 397) as f64) * 0.02 - 4.0,
+                    ((i % 521) as f64) * 0.02 - 5.0,
+                )
+            })
             .collect();
         let input = Value::Tensor(
             TensorValue::new_complex_values(
                 DType::Complex128,
-                Shape { dims: vec![n as u32] },
+                Shape {
+                    dims: vec![n as u32],
+                },
                 data.clone(),
             )
             .unwrap(),
@@ -16956,7 +17033,12 @@ mod tests {
         let got =
             eval_float_complex_unary(Primitive::Asin, std::slice::from_ref(&input), f64::asin)
                 .unwrap();
-        let gp = got.as_tensor().unwrap().elements.as_complex_slice().unwrap();
+        let gp = got
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_complex_slice()
+            .unwrap();
         // reference: HFT with libm hypot for the avg magnitude.
         let mut maxerr = 0.0f64;
         for (k, &(re, im)) in data.iter().enumerate() {
@@ -16964,9 +17046,14 @@ mod tests {
             let real = (re / avg).clamp(-1.0, 1.0).asin();
             let imag_mag = if avg <= 1.0 { 0.0 } else { avg.acosh() };
             let imag = if im < 0.0 { -imag_mag } else { imag_mag };
-            maxerr = maxerr.max((gp[k].0 - real).abs()).max((gp[k].1 - imag).abs());
+            maxerr = maxerr
+                .max((gp[k].0 - real).abs())
+                .max((gp[k].1 - imag).abs());
         }
-        assert!(maxerr < 1e-9, "complex asin hypot-elision vs hypot ref: {maxerr:e}");
+        assert!(
+            maxerr < 1e-9,
+            "complex asin hypot-elision vs hypot ref: {maxerr:e}"
+        );
         let best = |f: &dyn Fn() -> f64| -> f64 {
             let mut b = f64::MAX;
             for _ in 0..5 {
@@ -17005,12 +17092,19 @@ mod tests {
         use std::time::Instant;
         let n = 1usize << 24;
         let data: Vec<(f64, f64)> = (0..n)
-            .map(|i| (((i % 397) as f64) * 0.005 - 0.9, ((i % 521) as f64) * 0.005 - 1.1))
+            .map(|i| {
+                (
+                    ((i % 397) as f64) * 0.005 - 0.9,
+                    ((i % 521) as f64) * 0.005 - 1.1,
+                )
+            })
             .collect();
         let input = Value::Tensor(
             TensorValue::new_complex_values(
                 DType::Complex128,
-                Shape { dims: vec![n as u32] },
+                Shape {
+                    dims: vec![n as u32],
+                },
                 data.clone(),
             )
             .unwrap(),
@@ -17030,12 +17124,20 @@ mod tests {
             }
             result
         };
-        let got = eval_integer_pow(Primitive::IntegerPow, std::slice::from_ref(&input), &params)
+        let got =
+            eval_integer_pow(Primitive::IntegerPow, std::slice::from_ref(&input), &params).unwrap();
+        let gp = got
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_complex_slice()
             .unwrap();
-        let gp = got.as_tensor().unwrap().elements.as_complex_slice().unwrap();
         for (k, &z) in data.iter().enumerate() {
             let w = serial_pow(z);
-            assert_eq!((gp[k].0.to_bits(), gp[k].1.to_bits()), (w.0.to_bits(), w.1.to_bits()));
+            assert_eq!(
+                (gp[k].0.to_bits(), gp[k].1.to_bits()),
+                (w.0.to_bits(), w.1.to_bits())
+            );
         }
         let best = |f: &dyn Fn()| -> f64 {
             f();
@@ -17072,12 +17174,19 @@ mod tests {
         use std::time::Instant;
         let n = 1usize << 24;
         let data: Vec<(f64, f64)> = (0..n)
-            .map(|i| (((i % 397) as f64) * 0.02 - 4.0, ((i % 521) as f64) * 0.02 - 5.0))
+            .map(|i| {
+                (
+                    ((i % 397) as f64) * 0.02 - 4.0,
+                    ((i % 521) as f64) * 0.02 - 5.0,
+                )
+            })
             .collect();
         let input = Value::Tensor(
             TensorValue::new_complex_values(
                 DType::Complex128,
-                Shape { dims: vec![n as u32] },
+                Shape {
+                    dims: vec![n as u32],
+                },
                 data.clone(),
             )
             .unwrap(),
@@ -17107,7 +17216,11 @@ mod tests {
                 .iter()
                 .map(|&(re, im)| {
                     let m = super::complex_abs_f64(re, im);
-                    if m == 0.0 { (0.0, 0.0) } else { (re / m, im / m) }
+                    if m == 0.0 {
+                        (0.0, 0.0)
+                    } else {
+                        (re / m, im / m)
+                    }
                 })
                 .collect();
             std::hint::black_box(out);
@@ -17126,12 +17239,19 @@ mod tests {
         use std::time::Instant;
         let n = 1usize << 24; // 16M (the 4096² regime)
         let data: Vec<(f64, f64)> = (0..n)
-            .map(|i| (((i % 397) as f64) * 0.02 - 4.0, ((i % 521) as f64) * 0.02 - 5.0))
+            .map(|i| {
+                (
+                    ((i % 397) as f64) * 0.02 - 4.0,
+                    ((i % 521) as f64) * 0.02 - 5.0,
+                )
+            })
             .collect();
         let input = Value::Tensor(
             TensorValue::new_complex_values(
                 DType::Complex128,
-                Shape { dims: vec![n as u32] },
+                Shape {
+                    dims: vec![n as u32],
+                },
                 data.clone(),
             )
             .unwrap(),
@@ -17140,7 +17260,11 @@ mod tests {
         let got = eval_abs(Primitive::Abs, std::slice::from_ref(&input)).unwrap();
         let gv = got.as_tensor().unwrap().elements.as_f64_slice().unwrap();
         for (k, &(re, im)) in data.iter().enumerate() {
-            assert_eq!(gv[k].to_bits(), super::complex_abs_f64(re, im).to_bits(), "abs[{k}]");
+            assert_eq!(
+                gv[k].to_bits(),
+                super::complex_abs_f64(re, im).to_bits(),
+                "abs[{k}]"
+            );
         }
         let best = |f: &dyn Fn()| -> f64 {
             f();
@@ -17156,7 +17280,10 @@ mod tests {
             std::hint::black_box(eval_abs(Primitive::Abs, std::slice::from_ref(&input)).unwrap());
         });
         let serial = best(&|| {
-            let out: Vec<f64> = data.iter().map(|&(re, im)| super::complex_abs_f64(re, im)).collect();
+            let out: Vec<f64> = data
+                .iter()
+                .map(|&(re, im)| super::complex_abs_f64(re, im))
+                .collect();
             std::hint::black_box(out);
         });
         eprintln!(
@@ -17174,12 +17301,19 @@ mod tests {
         use std::time::Instant;
         let n = 1usize << 22;
         let data: Vec<(f64, f64)> = (0..n)
-            .map(|i| (((i % 397) as f64) * 0.02 - 4.0, ((i % 521) as f64) * 0.02 - 5.0))
+            .map(|i| {
+                (
+                    ((i % 397) as f64) * 0.02 - 4.0,
+                    ((i % 521) as f64) * 0.02 - 5.0,
+                )
+            })
             .collect();
         let input = Value::Tensor(
             TensorValue::new_complex_values(
                 DType::Complex128,
-                Shape { dims: vec![n as u32] },
+                Shape {
+                    dims: vec![n as u32],
+                },
                 data.clone(),
             )
             .unwrap(),
@@ -17190,14 +17324,28 @@ mod tests {
             &std::collections::BTreeMap::new(),
         )
         .unwrap();
-        let gp = got.as_tensor().unwrap().elements.as_complex_slice().unwrap();
+        let gp = got
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_complex_slice()
+            .unwrap();
         let mut maxerr = 0.0f64;
         for (k, &(re, im)) in data.iter().enumerate() {
             let mag = re.hypot(im);
-            let want = if mag == 0.0 { (0.0, 0.0) } else { (re / mag, im / mag) };
-            maxerr = maxerr.max((gp[k].0 - want.0).abs()).max((gp[k].1 - want.1).abs());
+            let want = if mag == 0.0 {
+                (0.0, 0.0)
+            } else {
+                (re / mag, im / mag)
+            };
+            maxerr = maxerr
+                .max((gp[k].0 - want.0).abs())
+                .max((gp[k].1 - want.1).abs());
         }
-        assert!(maxerr < 1e-9, "complex sign hypot-elision vs hypot ref: {maxerr:e}");
+        assert!(
+            maxerr < 1e-9,
+            "complex sign hypot-elision vs hypot ref: {maxerr:e}"
+        );
         let best = |f: &dyn Fn() -> f64| -> f64 {
             let mut b = f64::MAX;
             for _ in 0..5 {
@@ -17239,12 +17387,19 @@ mod tests {
         use std::time::Instant;
         let n = 1usize << 22;
         let data: Vec<(f64, f64)> = (0..n)
-            .map(|i| (((i % 521) as f64) * 0.03 - 7.0, ((i % 733) as f64) * 0.02 - 7.0))
+            .map(|i| {
+                (
+                    ((i % 521) as f64) * 0.03 - 7.0,
+                    ((i % 733) as f64) * 0.02 - 7.0,
+                )
+            })
             .collect();
         let input = Value::Tensor(
             TensorValue::new_complex_values(
                 DType::Complex128,
-                Shape { dims: vec![n as u32] },
+                Shape {
+                    dims: vec![n as u32],
+                },
                 data.clone(),
             )
             .unwrap(),
@@ -17268,7 +17423,11 @@ mod tests {
             b
         };
         let hyp = best(&|| data.iter().map(|&(re, im)| re.hypot(im)).sum());
-        let fast = best(&|| data.iter().map(|&(re, im)| super::complex_abs_f64(re, im)).sum());
+        let fast = best(&|| {
+            data.iter()
+                .map(|&(re, im)| super::complex_abs_f64(re, im))
+                .sum()
+        });
         eprintln!(
             "[complex_abs {n}] hypot={:.3}ms sqrt-fastpath={:.3}ms ratio={:.2}x",
             hyp * 1e3,
@@ -17284,13 +17443,20 @@ mod tests {
         use std::time::Instant;
         let n = 1usize << 22;
         let data: Vec<(f64, f64)> = (0..n)
-            .map(|i| (((i % 521) as f64) * 0.03 - 7.0, ((i % 733) as f64) * 0.02 - 7.0))
+            .map(|i| {
+                (
+                    ((i % 521) as f64) * 0.03 - 7.0,
+                    ((i % 733) as f64) * 0.02 - 7.0,
+                )
+            })
             .collect();
         let mut maxerr = 0.0f64;
         for &(re, im) in &data {
             let want = (re.hypot(im).ln(), im.atan2(re));
             let got = super::complex_log((re, im));
-            maxerr = maxerr.max((got.0 - want.0).abs()).max((got.1 - want.1).abs());
+            maxerr = maxerr
+                .max((got.0 - want.0).abs())
+                .max((got.1 - want.1).abs());
         }
         assert!(maxerr < 1e-12, "complex_log fastpath vs hypot: {maxerr:e}");
         let best = |f: &dyn Fn() -> f64| -> f64 {
@@ -17333,19 +17499,31 @@ mod tests {
         use std::time::Instant;
         let n = 1usize << 22;
         let data: Vec<(f64, f64)> = (0..n)
-            .map(|i| (((i % 617) as f64) * 0.01 - 3.0, ((i % 919) as f64) * 0.01 - 4.5))
+            .map(|i| {
+                (
+                    ((i % 617) as f64) * 0.01 - 3.0,
+                    ((i % 919) as f64) * 0.01 - 4.5,
+                )
+            })
             .collect();
         let input = Value::Tensor(
             TensorValue::new_complex_values(
                 DType::Complex128,
-                Shape { dims: vec![n as u32] },
+                Shape {
+                    dims: vec![n as u32],
+                },
                 data.clone(),
             )
             .unwrap(),
         );
         // Live eval path (sin_cos).
         let got = eval_sin(Primitive::Sin, std::slice::from_ref(&input)).unwrap();
-        let got_pairs = got.as_tensor().unwrap().elements.as_complex_slice().unwrap();
+        let got_pairs = got
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_complex_slice()
+            .unwrap();
         // Reference: separate sin/cos, the pre-change formula.
         let mut maxerr = 0.0f64;
         for (k, &(a, b)) in data.iter().enumerate() {
@@ -17640,6 +17818,131 @@ mod tests {
             std::hint::black_box(v.as_tensor().unwrap().elements.as_i64_slice().unwrap()[123])
                 as u64
         });
+    }
+
+    // gcd/lcm vs JAX (measured JAX 0.10.x CPU int64 8M: gcd 59.6ms, lcm 60.4ms — XLA lowers
+    // gcd to a `while_loop` Euclidean, parallelized). fj ran the Euclidean map dense-but-SERIAL
+    // below the 8.4M CHEAP i64-parallel threshold; the compute-bound EXPENSIVE path threads it.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_gcd_threaded_vs_serial() {
+        use std::time::Instant;
+        let n = 8_000_000usize; // < CHEAP_BINARY_PARALLEL_MIN (8.4M): old path was serial here
+        let xa: Vec<i64> = (0..n as i64).map(|i| (i % 999_983) + 1).collect();
+        let xb: Vec<i64> = (0..n as i64).map(|i| (i % 700_001) + 1).collect();
+        let ta = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xa.clone(),
+            )
+            .unwrap(),
+        );
+        let tb = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xb.clone(),
+            )
+            .unwrap(),
+        );
+        let scalar_gcd = |mut a: i64, mut b: i64| {
+            while b != 0 {
+                let t = b;
+                b = a % b;
+                a = t;
+            }
+            a.abs()
+        };
+        let time_it = |label: &str, f: &dyn Fn() -> i64| {
+            std::hint::black_box(f());
+            let mut best = f64::MAX;
+            for _ in 0..6 {
+                let s = Instant::now();
+                std::hint::black_box(f());
+                best = best.min(s.elapsed().as_secs_f64());
+            }
+            println!("{label}: {:.3}ms", best * 1e3);
+        };
+        time_it("REF gcd_serial_dense", &|| {
+            let out: Vec<i64> = xa
+                .iter()
+                .zip(&xb)
+                .map(|(&a, &b)| scalar_gcd(a, b))
+                .collect();
+            std::hint::black_box(&out);
+            out[123]
+        });
+        let p = BTreeMap::new();
+        time_it("gcd_eval_threaded", &|| {
+            let v = crate::eval_primitive(Primitive::Gcd, &[ta.clone(), tb.clone()], &p).unwrap();
+            v.as_tensor().unwrap().elements.as_i64_slice().unwrap()[123]
+        });
+        println!("(JAX int64 8M gcd = 59.6ms)");
+    }
+
+    #[test]
+    fn gcd_lcm_threaded_matches_serial_reference() {
+        // n above EXPENSIVE_BINARY_PARALLEL_MIN (65_536) so the threaded expensive-i64
+        // path fires; assert bit-identical to a hand-written serial Euclidean reference.
+        let n = 200_000usize;
+        let xa: Vec<i64> = (0..n as i64).map(|i| (i % 40_037) - 20_000).collect();
+        let xb: Vec<i64> = (0..n as i64).map(|i| (i % 30_011) - 15_000).collect();
+        let ta = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xa.clone(),
+            )
+            .unwrap(),
+        );
+        let tb = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xb.clone(),
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::new();
+        let gcd = |mut a: i64, mut b: i64| {
+            while b != 0 {
+                let t = b;
+                b = a % b;
+                a = t;
+            }
+            a.abs()
+        };
+        let got_gcd = crate::eval_primitive(Primitive::Gcd, &[ta.clone(), tb.clone()], &p).unwrap();
+        let gg = got_gcd
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_i64_slice()
+            .unwrap();
+        for i in 0..n {
+            assert_eq!(gg[i], gcd(xa[i], xb[i]), "gcd mismatch at {i}");
+        }
+        let got_lcm = crate::eval_primitive(Primitive::Lcm, &[ta, tb], &p).unwrap();
+        let gl = got_lcm
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_i64_slice()
+            .unwrap();
+        for i in 0..n {
+            let (a, b) = (xa[i], xb[i]);
+            let want = if a == 0 || b == 0 {
+                0
+            } else {
+                (a.abs() * b.abs()) / gcd(a, b)
+            };
+            assert_eq!(gl[i], want, "lcm mismatch at {i}");
+        }
     }
 
     #[test]
@@ -24756,7 +25059,13 @@ mod tests {
         let n = 1usize << 22; // 4M
         let x: Vec<f32> = (0..n).map(|i| 0.5 + (i % 8192) as f32 * 0.01).collect();
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, x.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                x.clone(),
+            )
+            .unwrap(),
         );
         let order = 1i64; // trigamma
         let serial_map = || -> Vec<f64> {
@@ -24780,7 +25089,11 @@ mod tests {
             .collect();
         let refv = serial_map();
         for (k, r) in refv.iter().enumerate() {
-            assert_eq!(gp[k], r.to_bits(), "polygamma f32 threaded != serial at {k}");
+            assert_eq!(
+                gp[k],
+                r.to_bits(),
+                "polygamma f32 threaded != serial at {k}"
+            );
         }
         let best = |f: &dyn Fn()| -> f64 {
             f();
@@ -24824,10 +25137,22 @@ mod tests {
         let av: Vec<f32> = (0..n).map(|i| 1.0 + (i % 64) as f32 * 0.1).collect();
         let xv: Vec<f32> = (0..n).map(|i| 0.5 + (i % 128) as f32 * 0.05).collect();
         let a = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, av.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                av.clone(),
+            )
+            .unwrap(),
         );
         let x = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, xv.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
         );
         let best = |f: &dyn Fn()| -> f64 {
             f();
@@ -24840,9 +25165,7 @@ mod tests {
             b
         };
         let threaded = best(&|| {
-            std::hint::black_box(
-                eval_igamma(Primitive::Igamma, &[a.clone(), x.clone()]).unwrap(),
-            );
+            std::hint::black_box(eval_igamma(Primitive::Igamma, &[a.clone(), x.clone()]).unwrap());
         });
         let serial = best(&|| {
             let out: Vec<f32> = av
@@ -24870,10 +25193,22 @@ mod tests {
         let sv: Vec<f32> = (0..n).map(|i| 1.05 + (i % 400) as f32 * 0.01).collect();
         let qv: Vec<f32> = (0..n).map(|i| 0.25 + (i % 200) as f32 * 0.05).collect();
         let s = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, sv.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                sv.clone(),
+            )
+            .unwrap(),
         );
         let q = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, qv.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                qv.clone(),
+            )
+            .unwrap(),
         );
         let got = eval_zeta(Primitive::Zeta, &[s, q]).unwrap();
         let gp = got.as_tensor().unwrap().elements.as_f32_slice().unwrap();
@@ -24938,9 +25273,17 @@ mod tests {
     fn erfinv_f32_eval_ab() {
         use std::time::Instant;
         let n = 1usize << 22;
-        let xv: Vec<f32> = (0..n).map(|i| -0.99 + (i % 1000) as f32 * 0.00198).collect();
+        let xv: Vec<f32> = (0..n)
+            .map(|i| -0.99 + (i % 1000) as f32 * 0.00198)
+            .collect();
         let x = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, xv.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
         );
         let best = |f: &dyn Fn()| -> f64 {
             f();
@@ -24981,13 +25324,31 @@ mod tests {
         let bv: Vec<f32> = (0..n).map(|i| 0.5 + (i % 40) as f32 * 0.1).collect();
         let xv: Vec<f32> = (0..n).map(|i| 0.05 + (i % 18) as f32 * 0.05).collect();
         let a = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, av.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                av.clone(),
+            )
+            .unwrap(),
         );
         let b = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, bv.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                bv.clone(),
+            )
+            .unwrap(),
         );
         let x = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, xv.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv.clone(),
+            )
+            .unwrap(),
         );
         let best = |f: &dyn Fn()| -> f64 {
             f();
@@ -25030,10 +25391,22 @@ mod tests {
         let sv: Vec<f32> = (0..n).map(|i| 1.5 + (i % 32) as f32 * 0.05).collect();
         let qv: Vec<f32> = (0..n).map(|i| 1.0 + (i % 64) as f32 * 0.1).collect();
         let s = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, sv.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                sv.clone(),
+            )
+            .unwrap(),
         );
         let q = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, qv.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                qv.clone(),
+            )
+            .unwrap(),
         );
         let best = |f: &dyn Fn()| -> f64 {
             f();
@@ -27855,7 +28228,9 @@ mod tests {
         // eval_acos native-f32 path (acos_f32x8 via asin_f32x8) vs scalar f32 acos: few-ulp f32 across
         // all 3 regimes incl. near ±1, edges (x=1 -> 0, x=-1 -> π, |x|>1 -> NaN).
         let n = 300_003usize;
-        let mut data: Vec<f32> = (0..n).map(|i| -1.0 + (i % 9973) as f32 * (2.0 / 9973.0)).collect();
+        let mut data: Vec<f32> = (0..n)
+            .map(|i| -1.0 + (i % 9973) as f32 * (2.0 / 9973.0))
+            .collect();
         for (k, v) in [
             (3usize, 0.0f32),
             (4, 1.0),
@@ -27870,7 +28245,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_acos(Primitive::Acos, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -27898,8 +28279,15 @@ mod tests {
         let data: Vec<f32> = (0..n)
             .map(|i| -1.0 + (i % 9973) as f32 * (2.0 / 9973.0))
             .collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
             std::hint::black_box(eval_acos(Primitive::Acos, std::slice::from_ref(&input)).unwrap());
         };
@@ -27923,7 +28311,9 @@ mod tests {
         // eval_asin native-f32 path (asin_f32x8 via atan_f32x8) vs scalar f32 asin: few-ulp f32 both
         // regimes incl. near ±1, bit-exact ±0, edges (|x|>1 -> NaN).
         let n = 300_003usize;
-        let mut data: Vec<f32> = (0..n).map(|i| -1.0 + (i % 9973) as f32 * (2.0 / 9973.0)).collect();
+        let mut data: Vec<f32> = (0..n)
+            .map(|i| -1.0 + (i % 9973) as f32 * (2.0 / 9973.0))
+            .collect();
         for (k, v) in [
             (3usize, 0.0f32),
             (4, -0.0),
@@ -27937,7 +28327,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_asin(Primitive::Asin, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -27947,7 +28343,11 @@ mod tests {
             let want = x.asin();
             let g = got[idx];
             if want == 0.0 {
-                assert_eq!(g.to_bits(), want.to_bits(), "asin f32 sign-of-zero at x={x}");
+                assert_eq!(
+                    g.to_bits(),
+                    want.to_bits(),
+                    "asin f32 sign-of-zero at x={x}"
+                );
             } else if want.is_finite() {
                 assert!(
                     (g - want).abs() <= 1e-5 * want.abs().max(1.0),
@@ -27967,8 +28367,15 @@ mod tests {
         let data: Vec<f32> = (0..n)
             .map(|i| -1.0 + (i % 9973) as f32 * (2.0 / 9973.0))
             .collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
             std::hint::black_box(eval_asin(Primitive::Asin, std::slice::from_ref(&input)).unwrap());
         };
@@ -28008,7 +28415,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_atan(Primitive::Atan, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28018,7 +28431,11 @@ mod tests {
             let want = x.atan();
             let g = got[idx];
             if want == 0.0 {
-                assert_eq!(g.to_bits(), want.to_bits(), "atan f32 sign-of-zero at x={x}");
+                assert_eq!(
+                    g.to_bits(),
+                    want.to_bits(),
+                    "atan f32 sign-of-zero at x={x}"
+                );
             } else if want.is_finite() {
                 assert!(
                     (g - want).abs() <= 1e-6 * want.abs().max(1.0),
@@ -28036,8 +28453,15 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| -100.0 + (i % 9973) as f32 * 0.02).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
             std::hint::black_box(eval_atan(Primitive::Atan, std::slice::from_ref(&input)).unwrap());
         };
@@ -28076,7 +28500,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_cbrt(Primitive::Cbrt, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28104,8 +28534,15 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.5).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
             std::hint::black_box(eval_cbrt(Primitive::Cbrt, std::slice::from_ref(&input)).unwrap());
         };
@@ -28127,7 +28564,10 @@ mod tests {
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.5).collect();
         let f = || {
-            let out: Vec<f32> = data.iter().map(|&v| fast_cbrt_f64(v as f64) as f32).collect();
+            let out: Vec<f32> = data
+                .iter()
+                .map(|&v| fast_cbrt_f64(v as f64) as f32)
+                .collect();
             std::hint::black_box(out);
         };
         f();
@@ -28158,7 +28598,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_rsqrt(Primitive::Rsqrt, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28186,10 +28632,19 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.002).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
-            std::hint::black_box(eval_rsqrt(Primitive::Rsqrt, std::slice::from_ref(&input)).unwrap());
+            std::hint::black_box(
+                eval_rsqrt(Primitive::Rsqrt, std::slice::from_ref(&input)).unwrap(),
+            );
         };
         f();
         let mut b = f64::MAX;
@@ -28213,7 +28668,13 @@ mod tests {
         let n = 300_003usize;
         let data: Vec<f32> = (0..n).map(|i| 0.25 + (i % 9973) as f32 * 0.02).collect();
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_digamma(Primitive::Digamma, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28235,8 +28696,15 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| 0.5 + (i % 9973) as f32 * 0.002).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
             std::hint::black_box(
                 eval_digamma(Primitive::Digamma, std::slice::from_ref(&input)).unwrap(),
@@ -28277,7 +28745,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_sinh(Primitive::Sinh, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28287,7 +28761,11 @@ mod tests {
             let want = x.sinh();
             let g = got[idx];
             if want == 0.0 {
-                assert_eq!(g.to_bits(), want.to_bits(), "sinh f32 sign-of-zero at x={x}");
+                assert_eq!(
+                    g.to_bits(),
+                    want.to_bits(),
+                    "sinh f32 sign-of-zero at x={x}"
+                );
             } else if want.is_finite() {
                 assert!(
                     (g - want).abs() <= 1e-5 * want.abs().max(1e-6),
@@ -28305,8 +28783,15 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| -5.0 + (i % 9973) as f32 * 0.001).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
             std::hint::black_box(eval_sinh(Primitive::Sinh, std::slice::from_ref(&input)).unwrap());
         };
@@ -28345,7 +28830,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_expm1(Primitive::Expm1, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28355,7 +28846,11 @@ mod tests {
             let want = x.exp_m1();
             let g = got[idx];
             if want == 0.0 {
-                assert_eq!(g.to_bits(), want.to_bits(), "expm1 f32 sign-of-zero at x={x}");
+                assert_eq!(
+                    g.to_bits(),
+                    want.to_bits(),
+                    "expm1 f32 sign-of-zero at x={x}"
+                );
             } else if want.is_finite() {
                 assert!(
                     (g - want).abs() <= 1e-5 * want.abs().max(1e-6),
@@ -28373,10 +28868,19 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| -3.0 + (i % 9973) as f32 * 0.0006).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
-            std::hint::black_box(eval_expm1(Primitive::Expm1, std::slice::from_ref(&input)).unwrap());
+            std::hint::black_box(
+                eval_expm1(Primitive::Expm1, std::slice::from_ref(&input)).unwrap(),
+            );
         };
         f();
         let mut b = f64::MAX;
@@ -28412,7 +28916,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_acosh(Primitive::Acosh, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28438,10 +28948,19 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| 1.1 + (i % 9973) as f32 * 0.002).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
-            std::hint::black_box(eval_acosh(Primitive::Acosh, std::slice::from_ref(&input)).unwrap());
+            std::hint::black_box(
+                eval_acosh(Primitive::Acosh, std::slice::from_ref(&input)).unwrap(),
+            );
         };
         f();
         let mut b = f64::MAX;
@@ -28478,7 +28997,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_asinh(Primitive::Asinh, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28488,7 +29013,11 @@ mod tests {
             let want = x.asinh();
             let g = got[idx];
             if want == 0.0 {
-                assert_eq!(g.to_bits(), want.to_bits(), "asinh f32 sign-of-zero at x={x}");
+                assert_eq!(
+                    g.to_bits(),
+                    want.to_bits(),
+                    "asinh f32 sign-of-zero at x={x}"
+                );
             } else if want.is_finite() {
                 assert!(
                     (g - want).abs() <= 1e-5 * want.abs().max(1.0),
@@ -28506,10 +29035,19 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| -10.0 + (i % 9973) as f32 * 0.002).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
-            std::hint::black_box(eval_asinh(Primitive::Asinh, std::slice::from_ref(&input)).unwrap());
+            std::hint::black_box(
+                eval_asinh(Primitive::Asinh, std::slice::from_ref(&input)).unwrap(),
+            );
         };
         f();
         let mut b = f64::MAX;
@@ -28531,7 +29069,9 @@ mod tests {
         // eval_atanh native-f32 path (atanh_f32x8) vs scalar f32 atanh: few-ulp f32 on (-1,1),
         // bit-exact ±0, edges (±1 -> ±inf, |x|>1 -> NaN) via log1p_f32x8's per-lane edge handling.
         let n = 300_003usize;
-        let mut data: Vec<f32> = (0..n).map(|i| -0.999 + (i % 9973) as f32 * 0.0002).collect();
+        let mut data: Vec<f32> = (0..n)
+            .map(|i| -0.999 + (i % 9973) as f32 * 0.0002)
+            .collect();
         for (k, v) in [
             (3usize, 0.0f32),
             (4, -0.0),
@@ -28544,7 +29084,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_atanh(Primitive::Atanh, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28554,7 +29100,11 @@ mod tests {
             let want = x.atanh();
             let g = got[idx];
             if want == 0.0 {
-                assert_eq!(g.to_bits(), want.to_bits(), "atanh f32 sign-of-zero at x={x}");
+                assert_eq!(
+                    g.to_bits(),
+                    want.to_bits(),
+                    "atanh f32 sign-of-zero at x={x}"
+                );
             } else if want.is_finite() {
                 assert!(
                     (g - want).abs() <= 1e-5 * want.abs().max(1.0),
@@ -28572,10 +29122,19 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| 0.001 + (i % 9973) as f32 * 1e-4).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
-            std::hint::black_box(eval_atanh(Primitive::Atanh, std::slice::from_ref(&input)).unwrap());
+            std::hint::black_box(
+                eval_atanh(Primitive::Atanh, std::slice::from_ref(&input)).unwrap(),
+            );
         };
         f();
         let mut b = f64::MAX;
@@ -28611,7 +29170,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_log1p(Primitive::Log1p, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28621,7 +29186,11 @@ mod tests {
             let want = x.ln_1p();
             let g = got[idx];
             if want == 0.0 {
-                assert_eq!(g.to_bits(), want.to_bits(), "log1p f32 sign-of-zero at x={x}");
+                assert_eq!(
+                    g.to_bits(),
+                    want.to_bits(),
+                    "log1p f32 sign-of-zero at x={x}"
+                );
             } else if want.is_finite() {
                 assert!(
                     (g - want).abs() <= 1e-6 * want.abs().max(1e-30),
@@ -28639,10 +29208,19 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.002).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
-            std::hint::black_box(eval_log1p(Primitive::Log1p, std::slice::from_ref(&input)).unwrap());
+            std::hint::black_box(
+                eval_log1p(Primitive::Log1p, std::slice::from_ref(&input)).unwrap(),
+            );
         };
         f();
         let mut b = f64::MAX;
@@ -28680,7 +29258,13 @@ mod tests {
             data[kk] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_log2(Primitive::Log2, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28707,8 +29291,15 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.002).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
             std::hint::black_box(eval_log2(Primitive::Log2, std::slice::from_ref(&input)).unwrap());
         };
@@ -28745,7 +29336,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_log(Primitive::Log, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28771,8 +29368,15 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| 0.1 + (i % 9973) as f32 * 0.002).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
             std::hint::black_box(eval_log(Primitive::Log, std::slice::from_ref(&input)).unwrap());
         };
@@ -28810,7 +29414,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_cosh(Primitive::Cosh, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28838,8 +29448,15 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| -10.0 + (i % 9973) as f32 * 0.002).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
             std::hint::black_box(eval_cosh(Primitive::Cosh, std::slice::from_ref(&input)).unwrap());
         };
@@ -28876,7 +29493,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_logistic(Primitive::Logistic, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28902,8 +29525,15 @@ mod tests {
         use std::time::Instant;
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| -8.0 + (i % 9973) as f32 * 0.0016).collect();
-        let input =
-            Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap());
+        let input = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
         let f = || {
             std::hint::black_box(
                 eval_logistic(Primitive::Logistic, std::slice::from_ref(&input)).unwrap(),
@@ -28943,7 +29573,13 @@ mod tests {
             data[k] = v;
         }
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
         );
         let got = match eval_tanh(Primitive::Tanh, std::slice::from_ref(&input)).unwrap() {
             Value::Tensor(t) => t.elements.as_f32_slice().unwrap().to_vec(),
@@ -28960,7 +29596,11 @@ mod tests {
                     "tanh f32 at x={x}: simd {g} vs scalar {want}"
                 );
                 if x == 0.0 {
-                    assert_eq!(g.to_bits(), want.to_bits(), "tanh f32 sign-of-zero at x={x}");
+                    assert_eq!(
+                        g.to_bits(),
+                        want.to_bits(),
+                        "tanh f32 sign-of-zero at x={x}"
+                    );
                 }
             }
         }
@@ -29043,7 +29683,13 @@ mod tests {
         let n = 4_000_000usize;
         let data: Vec<f32> = (0..n).map(|i| -6.0 + (i % 9973) as f32 * 0.0012).collect();
         let input = Value::Tensor(
-            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data).unwrap(),
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data,
+            )
+            .unwrap(),
         );
         let f = || {
             std::hint::black_box(eval_tanh(Primitive::Tanh, std::slice::from_ref(&input)).unwrap());
@@ -30132,7 +30778,11 @@ mod tests {
                     "f32 lgamma at idx {idx}: simd {g} vs scalar {want}"
                 );
             } else {
-                assert_eq!(g.to_bits(), want.to_bits(), "f32 lgamma nonfinite at idx {idx}");
+                assert_eq!(
+                    g.to_bits(),
+                    want.to_bits(),
+                    "f32 lgamma nonfinite at idx {idx}"
+                );
             }
         }
         for &x in &[
@@ -30153,7 +30803,11 @@ mod tests {
             let want = lgamma_approx(x);
             if want.is_finite() {
                 let tol = 1e-11 * want.abs().max(1.0);
-                assert!((g[0] - want).abs() <= tol, "special x={x}: {} vs {want}", g[0]);
+                assert!(
+                    (g[0] - want).abs() <= tol,
+                    "special x={x}: {} vs {want}",
+                    g[0]
+                );
             } else {
                 assert_eq!(g[0].to_bits(), want.to_bits(), "special x={x}");
             }
