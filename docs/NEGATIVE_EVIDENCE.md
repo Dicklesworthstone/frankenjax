@@ -11058,3 +11058,16 @@ max 57.24/59.93/64.12ms = **0.23x / 0.49x / 1.14x**. PARTIAL win: the c=1 reshap
 JAX only at LARGE windows (sum w32+, max w64); small windows improve fj (84→25ms) but still favor JAX's cheap
 small-k O(k²). Verified bit-exact sum/max/min vs brute-force (`nchw_pool_reshape_matches_bruteforce`) + rw4d
 green. Follow-up for an all-window NCHW win: a dedicated kernel with SIMD ACROSS ROWS (strided) instead of c=1.
+
+## 2026-07-02 - WIN: SAME-pad NHWC sum-pool — up to 17.8x FASTER than JAX (BlackThrush)
+
+COMMON CONFIG (Keras/TF default padding). My separable pooling was VALID-only (gated pad_lows==0), so SAME-pad
+fell to the O(k^2) SIMD-channel path. XLA is O(k^2) here too and even slower than VALID (SAME keeps full output
+size): JAX SAME sumpool [4,256,256,16] w16=27.38/w32=104.99/w64=**529.51ms**. FIX: pad taps contribute 0 to a
+SUM, so pre-pad the spatial dims with +0.0 (`pad_nhwc_spatial_zero`, f32/f64/bf16/f16) and recurse VALID to reuse
+the O(k) separable; output is already the SAME size. RESULT (flat): fj SAME sumpool 31.91/33.31/29.75ms = vs JAX
+**0.86x (w16, near-parity) / 3.15x / 17.8x FASTER**. The pre-pad copy (~20ms) dominates at w16 so it's near-parity
+there, but w32/w64 win big. Verified bit-exact vs a centered-window brute-force (`rw4d_same_pad_sum_matches_
+bruteforce`) + all existing SAME-pad tests green. SUM only — max/min SAME needs a ±inf sentinel that trips the
+finite gate (follow-up: pad with a finite below-min/above-max sentinel). NHWC pooling: VALID (all dtypes, sum+max/min)
++ NCHW (reshape) + SAME (sum) now O(k).

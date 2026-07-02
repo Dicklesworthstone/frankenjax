@@ -8160,6 +8160,57 @@ fn reduce_window_separable_maxmin_i64(
     cur
 }
 
+/// Zero-pad the spatial (H,W) dims of an NHWC `[N,H,W,C]` float tensor into `[N, H+ph, W+pw, C]`
+/// with `+0.0`, copying each contiguous input row into place. Used to turn a SAME/explicit-pad SUM
+/// pool into a VALID one (pad taps contribute 0 to a sum) so the O(k) separable path can run.
+fn pad_nhwc_spatial_zero(
+    tensor: &TensorValue,
+    n: usize,
+    h: usize,
+    w: usize,
+    c: usize,
+    ph_lo: usize,
+    ph_hi: usize,
+    pw_lo: usize,
+    pw_hi: usize,
+) -> Option<TensorValue> {
+    let hp = h + ph_lo + ph_hi;
+    let wp = w + pw_lo + pw_hi;
+    let out_shape = Shape {
+        dims: vec![n as u32, hp as u32, wp as u32, c as u32],
+    };
+    macro_rules! pad_copy {
+        ($src:expr, $zero:expr) => {{
+            let src = $src;
+            let mut out = vec![$zero; n * hp * wp * c];
+            for ni in 0..n {
+                for hi in 0..h {
+                    let s = ((ni * h + hi) * w) * c;
+                    let d = ((ni * hp + ph_lo + hi) * wp + pw_lo) * c;
+                    out[d..d + w * c].copy_from_slice(&src[s..s + w * c]);
+                }
+            }
+            out
+        }};
+    }
+    let tv = match tensor.dtype {
+        fj_core::DType::F32 => {
+            let out = pad_copy!(tensor.elements.as_f32_slice()?, 0.0f32);
+            TensorValue::new_f32_values(out_shape, out)
+        }
+        fj_core::DType::F64 => {
+            let out = pad_copy!(tensor.elements.as_f64_slice()?, 0.0f64);
+            TensorValue::new_f64_values(out_shape, out)
+        }
+        fj_core::DType::BF16 | fj_core::DType::F16 => {
+            let out = pad_copy!(tensor.elements.as_half_float_slice()?, 0u16);
+            TensorValue::new_half_float_values(tensor.dtype, out_shape, out)
+        }
+        _ => return None,
+    };
+    tv.ok()
+}
+
 /// Evaluate ReduceWindow: apply a reduction over sliding windows of a tensor.
 ///
 /// inputs: [tensor]
@@ -8358,6 +8409,49 @@ fn eval_reduce_window(
                 },
                 elements: t.elements,
             }));
+        }
+    }
+
+    // SAME/explicit-pad NHWC SUM: XLA is O(k^2) here (JAX SAME sumpool w64 ~530ms). Pre-pad the
+    // spatial dims with +0.0 (pad taps add 0 to a sum) and recurse VALID to reuse the O(k) separable.
+    // SUM only — max/min need a ±inf sentinel that would trip the finite gate (deferred). Stride 1.
+    if no_base_dilation
+        && no_window_dilation
+        && rank == 4
+        && reduce_window_sum_like(reduce_op)
+        && window_dims[0] == 1
+        && window_dims[3] == 1
+        && window_dims[1] > 1
+        && window_dims[2] > 1
+        && strides.iter().all(|&s| s == 1)
+        && (pad_lows[1] > 0 || pad_lows[2] > 0)
+        && matches!(
+            tensor.dtype,
+            fj_core::DType::F32 | fj_core::DType::F64 | fj_core::DType::BF16 | fj_core::DType::F16
+        )
+    {
+        let d = &tensor.shape.dims;
+        let (n, h, w, c) = (d[0] as usize, d[1] as usize, d[2] as usize, d[3] as usize);
+        let hp = out_dims[1] as usize + eff_window_dims[1] - 1;
+        let wp = out_dims[2] as usize + eff_window_dims[2] - 1;
+        if hp >= h + pad_lows[1]
+            && wp >= w + pad_lows[2]
+            && let Some(padded) = pad_nhwc_spatial_zero(
+                tensor,
+                n,
+                h,
+                w,
+                c,
+                pad_lows[1],
+                hp - h - pad_lows[1],
+                pad_lows[2],
+                wp - w - pad_lows[2],
+            )
+        {
+            let mut p2 = params.clone();
+            p2.insert("padding".to_owned(), "VALID".to_owned());
+            p2.insert("window_strides".to_owned(), "1,1,1,1".to_owned());
+            return eval_reduce_window(primitive, &[Value::Tensor(padded)], &p2);
         }
     }
 
@@ -11039,6 +11133,62 @@ mod tests {
                                 );
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rw4d_same_pad_sum_matches_bruteforce() {
+        // SAME-pad NHWC sum: each output covers the window centered (JAX SAME geometry), pad taps = 0.
+        let (n, h, w, c) = (2usize, 15usize, 13usize, 8usize);
+        let (wh, ww) = (5usize, 5usize);
+        let data: Vec<f32> = (0..n * h * w * c)
+            .map(|i| (((i * 11 + 3) % 89) as f32) * 0.03 - 1.0)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32, h as u32, w as u32, c as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let mut p = BTreeMap::new();
+        p.insert("reduce_op".to_owned(), "sum".to_owned());
+        p.insert("window_dimensions".to_owned(), format!("1,{wh},{ww},1"));
+        p.insert("window_strides".to_owned(), "1,1,1,1".to_owned());
+        p.insert("padding".to_owned(), "SAME".to_owned());
+        let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&x), &p).unwrap();
+        let got = got.as_tensor().unwrap();
+        // SAME stride-1: output == input spatial size.
+        assert_eq!(got.shape.dims, vec![n as u32, h as u32, w as u32, c as u32]);
+        let out = got.elements.as_f32_slice().unwrap();
+        // JAX SAME pad_low = (win-1)/2 for odd windows (both dims).
+        let (plh, plw) = ((wh - 1) / 2, (ww - 1) / 2);
+        for ni in 0..n {
+            for oh in 0..h {
+                for ow in 0..w {
+                    for ch in 0..c {
+                        let mut acc = 0.0f64;
+                        for dh in 0..wh {
+                            for dw in 0..ww {
+                                let ih = oh as isize + dh as isize - plh as isize;
+                                let iw = ow as isize + dw as isize - plw as isize;
+                                if ih >= 0 && ih < h as isize && iw >= 0 && iw < w as isize {
+                                    acc += f64::from(
+                                        data[(((ni * h + ih as usize) * w + iw as usize) * c) + ch],
+                                    );
+                                }
+                            }
+                        }
+                        let o = f64::from(out[(((ni * h + oh) * w + ow) * c) + ch]);
+                        assert!(
+                            (o - acc).abs() <= 1e-4 * acc.abs().max(1.0),
+                            "SAME sum n{ni} oh{oh} ow{ow} ch{ch}: got {o} want {acc}"
+                        );
                     }
                 }
             }
