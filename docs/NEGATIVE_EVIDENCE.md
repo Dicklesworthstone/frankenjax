@@ -11107,3 +11107,28 @@ feeds fj a structured (mod-97) matrix vs JAX's iid-random — so the exact ratio
 NOT chase batched-eig as a JAX win, and don't trust fj-vs-JAX eig head-to-heads (convergence-confounded); eigh/svd
 (symmetric/general, reliable convergence) are the trustworthy batched-linalg comparisons. Bench kept as the
 eigh-win/eig-loss contrast (`bench_batch_eigh_svd_vs_jax`).
+
+## 2026-07-02 - NEGATIVE / BOUNDARY SWEEP: 7 unbenchmarked XLA-CPU ops probed — all XLA-STRONG, none a fj target (BlackThrush)
+
+Profile-first sweep hunting for a NEW primitive win in the style of the eigh/svd/pooling/sort wins (all found by
+XLA-CPU weakness). Measured JAX 0.10.x CPU (jaxvenv, `JAX_PLATFORMS=cpu`, jit'd, min-of-5) across ops with ZERO
+prior fj-vs-JAX coverage in this ledger, plus the sort-family for contrast:
+
+XLA-CPU **STRONG** (fast; fj cannot beat — DO NOT re-probe for a win):
+  scatter_add 4M→1024 = **3.44ms**, 4M→1M = 6.97ms (segment-sum-style, heavy collisions — XLA handles it);
+  searchsorted 1e6-in-1e6 = **12.1ms**; cumsum [4096,4096] axis1 = **34.2ms**;
+  vmap(triangular_solve) [512,64,64] = **1.16ms**; vmap(slogdet) [512,64,64] = **2.44ms** (LU-batched-LAPACK,
+  like the already-known cholesky/solve/qr/det fast group — contrast the SLOW vmap(eigh)/vmap(svd) fj wins);
+  vmap(matmul) [4096,32,32] = **5.26ms** (many small GEMM — batched-BLAS); kron [64×64,32×32]→[2048²] = **0.40ms**.
+
+XLA-CPU **WEAK** (slow) — but ALL are the sort family, which fj ALREADY WINS at the primitive level (Sort/TopK
+58-94x, `bench_topk_vs_jax`): median [4096,4096] axis1 = **2225ms**; jnp.unique 1e6 (size-fixed) = **230ms**;
+argsort [2048,4096] axis1 = **1398ms**; vmap(top_k) [2048,4096] k=32 f32 = **25.4ms**. These are NOT separate fj
+primitives — `jnp.median`/`percentile`/`quantile`/`unique` decompose to `Sort` (+slice/gather) at trace time, so
+they inherit fj's existing sort win with NO new fj code. (median's 2225ms IS essentially the per-row sort cost.)
+
+RULE: the XLA-CPU-weakness map is now closed for contained primitives — the only weak regions are (1) sort-family,
+(2) slow-vmap eigh/svd, (3) O(k²) reduce_window pooling, and fj already wins all three. scatter/gather/searchsorted/
+cumsum/small-batched-linalg/kron are XLA strongholds; do not chase them. Remaining fj-vs-JAX gaps are the known
+BIG-SWING prior loops (FFT mixed-radix kernel 7-43x LOSS; interpreter→typed-slot compile), which are multi-session
+and out of scope for a single contained lever. No code change; boundary evidence only.
