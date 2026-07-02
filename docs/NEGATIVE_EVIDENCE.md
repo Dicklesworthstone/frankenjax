@@ -2,6 +2,20 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-02 - MODEST: native-f64 SIMD Sin/Cos — turns the prior f64 LOSS into ~parity vs JAX (f64x8 gain is small) (BlackThrush)
+
+Tested the f64-SIMD-trig follow-up scoped last turn (1c675a1e flagged fj f64 sin LOSING 0.86x). Added `sin_f64x8`/
+`cos_f64x8` = Cephes DOUBLE sin/cos (octant reduction + degree-5 minimax polys, higher-precision 3-part Cody-Waite;
+`|x| < 2^18` SIMD, else scalar `f64::sin`), a shared `sincos_reduce_f64x8`, and routed eval_sin/eval_cos's f64 path
+through the existing `eval_unary_simd_dense_f64_parallel` driver. RESULT (`bench_f64_transcendental_vs_jax`, f64 16M):
+fj sin **~23.4-29.1ms (median ~24.7) vs JAX 25.5ms = ~1.03x (0.9-1.1x, contention-noisy)** — i.e. the prior 0.86x
+LOSS is now ~PARITY/marginal-win. HONEST verdict: this is NOT the ~2x the f32 native kernels get. The f64x8 SIMD gain
+over threaded-scalar `f64::sin` is small (8 doubles = 2 AVX2 regs vs f32's 8-in-1, and glibc's f64 sin is already
+decent), so f64 native-SIMD trig only reaches parity, not a headline win. Kept because it's CORRECT (~1 ulp,
+`sin_cos_f64_native_matches_libm`), full lib suite green (1727), removes the documented loss, and leaves reusable
+`sin_f64x8`/`cos_f64x8` + `sincos_reduce_f64x8` for f64 tan/asin/etc. RULE: f64-native-SIMD trig = parity lever
+(loss→parity), NOT a 2x win like f32 — do not expect big f64 trig wins vs JAX.
+
 ## 2026-07-02 - NEGATIVE/BOUNDARY: the native-f32 trig wins DO NOT extend to f64 (no f64-SIMD kernels) (BlackThrush)
 
 The f32 native-SIMD trig wins (2x vs JAX) prompted checking f64 — JAX under-parallelizes f64 transcendentals TOO

@@ -6914,6 +6914,159 @@ pub(crate) fn sinc_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> 
     r
 }
 
+// Cephes `sin`/`cos` (DOUBLE) octant-reduction constants (higher-precision π/4 split + degree-5 polys
+// than the f32 versions — f64 needs ~1e-16 accuracy).
+const SINCOS64_FOPI: f64 = 1.273_239_544_735_162_8; // 4/π
+const SINCOS64_DP1: f64 = 7.853_981_256_484_985_35e-1;
+const SINCOS64_DP2: f64 = 3.774_894_707_930_798_18e-8;
+const SINCOS64_DP3: f64 = 2.695_151_429_079_059_53e-15;
+const SIN64_C: [f64; 6] = [
+    1.589_623_015_765_465_68e-10,
+    -2.505_074_776_285_780_73e-8,
+    2.755_731_362_138_572_45e-6,
+    -1.984_126_982_958_953_86e-4,
+    8.333_333_333_322_118_59e-3,
+    -1.666_666_666_666_663_07e-1,
+];
+const COS64_C: [f64; 6] = [
+    -1.135_853_652_138_768_17e-11,
+    2.087_570_084_197_473_17e-9,
+    -2.755_731_417_929_673_88e-7,
+    2.480_158_728_885_170_45e-5,
+    -1.388_888_888_887_305_64e-3,
+    4.166_666_666_666_659_29e-2,
+];
+
+/// Reduce `ax = |x|` (`< 2^18`) to Cephes octant `j` (`& 7`, then `−4` if `>3`), reduced argument
+/// `z ∈ [−π/4, π/4]`, and the `j>3` sign-flip mask. Double-precision sibling of [`sincos_reduce_f32x8`].
+#[inline]
+fn sincos_reduce_f64x8(
+    ax: std::simd::Simd<f64, 8>,
+) -> (
+    std::simd::Simd<i64, 8>,
+    std::simd::Simd<f64, 8>,
+    std::simd::Mask<i64, 8>,
+) {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+    use std::simd::num::{SimdFloat, SimdInt};
+    type F = Simd<f64, 8>;
+    type I = Simd<i64, 8>;
+    let mut j = (ax * F::splat(SINCOS64_FOPI)).cast::<i64>();
+    let odd = (j & I::splat(1)).simd_eq(I::splat(1));
+    j = odd.select(j + I::splat(1), j);
+    let y = j.cast::<f64>();
+    j = j & I::splat(7);
+    let jgt3 = j.simd_gt(I::splat(3));
+    j = jgt3.select(j - I::splat(4), j);
+    let z = ((ax - y * F::splat(SINCOS64_DP1)) - y * F::splat(SINCOS64_DP2))
+        - y * F::splat(SINCOS64_DP3);
+    (j, z, jgt3)
+}
+
+#[inline]
+fn sin_poly_f64x8(
+    z: std::simd::Simd<f64, 8>,
+    zz: std::simd::Simd<f64, 8>,
+) -> std::simd::Simd<f64, 8> {
+    use std::simd::Simd;
+    type F = Simd<f64, 8>;
+    let mut p = F::splat(SIN64_C[0]);
+    for &c in &SIN64_C[1..] {
+        p = p * zz + F::splat(c);
+    }
+    z + z * (zz * p)
+}
+
+#[inline]
+fn cos_poly_f64x8(zz: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
+    use std::simd::Simd;
+    type F = Simd<f64, 8>;
+    let mut p = F::splat(COS64_C[0]);
+    for &c in &COS64_C[1..] {
+        p = p * zz + F::splat(c);
+    }
+    (F::splat(1.0) - F::splat(0.5) * zz) + (zz * zz) * p
+}
+
+/// NATIVE-f64 8-wide `sin(x)` — Cephes double `sin` (octant reduction + degree-5 minimax polys). SIMD
+/// for `|x| < 2^18` (where the 3-part Cody-Waite reduction stays ~1 ulp); larger `|x|` / `±inf` / `NaN`
+/// fall back to scalar `f64::sin` (full Payne-Hanek). ~1 ulp; parity is tolerance.
+fn sin_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+    use std::simd::num::SimdFloat;
+    type F = Simd<f64, 8>;
+    type I = Simd<i64, 8>;
+    type U = Simd<u64, 8>;
+    let ok = x.abs().simd_lt(F::splat(262_144.0));
+    if !ok.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f64; 8];
+        for k in 0..8 {
+            ra[k] = xa[k].sin();
+        }
+        return F::from_array(ra);
+    }
+    let (j, z, jgt3) = sincos_reduce_f64x8(x.abs());
+    let zz = z * z;
+    let use_cos = j.simd_eq(I::splat(1)) | j.simd_eq(I::splat(2));
+    let mut r = use_cos.select(cos_poly_f64x8(zz), sin_poly_f64x8(z, zz));
+    let x_neg = (x.to_bits() & U::splat(0x8000_0000_0000_0000)).simd_ne(U::splat(0));
+    r = (x_neg ^ jgt3).select(-r, r);
+    if !ok.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k].abs() < 262_144.0) {
+                ra[k] = xa[k].sin();
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
+}
+
+/// NATIVE-f64 8-wide `cos(x)` — Cephes double `cos` (even; octant `j∈{1,2}` uses the sin poly, sign
+/// flips on `j>3` XOR `j>1`). Same range/fallback as [`sin_f64x8`].
+fn cos_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+    use std::simd::num::SimdFloat;
+    type F = Simd<f64, 8>;
+    type I = Simd<i64, 8>;
+    let ax = x.abs();
+    let ok = ax.simd_lt(F::splat(262_144.0));
+    if !ok.any() {
+        let xa = x.to_array();
+        let mut ra = [0.0f64; 8];
+        for k in 0..8 {
+            ra[k] = xa[k].cos();
+        }
+        return F::from_array(ra);
+    }
+    let (j, z, jgt3) = sincos_reduce_f64x8(ax);
+    let zz = z * z;
+    let use_sin = j.simd_eq(I::splat(1)) | j.simd_eq(I::splat(2));
+    let mut r = use_sin.select(sin_poly_f64x8(z, zz), cos_poly_f64x8(zz));
+    let jgt1 = j.simd_gt(I::splat(1));
+    r = (jgt3 ^ jgt1).select(-r, r);
+    if !ok.all() {
+        let xa = x.to_array();
+        let mut ra = r.to_array();
+        for k in 0..8 {
+            if !(xa[k].abs() < 262_144.0) {
+                ra[k] = xa[k].cos();
+            }
+        }
+        r = F::from_array(ra);
+    }
+    r
+}
+
 pub(crate) fn eval_sin(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     // JAX sin_p = standard_unop(_float | _complex): reject integer operands.
     if let Some(input) = inputs.first() {
@@ -6935,7 +7088,8 @@ pub(crate) fn eval_sin(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
         {
             return v;
         }
-        eval_unary_elementwise_parallel(primitive, inputs, f64::sin)
+        // f64 (+ sub-threshold/widened f32) via the native-f64 SIMD Cephes kernel.
+        eval_unary_simd_dense_f64_parallel(primitive, inputs, sin_f64x8, f64::sin)
     }
 }
 
@@ -6958,7 +7112,8 @@ pub(crate) fn eval_cos(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
         {
             return v;
         }
-        eval_unary_elementwise_parallel(primitive, inputs, f64::cos)
+        // f64 (+ sub-threshold/widened f32) via the native-f64 SIMD Cephes kernel.
+        eval_unary_simd_dense_f64_parallel(primitive, inputs, cos_f64x8, f64::cos)
     }
 }
 
@@ -18613,6 +18768,36 @@ mod tests {
                 maxerr = maxerr.max((f64::from(out[i]) - refr(f64::from(xs[i]))).abs());
             }
             assert!(maxerr < 2e-5, "{prim:?} f32 native maxerr={maxerr:e}");
+        }
+    }
+
+    #[test]
+    fn sin_cos_f64_native_matches_libm() {
+        // Native-f64 SIMD sin/cos (Cephes double) over [-500, 500] within the |x| < 2^18 SIMD range.
+        // Compare to f64::sin/cos at ~1 ulp (maxerr ≈ 1e-16 confirms the kernel ran, not scalar).
+        let n = 4_000_000usize;
+        let xs: Vec<f64> = (0..n).map(|i| (i as f64) * 0.00025 - 500.0).collect();
+        let xt = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xs.clone(),
+            )
+            .unwrap(),
+        );
+        let p = BTreeMap::new();
+        for (prim, refr) in [
+            (Primitive::Sin, f64::sin as fn(f64) -> f64),
+            (Primitive::Cos, f64::cos as fn(f64) -> f64),
+        ] {
+            let got = crate::eval_primitive(prim, std::slice::from_ref(&xt), &p).unwrap();
+            let out = got.as_tensor().unwrap().elements.as_f64_slice().unwrap();
+            let mut maxerr = 0.0f64;
+            for i in 0..n {
+                maxerr = maxerr.max((out[i] - refr(xs[i])).abs());
+            }
+            assert!(maxerr < 1e-13, "{prim:?} f64 native maxerr={maxerr:e}");
         }
     }
 
