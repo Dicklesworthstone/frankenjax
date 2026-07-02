@@ -16454,6 +16454,52 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_batch_eigh_svd_vs_jax() {
+        use std::time::Instant;
+        let (b, n) = (512usize, 64usize);
+        let mut sym = vec![0.0f32; b * n * n];
+        let mut genm = vec![0.0f32; b * n * n];
+        for bi in 0..b {
+            for i in 0..n {
+                for j in 0..n {
+                    genm[bi * n * n + i * n + j] =
+                        (((bi * 31 + i * 7 + j * 13) % 97) as f32) * 0.02 - 1.0;
+                }
+                for j in i..n {
+                    let v = (((bi * n * n + i * n + j) % 97) as f32) * 0.01 - 0.5;
+                    sym[bi * n * n + i * n + j] = v;
+                    sym[bi * n * n + j * n + i] = v;
+                }
+            }
+        }
+        let shape = Shape {
+            dims: vec![b as u32, n as u32, n as u32],
+        };
+        let params = BTreeMap::new();
+        for (tag, prim, buf) in [
+            ("eigh", Primitive::Eigh, &sym),
+            ("svd", Primitive::Svd, &genm),
+        ] {
+            let make = || {
+                vec![BatchTracer::batched(
+                    Value::Tensor(TensorValue::new_f32_values(shape.clone(), buf.clone()).unwrap()),
+                    0,
+                )]
+            };
+            let _ = apply_batch_rule(prim, &make(), &params).unwrap();
+            let mut tm = f64::MAX;
+            for _ in 0..3 {
+                let inp = make();
+                let s = Instant::now();
+                let _ = std::hint::black_box(apply_batch_rule(prim, &inp, &params).unwrap());
+                tm = tm.min(s.elapsed().as_secs_f64());
+            }
+            println!("fj batched {tag} [512,64,64]: {:.2}ms", tm * 1e3);
+        }
+    }
+
+    #[test]
     fn batch_top_k_multi_matches_per_slice_fallback() {
         let summary = |outs: &[BatchTracer]| -> Vec<(Option<usize>, Vec<u32>, Vec<u64>)> {
             outs.iter()

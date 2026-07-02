@@ -11083,3 +11083,15 @@ maxpool [4,256,256,16] w16=34.94/w32=133.69/w64=**629.29ms**. fj SAME maxpool **
 the running-sum + smaller pad overhead). Verified BIT-EXACT (to_bits) max+min vs centered-window brute-force
 (`rw4d_same_pad_maxmin_matches_bruteforce`) + 12 SAME tests green. Non-finite input keeps the deque (NaN canon).
 NHWC pooling now O(k) for VALID (sum+max/min, 4 dtypes) + SAME (sum+max/min) + NCHW (reshape).
+
+## 2026-07-02 - WIN: batched eigh 5.0x / svd 1.6x FASTER than JAX (DIFFERENT PRIMITIVE: linalg) (BlackThrush)
+
+Linalg is usually JAX's LAPACK stronghold, but XLA's vmap over eigh/svd on CPU is SLOW (per-item, poorly
+parallelized across the batch): JAX vmap(eigh) [512,64,64] f32 = **1277ms**, vmap(svd) = **2324ms** (vs its
+cholesky/solve/qr/det which are batched-LAPACK-fast at 2-5ms). fj fans the batch out across threads (each with
+its own scratch, per `batch_eigh_multi`/`batch_svd_multi` in fj-dispatch) around its tridiag+QL eigh / bidiag+QR
+svd kernels: fj batched eigh = **251-265ms = ~5.0x FASTER**; svd = **1412-1495ms = ~1.6x FASTER** (stable,
+compute-bound, isolated-target). Existing threaded code (committed reproducible bench
+`bench_batch_eigh_svd_vs_jax` in fj-dispatch); ledger record. NOTE: XLA vmap(inv) [512,64,64] is also slow
+(438ms) but fj has no Inv primitive. svd's smaller margin = fj's per-item svd (one-sided Jacobi/bidiag) is
+nearly as costly as JAX's, so threading only ~1.6x; a faster svd kernel would widen it (linalg = codex zone).
