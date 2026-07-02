@@ -2,6 +2,17 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-01 - WIRED WIN (native-f32 Log1p: 3.45x vs scalar ORIG): fifth native-f32 consumer (BlackThrush)
+
+Fifth consumer of `eval_unary_simd_dense_f32_native`. `Log1p` f32 (JAX default dtype) was routing through
+widen-to-f64. New `log1p_f32x8` = the f32 sibling of `log1p_f64x8` (Kahan `x·ln(u)/(u−1)`, `u=1+x`,
+`ln(u)` via Cephes `log_block_f32`; `u==1` returns `x` so `log1p(±0)=±0` bit-exact + tiny-x exact). Lanes
+with `u≤0`/subnormal/`+inf`/`NaN` → scalar `f32::ln_1p`. Biggest f32 win yet because libm `log1p` is slow.
+
+MEASURED (4M f32, `FJ_LOG1P_SCALAR` A/B): scalar-ORIG 14.35ms → NATIVE **4.16ms = 3.45x**. Gates: fj-lax
+lib green, full conformance green, few-ulp f32 accuracy test green. Native-f32 vein tally: tanh 2.27x,
+logistic 2.02x, cosh 2.24x, log 2.04x, log1p 3.45x. `log1p_f32x8` also unlocks native-f32 atanh/asinh/acosh.
+
 ## 2026-07-01 - WIRED WIN (native-f32 Log: 2.04x vs scalar ORIG): fourth native-f32 consumer (BlackThrush)
 
 Fourth consumer of `eval_unary_simd_dense_f32_native`. `Log` f32 (JAX's default dtype) was routing
