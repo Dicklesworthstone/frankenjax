@@ -48,16 +48,12 @@ pub(crate) fn new_boxed(
 
 use arithmetic::{
     ensure_float_or_complex_operands, eval_abs, eval_acos, eval_acosh, eval_asin, eval_asinh,
-    eval_atan, eval_atanh,
-    eval_bessel_i0e, eval_bessel_i1e, eval_betainc, eval_binary_elementwise, eval_cbrt, eval_clamp,
-    eval_complex, eval_conj, eval_cos, eval_cosh, eval_digamma, eval_dot, eval_dot_general,
-    eval_erf, eval_erf_inv, eval_erfc, eval_exp, eval_expm1, eval_float_complex_unary, eval_fma,
-    eval_igamma,
-    eval_igammac, eval_imag, eval_integer_pow, eval_is_finite, eval_is_inf, eval_is_nan,
-    eval_lgamma, eval_log, eval_log1p, eval_log2, eval_logistic, eval_neg, eval_nextafter,
-    eval_polygamma, eval_real,
-    eval_round,
-    eval_rsqrt,
+    eval_atan, eval_atanh, eval_bessel_i0e, eval_bessel_i1e, eval_betainc, eval_binary_elementwise,
+    eval_cbrt, eval_clamp, eval_complex, eval_conj, eval_cos, eval_cosh, eval_digamma, eval_dot,
+    eval_dot_general, eval_erf, eval_erf_inv, eval_erfc, eval_exp, eval_expm1,
+    eval_float_complex_unary, eval_fma, eval_igamma, eval_igammac, eval_imag, eval_integer_pow,
+    eval_is_finite, eval_is_inf, eval_is_nan, eval_lgamma, eval_log, eval_log1p, eval_log2,
+    eval_logistic, eval_neg, eval_nextafter, eval_polygamma, eval_real, eval_round, eval_rsqrt,
     eval_select, eval_select_n, eval_signbit, eval_sin, eval_sinh, eval_tan, eval_tanh,
     eval_unary_elementwise_parallel, eval_unary_int_or_float, eval_zeta,
 };
@@ -3905,6 +3901,94 @@ fn separable_reduce_window_sum_f32(
     Some(output)
 }
 
+/// Rank-4 NHWC separable running-window SUM for VALID (pad 0), unit-stride f32 `reduce_window`
+/// add — the standard CNN box-sum layout `[N, H, W, C]`, window `[1, wh, ww, 1]`. The naive tap
+/// loop is O(out · wh · ww); SUM is separable, so two O(input) running-sum passes (horizontal
+/// over W, then vertical over H) with the C channel carried as a contiguous inner vector drop it
+/// to ~2 adds/cell, INDEPENDENT of window size. Tolerance-equal (running sum reassociates; f64
+/// accumulator) → gated to all-finite inputs, unit stride, VALID padding, mirroring
+/// [`separable_reduce_window_sum_f32`]. Returns `None` (naive fallback) on any unsupported shape.
+#[allow(clippy::too_many_arguments)]
+fn separable_reduce_window_sum_4d_nhwc_f32(
+    tensor: &TensorValue,
+    dims: [usize; 4],
+    out_h: usize,
+    out_w: usize,
+    window_h: usize,
+    window_w: usize,
+) -> Option<Vec<f32>> {
+    let [bn, h, w, c] = dims;
+    if window_h < 2 || window_w < 2 || window_h.saturating_mul(window_w) < 25 {
+        return None;
+    }
+    // VALID, unit stride: out = in - window + 1.
+    if out_h + window_h != h + 1 || out_w + window_w != w + 1 {
+        return None;
+    }
+    let src = tensor.elements.as_f32_slice()?;
+    if src.len() != bn * h * w * c || !src.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let row_c = out_w * c;
+    let mut output = vec![0.0f32; bn * out_h * row_c];
+    let mut hsum = vec![0.0f64; h * row_c];
+    let mut vsum = vec![0.0f64; row_c];
+    let mut acc = vec![0.0f64; c];
+    for n in 0..bn {
+        let in_base = n * h * w * c;
+        // Phase 1: per input row, horizontal running window-sum over W (channel-wise, f64).
+        for pr in 0..h {
+            let src_row = in_base + pr * w * c;
+            let hrow = &mut hsum[pr * row_c..(pr + 1) * row_c];
+            acc.iter_mut().for_each(|a| *a = 0.0);
+            for j in 0..window_w {
+                let s = src_row + j * c;
+                for (a, &v) in acc.iter_mut().zip(&src[s..s + c]) {
+                    *a += f64::from(v);
+                }
+            }
+            for (o, &a) in hrow[0..c].iter_mut().zip(&acc) {
+                *o = a;
+            }
+            for oc in 1..out_w {
+                let add = src_row + (oc + window_w - 1) * c;
+                let sub = src_row + (oc - 1) * c;
+                for ch in 0..c {
+                    acc[ch] += f64::from(src[add + ch]) - f64::from(src[sub + ch]);
+                }
+                let d = &mut hrow[oc * c..(oc + 1) * c];
+                for (o, &a) in d.iter_mut().zip(&acc) {
+                    *o = a;
+                }
+            }
+        }
+        // Phase 2: vertical running window-sum over H (row-wide, f64) → narrow to f32.
+        vsum.iter_mut().for_each(|v| *v = 0.0);
+        for wr in 0..window_h {
+            let hrow = &hsum[wr * row_c..(wr + 1) * row_c];
+            for (v, &hh) in vsum.iter_mut().zip(hrow) {
+                *v += hh;
+            }
+        }
+        let obase = n * out_h * row_c;
+        for (o, &v) in output[obase..obase + row_c].iter_mut().zip(&vsum) {
+            *o = v as f32;
+        }
+        for or in 1..out_h {
+            let add = &hsum[(or + window_h - 1) * row_c..(or + window_h) * row_c];
+            let sub = &hsum[(or - 1) * row_c..or * row_c];
+            for ((v, &a), &s) in vsum.iter_mut().zip(add).zip(sub) {
+                *v += a - s;
+            }
+            let od = &mut output[obase + or * row_c..obase + (or + 1) * row_c];
+            for (o, &v) in od.iter_mut().zip(&vsum) {
+                *o = v as f32;
+            }
+        }
+    }
+    Some(output)
+}
+
 /// Rank-3 separable running-window-SUM for VALID (pad 0), unit-stride f64 sum pooling
 /// (volumetric/3D `reduce_window` add). Replaces the naive O(out·∏window) tap loop in
 /// [`reduce_window_rank3_f64_sum_xlane`] with three O(input) add-new-subtract-old running
@@ -7648,6 +7732,44 @@ fn eval_reduce_window(
     }
 
     // SIMD-over-channel SUM fast path (channel-last f64/f32) — sum/average pooling. The scalar
+    // f32 rank-4 NHWC SUM: standard CNN box-sum layout [N,H,W,C] with window [1,wh,ww,1]. The window
+    // touches only the two spatial axes, so this is batched-2D SEPARABLE pooling (two O(input) running
+    // sums, C carried inner) — O(k) not O(k^2). Placed BEFORE the SIMD-channel path (which is O(k^2)
+    // across spatial taps). VALID + unit stride; separable returns None otherwise → SIMD path below.
+    if no_base_dilation
+        && no_window_dilation
+        && tensor.dtype == fj_core::DType::F32
+        && rank == 4
+        && reduce_window_sum_like(reduce_op)
+        && window_dims[0] == 1
+        && window_dims[3] == 1
+        && strides.iter().all(|&s| s == 1)
+        && pad_lows.iter().all(|&p| p == 0)
+        && let Some(output) = separable_reduce_window_sum_4d_nhwc_f32(
+            tensor,
+            [
+                tensor.shape.dims[0] as usize,
+                tensor.shape.dims[1] as usize,
+                tensor.shape.dims[2] as usize,
+                tensor.shape.dims[3] as usize,
+            ],
+            out_dims[1] as usize,
+            out_dims[2] as usize,
+            window_dims[1],
+            window_dims[2],
+        )
+    {
+        return Ok(Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: out_dims.to_vec(),
+                },
+                output,
+            )
+            .map_err(EvalError::InvalidTensor)?,
+        ));
+    }
+
     // dense_float odometer was ~58-200x JAX. SIMD across C with an f64 accumulator preserving the
     // row-major tap order (bit-identical to the odometer despite float non-associativity, since
     // channels are summed independently; f32 widens→f64→rounds exactly as dense_float does).
@@ -9637,11 +9759,58 @@ mod tests {
         );
     }
 
-    // Large-window SUM pooling vs JAX (measured JAX f64 [2048,2048] VALID: win11x11 8.18ms, win31x31
-    // 35.3ms; f32 win11 6.98ms, win31 34.2ms). The general rank-2 sum path is naive O(out*wr*wc); sum is
-    // SEPARABLE (two 1-D running-sum passes = O(input)) — check the gap.
     #[test]
-    #[ignore = "perf benchmark; run explicitly"]
+    fn rw4d_nhwc_separable_sum_matches_bruteforce() {
+        let (bn, h, w, c) = (2usize, 13usize, 11usize, 4usize);
+        let (wh, ww) = (5usize, 5usize);
+        let data: Vec<f32> = (0..bn * h * w * c)
+            .map(|i| (((i * 7 + 3) % 97) as f32) * 0.03125 - 1.5)
+            .collect();
+        let x = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![bn as u32, h as u32, w as u32, c as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let mut p = BTreeMap::new();
+        p.insert("reduce_op".to_owned(), "sum".to_owned());
+        p.insert("window_dimensions".to_owned(), format!("1,{wh},{ww},1"));
+        p.insert("window_strides".to_owned(), "1,1,1,1".to_owned());
+        let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&x), &p).unwrap();
+        let got = got.as_tensor().unwrap();
+        let (oh, ow) = (h - wh + 1, w - ww + 1);
+        assert_eq!(
+            got.shape.dims,
+            vec![bn as u32, oh as u32, ow as u32, c as u32]
+        );
+        let out = got.elements.as_f32_slice().unwrap();
+        for n in 0..bn {
+            for r in 0..oh {
+                for col in 0..ow {
+                    for ch in 0..c {
+                        let mut acc = 0.0f64;
+                        for dh in 0..wh {
+                            for dw in 0..ww {
+                                let idx = ((n * h + r + dh) * w + col + dw) * c + ch;
+                                acc += f64::from(data[idx]);
+                            }
+                        }
+                        let o = out[((n * oh + r) * ow + col) * c + ch];
+                        assert!(
+                            (f64::from(o) - acc).abs() <= 1e-3 * acc.abs().max(1.0),
+                            "mismatch at n{n} r{r} c{col} ch{ch}: got {o} want {acc}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
     fn bench_reduce_window_sum_f32_vs_jax() {
         use std::time::Instant;
         let n = 2048usize;
@@ -15302,7 +15471,13 @@ mod tests {
             .unwrap(),
         );
         let out = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
-        let vals: Vec<f32> = out.as_tensor().unwrap().elements.as_f32_slice().unwrap().to_vec();
+        let vals: Vec<f32> = out
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f32_slice()
+            .unwrap()
+            .to_vec();
         assert_eq!(vals, vec![58.0, 64.0, 139.0, 154.0]);
     }
 
@@ -15311,7 +15486,8 @@ mod tests {
     #[test]
     fn i32_dot_fast_path_matches_expected() {
         let a = Value::Tensor(
-            TensorValue::new_i32_values(Shape { dims: vec![2, 3] }, vec![1, 2, 3, 4, 5, 6]).unwrap(),
+            TensorValue::new_i32_values(Shape { dims: vec![2, 3] }, vec![1, 2, 3, 4, 5, 6])
+                .unwrap(),
         );
         let b = Value::Tensor(
             TensorValue::new_i32_values(Shape { dims: vec![3, 2] }, vec![7, 8, 9, 10, 11, 12])
@@ -15350,7 +15526,13 @@ mod tests {
             .unwrap(),
         );
         let out = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
-        let vals = out.as_tensor().unwrap().elements.as_complex_slice().unwrap().to_vec();
+        let vals = out
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_complex_slice()
+            .unwrap()
+            .to_vec();
         assert_eq!(vals, vec![(1.0, 1.0)]);
     }
 
@@ -15359,7 +15541,8 @@ mod tests {
     #[test]
     fn u64_dot_fast_path_matches_expected() {
         let a = Value::Tensor(
-            TensorValue::new_u64_values(Shape { dims: vec![2, 3] }, vec![1, 2, 3, 4, 5, 6]).unwrap(),
+            TensorValue::new_u64_values(Shape { dims: vec![2, 3] }, vec![1, 2, 3, 4, 5, 6])
+                .unwrap(),
         );
         let b = Value::Tensor(
             TensorValue::new_u64_values(Shape { dims: vec![3, 2] }, vec![7, 8, 9, 10, 11, 12])

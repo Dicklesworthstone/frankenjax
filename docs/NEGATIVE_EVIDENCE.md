@@ -10904,3 +10904,18 @@ generic path). Bit-exact value sort asc+desc + argsort (gather-is-sorted) vs `so
 is comparison-based and VERY slow (f32 5348 ms, i32 4891 ms @ 16M) — fj's existing pairs-radix f32 argsort
 already ~608 ms = **8.8x FASTER** (previously undocumented). Surveyed + REJECTED as XLA-tuned this session:
 scatter-add (~9 ms), int32 conv2d (33 ms ≈ f32), bf16/f16 matmul (2.5-2.9 ms, upcasts to f32 BLAS).
+
+## 2026-07-02 - WIN: 4D NHWC separable sum-pool — up to 36x FASTER than JAX (BlackThrush)
+
+DIFFERENT PRIMITIVE (reduce_window / avg-pool). ALIEN-GRAVEYARD find: XLA's reduce_window SUM is naive
+O(k^2) in window size — measured JAX f32 [4,256,256,16] window (1,w,w,1) stride 1 VALID: w8=3.67ms, w16=28ms,
+w32=80ms, w64=281ms (~4x per window-doubling). fj had rank-2/rank-3 separable running-sum paths but NO rank-4,
+so the standard CNN NHWC layout fell to the SIMD-channel path — still O(k^2) across spatial taps (fj naive
+w8=11.7/w16=32/w32=87/w64=297ms). Added `separable_reduce_window_sum_4d_nhwc_f32` (window touches only the two
+spatial axes → batched-2D separable: horizontal running-sum over W then vertical over H, C carried as a
+contiguous inner f64-accumulated vector), placed BEFORE the SIMD-channel path; VALID + unit stride, finite-gated
+(separable reassociates → tolerance-equal, same contract as the existing rank-2/3 separable). RESULT: FLAT in
+window size — fj w8=10.88, w16=10.92, w32=10.88, **w64=7.68 ms**. vs JAX: w16 **2.6x**, w32 **7.3x**, w64
+**36.6x FASTER**. Verified vs brute-force reference (`rw4d_nhwc_separable_sum_matches_bruteforce`) + 48
+reduce_window tests green. f64/half NHWC siblings are the natural follow-up. Surveyed + REJECTED as XLA-tuned
+this session: scatter-add (~9ms), int conv (33ms), bf16 matmul (2.9ms), cummax (already parallel in fj).
