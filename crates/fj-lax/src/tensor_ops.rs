@@ -9467,6 +9467,25 @@ fn sort_along_axis_dense_i64(
     }
     let outer_count = total / axis_dim;
 
+    // Keys-only VALUE-sort fast path for the single large contiguous slice (`jnp.sort(x)`
+    // on a big 1-D i64 array): the sign-flipped key IS the value bijectively, so sort u64
+    // keys directly (8 bytes/elem, ~2x less traffic than (key,index) pairs) and invert.
+    // Equal keys == equal values → stability irrelevant. `key_mask` XOR handles descending.
+    if axis_stride == 1 && !return_indices && use_parallel_radix(outer_count, axis_dim) {
+        const FLIP: u64 = 1_u64 << 63;
+        let mut keys: Vec<u64> = values
+            .iter()
+            .map(|&v| ((v as u64) ^ FLIP) ^ key_mask)
+            .collect();
+        let mut scratch: Vec<u64> = Vec::new();
+        radix_keys_ascending_parallel(&mut keys, &mut scratch);
+        let out: Vec<i64> = keys.iter().map(|&k| ((k ^ key_mask) ^ FLIP) as i64).collect();
+        return Ok(Some(Value::Tensor(
+            TensorValue::new_i64_values(tensor.shape.clone(), out)
+                .map_err(EvalError::InvalidTensor)?,
+        )));
+    }
+
     let mut out = vec![0_i64; total];
     if axis_stride == 1 {
         // Contiguous last axis: slices are disjoint blocks -> fan out across threads.
@@ -10753,6 +10772,131 @@ fn radix_pairs_ascending_maybe_parallel(
     } else {
         radix_pairs_ascending(pairs, scratch);
     }
+}
+
+// ---- Keys-only radix (VALUE sorts) ---------------------------------------------------
+// For a value sort the i64/f64 sort key is the value bijectively, so no index is needed:
+// radix-sort `u64` KEYS directly (8 bytes/elem) instead of `(key,index)` pairs (16 bytes,
+// u32 padded) → ~2x less memory traffic + scatter cache footprint. Equal keys == equal
+// values, so stability is irrelevant. Mirrors the pairs radix exactly (byte-for-byte same
+// bucketing), just without the carried index.
+
+/// 8-pass LSD radix of a `u64` key slice into `tmp` (result left in `data`).
+fn radix_keys_slice_8pass(data: &mut [u64], tmp: &mut [u64]) {
+    let mut src: &mut [u64] = data;
+    let mut dst: &mut [u64] = tmp;
+    for byte in 0..8 {
+        let shift = byte * 8;
+        let mut counts = [0_usize; 256];
+        for &key in src.iter() {
+            counts[((key >> shift) & 0xff) as usize] += 1;
+        }
+        let mut sum = 0_usize;
+        for c in counts.iter_mut() {
+            let count = *c;
+            *c = sum;
+            sum += count;
+        }
+        for &key in src.iter() {
+            let bucket = ((key >> shift) & 0xff) as usize;
+            dst[counts[bucket]] = key;
+            counts[bucket] += 1;
+        }
+        std::mem::swap(&mut src, &mut dst);
+    }
+    // 8 swaps -> `src` aliases the original `data`, which holds the result.
+}
+
+/// Parallel keys-only radix for a single LARGE slice: MSD top-byte partition into 256
+/// globally-ordered buckets (`scratch`), then LSD-sort each bucket across threads.
+/// Bit-identical (as a multiset; value sort) to the flat LSD.
+fn radix_keys_ascending_parallel(keys: &mut Vec<u64>, scratch: &mut Vec<u64>) {
+    let n = keys.len();
+    if n <= 1 {
+        return;
+    }
+    if scratch.len() < n {
+        scratch.resize(n, 0);
+    }
+    const SHIFT: u32 = 56;
+    let mut starts = [0_usize; 256];
+    {
+        let mut counts = [0_usize; 256];
+        for &key in keys.iter() {
+            counts[(key >> SHIFT) as usize] += 1;
+        }
+        let mut sum = 0_usize;
+        for b in 0..256 {
+            starts[b] = sum;
+            sum += counts[b];
+        }
+    }
+    let mut wpos = starts;
+    for &key in keys.iter() {
+        let b = (key >> SHIFT) as usize;
+        scratch[wpos[b]] = key;
+        wpos[b] += 1;
+    }
+    let hardware = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1);
+    let buf = &mut scratch[..n];
+    if hardware <= 1 {
+        let mut tmp: Vec<u64> = Vec::new();
+        let mut start = 0usize;
+        for b in 0..256 {
+            let end = if b == 255 { n } else { starts[b + 1] };
+            let len = end - start;
+            if len > 1 {
+                if tmp.len() < len {
+                    tmp.resize(len, 0);
+                }
+                radix_keys_slice_8pass(&mut buf[start..end], &mut tmp[..len]);
+            }
+            start = end;
+        }
+    } else {
+        let target = n.div_ceil(hardware).max(1);
+        let bucket_end = |b: usize| -> usize { if b + 1 >= 256 { n } else { starts[b + 1] } };
+        let mut group_bucket_bounds: Vec<usize> = vec![0];
+        let mut group_start_elem = 0usize;
+        for b in 0..256 {
+            if bucket_end(b) - group_start_elem >= target && b + 1 < 256 {
+                group_bucket_bounds.push(b + 1);
+                group_start_elem = starts[b + 1];
+            }
+        }
+        group_bucket_bounds.push(256);
+        std::thread::scope(|scope| {
+            let mut rest: &mut [u64] = buf;
+            for w in 0..group_bucket_bounds.len() - 1 {
+                let gb_start = group_bucket_bounds[w];
+                let gb_end = group_bucket_bounds[w + 1];
+                let elem_start = starts[gb_start];
+                let elem_end = if gb_end >= 256 { n } else { starts[gb_end] };
+                let group_len = elem_end - elem_start;
+                let (group_slice, tail) = rest.split_at_mut(group_len);
+                rest = tail;
+                let local_bounds: Vec<usize> = (gb_start..=gb_end)
+                    .map(|b| (if b >= 256 { n } else { starts[b] }) - elem_start)
+                    .collect();
+                scope.spawn(move || {
+                    let mut tmp: Vec<u64> = Vec::new();
+                    for win in local_bounds.windows(2) {
+                        let (s, e) = (win[0], win[1]);
+                        let len = e - s;
+                        if len > 1 {
+                            if tmp.len() < len {
+                                tmp.resize(len, 0);
+                            }
+                            radix_keys_slice_8pass(&mut group_slice[s..e], &mut tmp[..len]);
+                        }
+                    }
+                });
+            }
+        });
+    }
+    keys[..n].copy_from_slice(&scratch[..n]);
 }
 
 /// Sort or argsort a tensor along a given axis.
@@ -25663,6 +25807,37 @@ mod tests {
             dense_t * 1e3,
             lit / dense_t
         );
+    }
+
+    #[test]
+    fn radix_keys_i64_value_sort_matches_comparison_large() {
+        // >= PARALLEL_RADIX_MIN_PAIRS (1<<19) so the single-slice keys-only value-sort
+        // fast path fires (radix_keys_ascending_parallel). Negatives, dups, MIN/MAX.
+        let n = 1_000_000usize;
+        let data: Vec<i64> = (0..n)
+            .map(|i| match i % 13 {
+                0 => i64::MIN,
+                1 => i64::MAX,
+                2 => 0,
+                3 => -1,
+                4 => -((i as i64) % 97),
+                _ => ((i as i64).wrapping_mul(2654435761)) ^ (i as i64),
+            })
+            .collect();
+        let mut want = data.clone();
+        want.sort();
+        let asc = params(&[("dimension", "0"), ("descending", "false")]);
+        let got = extract_i64_vec(
+            &eval_sort(Primitive::Sort, &[Value::vector_i64(&data).unwrap()], &asc).unwrap(),
+        );
+        assert_eq!(got, want, "keys-only i64 value sort ascending");
+        let mut want_desc = data.clone();
+        want_desc.sort_by(|a, b| b.cmp(a));
+        let desc = params(&[("dimension", "0"), ("descending", "true")]);
+        let got_desc = extract_i64_vec(
+            &eval_sort(Primitive::Sort, &[Value::vector_i64(&data).unwrap()], &desc).unwrap(),
+        );
+        assert_eq!(got_desc, want_desc, "keys-only i64 value sort descending");
     }
 
     #[test]

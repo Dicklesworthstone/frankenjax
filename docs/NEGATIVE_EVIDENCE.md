@@ -10838,3 +10838,15 @@ in-turn): needs keys-only copies of `radix_pairs_ascending_passes`/`_parallel`/`
 subtle) + a keys-only value-sort slice path — a stable-radix rewrite is fiddly, and a bit-buggy radix is worse than
 a clean handoff. Next dig: implement + verify against the existing pairs sort (`radix_sort_i64_ascending_matches_
 comparison_sort`), argsort keeps pairs. No ceiling.
+
+## 2026-07-02 - WIN: keys-only i64 value sort — flips the 1.28x LOSS to 1.20x FASTER than JAX (BlackThrush)
+
+Implemented the pinned keys-only lever. For a single large contiguous i64 VALUE sort (`jnp.sort(x)` on a big 1-D
+array), the sign-flipped key IS the value bijectively, so `sort_along_axis_dense_i64` now radix-sorts `u64` KEYS
+directly (`radix_keys_ascending_parallel`: MSD top-byte partition → per-bucket LSD across threads) — **8 bytes/elem
+vs 16 for the `(key,index)` pairs** — then inverts. Equal keys == equal values → stability irrelevant, no index
+needed. RESULT: fj i64 sort 16M = **1114 → 729.76 ms** (1.53x internal), now **~1.20x FASTER than JAX** (873 ms) —
+flips the prior 1.28x LOSS to a WIN. Verified bit-correct (asc + desc, negatives/dups/MIN/MAX) vs comparison sort
+(`radix_keys_i64_value_sort_matches_comparison_large`, 1M) + all 38 sort tests green. Only the single-slice value
+path uses keys-only; argsort and multi-slice keep the pairs path. NEXT: f64 value sort (already 4.5x, keys-only
+would widen it) needs the invertible total-order transform; u32/u64/f32 similar. No ceiling.
