@@ -3582,7 +3582,22 @@ fn bench_half_f32_sort_vs_jax(c: &mut Criterion) {
 // Complex sort 4M vs JAX 0.10.2 x64 (jaxvenv, 2026-07-03): complex sort 4M = 1207.9ms
 // (lexicographic full sort). fj sorts complex by (real, imag) lexicographic key.
 fn bench_complex_sort_4m_vsjax(c: &mut Criterion) {
-    let input = complex_vector(1 << 22);
+    // Dense complex128 (new_complex_values) so the radix path fires — complex_vector
+    // builds a boxed Vec<Literal> that the two-pass radix bails on.
+    let n = 1usize << 22;
+    let c128: Vec<(f64, f64)> = (0..n)
+        .map(|i| (((i as f64) * 0.017).sin(), ((i as f64) * 0.031).cos()))
+        .collect();
+    let input = Value::Tensor(
+        TensorValue::new_complex_values(
+            DType::Complex128,
+            Shape {
+                dims: vec![n as u32],
+            },
+            c128,
+        )
+        .unwrap(),
+    );
     let mut p = BTreeMap::new();
     p.insert("dimension".to_owned(), "0".to_owned());
     p.insert("descending".to_owned(), "false".to_owned());

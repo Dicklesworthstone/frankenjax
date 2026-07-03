@@ -255,12 +255,17 @@ Complex sort splits by PRECISION:
 - **complex64 sort 4M: fj 136.7ms vs JAX 1207.4ms = 8.84x FASTER** (`eval/complex64_sort_4m_vsjax`) — fj
   packs both f32 total-order component keys into ONE u64 (`real_key<<32 | imag_key`) and single-pass
   radix-sorts it (bijection over finite f32), crushing JAX's comparison full-sort.
-- **complex128 sort 4M: fj 872.7ms vs JAX 1207.9ms = only 1.38x** (`eval/complex_sort_4m_vsjax`) — two f64
-  components DON'T pack into one u64, so fj falls to the lexicographic COMPARISON sort (like JAX) = modest.
-FIXABLE fj GAP (filed): a two-pass STABLE f64 radix (sort by imag then real, carrying the complex payload
-via key-value radix — fj has `sort_key_val_dense_uniform`) would give complex128 sort the same ~6-9x radix
-crush complex64 gets. Niche (complex128 sorting is rare) but a clear "fj uses comparison where radix would
-win" case. The big sort wins are RADIX (real/int/half/complex64); only complex128 falls back. Also NORMS are a LOSS/parity (JAX matrix norms 0.2-0.62ms — threaded reductions
+- **complex128 sort 4M: FIXED 2026-07-03 — comparison -> two-pass radix, 1.66x internal / 2.49x vs JAX**
+  (`eval/complex_sort_4m_vsjax`, dense input). Two f64 components don't pack into one u64, so complex128
+  fell to the lexicographic COMPARISON sort (1.38x). Added `sort_along_axis_dense_complex128`: two-pass
+  STABLE f64 radix — sort by imag (secondary), then STABLY by real (primary) via `radix_pairs_ascending
+  _parallel` on (key, index) pairs; LSD stability makes the result lexicographic (real, imag), exactly the
+  comparator it replaces. Single-line + finite gated (mirrors the complex64 path); NaN/multi-line fall
+  back to comparison. HONEST A/B (same dense input, same binary): dense-comparison 805.8ms -> dense-radix
+  484.8ms = **1.66x**, and **484.8ms vs JAX 1207.9ms = 2.49x** (was 1.38x). Bit-exact for finite (43 sort
+  tests + full fj-lax lib 1727/0 green). Not the ~6x complex64 gets (two passes + payload gather vs one
+  packed pass), but a genuine algorithmic upgrade. The whole sort family is now RADIX (real/int/half/
+  complex64 single-pass, complex128 two-pass); no comparison fallback for finite dense. Also NORMS are a LOSS/parity (JAX matrix norms 0.2-0.62ms — threaded reductions
 on idle cores; fj's memory-bound norm reduces lose on the contended host, same class as the reduction
 losses — NOT a win, not recorded as one).
 
