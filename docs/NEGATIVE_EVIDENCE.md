@@ -275,6 +275,18 @@ The whole order-statistics family is now mapped as a decisive fj domination: 1D 
 2D sort 31-42x, top_k 18.7-205x, argmax 1.76x, scans 1.55-2.35x — every case where fj's radix /
 partial-select / parallel-prefix ALGORITHM beats XLA's full comparison sort, threading-independent.
 
+## 2026-07-03 - WIN (recorded, HUGE): fj bf16 per-row top_k 232x FASTER than JAX (the LLM sampling hot path) (TealMarten)
+
+The ML use of top_k is per-row sampling in f32/bf16 (LLM top-k / nucleus sampling). JAX 0.10.2 x64
+top_k [4096,1024] k=50: f32 = 39.3ms, **bf16 = 577.4ms** (bf16 falls to a full sort per row). fj per-row
+partial selection (new benches `eval/topk_4096x1024_k50_{f32,bf16}_vsjax`):
+- **bf16 top_k [4096,1024] k=50: fj 2.49ms vs JAX 577.4ms = 231.9x FASTER** — THE headline; this is the
+  exact LLM decode-time top-k-sampling shape+dtype.
+- **f32 top_k k=50: fj 2.38ms vs JAX 39.3ms = 16.5x FASTER** (JAX's f32 top_k is better than bf16 but
+  still full-sort-ish).
+Highest-relevance order-statistics win yet (bf16 top-k sampling runs every decode step). Extends the
+top_k map: 1D f64 18.7x, per-row f64 k5 205x, per-row bf16 k50 232x, per-row f32 k50 16.5x.
+
 ## 2026-07-02 - WIN (recorded, BIG): fj top_k 18.7x (1D) / 205x (per-row) FASTER than JAX (TealMarten)
 
 top_k is a common ML op (sampling / retrieval / beam-search). JAX 0.10.2 x64 does a FULL SORT regardless

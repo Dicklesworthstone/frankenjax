@@ -4554,6 +4554,51 @@ fn bench_topk_64k_k128_f64_vec(c: &mut Criterion) {
 // top_k vs JAX 0.10.2 x64 (jaxvenv, 2026-07-02): JAX does a FULL SORT regardless of k
 // (top_k 4M k=10 = 1135ms, 4096x1024 k=5 = 519ms). If fj uses partial selection this
 // is a large win on a common ML op (sampling/retrieval).
+// f32/bf16 per-row top_k (LLM top-k sampling — the real ML use) vs JAX 0.10.2 x64
+// (jaxvenv, 2026-07-03): f32 top_k [4096,1024] k50 = 39.3ms, bf16 = 577.4ms (bf16
+// falls to full sort per row). fj uses per-row partial selection.
+fn bench_half_topk_vs_jax(c: &mut Criterion) {
+    let (rows, cols) = (4096usize, 1024usize);
+    let f32data: Vec<f32> = (0..rows * cols)
+        .map(|i| ((i as f32) * 1e-3).sin())
+        .collect();
+    let f32m = Value::Tensor(
+        TensorValue::new_f32_values(
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            f32data,
+        )
+        .unwrap(),
+    );
+    let bf16bits: Vec<u16> = (0..rows * cols)
+        .map(
+            |i| match Literal::from_bf16_f64(((i as f64) * 1e-3).sin()) {
+                Literal::BF16Bits(b) => b,
+                _ => 0,
+            },
+        )
+        .collect();
+    let bf16m = Value::Tensor(
+        TensorValue::new_half_float_values(
+            DType::BF16,
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            bf16bits,
+        )
+        .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("k".to_owned(), "50".to_owned());
+    c.bench_function("eval/topk_4096x1024_k50_f32_vsjax", |b| {
+        b.iter(|| eval_primitive_multi(Primitive::TopK, std::slice::from_ref(&f32m), &p))
+    });
+    c.bench_function("eval/topk_4096x1024_k50_bf16_vsjax", |b| {
+        b.iter(|| eval_primitive_multi(Primitive::TopK, std::slice::from_ref(&bf16m), &p))
+    });
+}
+
 fn bench_topk_vs_jax(c: &mut Criterion) {
     let n = 1usize << 22;
     let data: Vec<f64> = (0..n)
@@ -8255,6 +8300,7 @@ criterion_group!(
     bench_sort_64k_u64_literal_reference,
     bench_sort_calib_reduce_64k_i64,
     bench_topk_64k_k128_f64_vec,
+    bench_half_topk_vs_jax,
     bench_topk_vs_jax,
     bench_topk_64k_k128_f32,
     bench_topk_64k_k128_f64_literal_reference,
