@@ -1782,10 +1782,6 @@ fn bench_eigh_qr_vs_jax(c: &mut Criterion) {
     }
 }
 
-// Complex Hermitian eigh vs JAX 0.10.2 x64 (jaxvenv, 2026-07-02): cheigh_128 = 118.6ms.
-// UNLIKE real eigh (fj WINS 12x), fj's COMPLEX Hermitian eigh is a LOSS: fj 128 = 1.23s
-// = ~10x SLOWER (slow complex Jacobi; lacks the tred2/tql2 tridiag speedup real eigh has).
-// Only n=128 benched (n=256 is multi-second). Documented gap/reproducer, not a win.
 // Complex non-symmetric eig vs JAX 0.10.2 x64 (jaxvenv, 2026-07-03): ceig_256 =
 // 2709.8ms (iterative complex Schur — catastrophic). fj uses Francis + complex-QR Givens.
 fn bench_complex_eig_vs_jax(c: &mut Criterion) {
@@ -1833,6 +1829,9 @@ fn bench_complex_qr_vs_jax(c: &mut Criterion) {
     }
 }
 
+// Complex Hermitian eigh vs JAX 0.10.2 x64: cheigh_128 = 118.6ms. FIXED 2026-07-03
+// (real-embedding M=[[A,-B],[B,A]] + real tridiag-QL, replacing the slow complex
+// Jacobi): fj 128 = 22.0ms = 5.4x FASTER (was 1.23s = 10x SLOWER). Loss -> WIN.
 fn bench_complex_eigh_vs_jax(c: &mut Criterion) {
     for n in [128usize] {
         let mut elems: Vec<Literal> = Vec::with_capacity(n * n);

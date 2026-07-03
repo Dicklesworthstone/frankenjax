@@ -2546,6 +2546,93 @@ fn jacobi_eigendecomposition_cyclic(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f
 }
 
 /// Complex Jacobi eigendecomposition of a Hermitian n×n matrix.
+/// Complex Hermitian eigendecomposition via the 2n×2n REAL EMBEDDING.
+///
+/// For `H = A + iB` (A = Re symmetric, B = Im antisymmetric), the real symmetric matrix
+/// `M = [[A, -B], [B, A]]` satisfies `M·[x;y] = λ·[x;y]` ⟺ `H·(x+iy) = λ·(x+iy)`, so M's
+/// eigenpairs give H's directly and each H-eigenvalue appears TWICE in M's spectrum.
+/// Reusing the fast real `tridiag_ql_eigendecomposition` (Householder tridiag + implicit-QL)
+/// replaces the O(n⁴)-ish complex cyclic Jacobi (~10x slower than JAX) — this flips a loss
+/// to a win (real eigh on 2n is far cheaper than complex Jacobi on n).
+///
+/// Extraction: sort M's 2n eigenvalues, and for each group of near-equal eigenvalues (an
+/// H-eigenvalue of multiplicity g appears as a 2g-block) form the candidate complex vectors
+/// `v = x + iy` from the M-eigenvectors and run complex modified Gram-Schmidt to yield g
+/// ORTHONORMAL complex eigenvectors. The MGS is essential under degeneracy: e.g. for `H = I`
+/// the naive pairing gives v=[1,0], [i,0] (⟨⟩=i≠0) which fails reconstruction; MGS fixes it.
+/// Eigh parity is reconstruction + sorted spectrum, so any valid orthonormal eigenbasis is
+/// accepted. Returns (eigenvalues[n], eigenvectors[n·n] row-major, columns = eigenvectors).
+fn complex_hermitian_eigh_via_real_embedding(
+    a: &[(f64, f64)],
+    m: usize,
+) -> (Vec<f64>, Vec<(f64, f64)>) {
+    let n2 = 2 * m;
+    let mut big = vec![0.0f64; n2 * n2];
+    for i in 0..m {
+        for j in 0..m {
+            let (re, im) = a[i * m + j];
+            big[i * n2 + j] = re; // A
+            big[i * n2 + (j + m)] = -im; // -B
+            big[(i + m) * n2 + j] = im; // B
+            big[(i + m) * n2 + (j + m)] = re; // A
+        }
+    }
+    let (w2, v2) = tridiag_ql_eigendecomposition(&big, n2);
+    let mut idx: Vec<usize> = (0..n2).collect();
+    idx.sort_by(|&x, &y| w2[x].total_cmp(&w2[y]));
+
+    let mut eigenvalues: Vec<f64> = Vec::with_capacity(m);
+    let mut eigenvectors = vec![(0.0f64, 0.0f64); m * m]; // row*m + col
+    let mut out_col = 0usize;
+    let mut gi = 0usize;
+    while gi < n2 && out_col < m {
+        let lam = w2[idx[gi]];
+        let mut gj = gi + 1;
+        while gj < n2 && (w2[idx[gj]] - lam).abs() <= 1e-9 * (1.0 + lam.abs()) {
+            gj += 1;
+        }
+        // Complex modified Gram-Schmidt over the candidate v = x + iy in this group.
+        let mut basis: Vec<Vec<(f64, f64)>> = Vec::new();
+        for &col in &idx[gi..gj] {
+            let mut cv: Vec<(f64, f64)> = (0..m)
+                .map(|row| (v2[row * n2 + col], v2[(row + m) * n2 + col]))
+                .collect();
+            for b in &basis {
+                let mut dot = (0.0f64, 0.0f64);
+                for r in 0..m {
+                    dot = complex_add(dot, complex_mul(complex_conj(b[r]), cv[r]));
+                }
+                for r in 0..m {
+                    cv[r] = complex_sub(cv[r], complex_mul(dot, b[r]));
+                }
+            }
+            let norm = cv
+                .iter()
+                .map(|&(re, im)| re * re + im * im)
+                .sum::<f64>()
+                .sqrt();
+            if norm > 1e-7 {
+                for c in cv.iter_mut() {
+                    *c = (c.0 / norm, c.1 / norm);
+                }
+                basis.push(cv);
+            }
+        }
+        for b in basis {
+            if out_col >= m {
+                break;
+            }
+            eigenvalues.push(lam);
+            for row in 0..m {
+                eigenvectors[row * m + out_col] = b[row];
+            }
+            out_col += 1;
+        }
+        gi = gj;
+    }
+    (eigenvalues, eigenvectors)
+}
+
 /// Returns (eigenvalues, eigenvectors) where eigenvalues are real and eigenvectors are complex.
 ///
 /// Reference (max-pivot) kernel: production paths use the faster
@@ -3345,10 +3432,10 @@ pub(crate) fn eval_eigh(
 
             (vec![lambda1, lambda2], v)
         } else {
-            let mut a_work = a;
-            // Row-cyclic sweeps (O(m³·sweeps)) instead of the max-pivot kernel's
-            // O(m⁴); same Hermitian spectrum to machine precision, sorted below.
-            complex_jacobi_eigendecomposition_cyclic(&mut a_work, m)
+            // Real-embedding (M = [[A,-B],[B,A]]) reusing the fast real tridiag-QL eigh —
+            // replaces the ~10x-slower complex cyclic Jacobi. Same Hermitian spectrum
+            // (sorted below); reconstruction-validated (VᴴHV = diag).
+            complex_hermitian_eigh_via_real_embedding(&a, m)
         };
 
         // Sort eigenvalues in ascending order (JAX convention for eigh)

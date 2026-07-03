@@ -191,13 +191,18 @@ x_f64_vsjax`):
 - **qr 256: fj 6.80ms vs JAX 107ms = 15.7x FASTER**; **qr 512: fj 49.3ms vs 557ms = 11.3x**
 - **eig 256 (NON-symmetric eigvals): fj 68.4ms vs JAX 230ms = 3.4x FASTER** (fj real-Schur Francis
   double-shift vs JAX iterative CPU eig; `linalg/eig_256x256_f64_vsjax`).
-- **COMPLEX Hermitian eigh: fj LOSS ~10x** (`linalg/complex_eigh_128x128_vsjax`). JAX cheigh_128 =
-  118.6ms (and cheigh_256 = 3196ms — JAX complex eigh also scales badly), but **fj 128 = 1.23s = ~10x
-  SLOWER**. UNLIKE real eigh (12x WIN), fj's complex Hermitian eigh uses a slow complex Jacobi that LACKS
-  the tred2/tql2 tridiagonalization the real path got. GAP FILED: port the complex path to
-  Householder-tridiag + implicit-QL (the complex analog of the real tred2/tql2) — would flip this 10x
-  loss to a win. Bench only n=128 (256 is multi-second). This is the honest counterexample to the eigh
-  win: the win is REAL-only.
+- **COMPLEX Hermitian eigh: FIXED 2026-07-03 — LOSS -> WIN, 56x internal, now 5.4x FASTER than JAX**
+  (`linalg/complex_eigh_128x128_vsjax`). Was fj 128 = 1.23s (10x SLOWER than JAX 118.6ms). Replaced the
+  slow complex cyclic Jacobi with the REAL-EMBEDDING: `complex_hermitian_eigh_via_real_embedding` builds
+  M = [[A,-B],[B,A]] (2n×2n real symmetric, H=A+iB), runs the fast real `tridiag_ql_eigendecomposition`,
+  extracts n eigenvalues + complex eigenvectors v=x+iy with per-eigenvalue-group complex modified
+  Gram-Schmidt (handles degeneracy — the identity case). **fj 128 = 22.0ms = 5.4x FASTER than JAX** (was
+  10x slower). VALIDATED: 12/12 conformance eigh oracle tests pass (incl. `oracle_eigh_complex128
+  _hermitian_identity` degeneracy + `metamorphic_eigh_reconstruction`), full fj-lax lib 1727/0 green. This
+  was the biggest fixable vs-JAX loss on record — now a win. The real-embedding reuses the fast real eigh
+  (no new complex numerical kernel), exactly as the QR/eig-win diagnosis predicted. Bit-exactness note:
+  eigh parity is reconstruction + sorted spectrum (not bit-pinned eigenvectors), so the different
+  eigenbasis is legal.
 - **COMPLEX QR: fj WINS** — fj complex Householder QR beats JAX's iterative complex QR:
   `linalg/complex_qr_256x256_vsjax` fj **102.8ms vs JAX 384.8ms = 3.7x**; 512 fj **837.6ms vs 1288ms
   = 1.54x**.
