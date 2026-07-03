@@ -46,6 +46,18 @@ transpose-sort, but transpose tiling is memory-flagged DO-NOT (`transpose_alread
 all regimes). Genuine hard gap: any axis-0 sort must touch data with column-stride. Benches kept as markers.
 DO-NOT re-attempt the naive strided column-gather; the lever is a blocked transpose (separately gated) or nothing.
 
+## 2026-07-03 - SURVEY + WIN CONFIRMED: empirical vs-JAX op sweep — common ops won/competitive; conv_transpose is the sole gap (TealMarten)
+
+Data-driven sweep (jaxvenv, load-clean) to find fresh gaps rather than guess at mined code. JAX f64 targets:
+cumsum_2d_axis0 2048² = 6.95ms, cumsum_2d_axis1 = 2.99ms, roll_4m = 4.04ms, flip_2d_axis0 = 0.50ms,
+take_along_axis1 2048² = 0.83ms, diff_4m = 0.45ms, cummax_2d_axis0 = 7.37ms. Head-to-head where measured:
+**cumsum axis0 16384×1024 f64: fj 27.4ms vs JAX 45.3ms = 1.65x FASTER** (fj's leading-axis threaded
+row-slab scan beats JAX's strided cumsum — confirms the `scan_leading_axis_to_vec_threaded` win with a
+fresh ratio). CONCLUSION: the common contained-primitive space (scans/reductions/sort/pooling/elementwise/
+transcendentals) is comprehensively WON or competitive vs JAX. The ONE unmined algorithmic gap on record is
+**conv_transpose (5.3x, below)** — that is where a future focused session should go, not another
+elementwise/scan probe. Reference JAX numbers committed here as targets for any future op work.
+
 ## 2026-07-03 - GAP SURFACED (data-backed, 5.3x): conv_transpose (lhs_dilation) wastes ~stride² on zero-multiplies (TealMarten)
 
 Measured a REAL, unmined algorithmic gap on a common op (deconv / 2x-upsampling in GANs/segmentation/
