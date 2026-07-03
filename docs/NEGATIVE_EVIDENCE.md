@@ -17,6 +17,22 @@ measured a clean 2.99x (deque 20.6→6.9ms) earlier this session, so ~3x is well
 (`van_herk_rank2_maxmin_i64_matches_naive`: max+min, VALID+same-pad, non-square). full fj-lax lib 1729/0.
 The ENTIRE rank-2 max/min pooling family (f64/f32/bf16/f16/i64/i32, 3x3..NxN) now rides the SIMD van Herk.
 
+## 2026-07-03 - GAP SURFACED + NEGATIVE (cache-hostile): 2-D sort(axis=0) is 4.2x slower than axis=1; column-gather does NOT help (TealMarten)
+
+sort2d 2048² f64: **axis=0 210ms vs axis=1 50ms = 4.2x SLOWER** (same tensor; `eval/sort2d_2048x2048
+_axis[01]_f64`, benches added). axis=1 is the contiguous last axis → threaded parallel radix; axis=0 is the
+strided leading axis → the generic route does `transpose → sort last axis → transpose BACK` (two full-tensor
+transposes at ~0.4 GB/s dominate the ~13ms sort). TRIED replacing the double-transpose with a THREADED
+column-gather sort (each thread gathers a column via stride-`cols` reads, radix-sorts it, writes a contiguous
+transposed block; one transpose back). Clean same-invocation A/B (both ~load 64): column-gather **192ms** vs
+double-transpose **198ms = ~parity (NOISE)**. Root cause: the strided column GATHER is exactly as
+cache-hostile as the transpose it replaced (every column read is a stride-16KB cache miss), so fusing the
+first transpose into the sort buys nothing. REVERTED (correctness test confirmed bit-identical incl NaN/±0
+first, so the approach was sound — just not faster). The real fix would be a CACHE-BLOCKED/tiled
+transpose-sort, but transpose tiling is memory-flagged DO-NOT (`transpose_already_optimal`: tiling regresses
+all regimes). Genuine hard gap: any axis-0 sort must touch data with column-stride. Benches kept as markers.
+DO-NOT re-attempt the naive strided column-gather; the lever is a blocked transpose (separately gated) or nothing.
+
 ## 2026-07-03 - NEGATIVE (DO-NOT-REATTEMPT): multi-accumulator ILP does NOT speed up SIMD reduce_max/min — already BW-bound (TealMarten)
 
 The ledger recorded reduce_max 4M f64 = 2.46ms vs JAX 0.71ms = 3.5x. Two findings: (1) that 2.46ms was

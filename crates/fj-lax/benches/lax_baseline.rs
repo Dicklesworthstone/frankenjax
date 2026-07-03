@@ -3486,6 +3486,34 @@ fn bench_sort3d_mid_256x1024x64_f64(c: &mut Criterion) {
     });
 }
 
+// 2-D f64 sort along axis 0 (STRIDED, serial) vs axis 1 (contiguous, threaded+parallel radix).
+// axis=0 reads each column at stride=cols and can't thread (shared pairs/scratch) — exposes the gap.
+fn bench_sort2d_axis0_vs_axis1_f64(c: &mut Criterion) {
+    let (rows, cols) = (2048usize, 2048usize);
+    let data: Vec<f64> = (0..rows * cols)
+        .map(|i| (i.wrapping_mul(2_654_435_761) % 1_000_003) as f64)
+        .collect();
+    let input = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            data,
+        )
+        .unwrap(),
+    );
+    let mut p0 = BTreeMap::new();
+    p0.insert("axis".to_owned(), "0".to_owned());
+    c.bench_function("eval/sort2d_2048x2048_axis0_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &p0))
+    });
+    let mut p1 = BTreeMap::new();
+    p1.insert("axis".to_owned(), "1".to_owned());
+    c.bench_function("eval/sort2d_2048x2048_axis1_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &p1))
+    });
+}
+
 // Head-to-head vs JAX argsort (XLA CPU full bitonic sort): completes the order-statistics
 // domination map alongside sort + top_k. CrimsonOtter 2026-06-21.
 fn bench_argsort_64k_f64(c: &mut Criterion) {
@@ -8431,6 +8459,7 @@ criterion_group!(
     bench_cumulative_vs_jax,
     bench_sort_64k_f64,
     bench_sort3d_mid_256x1024x64_f64,
+    bench_sort2d_axis0_vs_axis1_f64,
     bench_argsort_64k_f64,
     bench_argmax_64k_f64,
     bench_sort_64k_f64_descending,
