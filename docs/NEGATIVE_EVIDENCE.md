@@ -94,6 +94,21 @@ transcendentals) is comprehensively WON or competitive vs JAX. The ONE unmined a
 **conv_transpose (5.3x, below)** — that is where a future focused session should go, not another
 elementwise/scan probe. Reference JAX numbers committed here as targets for any future op work.
 
+## 2026-07-03 - NEGATIVE (marginal 1.10x, JAX still 2.5x ahead): 1D (rank-3) conv_transpose scatter-GEMM NOT worth a path (TealMarten)
+
+Implemented + tolerance-verified the 1D (rank-3) sibling of the 2D conv_transpose scatter-GEMM win
+(`try_conv_transpose_scatter_gemm_1d` + a 1D scatter helper, f64/f32, VALID/SAME/SAME_LOWER/explicit, K>s
+overlap — all correct within 1e-9/1e-4). But measured it is NOT worth shipping. Same-invocation A/B
+[1,2048,64]*[4,64,128] lhsdil2 s=2 SAME: f32 dilate+conv=3.24ms vs scatter-GEMM=**2.94ms = only 1.10x**;
+f64 5.42ms→4.70ms = 1.15x. And JAX f32=1.17ms / f64=2.47ms, so fj 1D stays **~2.5x (f32) / ~1.9x (f64)
+SLOWER than JAX** either way. ROOT CAUSE: 1D has only s-fold zero-waste (vs 2D's s^2-fold), so the saving is
+small, and the multiple-small-GEMM (KW GEMMs) + scatter-add overhead nearly cancels it — unlike 2D where the
+s^2 waste + huge dilated im2col made the scatter-GEMM a 4x win. A 1.1x-over-self path that is still 2.5x
+behind JAX does not justify a dedicated ~130-line code path; 1D stays on the exact dilate+conv fallback.
+REVERTED the code (tensor_ops.rs restored bit-for-bit). DO-NOT re-attempt 1D scatter-GEMM at small stride;
+if ever revisited, only very large strides (s>=8, where s-fold waste is large) could plausibly pay — and
+even then JAX's 1D is well-tuned. The 2D win below stands.
+
 ## 2026-07-03 - WIRED WIN (4.17x; 5.3x JAX LOSS -> BEATS JAX): conv_transpose scatter-GEMM — the biggest documented gap, CLOSED (TealMarten)
 
 The four-turn conv_transpose de-risking (gap → decomposition → correctness-model) is now SHIPPED as a fast
