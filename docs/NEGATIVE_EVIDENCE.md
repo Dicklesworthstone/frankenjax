@@ -25,6 +25,22 @@ peephole (mirrors existing `try_eval_top_level_scan_*` in fj-interpreters lib.rs
 on resolving softmax parity as TOLERANCE (softmax_2d's scalar `fold(f64::max)`/`+=` differ from fj-lax
 SIMD reduce_max/sum on +/-0 and NaN, so it is NOT a bit-identical drop-in for the decomposed path).
 
+## 2026-07-02 - NEGATIVE/BOUNDARY: extending the replicated-fill fast path to complex/u32/u64/bool broadcast is only 1.22x (niche, below bar) (TealMarten)
+
+The shipped replicated-axis fill covers f64/i64/f32/half (`broadcast_replicate_into`); complex/u32/u64/
+bool/generic go through `broadcast_replicate` (Vec-building odometer), which has the SAME missing fast
+path (block-optimizes only trailing INPUT-MAPPED axes, so replicated `[n]->[n,m]` degrades to a
+1-element `extend_from_slice` per output). I implemented + tested (48 broadcast tests green) the mirror
+fill path (`out.resize(len+fill_len, src[base])` per outer block) and MEASURED complex128
+`[4096]->[4096,1024]` (64MB, `nn/complex_replicated_broadcast_4096x1024`): odometer **121ms** -> fill
+**99ms = only 1.22x**. The resize-clone of 16-byte complex structs is nearly as slow as the odometer
+(both struct-copy/memory-bound); a real win would need threading (`broadcast_replicate` is serial) or a
+type-specialized store — not the plain fill. Below the 2x bar AND niche (complex/u32/u64/bool broadcast
+is rare vs f64/f32 attention/norm), so REVERTED the code; kept the bench as a reproducer. DO-NOT ship
+the plain-fill extension to `broadcast_replicate`; if complex broadcast ever matters, route it through
+the threaded `broadcast_replicate_into` instead. The hot-dtype (f64/f32) fill+threading remains the real
+shipped win (6.3x).
+
 ## 2026-07-02 - NEGATIVE/BOUNDARY: replicated broadcast fill can't be beaten SERIALLY — threading (shipped) is the fix; sibling fills already fast (TealMarten)
 
 Follow-up: checked whether the replicated-axis fill (shipped threaded at 6.4ms) could instead be fixed

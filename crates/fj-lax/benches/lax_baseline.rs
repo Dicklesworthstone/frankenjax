@@ -7373,6 +7373,22 @@ fn bench_scalar_broadcast_fill_4m(c: &mut Criterion) {
             )
         })
     });
+
+    // Complex128 replicated broadcast [4096] -> [4096,1024] (bdims=[0]): the
+    // `broadcast_replicate` (Vec-building) path, exercised by complex/u32/u64/bool.
+    // Reduce-re-expand over the replicated trailing axis (64MB output).
+    let cvec = complex_vector(4096);
+    let mut cp = BTreeMap::new();
+    cp.insert("shape".to_string(), "4096,1024".to_string());
+    cp.insert("broadcast_dimensions".to_string(), "0".to_string());
+    c.bench_function("nn/complex_replicated_broadcast_4096x1024", |b| {
+        b.iter(|| {
+            black_box(
+                eval_primitive(Primitive::BroadcastInDim, std::slice::from_ref(&cvec), &cp)
+                    .unwrap(),
+            )
+        })
+    });
 }
 
 criterion_group!(
