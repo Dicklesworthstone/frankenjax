@@ -3183,6 +3183,41 @@ fn bench_full_reduce_4m_f64(c: &mut Criterion) {
     });
 }
 
+// 2D per-row sort/argsort vs JAX 0.10.2 x64 (jaxvenv, 2026-07-02): JAX full-sorts each
+// row -> sort axis1 4096x1024 = 466.6ms, argsort axis1 = 584.7ms, sort axis0 = 625.6ms.
+// fj radix-sorts each independent line (threaded), so the per-row case should dominate.
+fn bench_sort2d_vs_jax(c: &mut Criterion) {
+    let (rows, cols) = (4096usize, 1024usize);
+    let mat = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            (0..rows * cols)
+                .map(|i| ((i as f64) * 1.000_173).sin() * 1e6 - (i % 4096) as f64)
+                .collect(),
+        )
+        .unwrap(),
+    );
+    let asc = |dim: &str| {
+        let mut p = BTreeMap::new();
+        p.insert("dimension".to_owned(), dim.to_owned());
+        p.insert("descending".to_owned(), "false".to_owned());
+        p
+    };
+    let p1 = asc("1");
+    c.bench_function("eval/sort_axis1_4096x1024_f64", |b| {
+        b.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&mat), &p1))
+    });
+    c.bench_function("eval/argsort_axis1_4096x1024_f64", |b| {
+        b.iter(|| eval_primitive(Primitive::Argsort, std::slice::from_ref(&mat), &p1))
+    });
+    let p0 = asc("0");
+    c.bench_function("eval/sort_axis0_4096x1024_f64", |b| {
+        b.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&mat), &p0))
+    });
+}
+
 // Cumulative scans vs JAX 0.10.2 x64 (jaxvenv, 2026-07-02): cumsum axis1 4096x1024
 // = 12.19ms, cummax 4M = 15.88ms. fj threads independent lines (axis1: 4096 rows) and
 // uses an associative all-cores parallel-prefix for 1D cummax.
@@ -7732,6 +7767,7 @@ criterion_group!(
     bench_sort_64k_i64,
     bench_sort_argsort_4m_f64,
     bench_full_reduce_4m_f64,
+    bench_sort2d_vs_jax,
     bench_cumulative_vs_jax,
     bench_sort_64k_f64,
     bench_sort3d_mid_256x1024x64_f64,

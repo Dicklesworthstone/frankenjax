@@ -62,6 +62,20 @@ benches `nn/scalar_broadcast_fill_4m_f64`, `nn/bias_broadcast_4096x1024_f64`, al
   already delivers 6.4ms). LESSON (again): measure sibling sites before assuming a shared mis-gate — 2 of
   3 here were already fast.
 
+## 2026-07-02 - WIN (recorded, BIG): fj 2D per-row/column sort 31-42x FASTER than JAX (TealMarten)
+
+Sibling of the top_k win: JAX full-sorts each row/column of a matrix. JAX 0.10.2 x64 4096x1024:
+sort axis1 = 466.6ms, argsort axis1 = 584.7ms, sort axis0 (strided) = 625.6ms. fj radix-sorts each
+independent line, threaded over the 4096 rows (new benches `eval/{sort,argsort}_axis1_4096x1024_f64`,
+`eval/sort_axis0_4096x1024_f64`):
+- **sort axis1 4096x1024: fj 14.76ms vs JAX 466.6ms = 31.6x FASTER**
+- **argsort axis1: fj 14.93ms vs JAX 584.7ms = 39.2x FASTER**
+- **sort axis0 (leading/strided): fj 14.75ms vs JAX 625.6ms = 42.4x FASTER** (fj transposes the sort
+  axis to trailing -> contiguous radix -> transpose back; still crushes JAX's strided full sort).
+The whole order-statistics family is now mapped as a decisive fj domination: 1D sort 6.1x / argsort 4.3x,
+2D sort 31-42x, top_k 18.7-205x, argmax 1.76x, scans 1.55-2.35x — every case where fj's radix /
+partial-select / parallel-prefix ALGORITHM beats XLA's full comparison sort, threading-independent.
+
 ## 2026-07-02 - WIN (recorded, BIG): fj top_k 18.7x (1D) / 205x (per-row) FASTER than JAX (TealMarten)
 
 top_k is a common ML op (sampling / retrieval / beam-search). JAX 0.10.2 x64 does a FULL SORT regardless
