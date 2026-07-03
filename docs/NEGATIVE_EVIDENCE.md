@@ -2,6 +2,25 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-03 - WIRED WIN (5x; 3.6x JAX LOSS -> BEATS JAX): contiguous row-gather was WRONGLY THREADED at moderate sizes (TealMarten)
+
+Profile-first found a huge gap on the MOST common ML op: fj **gather rows [16384,256]->[4096,256] f64 =
+1.45ms vs JAX 0.34ms = 3.6x SLOWER** (embedding lookup; i32 was 2.49ms criterion / ~12x). Root cause: the
+contiguous row-gather threads (`gather_contiguous_into`) for any output `>= 1<<19` (512K elems), but the
+threaded path pays a per-call `vec![0;total]`-ZERO (so threads write disjoint ranges) + ~16 OS-thread SPAWNS
+that a tight serial `extend_from_slice` does NOT. Same-invocation A/B (`bench_gather_rows_f64_i32_vs_jax`):
+at 1M elems (33MB table, warm) **serial-core=0.32ms vs threaded-core=0.98-1.46ms = 3-4.5x**, and serial
+BEATS JAX 0.34ms. The serial-vs-threaded comparison had apparently NEVER been done for gather (the memory
+note only compared thread COUNTS, both threaded). Confirmed the crossover is real: at 16M elems (256MB
+DRAM-bound table) threaded=23ms BEATS serial=86ms (3.7x, parallel bandwidth pays), so threading is kept for
+large outputs. Raised the gate to `GATHER_CONTIGUOUS_THREAD_MIN_ELEMS = 1<<22` (4M) across all 8 dtype
+branches (f64/f32/i64/i32/u32/u64/bf16). BIT-IDENTICAL (same resolved indices/ranges; 23 gather tests +
+`gather_contiguous_into_bit_identical_to_serial` pass). Result: **f64 gather eval 1.45ms -> 0.289ms = 5x,
+BEATS JAX (0.34ms); i32 eval -> 0.316ms** (~1.5x from JAX i32 0.208ms — residual is the i64-backing, 2x
+traffic, architectural); criterion end-to-end i32 2.49ms -> 1.045ms (2.4x). Full fj-lax lib 1743/0. Gate is
+an output-size proxy for source-DRAM-boundness — imperfect but bit-safe; the 4M-16M range keeps prior
+threaded behavior (no regression).
+
 ## 2026-07-03 - WIRED WIN (1.7x; 2.35x JAX LOSS -> 1.38x): f64 scatter-add tight-serial for cache-resident operand (TealMarten)
 
 Profile-first found a fresh gap: fj **scatter-add 1M f64 = 6.37ms vs JAX 2.71ms = 2.35x SLOWER** (embedding

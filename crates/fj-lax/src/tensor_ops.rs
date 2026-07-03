@@ -3591,6 +3591,19 @@ fn gather_single_dense_f64_interleaved(out: &mut [f64], src: &[f64], idx: &[usiz
 /// Returns `false` (caller falls back to the serial path, which raises the proper error) if
 /// any in-bounds index would exceed `src` — so bounds behaviour is unchanged. Bit-for-bit
 /// identical to the serial contiguous copy.
+/// Output-element threshold above which the contiguous row-gather uses the THREADED
+/// [`gather_contiguous_into`] instead of the tight serial `extend_from_slice` copy.
+///
+/// The threaded path pays a per-call cost the serial path does not: it must `vec![0; total]`-ZERO the
+/// output (so threads can write disjoint ranges) and SPAWN ~16 OS threads. Measured f64 row-gather A/B
+/// (`bench_gather_rows_f64_i32_vs_jax`): at 1M output elems (33MB table, warm) serial=0.33ms BEATS
+/// threaded=0.98ms (3x) AND beats JAX 0.34ms — the spawn+zero overhead dominates; but at 16M elems
+/// (256MB table, DRAM-bound, minimal reuse) threaded=23ms BEATS serial=86ms (3.7x) as parallel DRAM
+/// bandwidth pays. The crossover sits between, so the common embedding-lookup regime (batch×dim, a few M
+/// elements) belongs on the serial path. The old gate (1<<19 = 512K) threaded it — a ~3x pessimization.
+/// Both paths are bit-identical (same resolved indices, same slice ranges), so this only trades perf.
+const GATHER_CONTIGUOUS_THREAD_MIN_ELEMS: usize = 1 << 22;
+
 fn gather_contiguous_into<T: Copy + Send + Sync>(
     out: &mut [T],
     src: &[T],
@@ -3927,7 +3940,7 @@ pub(crate) fn eval_gather(
             // Threaded contiguous gather: gather is LATENCY-bound (random row-misses), so threading wins via
             // memory-level parallelism well below the DRAM-bound elementwise gate (the embedding-lookup case is
             // often a few M elements). Parallel row memcpy; bit-identical, serial fallback on OOB/small.
-            if total >= (1 << 19) {
+            if total >= GATHER_CONTIGUOUS_THREAD_MIN_ELEMS {
                 let mut out = vec![0.0f64; total];
                 if gather_contiguous_into(&mut out, src, &resolved, f64::NAN, slice_elems) {
                     return Ok(Value::Tensor(TensorValue::new_f64_values(
@@ -3954,7 +3967,7 @@ pub(crate) fn eval_gather(
                     out,
                 )?));
             }
-            if total >= (1 << 19) {
+            if total >= GATHER_CONTIGUOUS_THREAD_MIN_ELEMS {
                 let mut out = vec![0.0f32; total];
                 if gather_contiguous_into(&mut out, src, &resolved, f32::NAN, slice_elems) {
                     return Ok(Value::Tensor(TensorValue::new_f32_values(
@@ -3977,7 +3990,7 @@ pub(crate) fn eval_gather(
                 )?));
             }
             // i64 index/id gather at scale: threaded contiguous copy above the latency-bound gate.
-            if total >= (1 << 19) {
+            if total >= GATHER_CONTIGUOUS_THREAD_MIN_ELEMS {
                 let mut out = vec![0i64; total];
                 if gather_contiguous_into(&mut out, src, &resolved, i64::MIN, slice_elems) {
                     return Ok(Value::Tensor(TensorValue::new_i64_values(
@@ -4003,7 +4016,7 @@ pub(crate) fn eval_gather(
                     out,
                 )?));
             }
-            if total >= (1 << 19) {
+            if total >= GATHER_CONTIGUOUS_THREAD_MIN_ELEMS {
                 let mut out = vec![0i64; total];
                 if gather_contiguous_into(
                     &mut out,
@@ -4035,7 +4048,7 @@ pub(crate) fn eval_gather(
             }
             // Contiguous int row-gather (slice_elems>1): thread the row memcpys above the gate
             // (was serial-only). Same proven gather_contiguous_into f64/i64/bf16 use; bit-identical.
-            if total >= (1 << 19) {
+            if total >= GATHER_CONTIGUOUS_THREAD_MIN_ELEMS {
                 let mut out = vec![0u32; total];
                 if gather_contiguous_into(&mut out, src, &resolved, u32::MAX, slice_elems) {
                     return Ok(Value::Tensor(TensorValue::new_u32_values(
@@ -4057,7 +4070,7 @@ pub(crate) fn eval_gather(
                     out,
                 )?));
             }
-            if total >= (1 << 19) {
+            if total >= GATHER_CONTIGUOUS_THREAD_MIN_ELEMS {
                 let mut out = vec![0u64; total];
                 if gather_contiguous_into(&mut out, src, &resolved, u64::MAX, slice_elems) {
                     return Ok(Value::Tensor(TensorValue::new_u64_values(
@@ -4091,7 +4104,7 @@ pub(crate) fn eval_gather(
             }
             // bf16/f16 embedding lookup (dominant training dtype): thread above the gate
             // (calloc'd u16 output + parallel row memcpy); bit-identical, serial fallback on OOB.
-            if total >= (1 << 19) {
+            if total >= GATHER_CONTIGUOUS_THREAD_MIN_ELEMS {
                 let mut out = vec![0u16; total];
                 if gather_contiguous_into(&mut out, src, &resolved, fill, slice_elems) {
                     return Ok(Value::Tensor(TensorValue::new_half_float_values(
@@ -4163,7 +4176,7 @@ pub(crate) fn eval_gather(
                     out,
                 )?));
             }
-            if total >= (1 << 19) {
+            if total >= GATHER_CONTIGUOUS_THREAD_MIN_ELEMS {
                 let mut out = vec![(0.0f64, 0.0f64); total];
                 if gather_contiguous_into(&mut out, src, &resolved, fill, slice_elems) {
                     return Ok(Value::Tensor(TensorValue::new_complex_values(
@@ -31716,6 +31729,106 @@ mod tests {
     // Tight SERIAL 1D f64 scatter-add vs the range-partition, same-invocation A/B. The partition
     // materializes ~8MB of (idx,i) pairs and round-trips them; a tight i-order serial loop just does the
     // random RMW (operand L3-resident at 1M). Both apply updates in global i-order → bit-identical.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_gather_rows_f64_i32_vs_jax() {
+        use std::time::Instant;
+        let (rows, cols, k) = (16384usize, 256usize, 4096usize);
+        let idx: Vec<i64> = (0..k)
+            .map(|i| ((i.wrapping_mul(2_654_435_761) ^ (i >> 3)) % rows) as i64)
+            .collect();
+        let indices = Value::vector_i64(&idx).unwrap();
+        let mut p = BTreeMap::new();
+        p.insert("slice_sizes".into(), format!("1,{cols}"));
+        let f64data: Vec<f64> = (0..rows * cols).map(|i| (i % 4096) as f64).collect();
+        let op_f64 = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                f64data,
+            )
+            .unwrap(),
+        );
+        let i32data: Vec<i64> = (0..(rows * cols) as i64).map(|i| i % 4096).collect();
+        let op_i32 = Value::Tensor(
+            TensorValue::new_i32_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                i32data,
+            )
+            .unwrap(),
+        );
+        let src_f64: Vec<f64> = (0..rows * cols).map(|i| (i % 4096) as f64).collect();
+        let resolved: Vec<Option<usize>> = idx.iter().map(|&v| Some(v as usize % rows)).collect();
+        let best = |f: &dyn Fn()| -> f64 {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..10 {
+                let t = Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        // Current eval_gather (threaded gather_contiguous_into for total>=1<<19).
+        let cur = best(&|| {
+            std::hint::black_box(eval_gather(&[op_f64.clone(), indices.clone()], &p).unwrap());
+        });
+        // Threaded core in isolation (vec![0.0;n] zero + spawn 16 + row memcpy).
+        let thr = best(&|| {
+            let mut out = vec![0.0f64; k * cols];
+            super::gather_contiguous_into(&mut out, &src_f64, &resolved, f64::NAN, cols);
+            std::hint::black_box(out[0]);
+        });
+        // Serial extend-based (no zero, no spawn) — the dense_contiguous_gather approach.
+        let ser = best(&|| {
+            let mut out: Vec<f64> = Vec::with_capacity(k * cols);
+            for &r in &resolved {
+                let base = r.unwrap() * cols;
+                out.extend_from_slice(&src_f64[base..base + cols]);
+            }
+            std::hint::black_box(out[0]);
+        });
+        let i = best(&|| {
+            std::hint::black_box(eval_gather(&[op_i32.clone(), indices.clone()], &p).unwrap());
+        });
+        println!(
+            "[gather rows [16384,256]->[4096,256] f64] eval={:.3}ms threaded-core={:.3}ms serial-core={:.3}ms | i32 eval={:.3}ms | JAX f64=0.344 i32=0.208ms",
+            cur * 1e3,
+            thr * 1e3,
+            ser * 1e3,
+            i * 1e3,
+        );
+        // Larger case to find the serial/threaded crossover: gather 131072 rows x 128 = 16M elems
+        // from a [262144,128] (256MB) table (exceeds L3, minimal reuse).
+        let (lr, lc, lk) = (262144usize, 128usize, 131072usize);
+        let lsrc: Vec<f64> = (0..lr * lc).map(|i| (i % 7919) as f64).collect();
+        let lres: Vec<Option<usize>> = (0..lk)
+            .map(|i| Some((i.wrapping_mul(2_654_435_761) ^ (i >> 3)) % lr))
+            .collect();
+        let lthr = best(&|| {
+            let mut out = vec![0.0f64; lk * lc];
+            super::gather_contiguous_into(&mut out, &lsrc, &lres, f64::NAN, lc);
+            std::hint::black_box(out[0]);
+        });
+        let lser = best(&|| {
+            let mut out: Vec<f64> = Vec::with_capacity(lk * lc);
+            for &r in &lres {
+                let base = r.unwrap() * lc;
+                out.extend_from_slice(&lsrc[base..base + lc]);
+            }
+            std::hint::black_box(out[0]);
+        });
+        println!(
+            "[gather LARGE 16M elems from 256MB table f64] threaded-core={:.3}ms serial-core={:.3}ms ratio(ser/thr)={:.2}",
+            lthr * 1e3,
+            lser * 1e3,
+            lser / lthr,
+        );
+    }
+
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_scatter_add_1m_serial_tight_vs_partition() {
