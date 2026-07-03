@@ -46,6 +46,26 @@ transpose-sort, but transpose tiling is memory-flagged DO-NOT (`transpose_alread
 all regimes). Genuine hard gap: any axis-0 sort must touch data with column-stride. Benches kept as markers.
 DO-NOT re-attempt the naive strided column-gather; the lever is a blocked transpose (separately gated) or nothing.
 
+## 2026-07-03 - GAP SURFACED (data-backed, 5.3x): conv_transpose (lhs_dilation) wastes ~stride² on zero-multiplies (TealMarten)
+
+Measured a REAL, unmined algorithmic gap on a common op (deconv / 2x-upsampling in GANs/segmentation/
+diffusion). **fj Conv with lhs_dilation=2 = 10.8ms vs JAX lax.conv_transpose = 2.04ms = ~5.3x SLOWER**
+(both measured: fj `eval/conv_transpose_lhsdil2_64x64x16_f64` [1,64,64,16]*[3,3,16,32] f64, tight variance;
+JAX jaxvenv `conv_transpose` same shape → out [1,128,128,32]). ROOT CAUSE (confirmed in tensor_ops.rs
+~13078: "lhs_dilation ... recursing with lhs_dilation stripped"): fj MATERIALIZES the zero-dilated input
+([2h-1, 2w-1] ≈ 4x elements, ~75% zeros) then runs the FULL im2col+GEMM conv over it — every zero tap is a
+wasted multiply. JAX computes it directly (no zero-multiplies).
+
+FIX PLAN (filed — substantial, multi-session, correctness-risky so NOT rushed): POLYPHASE / sub-pixel
+decomposition — a transposed conv with stride s == s² independent DIRECT convs, each using a strided
+(sub-sampled) slice of the kernel, whose outputs interleave into the s×-larger output. O(input·K²) vs the
+current O(s²·input·K²). Equivalent: scatter-add each original input pixel's kernel-weighted contribution to
+the output. Both avoid the zero-dilated materialization + zero-multiplies. Correctness hazards: exact kernel
+flip (conv_transpose flips spatial + swaps I/O), the SAME/VALID output-size + padding arithmetic, and
+feature_group_count interaction — needs a dedicated session with the conv oracle. Bench committed as the
+regression/target marker (2.04ms JAX target). This is the biggest contained non-FFT non-FMA gap now on
+record after pooling/atan2 were mined.
+
 ## 2026-07-03 - NEGATIVE (DO-NOT): native-f64 SIMD tan is a NO-WIN — glibc tan too fast (both approaches tried) (TealMarten)
 
 UPDATE: the filed single-reduction lever was executed and ALSO failed. First a sin/cos-RATIO tan = 1.10x

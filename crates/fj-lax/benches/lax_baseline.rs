@@ -2428,6 +2428,44 @@ fn bench_strassen_ab_2048(c: &mut Criterion) {
 
 // 2D conv (1x32x32x8 input, 3x3x8x16 kernel, SAME): dense f64 conv path (pass87)
 // vs the generic per-multiply Literal path. Same process for a same-worker ratio.
+// conv_transpose proxy: Conv with lhs_dilation=2 (input dilation = fractionally-strided/transposed conv).
+// fj materializes a zero-dilated input (~4x elements) then convolves — the zero-multiply waste. JAX's
+// direct conv_transpose on the same shape = 2.04ms (measured, jaxvenv). [1,64,64,16] * [3,3,16,32] f64.
+fn bench_conv_transpose_lhsdil2_f64(c: &mut Criterion) {
+    let (n, h, w, cin, kh, kw, cout) = (1usize, 64, 64, 16, 3, 3, 32);
+    let lhs: Vec<f64> = (0..n * h * w * cin)
+        .map(|i| ((i as f64) * 0.013).sin())
+        .collect();
+    let rhs: Vec<f64> = (0..kh * kw * cin * cout)
+        .map(|i| ((i as f64) * 0.017).cos())
+        .collect();
+    let lhs = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, h as u32, w as u32, cin as u32],
+            },
+            lhs,
+        )
+        .unwrap(),
+    );
+    let rhs = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![kh as u32, kw as u32, cin as u32, cout as u32],
+            },
+            rhs,
+        )
+        .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("padding".to_owned(), "same".to_owned());
+    p.insert("strides".to_owned(), "1".to_owned());
+    p.insert("lhs_dilation".to_owned(), "2,2".to_owned());
+    c.bench_function("eval/conv_transpose_lhsdil2_64x64x16_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Conv, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
 fn conv2d_inputs(dense: bool) -> (Value, Value) {
     let (n, h, w, cin) = (1usize, 32usize, 32usize, 8usize);
     let (kh, kw, cout) = (3usize, 3usize, 16usize);
@@ -8565,6 +8603,7 @@ criterion_group!(
     bench_atan2_8m_f64,
     bench_xlogy_2m_f64,
     bench_tan_2m_f64,
+    bench_conv_transpose_lhsdil2_f64,
     bench_sort_argsort_4m_f64,
     bench_half_f32_sort_vs_jax,
     bench_complex_sort_4m_vsjax,
