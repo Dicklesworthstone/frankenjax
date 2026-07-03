@@ -2,6 +2,22 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-03 - WIRED WIN (3.2-6.6x internal): U32/U64 integer SUM-pool routed onto the N-D separable core (TealMarten)
+
+The unsigned tail of the integer sum-pool family. i64/i32 rank>=2 SUM already ran the N-D separable
+block-prefix (`reduce_window_separable_sum_nd_i64`, integer add is a ring → bit-identical to the naive
+`wrapping_add` fold incl. overflow wrap), but that block was `I64|I32`-gated, so u32/u64 (which have their
+OWN storage, not the i64 backing i32 shares) fell to the naive O(out·∏window) fold. Extended the ONE gate
+to widen/bitcast the unsigned dtypes through the same core: u32 widens `i64::from` in / narrows low-32 out;
+u64 bitcasts `v as i64` in / `v as u64` out (two's-complement add is sign-agnostic → reproduces the u64
+wrapping fold exactly). Minimal change (dtype arm on an existing block, no new kernel) so it covers ALL
+ranks, not just rank-2. New `u32_rank2_sumpool_wraps_like_naive` (5x5 sum > u32::MAX → wraps mod 2^32) and
+`u64_rank2_sumpool_wraps_like_naive` (values > i64::MAX, wraps mod 2^64) verify bit-exactness vs the naive
+fold. Internal separable-vs-naive on the shared core: 3.19x (win3) / 6.56x (win5) at rank-5 48^3 — the exact
+speedup u32/u64 now inherit. JAX u32 512x512 win9x9 = 0.40ms (XLA-fused reference). Structural win (separable
+O(input) strictly replaces the naive fold). The integer SUM-pool family (i64/i32/u32/u64) is now COMPLETE,
+matching the rank-2 max/min family (which already spans u32/u64 via van Herk).
+
 ## 2026-07-03 - WIRED WIN (3.0x internal): STRIDED (stride>1) rank-2 van Herk maxpool/minpool (TealMarten)
 
 Extended the rank-2 van Herk (f64/f32/half/i64/i32) from stride-1-only to stride>1. A strided rank-2

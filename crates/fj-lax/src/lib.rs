@@ -10262,43 +10262,71 @@ fn eval_reduce_window(
         }
     }
 
-    // Rank>=2 I64 SUM: N-D separable block-prefix (the integer analogue of the float sum path).
+    // Rank>=2 integer SUM: N-D separable block-prefix (the integer analogue of the float sum path).
     // Bit-identical (integer add is a ring — associative + wrapping, so the separable prefix matches the
     // naive fold exactly, incl. overflow wrap); covers integer 2-D box-sum / volumetric pooling at any
-    // stride/pad. Rank-3 has its own dedicated path above (fires first); this now also catches RANK-2,
-    // which otherwise fell to the naive O(out·window) fold (f64/f32 rank-2 already had the running-sum).
+    // stride/pad. Rank-3 has its own dedicated path above (fires first); this also catches RANK-2, which
+    // otherwise fell to the naive O(out·window) fold (f64/f32 rank-2 already had the running-sum). The one
+    // i64 `reduce_window_separable_sum_nd_i64` core serves the whole fixed-width integer family via dtype
+    // conversion: i32 sign-extends in / wraps mod-2^32 out; u32 widens in (i64::from) / narrows low-32 out;
+    // u64 bitcasts both ways (two's-complement add is sign-agnostic, so it reproduces the u64 wrapping fold).
+    // Without the unsigned arms u32/u64 rank>=2 sum fell to the naive fold (they have their own storage,
+    // not the i64 backing i32 shares).
     if no_base_dilation
         && no_window_dilation
-        && matches!(tensor.dtype, fj_core::DType::I64 | fj_core::DType::I32)
+        && matches!(
+            tensor.dtype,
+            fj_core::DType::I64 | fj_core::DType::I32 | fj_core::DType::U32 | fj_core::DType::U64
+        )
         && output_dtype == tensor.dtype
         && rank >= 2
         && reduce_window_sum_like(reduce_op)
         && window_dims.iter().product::<usize>() > 2 * window_dims.iter().sum::<usize>()
-        && let Some(src) = tensor.elements.as_i64_slice()
     {
-        let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
-        let out_dims_usize: Vec<usize> = out_dims.iter().map(|&d| d as usize).collect();
-        let values = reduce_window_separable_sum_nd_i64(
-            src,
-            &input_dims,
-            &window_dims,
-            &strides,
-            &pad_lows,
-            &out_dims_usize,
-        );
-        let shape = Shape {
-            dims: out_dims.clone(),
+        let src_i64: Option<Vec<i64>> = match tensor.dtype {
+            fj_core::DType::U32 => tensor
+                .elements
+                .as_u32_slice()
+                .map(|s| s.iter().map(|&v| i64::from(v)).collect()),
+            fj_core::DType::U64 => tensor
+                .elements
+                .as_u64_slice()
+                .map(|s| s.iter().map(|&v| v as i64).collect()),
+            _ => tensor.elements.as_i64_slice().map(<[i64]>::to_vec),
         };
-        // I32 (JAX's default int) shares the i64 backing; its box-sum wraps mod 2^32. The naive i32 path
-        // accumulates in i64 then narrows, and sum-mod-2^32 is associative, so narrowing each i64 box-sum
-        // (`v as i32`) is bit-identical to the naive fold. I64 keeps the exact ring sum.
-        let tv = if tensor.dtype == fj_core::DType::I32 {
-            let wrapped: Vec<i64> = values.iter().map(|&v| i64::from(v as i32)).collect();
-            TensorValue::new_i32_values(shape, wrapped)
-        } else {
-            TensorValue::new_i64_values(shape, values)
-        };
-        return Ok(Value::Tensor(tv.map_err(EvalError::from)?));
+        if let Some(src) = src_i64 {
+            let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+            let out_dims_usize: Vec<usize> = out_dims.iter().map(|&d| d as usize).collect();
+            let values = reduce_window_separable_sum_nd_i64(
+                &src,
+                &input_dims,
+                &window_dims,
+                &strides,
+                &pad_lows,
+                &out_dims_usize,
+            );
+            let shape = Shape {
+                dims: out_dims.clone(),
+            };
+            // I32 (JAX's default int) shares the i64 backing; its box-sum wraps mod 2^32. The naive i32
+            // path accumulates in i64 then narrows, and sum-mod-2^32 is associative, so narrowing each i64
+            // box-sum (`v as i32`) is bit-identical to the naive fold. u32/u64 narrow the same way (low
+            // bits = the unsigned wrapping sum). I64 keeps the exact ring sum.
+            let tv = match tensor.dtype {
+                fj_core::DType::I32 => TensorValue::new_i32_values(
+                    shape,
+                    values.iter().map(|&v| i64::from(v as i32)).collect(),
+                ),
+                fj_core::DType::U32 => {
+                    TensorValue::new_u32_values(shape, values.iter().map(|&v| v as u32).collect())
+                }
+                fj_core::DType::U64 => {
+                    TensorValue::new_u64_values(shape, values.iter().map(|&v| v as u64).collect())
+                }
+                _ => TensorValue::new_i64_values(shape, values),
+            };
+            return Ok(Value::Tensor(tv.map_err(EvalError::from)?));
+        }
     }
 
     if no_base_dilation
@@ -13799,6 +13827,101 @@ mod tests {
             got, want,
             "bf16 rank-2 sumpool diverges from naive f64-fold->round"
         );
+    }
+
+    // Rank-2 U32 SUM-pool (widen->i64 separable->low-32 narrow). Values ~3e9 so a 5x5 window sum
+    // (~7.5e10 > u32::MAX) WRAPS mod 2^32 — must match the naive u32 `wrapping_add` fold.
+    #[test]
+    fn u32_rank2_sumpool_wraps_like_naive() {
+        let (rows, cols) = (40usize, 44usize);
+        let src: Vec<u32> = (0..rows * cols)
+            .map(|i| ((i as u64).wrapping_mul(2_654_435_761) % 4_000_000_000) as u32)
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_u32_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                src.clone(),
+            )
+            .unwrap(),
+        );
+        let (wr, wc) = (5usize, 5usize);
+        let mut p = std::collections::BTreeMap::new();
+        p.insert("reduce_op".to_owned(), "sum".to_owned());
+        p.insert("window_dimensions".to_owned(), format!("{wr},{wc}"));
+        p.insert("window_strides".to_owned(), "1,1".to_owned());
+        p.insert("padding".to_owned(), "VALID".to_owned());
+        let got = match eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor), &p)
+            .unwrap()
+        {
+            Value::Tensor(t) => t.elements.as_u32_slice().unwrap().to_vec(),
+            _ => panic!(),
+        };
+        let (out_rows, out_cols) = (rows - wr + 1, cols - wc + 1);
+        let mut want = Vec::with_capacity(out_rows * out_cols);
+        for orr in 0..out_rows {
+            for occ in 0..out_cols {
+                let mut acc = 0u32;
+                for dr in 0..wr {
+                    for dc in 0..wc {
+                        acc = acc.wrapping_add(src[(orr + dr) * cols + (occ + dc)]);
+                    }
+                }
+                want.push(acc);
+            }
+        }
+        assert_eq!(got, want, "u32 rank-2 sumpool wrap diverges from naive");
+    }
+
+    // Rank-2 U64 SUM-pool (bitcast->i64 wrapping separable->bitcast back). Values include entries ABOVE
+    // i64::MAX; the sum WRAPS mod 2^64 and must be bit-identical to the naive u64 `wrapping_add` fold
+    // (two's-complement add is sign-agnostic, so the i64-bitcast core reproduces it exactly).
+    #[test]
+    fn u64_rank2_sumpool_wraps_like_naive() {
+        let (rows, cols) = (38usize, 42usize);
+        let src: Vec<u64> = (0..rows * cols)
+            .map(|i| {
+                (i as u64)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    .wrapping_add(0xFFFF_FFFF_0000_0000)
+            })
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_u64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                src.clone(),
+            )
+            .unwrap(),
+        );
+        let (wr, wc) = (5usize, 5usize);
+        let mut p = std::collections::BTreeMap::new();
+        p.insert("reduce_op".to_owned(), "sum".to_owned());
+        p.insert("window_dimensions".to_owned(), format!("{wr},{wc}"));
+        p.insert("window_strides".to_owned(), "1,1".to_owned());
+        p.insert("padding".to_owned(), "VALID".to_owned());
+        let got = match eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor), &p)
+            .unwrap()
+        {
+            Value::Tensor(t) => t.elements.as_u64_slice().unwrap().to_vec(),
+            _ => panic!(),
+        };
+        let (out_rows, out_cols) = (rows - wr + 1, cols - wc + 1);
+        let mut want = Vec::with_capacity(out_rows * out_cols);
+        for orr in 0..out_rows {
+            for occ in 0..out_cols {
+                let mut acc = 0u64;
+                for dr in 0..wr {
+                    for dc in 0..wc {
+                        acc = acc.wrapping_add(src[(orr + dr) * cols + (occ + dc)]);
+                    }
+                }
+                want.push(acc);
+            }
+        }
+        assert_eq!(got, want, "u64 rank-2 sumpool wrap diverges from naive");
     }
 
     // U32 rank-2 maxpool/minpool (routes u32 -> i64 van Herk -> u32) must match the naive u32 fold,
