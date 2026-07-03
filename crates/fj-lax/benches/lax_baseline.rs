@@ -4075,6 +4075,41 @@ fn bench_topk_64k_k128_f64_vec(c: &mut Criterion) {
     });
 }
 
+// top_k vs JAX 0.10.2 x64 (jaxvenv, 2026-07-02): JAX does a FULL SORT regardless of k
+// (top_k 4M k=10 = 1135ms, 4096x1024 k=5 = 519ms). If fj uses partial selection this
+// is a large win on a common ML op (sampling/retrieval).
+fn bench_topk_vs_jax(c: &mut Criterion) {
+    let n = 1usize << 22;
+    let data: Vec<f64> = (0..n)
+        .map(|i| ((i as f64) * 1.000_173).sin() * 1e6 - (i as f64))
+        .collect();
+    let input = Value::vector_f64(&data).unwrap();
+    for k in [10usize, 100, 1000] {
+        let mut p = BTreeMap::new();
+        p.insert("k".to_owned(), k.to_string());
+        c.bench_function(&format!("eval/topk_4m_k{k}_f64"), |b| {
+            b.iter(|| eval_primitive_multi(Primitive::TopK, std::slice::from_ref(&input), &p))
+        });
+    }
+    let (rows, cols) = (4096usize, 1024usize);
+    let mat = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            (0..rows * cols)
+                .map(|i| ((i as f64) * 1e-3).sin())
+                .collect(),
+        )
+        .unwrap(),
+    );
+    let mut p5 = BTreeMap::new();
+    p5.insert("k".to_owned(), "5".to_owned());
+    c.bench_function("eval/topk_4096x1024_k5_f64", |b| {
+        b.iter(|| eval_primitive_multi(Primitive::TopK, std::slice::from_ref(&mat), &p5))
+    });
+}
+
 fn bench_topk_64k_k128_f64_literal_reference(c: &mut Criterion) {
     let elements: Vec<Literal> = (0..LARGE_ELEMENTWISE_LEN)
         .map(|i| Literal::from_f64(((i as f64) * 1.000_173).sin() * 1e6 - (i as f64)))
@@ -7731,6 +7766,7 @@ criterion_group!(
     bench_sort_64k_u64_literal_reference,
     bench_sort_calib_reduce_64k_i64,
     bench_topk_64k_k128_f64_vec,
+    bench_topk_vs_jax,
     bench_topk_64k_k128_f32,
     bench_topk_64k_k128_f64_literal_reference,
     bench_topk_64k_k128_i64_vec,

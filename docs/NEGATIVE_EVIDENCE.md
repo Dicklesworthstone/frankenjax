@@ -62,6 +62,19 @@ benches `nn/scalar_broadcast_fill_4m_f64`, `nn/bias_broadcast_4096x1024_f64`, al
   already delivers 6.4ms). LESSON (again): measure sibling sites before assuming a shared mis-gate — 2 of
   3 here were already fast.
 
+## 2026-07-02 - WIN (recorded, BIG): fj top_k 18.7x (1D) / 205x (per-row) FASTER than JAX (TealMarten)
+
+top_k is a common ML op (sampling / retrieval / beam-search). JAX 0.10.2 x64 does a FULL SORT regardless
+of k — pathologically slow: top_k 4M k=10 = 1135ms, k=100 = 1137ms, k=1000 = 1145ms (all ~= sort cost);
+per-row `top_k(4096x1024, k=5)` = **519ms** (sorts every row). fj uses partial selection (new benches
+`eval/topk_4m_k{10,100,1000}_f64`, `eval/topk_4096x1024_k5_f64`):
+- **top_k 4M k=10: fj 60.7ms vs JAX 1135ms = 18.7x FASTER** (k=100 17.4x, k=1000 19.5x)
+- **top_k 4096x1024 k=5: fj 2.53ms vs JAX 519ms = 205x FASTER** — the headline: JAX full-sorts each of
+  4096 rows while fj does per-row partial selection. This is the retrieval/sampling hot shape.
+Biggest vs-JAX win recorded this arc. Extends the order-statistics domination map (sort 6.1x, argsort
+4.3x, argmax 1.76x, top_k 18.7-205x) — all cases where fj's ALGORITHM (radix / partial-select) beats
+XLA's full comparison sort, independent of threading (so robust, not host-contention-fragile).
+
 ## 2026-07-02 - CORRECTION to the pooling-gap entry below: rank-2 SUM w7 IS separable+fast (2.66ms); real gap is rank-2 MAX + small-window sum (TealMarten)
 
 The entry below overstated the gap. Verified `separable_reduce_window_sum_f64` IS a RANK-2 function (not
