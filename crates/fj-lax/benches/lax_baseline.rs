@@ -1786,6 +1786,29 @@ fn bench_eigh_qr_vs_jax(c: &mut Criterion) {
 // UNLIKE real eigh (fj WINS 12x), fj's COMPLEX Hermitian eigh is a LOSS: fj 128 = 1.23s
 // = ~10x SLOWER (slow complex Jacobi; lacks the tred2/tql2 tridiag speedup real eigh has).
 // Only n=128 benched (n=256 is multi-second). Documented gap/reproducer, not a win.
+// Complex non-symmetric eig vs JAX 0.10.2 x64 (jaxvenv, 2026-07-03): ceig_256 =
+// 2709.8ms (iterative complex Schur — catastrophic). fj uses Francis + complex-QR Givens.
+fn bench_complex_eig_vs_jax(c: &mut Criterion) {
+    let n = 256usize;
+    let mut elems: Vec<Literal> = Vec::with_capacity(n * n);
+    for idx in 0..n * n {
+        let re = (((idx * 2654435761) % 1000019) as f64) * 1e-3 - 500.0;
+        let im = (((idx * 40503 + 7) % 1000003) as f64) * 1e-3 - 500.0;
+        elems.push(Literal::from_complex128(re, im));
+    }
+    let m = Value::Tensor(TensorValue {
+        dtype: DType::Complex128,
+        shape: Shape {
+            dims: vec![n as u32, n as u32],
+        },
+        elements: elems.into(),
+    });
+    let p = no_params();
+    c.bench_function("linalg/complex_eig_256x256_vsjax", |b| {
+        b.iter(|| eval_primitive_multi(Primitive::Eig, std::slice::from_ref(&m), &p))
+    });
+}
+
 // Complex QR vs JAX 0.10.2 x64 (jaxvenv, 2026-07-03): cqr_256 = 384.8ms, cqr_512 =
 // 1288ms (iterative complex QR on CPU). fj uses complex Householder (like real QR).
 fn bench_complex_qr_vs_jax(c: &mut Criterion) {
@@ -7998,6 +8021,7 @@ criterion_group!(
     bench_dot_256_matrix_f64,
     bench_eig_48,
     bench_eigh_qr_vs_jax,
+    bench_complex_eig_vs_jax,
     bench_complex_qr_vs_jax,
     bench_complex_eigh_vs_jax,
     bench_eig_256_vs_jax,
