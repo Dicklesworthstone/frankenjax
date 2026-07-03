@@ -116,6 +116,17 @@ compute-bound. REFINED RULE: hand-SIMD an opaque-libm op ONLY when the scalar li
 (atan2/tan/pow-via-exp) AND the op is compute-bound (not masked by multi-tensor BW). Fast-libm (ln) or
 light-compute binary ops stay scalar. Kept the bench as a marker. full fj-lax lib unaffected (revert).
 
+## 2026-07-03 - WIRED WIN (completeness): rank-2 I32 SUM-pool separable (i64 prefix + wrap-narrow) (TealMarten)
+
+Followed the i64 rank-2 sum win with i32 (JAX's DEFAULT int). i32 shares the i64 backing, and sum-mod-2^32
+is ASSOCIATIVE, so the i64 separable prefix narrowed per box-sum (`v as i32`) is bit-identical to the naive
+i32 fold (which accumulates in i64 then narrows). Extended the rank-2 i64 sum path to `matches!(dtype,
+I64|I32)` + `output_dtype == tensor.dtype`, wrapping the output to i32 for I32. Bit-EXACT even when the
+window sum OVERFLOWS i32 (values ~2e8, 5x5 sum ~5e9 wraps) — guarded by new `i32_rank2_sumpool_wraps_like
+_naive`. Structural win (window-independent O(input) vs naive O(out·window)); replaces the naive dense i32
+path. full fj-lax lib 1734/0. Integer rank-2 SUM-pool now covers i64 AND i32; the whole rank-2 pooling
+family is comprehensively fast: max/min = f64/f32/bf16/f16/i64/i32/u32, sum = f64/f32/i64/i32.
+
 ## 2026-07-03 - WIRED WIN (completeness): rank-2 I64 SUM-pool separable (gate rank>=4 -> rank>=2) (TealMarten)
 
 Closed the rank-2 gap in the integer SUM-pool family: the N-D i64 separable block-prefix

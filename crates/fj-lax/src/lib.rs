@@ -10176,8 +10176,8 @@ fn eval_reduce_window(
     // which otherwise fell to the naive O(out·window) fold (f64/f32 rank-2 already had the running-sum).
     if no_base_dilation
         && no_window_dilation
-        && tensor.dtype == fj_core::DType::I64
-        && output_dtype == fj_core::DType::I64
+        && matches!(tensor.dtype, fj_core::DType::I64 | fj_core::DType::I32)
+        && output_dtype == tensor.dtype
         && rank >= 2
         && reduce_window_sum_like(reduce_op)
         && window_dims.iter().product::<usize>() > 2 * window_dims.iter().sum::<usize>()
@@ -10193,15 +10193,19 @@ fn eval_reduce_window(
             &pad_lows,
             &out_dims_usize,
         );
-        return Ok(Value::Tensor(
-            TensorValue::new_i64_values(
-                Shape {
-                    dims: out_dims.clone(),
-                },
-                values,
-            )
-            .map_err(EvalError::from)?,
-        ));
+        let shape = Shape {
+            dims: out_dims.clone(),
+        };
+        // I32 (JAX's default int) shares the i64 backing; its box-sum wraps mod 2^32. The naive i32 path
+        // accumulates in i64 then narrows, and sum-mod-2^32 is associative, so narrowing each i64 box-sum
+        // (`v as i32`) is bit-identical to the naive fold. I64 keeps the exact ring sum.
+        let tv = if tensor.dtype == fj_core::DType::I32 {
+            let wrapped: Vec<i64> = values.iter().map(|&v| i64::from(v as i32)).collect();
+            TensorValue::new_i32_values(shape, wrapped)
+        } else {
+            TensorValue::new_i64_values(shape, values)
+        };
+        return Ok(Value::Tensor(tv.map_err(EvalError::from)?));
     }
 
     if no_base_dilation
@@ -13593,6 +13597,56 @@ mod tests {
             }
         }
         assert_eq!(got, want, "i64 rank-2 sumpool diverges from naive");
+    }
+
+    // Rank-2 I32 SUM-pool (i64 separable + wrap-narrow to i32). Values ~2e8 so a 5x5 window sum
+    // (~5e9 > i32::MAX) OVERFLOWS — the result must WRAP mod 2^32, matching the naive i64-accumulate→i32.
+    #[test]
+    fn i32_rank2_sumpool_wraps_like_naive() {
+        let (rows, cols) = (40usize, 44usize);
+        let src: Vec<i64> = (0..rows * cols)
+            .map(|i| {
+                i64::from(
+                    (((i as i64).wrapping_mul(2_654_435_761)) % 400_000_000 - 200_000_000) as i32,
+                )
+            })
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_i32_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                src.clone(),
+            )
+            .unwrap(),
+        );
+        let (wr, wc) = (5usize, 5usize);
+        let mut p = std::collections::BTreeMap::new();
+        p.insert("reduce_op".to_owned(), "sum".to_owned());
+        p.insert("window_dimensions".to_owned(), format!("{wr},{wc}"));
+        p.insert("window_strides".to_owned(), "1,1".to_owned());
+        p.insert("padding".to_owned(), "VALID".to_owned());
+        let got = match eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor), &p)
+            .unwrap()
+        {
+            Value::Tensor(t) => t.elements.as_i64_slice().unwrap().to_vec(),
+            _ => panic!(),
+        };
+        let (out_rows, out_cols) = (rows - wr + 1, cols - wc + 1);
+        let mut want = Vec::with_capacity(out_rows * out_cols);
+        for orr in 0..out_rows {
+            for occ in 0..out_cols {
+                // naive: exact i64 window sum, then narrow to i32 (mod 2^32).
+                let mut acc = 0i64;
+                for dr in 0..wr {
+                    for dc in 0..wc {
+                        acc += src[(orr + dr) * cols + (occ + dc)];
+                    }
+                }
+                want.push(i64::from(acc as i32));
+            }
+        }
+        assert_eq!(got, want, "i32 rank-2 sumpool wrap diverges from naive");
     }
 
     // U32 rank-2 maxpool/minpool (routes u32 -> i64 van Herk -> u32) must match the naive u32 fold,
