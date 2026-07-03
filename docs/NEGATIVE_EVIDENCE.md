@@ -224,6 +224,16 @@ f64/f32, so the win transfers by construction (strictly replaces the slower naiv
 needed). full fj-lax lib 1733/0. (i32 sum stays naive — output_dtype==I64 gate; i32 needs mod-2^32 wrap
 handling on narrow, deferred.) Amortization gate unchanged (∏window > 2·∑window, ~w5+).
 
+## 2026-07-03 - WIRED WIN (completeness): U64 rank-2 van Herk maxpool/minpool (FLIP -> i64 kernel) — pooling family DONE (TealMarten)
+
+The last pooling dtype tail. u64 can exceed i64::MAX so it can't use the direct u32 approach — instead map
+the UNSIGNED order into i64's SIGNED order with the FLIP bit-trick `v ^ (1<<63)` (order-preserving
+bijection), run the i64 van Herk (max/min selects a flipped input value), FLIP back. Same trick the u64
+cumulative uses. Bit-exact for the FULL u64 range — new `u64_rank2_maxpool_matches_naive` uses values >
+i64::MAX and exactly 1<<63 (where a plain i64 compare would misrank them as negative). Structural win
+(van Herk O(input) replaces the naive O(out·window) fold). full fj-lax lib 1739/0. The rank-2 pooling
+family is now FULLY COMPLETE: max/min = f64/f32/bf16/f16/i64/i32/u32/u64, sum = f64/f32/bf16/f16/i64/i32.
+
 ## 2026-07-03 - WIRED WIN (completeness): U32 rank-2 van Herk maxpool/minpool (routes u32→i64 kernel) (TealMarten)
 
 Closed the last dtype gap in the rank-2 pooling family: the integer van Herk was I64|I32-gated, so U32

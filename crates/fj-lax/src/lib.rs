@@ -9608,7 +9608,7 @@ fn eval_reduce_window(
     // Rank-2 U32 van Herk: u32 is NON-NEGATIVE, so i64 max/min is the correct unsigned order — convert
     // to i64 (exact), reuse the i64 van Herk, narrow the extremum (an input value, fits u32) back to u32.
     // u32 has its own storage (not i64-backed) so it can't share the i64 path directly; without this it
-    // fell to the naive O(out·window) fold. (u64 can exceed i64::MAX so it stays on the naive path.)
+    // fell to the naive O(out·window) fold.
     if no_base_dilation
         && no_window_dilation
         && rank == 2
@@ -9638,6 +9638,46 @@ fn eval_reduce_window(
                         dims: out_dims.clone(),
                     },
                     out_u32,
+                )
+                .map_err(EvalError::from)?,
+            ));
+        }
+    }
+
+    // Rank-2 U64 van Herk: u64 can exceed i64::MAX, so map the UNSIGNED order into the i64 signed order
+    // with the FLIP bit-trick `v ^ (1<<63)` (order-preserving bijection), run the i64 van Herk (max/min
+    // selects a flipped input value), then FLIP back — bit-exact for the full u64 range. Same trick the
+    // u64 cumulative uses. Otherwise u64 rank-2 max/min fell to the naive fold.
+    if no_base_dilation
+        && no_window_dilation
+        && rank == 2
+        && tensor.dtype == fj_core::DType::U64
+        && matches!(reduce_op, "max" | "min")
+        && let Some(src_u64) = tensor.elements.as_u64_slice()
+    {
+        const FLIP: u64 = 1u64 << 63;
+        let src_i64: Vec<i64> = src_u64.iter().map(|&v| (v ^ FLIP) as i64).collect();
+        if let Some(values) = separable_reduce_window_rank2_maxmin_i64(
+            &src_i64,
+            tensor.shape.dims[0] as usize,
+            tensor.shape.dims[1] as usize,
+            out_dims[0] as usize,
+            out_dims[1] as usize,
+            window_dims[0],
+            window_dims[1],
+            strides[0],
+            strides[1],
+            pad_lows[0],
+            pad_lows[1],
+            reduce_op == "max",
+        ) {
+            let out_u64: Vec<u64> = values.iter().map(|&v| (v as u64) ^ FLIP).collect();
+            return Ok(Value::Tensor(
+                TensorValue::new_u64_values(
+                    Shape {
+                        dims: out_dims.clone(),
+                    },
+                    out_u64,
                 )
                 .map_err(EvalError::from)?,
             ));
@@ -13762,6 +13802,61 @@ mod tests {
     }
 
     // U32 rank-2 maxpool/minpool (routes u32 -> i64 van Herk -> u32) must match the naive u32 fold,
+    // U64 rank-2 maxpool/minpool (FLIP -> i64 van Herk -> FLIP back) must match the naive u64 fold,
+    // INCLUDING values ABOVE i64::MAX (where the FLIP bit-trick is essential — plain i64 compare would
+    // misrank them as negative).
+    #[test]
+    fn u64_rank2_maxpool_matches_naive() {
+        let (rows, cols) = (38usize, 42usize);
+        let src: Vec<u64> = (0..rows * cols)
+            .map(|i| match i % 5 {
+                0 => u64::MAX - (i as u64 % 11), // above i64::MAX
+                1 => (i as u64).wrapping_mul(11_400_714_819_323_198_485),
+                2 => 1u64 << 63, // exactly i64::MAX + 1
+                _ => ((i * 97 + 3) % 100_000) as u64,
+            })
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_u64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                src.clone(),
+            )
+            .unwrap(),
+        );
+        for op in ["max", "min"] {
+            let (wr, wc) = (5usize, 5usize);
+            let mut p = std::collections::BTreeMap::new();
+            p.insert("reduce_op".to_owned(), op.to_owned());
+            p.insert("window_dimensions".to_owned(), format!("{wr},{wc}"));
+            p.insert("window_strides".to_owned(), "1,1".to_owned());
+            p.insert("padding".to_owned(), "VALID".to_owned());
+            let got =
+                match eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor), &p)
+                    .unwrap()
+                {
+                    Value::Tensor(t) => t.elements.as_u64_slice().unwrap().to_vec(),
+                    _ => panic!(),
+                };
+            let (out_rows, out_cols) = (rows - wr + 1, cols - wc + 1);
+            let mut want = Vec::with_capacity(out_rows * out_cols);
+            for orr in 0..out_rows {
+                for occ in 0..out_cols {
+                    let mut acc = if op == "max" { u64::MIN } else { u64::MAX };
+                    for dr in 0..wr {
+                        for dc in 0..wc {
+                            let v = src[(orr + dr) * cols + (occ + dc)];
+                            acc = if op == "max" { acc.max(v) } else { acc.min(v) };
+                        }
+                    }
+                    want.push(acc);
+                }
+            }
+            assert_eq!(got, want, "u64 rank-2 {op}pool diverges from naive");
+        }
+    }
+
     // INCLUDING values above i64::MAX/... near u32::MAX (i64 holds all u32 exactly, unsigned order).
     #[test]
     fn u32_rank2_maxpool_matches_naive() {
