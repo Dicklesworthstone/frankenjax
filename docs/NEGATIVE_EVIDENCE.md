@@ -25,6 +25,24 @@ peephole (mirrors existing `try_eval_top_level_scan_*` in fj-interpreters lib.rs
 on resolving softmax parity as TOLERANCE (softmax_2d's scalar `fold(f64::max)`/`+=` differ from fj-lax
 SIMD reduce_max/sum on +/-0 and NaN, so it is NOT a bit-identical drop-in for the decomposed path).
 
+## 2026-07-02 - NEGATIVE/BOUNDARY: decomposed-softmax residual is memory-bound-by-design; only interpreter fusion remains (TealMarten)
+
+Follow-up to the BroadcastInDim fill win above. HONEST dense-input per-step breakdown of the decomposed
+softmax (4096x1024 f64, `nn/softmax_step_*`, input now `new_f64_values` so fast paths fire): broadcast
+**18.2ms**, sub **22.9ms**, exp **15.3ms**, div **8.4ms** (+ 2 trailing reduces). Two apparent anomalies,
+both NON-bugs: (1) broadcast is serial because total 4M < `CHEAP_BINARY_PARALLEL_MIN` (1<<23=8.4M) — the
+tuned memory-bound threading gate; (2) Sub 22.9ms vs Div 8.4ms for the IDENTICAL same-shape 4M op is not a
+missing fast path (both are `eval_same_shape_f64_map`, arithmetic.rs:1035/1037) — Div is classed
+expensive/compute-bound and THREADED, Sub is cheap/memory-bound and SERIAL by the same gate. So every
+remaining decomposed-softmax term is a memory-bound materialization that is serial BY DESIGN (threading it
+regresses under swarm contention — documented repeatedly). CONCLUSION: the contained fj-lax kernel levers in
+this family are EXHAUSTED (broadcast-replicated fill shipped 2.24x). The residual ~16-18x vs JAX
+(decomposed ~85ms dense vs JAX 4.79ms) is the FUSION gap — XLA never materializes the broadcast/sub/exp
+intermediates. The one remaining lever is wiring the fused `softmax_2d` into the interpreter via a
+`try_eval_top_level_softmax` peephole (fj-interpreters), GATED on softmax parity being tolerance (its scalar
++/-0/NaN reduce folds differ from fj-lax SIMD reduce). Not a further fj-lax kernel change. NOT ceiling: the
+next primitive lever is named and located; it's an interpreter change, not a maxed-out kernel.
+
 ## 2026-07-02 - NEGATIVE/BOUNDARY: alien-graveyard yields NO applicable different-primitive FFT lever; every classic DSP variant collapses onto an already-measured no-ship (TealMarten)
 
 The biggest MEASURED unowned gap is still batched FFT (fft_batch_128x1000 23.5x, fft_batch_2048x256 42.7x vs JAX/pocketfft;

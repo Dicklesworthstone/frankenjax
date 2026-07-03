@@ -7171,14 +7171,18 @@ fn bench_softmax_decomposed_vs_fused_ab(c: &mut Criterion) {
     let x: Vec<f64> = (0..rows * cols)
         .map(|k| ((k as f64) * 0.0007).sin() * 4.0)
         .collect();
-    let elements: Vec<Literal> = x.iter().map(|&v| Literal::from_f64(v)).collect();
-    let input = Value::Tensor(TensorValue {
-        dtype: DType::F64,
-        shape: Shape {
-            dims: vec![rows as u32, cols as u32],
-        },
-        elements: elements.into(),
-    });
+    // Dense f64 storage (what the interpreter actually feeds primitives) so the
+    // Sub/Div/reduce fast paths fire — a boxed Vec<Literal> input mis-attributes
+    // cost to the boxed-operand generic loop.
+    let input = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            x.clone(),
+        )
+        .unwrap(),
+    );
     let mut reduce_p = BTreeMap::new();
     reduce_p.insert("axes".to_string(), "1".to_string());
     let mut bcast_p = BTreeMap::new();
