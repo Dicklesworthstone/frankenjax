@@ -1596,6 +1596,28 @@ fn bench_eigh_qr_vs_jax(c: &mut Criterion) {
     }
 }
 
+// Non-symmetric eig vs JAX 0.10.2 x64 (jaxvenv, 2026-07-02): jnp.linalg.eigvals(256) =
+// 230ms (iterative on CPU). fj uses real-Schur Francis double-shift.
+fn bench_eig_256_vs_jax(c: &mut Criterion) {
+    let n = 256usize;
+    let genm: Vec<f64> = (0..n * n)
+        .map(|idx| (((idx * 2654435761) % 1000019) as f64) * 1e-3 - 500.0)
+        .collect();
+    let m = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            genm,
+        )
+        .unwrap(),
+    );
+    let p = no_params();
+    c.bench_function("linalg/eig_256x256_f64_vsjax", |b| {
+        b.iter(|| eval_primitive_multi(Primitive::Eig, std::slice::from_ref(&m), &p))
+    });
+}
+
 fn bench_eigh_48(c: &mut Criterion) {
     // Real symmetric eigendecomposition (Eigh) via Jacobi. Diagonally dominant
     // symmetric 48×48 so the iterative path (not the 3×3 analytic shortcut)
@@ -7717,6 +7739,7 @@ criterion_group!(
     bench_dot_256_matrix_f64,
     bench_eig_48,
     bench_eigh_qr_vs_jax,
+    bench_eig_256_vs_jax,
     bench_eigh_48,
     bench_cholesky_128_f64,
     bench_cholesky_512_f64,

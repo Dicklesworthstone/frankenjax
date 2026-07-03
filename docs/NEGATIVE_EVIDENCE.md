@@ -70,6 +70,8 @@ qr_512 = 557ms. fj's tred2/tql2 eigh + blocked/Householder QR (new benches `lina
 x_f64_vsjax`):
 - **eigh 256: fj 23.86ms vs JAX 288ms = 12.1x FASTER**; **eigh 512: fj 191.8ms vs 1003ms = 5.2x**
 - **qr 256: fj 6.80ms vs JAX 107ms = 15.7x FASTER**; **qr 512: fj 49.3ms vs 557ms = 11.3x**
+- **eig 256 (NON-symmetric eigvals): fj 68.4ms vs JAX 230ms = 3.4x FASTER** (fj real-Schur Francis
+  double-shift vs JAX iterative CPU eig; `linalg/eig_256x256_f64_vsjax`).
 BOUNDARY (honest): cholesky/det/inv are LAPACK-backed in JAX and FAST (0.34/0.55/11.4ms at n=256), so
 those are fj LOSSES (LAPACK is hard to beat) — NOT recorded as wins. The eigh/qr wins are where JAX's
 CPU path is iterative; fj's direct tridiag/Householder algorithms dominate. Adds the decomposition family
