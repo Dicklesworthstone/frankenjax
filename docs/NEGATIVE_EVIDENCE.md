@@ -94,6 +94,25 @@ transcendentals) is comprehensively WON or competitive vs JAX. The ONE unmined a
 **conv_transpose (5.3x, below)** — that is where a future focused session should go, not another
 elementwise/scan probe. Reference JAX numbers committed here as targets for any future op work.
 
+## 2026-07-03 - WIRED WIN (4.17x; 5.3x JAX LOSS -> BEATS JAX): conv_transpose scatter-GEMM — the biggest documented gap, CLOSED (TealMarten)
+
+The four-turn conv_transpose de-risking (gap → decomposition → correctness-model) is now SHIPPED as a fast
+path. A transposed conv is the ADJOINT SCATTER of the forward conv, so no zero-dilated buffer + no
+zero-multiplies are needed: each output pixel `O[n,oy,ox]` receives `x[n,iy,ix]·ker[ky,kx]` whenever
+`oy = iy·sy + pad_top − ky` and `ox = ix·sx + pad_left − kx` (the EXACT tap map eval_conv_2d uses over the
+dilated input, stride 1). Grouping by kernel tap, each `(ky,kx)` is ONE GEMM `X[N·H·W,Cin] @ ker[ky,kx][Cin,
+Cout]` (the fast `matmul_2d`) whose rows scatter-add into the output — KH·KW GEMMs, only the USEFUL MACs.
+Uses the IDENTICAL `compute_output_and_pad` geometry as the dilate+conv route so shape+padding match exactly.
+Same-invocation A/B on the ledger shape [1,64,64,16]*[3,3,16,32] lhsdil2 SAME f64: **dilate+conv=8.14ms vs
+scatter-GEMM=1.95ms = 4.17x FASTER, and JAX=2.04ms → fj now BEATS JAX (~1.04x).** The single biggest
+documented contained gap (was 5.3x SLOWER) is closed and flipped to a win. Correctness is TOLERANCE-verified
+(conv_transpose_scatter_gemm_matches_dilate_conv: 7 configs — VALID/SAME/SAME_LOWER/explicit, s=2&3,
+non-square kernels, multi channel/batch, K>s overlap — all within 1e-9 of the exact dilate+conv). SAFELY
+GATED: `try_conv_transpose_scatter_gemm_2d_f64` returns None (→ exact dilate+conv fallback) for anything not
+covered — non-rank-4, non-f64, feature/batch grouping, rhs_dilation>1, conv-stride>1 — so ZERO regression
+risk; `FJ_CONVT_NAIVE` forces the old path. NEXT (smaller follow-ups): f32 sibling (JAX default dtype; needs
+an f32 GEMM or promote-to-f64), 1D (rank-3), and threading the scatter-add. Full fj-lax lib green.
+
 ## 2026-07-03 - GAP SURFACED (data-backed, 5.3x): conv_transpose (lhs_dilation) wastes ~stride² on zero-multiplies (TealMarten)
 
 Measured a REAL, unmined algorithmic gap on a common op (deconv / 2x-upsampling in GANs/segmentation/

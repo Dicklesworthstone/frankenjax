@@ -13185,6 +13185,16 @@ pub(crate) fn eval_conv(
     let num_spatial = lhs_rank - 2;
     let lhs_dils = parse_conv_lhs_dilation(primitive, params, num_spatial)?;
     if lhs_dils.iter().any(|&l| l > 1) {
+        // Fast path: 2D f64 transposed conv via per-kernel-tap scatter-GEMM — skips the s^2
+        // zero-multiplies of the materialize-then-convolve route (see the decomposition ledger
+        // entry: that route is 8.6ms = 0.79ms dilate + 5.4ms conv-on-zeros; this targets ~conv/s^2).
+        // Falls back (None) to the exact dilate+conv for any case it does not cover.
+        if std::env::var_os("FJ_CONVT_NAIVE").is_none()
+            && let Some(fast) =
+                try_conv_transpose_scatter_gemm_2d_f64(primitive, lhs, rhs, params, &lhs_dils)?
+        {
+            return Ok(fast);
+        }
         let dilated = dilate_conv_lhs(primitive, lhs, &lhs_dils)?;
         let mut inner = params.clone();
         inner.remove("lhs_dilation");
@@ -13340,6 +13350,143 @@ fn parse_conv_lhs_dilation(
 /// insert `(L_i - 1)` zeros between elements along spatial axis `i`, giving spatial
 /// extent `(S_i - 1)*L_i + 1`. Real and complex dtypes both get a dtype-correct zero
 /// fill; each original element is scattered to its dilated position.
+/// 2D f64 transposed convolution (lhs_dilation) via per-kernel-tap scatter-GEMM.
+///
+/// The default route materializes the zero-dilated input (~s^2 elements, ~75% zeros for s=2) then runs a
+/// full im2col+GEMM conv over it — every zero tap is a wasted multiply. This computes the SAME result with
+/// no zero-multiplies: a transposed conv is the adjoint scatter of the forward conv, so each output pixel
+/// `O[n, oy, ox]` receives `x[n, iy, ix] · ker[ky, kx]` whenever `oy = iy·sy + pad_top − ky` and
+/// `ox = ix·sx + pad_left − kx` (the exact tap map eval_conv_2d uses over the dilated input, with
+/// stride==1). Grouping by kernel tap, each `(ky, kx)` is one GEMM `X[N·H·W, Cin] @ ker[ky,kx][Cin, Cout]`
+/// (the fast `matmul_2d`) whose rows scatter-add into the output — KH·KW GEMMs, total useful MACs (no s^2
+/// waste). Uses the IDENTICAL geometry helper (`compute_output_and_pad` on the dilated size) as the
+/// dilate+conv route, so output shape + padding match exactly. Parity is TOLERANCE (conv_oracle asserts
+/// `< 1e-10`, not bits), so the GEMM reassociation vs the dilated conv is legal.
+///
+/// Returns `Ok(None)` — deferring to the exact dilate+conv fallback — for every case not covered:
+/// non-rank-4, non-f64, feature/batch grouping, rhs_dilation (atrous) > 1, or conv stride > 1.
+fn try_conv_transpose_scatter_gemm_2d_f64(
+    primitive: Primitive,
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    params: &BTreeMap<String, String>,
+    lhs_dils: &[usize],
+) -> Result<Option<Value>, EvalError> {
+    // Only rank-4 (2D), f64/f64, ungrouped, no atrous, conv-stride 1 — else defer to dilate+conv.
+    if lhs.shape.rank() != 4 || rhs.shape.rank() != 4 {
+        return Ok(None);
+    }
+    if lhs.dtype != DType::F64 || rhs.dtype != DType::F64 {
+        return Ok(None);
+    }
+    if lhs_dils.len() != 2 {
+        return Ok(None);
+    }
+    if parse_conv_group_count(primitive, params)? != 1
+        || parse_conv_named_count(primitive, params, "batch_group_count")? != 1
+    {
+        return Ok(None);
+    }
+    let (dil_h, dil_w) = parse_dilation_pair(primitive, params)?;
+    if dil_h != 1 || dil_w != 1 {
+        return Ok(None);
+    }
+    let (stride_h, stride_w) = parse_stride_pair(primitive, params)?;
+    if stride_h != 1 || stride_w != 1 {
+        return Ok(None);
+    }
+    let (sy, sx) = (lhs_dils[0], lhs_dils[1]);
+
+    let (n, h, w, c_in) = (
+        lhs.shape.dims[0] as usize,
+        lhs.shape.dims[1] as usize,
+        lhs.shape.dims[2] as usize,
+        lhs.shape.dims[3] as usize,
+    );
+    let (kh, kw, rhs_c_in, c_out) = (
+        rhs.shape.dims[0] as usize,
+        rhs.shape.dims[1] as usize,
+        rhs.shape.dims[2] as usize,
+        rhs.shape.dims[3] as usize,
+    );
+    if rhs_c_in != c_in {
+        return Ok(None);
+    }
+    let (Some(x), Some(ker)) = (lhs.elements.as_f64_slice(), rhs.elements.as_f64_slice()) else {
+        return Ok(None);
+    };
+    if x.len() != n * h * w * c_in || ker.len() != kh * kw * c_in * c_out {
+        return Ok(None);
+    }
+    if n == 0 || h == 0 || w == 0 || c_in == 0 || c_out == 0 || kh == 0 || kw == 0 {
+        return Ok(None);
+    }
+
+    // Dilated spatial sizes + IDENTICAL geometry to the dilate+conv route (stride 1, eff kernel = kernel).
+    let padding = parse_conv_padding(primitive, params)?;
+    validate_conv_padding_rank(primitive, &padding, 2)?;
+    let dilated_h = (h - 1) * sy + 1;
+    let dilated_w = (w - 1) * sx + 1;
+    let (out_h, pad_top) = compute_output_and_pad(primitive, dilated_h, kh, 1, &padding, 0)?;
+    let (out_w, pad_left) = compute_output_and_pad(primitive, dilated_w, kw, 1, &padding, 1)?;
+    let total = n
+        .checked_mul(out_h)
+        .and_then(|v| v.checked_mul(out_w))
+        .and_then(|v| v.checked_mul(c_out))
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "conv_transpose output size overflow".into(),
+        })?;
+
+    let m = n * h * w; // GEMM rows: one per input spatial pixel (batch-major).
+    let mut out = vec![0.0f64; total];
+    let mut ker_slice = vec![0.0f64; c_in * c_out];
+    for ky in 0..kh {
+        for kx in 0..kw {
+            // Extract ker[ky, kx, :, :] as a contiguous [Cin, Cout] panel.
+            for ci in 0..c_in {
+                let src = ((ky * kw + kx) * c_in + ci) * c_out;
+                let dst = ci * c_out;
+                ker_slice[dst..dst + c_out].copy_from_slice(&ker[src..src + c_out]);
+            }
+            // Y[N*H*W, Cout] = X[N*H*W, Cin] @ ker_slice[Cin, Cout].
+            let y = matmul_2d(x, m, c_in, &ker_slice, c_out);
+            // Scatter-add each input pixel's contribution to its output pixel.
+            for ni in 0..n {
+                for iy in 0..h {
+                    let oy = iy as isize * sy as isize + pad_top as isize - ky as isize;
+                    if oy < 0 || oy >= out_h as isize {
+                        continue;
+                    }
+                    let oy = oy as usize;
+                    for ix in 0..w {
+                        let ox = ix as isize * sx as isize + pad_left as isize - kx as isize;
+                        if ox < 0 || ox >= out_w as isize {
+                            continue;
+                        }
+                        let ox = ox as usize;
+                        let y_base = ((ni * h + iy) * w + ix) * c_out;
+                        let o_base = ((ni * out_h + oy) * out_w + ox) * c_out;
+                        for co in 0..c_out {
+                            out[o_base + co] += y[y_base + co];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Some(Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, out_h as u32, out_w as u32, c_out as u32],
+            },
+            out,
+        )
+        .map_err(EvalError::InvalidTensor)?,
+    )))
+}
+
 fn dilate_conv_lhs(
     primitive: Primitive,
     lhs: &TensorValue,
@@ -21833,6 +21980,82 @@ mod tests {
     // (same total useful MACs as ONE undilated conv over the s^2 outputs, i.e. ~conv_on_dilated / s^2),
     // so `conv_on_dilated / 4` is the achievable-time floor for this 2D stride-2 case. Marker for the
     // future polyphase work; JAX direct conv_transpose = 2.04ms on this shape.
+    // Same-invocation A/B: the scatter-GEMM fast path vs the dilate+conv it replaces, on the ledger
+    // shape [1,64,64,16]*[3,3,16,32] lhsdil2 SAME. Both run back-to-back under identical load.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_conv_transpose_fastpath_ab_f64() {
+        use std::time::Instant;
+        let (n, h, w, cin, kh, kw, cout) = (1usize, 64, 64, 16, 3, 3, 32);
+        let lhs_v: Vec<f64> = (0..n * h * w * cin)
+            .map(|i| ((i as f64) * 0.013).sin())
+            .collect();
+        let rhs_v: Vec<f64> = (0..kh * kw * cin * cout)
+            .map(|i| ((i as f64) * 0.017).cos())
+            .collect();
+        let lhs = TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, h as u32, w as u32, cin as u32],
+            },
+            lhs_v,
+        )
+        .unwrap();
+        let rhs = TensorValue::new_f64_values(
+            Shape {
+                dims: vec![kh as u32, kw as u32, cin as u32, cout as u32],
+            },
+            rhs_v,
+        )
+        .unwrap();
+        let mut p = BTreeMap::new();
+        p.insert("padding".to_owned(), "same".to_owned());
+        p.insert("strides".to_owned(), "1".to_owned());
+        p.insert("lhs_dilation".to_owned(), "2,2".to_owned());
+        let lhs_dils = [2usize, 2];
+        let best = |f: &dyn Fn()| -> f64 {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..6 {
+                let t = Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let run_fast = || {
+            std::hint::black_box(
+                try_conv_transpose_scatter_gemm_2d_f64(Primitive::Conv, &lhs, &rhs, &p, &lhs_dils)
+                    .unwrap()
+                    .unwrap(),
+            );
+        };
+        let run_naive = || {
+            let dilated = dilate_conv_lhs(Primitive::Conv, &lhs, &lhs_dils).unwrap();
+            let mut p2 = p.clone();
+            p2.remove("lhs_dilation");
+            std::hint::black_box(
+                eval_conv(
+                    Primitive::Conv,
+                    &[Value::Tensor(dilated), Value::Tensor(rhs.clone())],
+                    &p2,
+                )
+                .unwrap(),
+            );
+        };
+        let naive1 = best(&run_naive);
+        let fast1 = best(&run_fast);
+        let naive2 = best(&run_naive);
+        let fast2 = best(&run_fast);
+        let naive = naive1.min(naive2);
+        let fast = fast1.min(fast2);
+        println!(
+            "[conv_transpose-fastpath 64x64x16 lhsdil2 SAME f64] dilate+conv={:.3}ms scatter-GEMM={:.3}ms ratio={:.2}x | JAX=2.04ms",
+            naive * 1e3,
+            fast * 1e3,
+            naive / fast,
+        );
+    }
+
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_conv_transpose_decompose_f64() {
@@ -21899,6 +22122,69 @@ mod tests {
             conv_on_dilated * 1e3,
             conv_on_dilated * 1e3 / 4.0,
         );
+    }
+
+    // The scatter-GEMM transposed-conv fast path must match the exact dilate+conv reference within
+    // tolerance (conv parity is 1e-10, not bits — the K^2 GEMMs reassociate vs the one dilated conv).
+    // Covers VALID + SAME + SAME_LOWER + explicit padding, strides s=2/3, non-square kernels, multi
+    // channel/batch, and (crucially) K > s where the dilated windows overlap.
+    #[test]
+    fn conv_transpose_scatter_gemm_matches_dilate_conv() {
+        let mk = |dims: Vec<u32>, seed: f64| {
+            let total: usize = dims.iter().map(|&d| d as usize).product();
+            let v: Vec<f64> = (0..total)
+                .map(|i| ((i as f64) * seed).sin() * 1.3 - 0.2)
+                .collect();
+            TensorValue::new_f64_values(Shape { dims }, v).unwrap()
+        };
+        // (n,h,w,cin, kh,kw,cout, sy,sx, padding)
+        let cases: &[(u32, u32, u32, u32, u32, u32, u32, usize, usize, &str)] = &[
+            (1, 8, 8, 3, 3, 3, 4, 2, 2, "same"),
+            (1, 8, 8, 3, 3, 3, 4, 2, 2, "valid"),
+            (2, 6, 7, 4, 2, 2, 5, 2, 2, "same"),
+            (1, 5, 5, 2, 4, 3, 3, 3, 2, "valid"),
+            (1, 5, 6, 2, 3, 4, 3, 2, 3, "same_lower"),
+            (2, 4, 4, 3, 3, 3, 2, 2, 2, "1,0,0,1"), // explicit asymmetric padding (2 pairs)
+            (1, 7, 7, 1, 5, 5, 2, 2, 2, "same"),    // K>s overlap
+        ];
+        for &(n, h, w, cin, kh, kw, cout, sy, sx, pad) in cases {
+            let lhs = mk(vec![n, h, w, cin], 0.013);
+            let rhs = mk(vec![kh, kw, cin, cout], 0.017);
+            let mut p = BTreeMap::new();
+            p.insert("padding".to_owned(), pad.to_owned());
+            p.insert("strides".to_owned(), "1".to_owned());
+            p.insert("lhs_dilation".to_owned(), format!("{sy},{sx}"));
+            let lhs_dils = [sy, sx];
+            // Fast path.
+            let fast =
+                try_conv_transpose_scatter_gemm_2d_f64(Primitive::Conv, &lhs, &rhs, &p, &lhs_dils)
+                    .unwrap()
+                    .expect("fast path should engage for f64 2D ungrouped stride-1");
+            // Reference: dilate the input, then plain conv (lhs_dilation stripped).
+            let dilated = dilate_conv_lhs(Primitive::Conv, &lhs, &lhs_dils).unwrap();
+            let mut p2 = p.clone();
+            p2.remove("lhs_dilation");
+            let refv = eval_conv(
+                Primitive::Conv,
+                &[Value::Tensor(dilated), Value::Tensor(rhs.clone())],
+                &p2,
+            )
+            .unwrap();
+            let ft = fast.as_tensor().unwrap();
+            let rt = refv.as_tensor().unwrap();
+            assert_eq!(
+                ft.shape.dims, rt.shape.dims,
+                "shape mismatch for case {pad} s=({sy},{sx}) k=({kh},{kw})"
+            );
+            let fv = ft.elements.as_f64_slice().unwrap();
+            let rv = rt.elements.as_f64_slice().unwrap();
+            for (i, (&a, &b)) in fv.iter().zip(rv.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() <= 1e-9 * (1.0 + b.abs()),
+                    "value mismatch at {i} for case {pad} s=({sy},{sx}) k=({kh},{kw}): fast={a} ref={b}"
+                );
+            }
+        }
     }
 
     #[test]
