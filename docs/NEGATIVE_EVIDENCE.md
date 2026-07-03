@@ -46,6 +46,20 @@ transpose-sort, but transpose tiling is memory-flagged DO-NOT (`transpose_alread
 all regimes). Genuine hard gap: any axis-0 sort must touch data with column-stride. Benches kept as markers.
 DO-NOT re-attempt the naive strided column-gather; the lever is a blocked transpose (separately gated) or nothing.
 
+## 2026-07-03 - NEGATIVE: native-f64 SIMD xlogy is a NO-WIN (0.81x) — glibc ln fast + 2-tensor BW-bound (TealMarten)
+
+Applied the atan2-winning filter (opaque-libm binary op, poly wins no-FMA) to `xlogy(x,y)=x·ln(y)` (cross-
+entropy/KL hot path; uses only `log`, not `exp`). Added `xlogy_f64x8` (`select(x==0,0, x·log_f64x8(y))`;
+`log_f64x8` already recomputes y<=0/inf/NaN lanes bit-exact) via `eval_binary_simd_dense_f64_native`.
+Tolerance-verified (maxrel < 1e-12). But same-invocation A/B (`eval/xlogy_2m_f64`, `FJ_XLOGY_SCALAR`):
+scalar **4.17ms vs SIMD 5.16ms = 0.81x (SLOWER)**. Reverted. Why atan2 won but xlogy lost — the filter
+needs a SECOND condition: (a) glibc `f64::ln` is FAST/well-optimized (unlike the SLOW glibc `atan2`), so
+Cephes `log_f64x8` doesn't beat it; and (b) xlogy reads TWO input tensors (48MB @ 2M) so it's BW-bound —
+the SIMD compute win is masked, while atan2's heavy per-element compute (atan poly + div + quadrant) stays
+compute-bound. REFINED RULE: hand-SIMD an opaque-libm op ONLY when the scalar libm fn is genuinely SLOW
+(atan2/tan/pow-via-exp) AND the op is compute-bound (not masked by multi-tensor BW). Fast-libm (ln) or
+light-compute binary ops stay scalar. Kept the bench as a marker. full fj-lax lib unaffected (revert).
+
 ## 2026-07-03 - WIRED WIN (1.5-1.9x): native-f64 SIMD atan2 (opaque libm → f64x8 poly) (TealMarten)
 
 Applied the rsqrt lesson (hand-SIMD ONLY opaque libm calls, not autovectorizable hardware ops) to find a

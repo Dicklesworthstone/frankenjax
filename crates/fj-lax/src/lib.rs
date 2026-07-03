@@ -648,7 +648,9 @@ fn eval_primitive_inner(
             )
         }
         Primitive::XLogY => {
-            // xlogy(x, y) = x * log(y), with 0 * log(anything) = 0
+            // xlogy(x, y) = x * log(y), with 0 * log(anything) = 0. NOTE (TealMarten 2026-07-03): a
+            // native-f64 SIMD path (x·log_f64x8(y)) was a NO-WIN (0.81x) — glibc f64::ln is fast AND
+            // xlogy reads TWO input tensors (BW-bound), unlike atan2 (heavy compute + slow libm atan2).
             eval_binary_elementwise(
                 primitive,
                 inputs,

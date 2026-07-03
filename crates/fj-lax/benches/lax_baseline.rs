@@ -3503,6 +3503,23 @@ fn bench_atan2_8m_f64(c: &mut Criterion) {
     });
 }
 
+// f64 xlogy = x*ln(y) (cross-entropy/KL hot path) — native-f64 SIMD (x*log_f64x8(y)) vs the scalar
+// libm-ln map (env-toggle FJ_XLOGY_SCALAR). y.ln() is opaque libm (no autovec); log wins no-FMA.
+fn bench_xlogy_2m_f64(c: &mut Criterion) {
+    let n = 1usize << 21;
+    let xs: Vec<f64> = (0..n).map(|i| (i % 50000) as f64 * 0.0001 + 0.1).collect();
+    let ys: Vec<f64> = (0..n).map(|i| (i % 40000) as f64 * 0.0001 + 0.5).collect();
+    let sh = Shape {
+        dims: vec![n as u32],
+    };
+    let xt = Value::Tensor(TensorValue::new_f64_values(sh.clone(), xs).unwrap());
+    let yt = Value::Tensor(TensorValue::new_f64_values(sh, ys).unwrap());
+    let p = BTreeMap::new();
+    c.bench_function("eval/xlogy_2m_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::XLogY, &[xt.clone(), yt.clone()], &p))
+    });
+}
+
 fn bench_sort_64k_i64(c: &mut Criterion) {
     let data: Vec<i64> = (0..LARGE_ELEMENTWISE_LEN as i64)
         .map(|i| (i.wrapping_mul(2_654_435_761)).rem_euclid(1_000_003) - 500_000)
@@ -8531,6 +8548,7 @@ criterion_group!(
     bench_assoc_scan_bf16_batched,
     bench_rsqrt_8m_f64,
     bench_atan2_8m_f64,
+    bench_xlogy_2m_f64,
     bench_sort_argsort_4m_f64,
     bench_half_f32_sort_vs_jax,
     bench_complex_sort_4m_vsjax,
