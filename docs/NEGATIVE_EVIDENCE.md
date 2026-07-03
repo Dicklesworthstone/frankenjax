@@ -62,6 +62,20 @@ benches `nn/scalar_broadcast_fill_4m_f64`, `nn/bias_broadcast_4096x1024_f64`, al
   already delivers 6.4ms). LESSON (again): measure sibling sites before assuming a shared mis-gate — 2 of
   3 here were already fast.
 
+## 2026-07-02 - WIN (recorded): fj threaded threefry uniform 8.5x FASTER than JAX (normal 1.25x, erfinv-bound) (TealMarten)
+
+RNG generation vs JAX 0.10.2 x64 (jaxvenv, 4M f64): JAX threefry on CPU is slow (uniform 60.6ms,
+normal 54.3ms). fj threads counter-based threefry bit-identically (new benches
+`random/{uniform,normal}_4m_f64_vsjax`):
+- **uniform 4M f64: fj 7.17ms vs JAX 60.6ms = 8.5x FASTER** — clean win (threaded threefry2x32 + mantissa
+  fill; bit-identical to serial).
+- **normal 4M f64: fj 43.5ms vs JAX 54.3ms = 1.25x FASTER** — marginal: normal is dominated by the
+  per-element `erf_inv` Newton solve (compute-bound scalar), not the threefry, so threading the bit-gen
+  helps little. NOT a headline; recorded for honesty.
+Uniform/randint-class (mantissa-fill from threefry bits) is the RNG win; normal/gumbel/laplace are
+gated by their transcendental transform. Threading-based here (fj threads, JAX's CPU threefry doesn't
+parallelize as well), so uniform's 8.5x may vary with host contention — but it held clean at measure time.
+
 ## 2026-07-02 - WIN (recorded): fj eigh/qr 5-16x FASTER than JAX (XLA CPU uses iterative Jacobi/QR) (TealMarten)
 
 A NEW win family beyond order-statistics: matrix DECOMPOSITIONS. JAX 0.10.2 x64 uses ITERATIVE

@@ -162,6 +162,19 @@ fn bench_random_normal_1m(c: &mut Criterion) {
     });
 }
 
+// RNG generation vs JAX 0.10.2 x64 (jaxvenv, 2026-07-02, 4M f64): uniform 60.6ms,
+// normal 54.3ms. fj threads counter-based threefry (bit-identical to serial).
+fn bench_random_4m_vs_jax(c: &mut Criterion) {
+    let n = 1usize << 22;
+    let key = random_key(0x1234_5678_9ABC_DEF0);
+    c.bench_function("random/uniform_4m_f64_vsjax", |b| {
+        b.iter(|| black_box(random_uniform(key, n, -1.0, 1.0)));
+    });
+    c.bench_function("random/normal_4m_f64_vsjax", |b| {
+        b.iter(|| black_box(random_normal(key, n)));
+    });
+}
+
 fn bench_add_scalar(c: &mut Criterion) {
     let inputs = [Value::scalar_i64(42), Value::scalar_i64(17)];
     let p = no_params();
@@ -7674,6 +7687,7 @@ criterion_group!(
     benches,
     bench_dispatch_overhead,
     bench_random_uniform_1m,
+    bench_random_4m_vs_jax,
     bench_random_normal_1m,
     bench_add_scalar,
     bench_add_1k_vector,
