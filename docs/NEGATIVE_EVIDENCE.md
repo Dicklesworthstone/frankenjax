@@ -46,6 +46,18 @@ transpose-sort, but transpose tiling is memory-flagged DO-NOT (`transpose_alread
 all regimes). Genuine hard gap: any axis-0 sort must touch data with column-stride. Benches kept as markers.
 DO-NOT re-attempt the naive strided column-gather; the lever is a blocked transpose (separately gated) or nothing.
 
+## 2026-07-03 - MARGINAL/FILED: native-f64 SIMD tan = sin/cos only 1.10x (double reduction); single-reduction filed (TealMarten)
+
+f64 tan general range (|x|>π/4) falls to scalar `f64::tan`; f32 has SIMD (`tan_f32x8`). Fits the sharp
+filter (opaque libm, single-tensor compute-bound). Added `tan_f64x8 = sin_f64x8(x)/cos_f64x8(x)` (reuses
+validated kernels, consistent reduction; tolerance-verified maxrel < 1e-11 over the general range).
+Same-invocation A/B (`eval/tan_2m_f64`, `FJ_TAN_SCALAR`, tight variance): scalar **18.6ms vs SIMD 16.9ms
+= only 1.10x**. Root cause: the sin/cos RATIO does TWO argument reductions vs glibc tan's ONE, and glibc
+tan is well-optimized (~9ns/elem threaded). Below the informal ~2x transcendental bar; reverted (kept the
+bench as a marker + a DO-NOT-this-way comment). FILED as the real lever: a SINGLE-reduction `tan_f64x8`
+(one `sincos_reduce_f64x8` → both sin/cos polys from the same (j,z) → divide) ~halves the work, est.
+~1.5-2x — a focused future session (octant-selection logic + accuracy near poles; risk warrants care).
+
 ## 2026-07-03 - NEGATIVE: native-f64 SIMD xlogy is a NO-WIN (0.81x) — glibc ln fast + 2-tensor BW-bound (TealMarten)
 
 Applied the atan2-winning filter (opaque-libm binary op, poly wins no-FMA) to `xlogy(x,y)=x·ln(y)` (cross-

@@ -7220,6 +7220,10 @@ pub(crate) fn eval_tan(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
         {
             return Ok(value);
         }
+        // NOTE (TealMarten 2026-07-03): a native-f64 SIMD tan = sin_f64x8/cos_f64x8 was only 1.10x over
+        // scalar f64::tan — the sin/cos RATIO does TWO argument reductions vs glibc tan's ONE, and glibc
+        // tan is well-optimized (~9ns/elem threaded). A single-reduction tan_f64x8 (one sincos_reduce_f64x8
+        // + both polys + divide) is the real lever (est. ~1.5-2x) — FILED, not done (octant logic + risk).
         eval_unary_elementwise_parallel(primitive, inputs, f64::tan)
     }
 }
@@ -19275,7 +19279,6 @@ mod tests {
         assert!(maxerr < 1e-9, "atan2 f64 native maxerr={maxerr:e}");
     }
 
-    // atan2 f32 vs JAX (measured JAX 0.10.x CPU f32 16M = 31.6ms — under-parallelized like atan).
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_atan2_f32_vs_jax() {

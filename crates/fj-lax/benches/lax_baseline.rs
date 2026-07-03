@@ -3520,6 +3520,21 @@ fn bench_xlogy_2m_f64(c: &mut Criterion) {
     });
 }
 
+// f64 tan (general range |x|>π/4) — native-f64 SIMD (sin/cos) vs scalar libm f64::tan
+// (env-toggle FJ_TAN_SCALAR). f64::tan is opaque + expensive (reduction+sin/cos+div); single-tensor.
+fn bench_tan_2m_f64(c: &mut Criterion) {
+    let n = 1usize << 21;
+    let xs: Vec<f64> = (0..n).map(|i| (i as f64) * 0.373 + 0.8).collect();
+    let sh = Shape {
+        dims: vec![n as u32],
+    };
+    let xt = Value::Tensor(TensorValue::new_f64_values(sh, xs).unwrap());
+    let p = BTreeMap::new();
+    c.bench_function("eval/tan_2m_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Tan, std::slice::from_ref(&xt), &p))
+    });
+}
+
 fn bench_sort_64k_i64(c: &mut Criterion) {
     let data: Vec<i64> = (0..LARGE_ELEMENTWISE_LEN as i64)
         .map(|i| (i.wrapping_mul(2_654_435_761)).rem_euclid(1_000_003) - 500_000)
@@ -8549,6 +8564,7 @@ criterion_group!(
     bench_rsqrt_8m_f64,
     bench_atan2_8m_f64,
     bench_xlogy_2m_f64,
+    bench_tan_2m_f64,
     bench_sort_argsort_4m_f64,
     bench_half_f32_sort_vs_jax,
     bench_complex_sort_4m_vsjax,
