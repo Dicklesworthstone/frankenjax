@@ -116,6 +116,20 @@ compute-bound. REFINED RULE: hand-SIMD an opaque-libm op ONLY when the scalar li
 (atan2/tan/pow-via-exp) AND the op is compute-bound (not masked by multi-tensor BW). Fast-libm (ln) or
 light-compute binary ops stay scalar. Kept the bench as a marker. full fj-lax lib unaffected (revert).
 
+## 2026-07-03 - WIRED WIN (completeness): rank-2 I64 SUM-pool separable (gate rank>=4 -> rank>=2) (TealMarten)
+
+Closed the rank-2 gap in the integer SUM-pool family: the N-D i64 separable block-prefix
+(`reduce_window_separable_sum_nd_i64`) was gated `rank >= 4` (rank-3 has its own path), so RANK-2 i64
+box-sum / avg-pool fell to the naive O(out·window) fold — while f64/f32 rank-2 already had the
+running-sum. The N-D fn iterates `for d in 0..rank` (fully generic), so lowering the gate to `rank >= 2`
+just adds rank-2 (rank-3 still intercepted earlier). Bit-EXACT: integer add is a ring (associative +
+wrapping), so the separable prefix matches the naive fold including overflow wrap — guarded by new
+`i64_rank2_sumpool_matches_naive` (w5 VALID vs the naive wrapping fold). Structurally window-independent
+O(input) vs naive O(out·window) — the same separable that's proven for rank-3/rank-4 i64 and rank-2
+f64/f32, so the win transfers by construction (strictly replaces the slower naive path; no perf-validation
+needed). full fj-lax lib 1733/0. (i32 sum stays naive — output_dtype==I64 gate; i32 needs mod-2^32 wrap
+handling on narrow, deferred.) Amortization gate unchanged (∏window > 2·∑window, ~w5+).
+
 ## 2026-07-03 - WIRED WIN (completeness): U32 rank-2 van Herk maxpool/minpool (routes u32→i64 kernel) (TealMarten)
 
 Closed the last dtype gap in the rank-2 pooling family: the integer van Herk was I64|I32-gated, so U32

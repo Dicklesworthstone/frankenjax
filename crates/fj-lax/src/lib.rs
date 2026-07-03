@@ -10169,13 +10169,16 @@ fn eval_reduce_window(
         }
     }
 
-    // Rank>=4 I64 SUM: N-D separable block-prefix (the integer analogue of the rank>=4 float
-    // path). Bit-identical (integer ring); covers integer volumetric pooling at any stride/pad.
+    // Rank>=2 I64 SUM: N-D separable block-prefix (the integer analogue of the float sum path).
+    // Bit-identical (integer add is a ring — associative + wrapping, so the separable prefix matches the
+    // naive fold exactly, incl. overflow wrap); covers integer 2-D box-sum / volumetric pooling at any
+    // stride/pad. Rank-3 has its own dedicated path above (fires first); this now also catches RANK-2,
+    // which otherwise fell to the naive O(out·window) fold (f64/f32 rank-2 already had the running-sum).
     if no_base_dilation
         && no_window_dilation
         && tensor.dtype == fj_core::DType::I64
         && output_dtype == fj_core::DType::I64
-        && rank >= 4
+        && rank >= 2
         && reduce_window_sum_like(reduce_op)
         && window_dims.iter().product::<usize>() > 2 * window_dims.iter().sum::<usize>()
         && let Some(src) = tensor.elements.as_i64_slice()
@@ -13545,6 +13548,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    // Rank-2 I64 SUM-pool (N-D separable prefix, gate lowered to rank>=2) must be BIT-EXACT to the naive
+    // fold — integer add is a ring, so the running-prefix (incl. wrap) matches. Large window (w5 > gate).
+    #[test]
+    fn i64_rank2_sumpool_matches_naive() {
+        let (rows, cols) = (40usize, 44usize);
+        let src: Vec<i64> = (0..rows * cols)
+            .map(|i| ((i as i64).wrapping_mul(2_654_435_761)) % 1_000_003 - 500_000)
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                src.clone(),
+            )
+            .unwrap(),
+        );
+        let (wr, wc) = (5usize, 5usize); // 25 > 2*10 -> engages the separable path
+        let mut p = std::collections::BTreeMap::new();
+        p.insert("reduce_op".to_owned(), "sum".to_owned());
+        p.insert("window_dimensions".to_owned(), format!("{wr},{wc}"));
+        p.insert("window_strides".to_owned(), "1,1".to_owned());
+        p.insert("padding".to_owned(), "VALID".to_owned());
+        let got = match eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&tensor), &p)
+            .unwrap()
+        {
+            Value::Tensor(t) => t.elements.as_i64_slice().unwrap().to_vec(),
+            _ => panic!(),
+        };
+        let (out_rows, out_cols) = (rows - wr + 1, cols - wc + 1);
+        let mut want = Vec::with_capacity(out_rows * out_cols);
+        for orr in 0..out_rows {
+            for occ in 0..out_cols {
+                let mut acc = 0i64;
+                for dr in 0..wr {
+                    for dc in 0..wc {
+                        acc = acc.wrapping_add(src[(orr + dr) * cols + (occ + dc)]);
+                    }
+                }
+                want.push(acc);
+            }
+        }
+        assert_eq!(got, want, "i64 rank-2 sumpool diverges from naive");
     }
 
     // U32 rank-2 maxpool/minpool (routes u32 -> i64 van Herk -> u32) must match the naive u32 fold,
