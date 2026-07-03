@@ -4585,6 +4585,64 @@ fn bench_topk_64k_k128_f64_vec(c: &mut Criterion) {
 // top_k vs JAX 0.10.2 x64 (jaxvenv, 2026-07-02): JAX does a FULL SORT regardless of k
 // (top_k 4M k=10 = 1135ms, 4096x1024 k=5 = 519ms). If fj uses partial selection this
 // is a large win on a common ML op (sampling/retrieval).
+// f16 top_k + sort vs JAX 0.10.2 x64 (jaxvenv, 2026-07-03): f16 top_k [4096,1024] k50
+// = 510.5ms, f16 sort 4M = 956.7ms (both slow full sort). fj half-radix / partial-select.
+fn bench_f16_orderstats_vs_jax(c: &mut Criterion) {
+    let (rows, cols) = (4096usize, 1024usize);
+    let mk_f16 = |vals: Vec<f64>| {
+        let bits: Vec<u16> = vals
+            .iter()
+            .map(|&v| match Literal::from_f16_f64(v) {
+                Literal::F16Bits(b) => b,
+                _ => 0,
+            })
+            .collect();
+        bits
+    };
+    let mbits = mk_f16(
+        (0..rows * cols)
+            .map(|i| ((i as f64) * 1e-3).sin())
+            .collect(),
+    );
+    let mat = Value::Tensor(
+        TensorValue::new_half_float_values(
+            DType::F16,
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            mbits,
+        )
+        .unwrap(),
+    );
+    let n = 1usize << 22;
+    let vbits = mk_f16(
+        (0..n)
+            .map(|i| ((i as f64) * 1.000_173).sin() * 1e3)
+            .collect(),
+    );
+    let vec1 = Value::Tensor(
+        TensorValue::new_half_float_values(
+            DType::F16,
+            Shape {
+                dims: vec![n as u32],
+            },
+            vbits,
+        )
+        .unwrap(),
+    );
+    let mut pk = BTreeMap::new();
+    pk.insert("k".to_owned(), "50".to_owned());
+    c.bench_function("eval/topk_4096x1024_k50_f16_vsjax", |b| {
+        b.iter(|| eval_primitive_multi(Primitive::TopK, std::slice::from_ref(&mat), &pk))
+    });
+    let mut ps = BTreeMap::new();
+    ps.insert("dimension".to_owned(), "0".to_owned());
+    ps.insert("descending".to_owned(), "false".to_owned());
+    c.bench_function("eval/sort_4m_f16_vsjax", |b| {
+        b.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&vec1), &ps))
+    });
+}
+
 // f32/bf16 per-row top_k (LLM top-k sampling — the real ML use) vs JAX 0.10.2 x64
 // (jaxvenv, 2026-07-03): f32 top_k [4096,1024] k50 = 39.3ms, bf16 = 577.4ms (bf16
 // falls to full sort per row). fj uses per-row partial selection.
@@ -8332,6 +8390,7 @@ criterion_group!(
     bench_sort_64k_u64_literal_reference,
     bench_sort_calib_reduce_64k_i64,
     bench_topk_64k_k128_f64_vec,
+    bench_f16_orderstats_vs_jax,
     bench_half_topk_vs_jax,
     bench_topk_vs_jax,
     bench_topk_64k_k128_f32,

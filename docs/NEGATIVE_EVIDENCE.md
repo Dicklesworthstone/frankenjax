@@ -301,6 +301,10 @@ partial selection (new benches `eval/topk_4096x1024_k50_{f32,bf16}_vsjax`):
   still full-sort-ish).
 Highest-relevance order-statistics win yet (bf16 top-k sampling runs every decode step). Extends the
 top_k map: 1D f64 18.7x, per-row f64 k5 205x, per-row bf16 k50 232x, per-row f32 k50 16.5x.
+- **f16 top_k [4096,1024] k50: fj 3.00ms vs JAX 510.5ms = 170x FASTER; f16 sort 4M: fj 170.6ms vs JAX
+  956.7ms = 5.6x** (`eval/topk_4096x1024_k50_f16_vsjax`, `eval/sort_4m_f16_vsjax`). Half-dtype order-stats
+  now COMPLETE: bf16 top-k 232x/sort 6.9x, f16 top-k 170x/sort 5.6x — both ML half-precision dtypes
+  decisively win JAX's full-sort weakness.
 
 ## 2026-07-02 - WIN (recorded, BIG): fj top_k 18.7x (1D) / 205x (per-row) FASTER than JAX (TealMarten)
 
