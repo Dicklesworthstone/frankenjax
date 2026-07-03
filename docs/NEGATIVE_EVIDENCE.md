@@ -249,13 +249,18 @@ v_1=[i,0], ⟨v_0,v_1⟩=i≠0, reconstruction FAILS). Fix: complex Gram-Schmidt
 group. That degeneracy handling is the only intricate part; the rest reuses real eigh. Multi-turn/careful
 (parity-absolute), NOT rushed — but this is the concrete de-risked path, superseding the Householder plan.
 
-## 2026-07-03 - WIN (modest) + BOUNDARY: complex sort 1.38x FASTER (comparison-based, not the radix crush) (TealMarten)
+## 2026-07-03 - WIN: complex64 sort 8.84x FASTER (packed radix); complex128 only 1.38x (comparison) — a fixable fj gap (TealMarten)
 
-`eval/complex_sort_4m_vsjax`: fj **872.7ms vs JAX 1207.9ms = 1.38x FASTER**. MODEST (the exception to the
-6-42x real/int sort wins): complex sort uses a LEXICOGRAPHIC (real, imag) COMPARISON sort (complex keys
-don't radix cleanly), same algorithm class as JAX's — so fj is only slightly faster, not the radix crush.
-Recorded honestly: the big sort wins come from RADIX (real/int/half); complex falls back to comparison for
-both, hence near-parity. Also NORMS are a LOSS/parity (JAX matrix norms 0.2-0.62ms — threaded reductions
+Complex sort splits by PRECISION:
+- **complex64 sort 4M: fj 136.7ms vs JAX 1207.4ms = 8.84x FASTER** (`eval/complex64_sort_4m_vsjax`) — fj
+  packs both f32 total-order component keys into ONE u64 (`real_key<<32 | imag_key`) and single-pass
+  radix-sorts it (bijection over finite f32), crushing JAX's comparison full-sort.
+- **complex128 sort 4M: fj 872.7ms vs JAX 1207.9ms = only 1.38x** (`eval/complex_sort_4m_vsjax`) — two f64
+  components DON'T pack into one u64, so fj falls to the lexicographic COMPARISON sort (like JAX) = modest.
+FIXABLE fj GAP (filed): a two-pass STABLE f64 radix (sort by imag then real, carrying the complex payload
+via key-value radix — fj has `sort_key_val_dense_uniform`) would give complex128 sort the same ~6-9x radix
+crush complex64 gets. Niche (complex128 sorting is rare) but a clear "fj uses comparison where radix would
+win" case. The big sort wins are RADIX (real/int/half/complex64); only complex128 falls back. Also NORMS are a LOSS/parity (JAX matrix norms 0.2-0.62ms — threaded reductions
 on idle cores; fj's memory-bound norm reduces lose on the contended host, same class as the reduction
 losses — NOT a win, not recorded as one).
 

@@ -3589,6 +3589,25 @@ fn bench_complex_sort_4m_vsjax(c: &mut Criterion) {
     c.bench_function("eval/complex_sort_4m_vsjax", |b| {
         b.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &p))
     });
+    // Complex64: JAX complex64 sort 4M = 1207.4ms; fj packs (real,imag) f32 total-order
+    // keys into ONE u64 radix key (single-pass), unlike complex128 (comparison).
+    let n = 1usize << 22;
+    let c64: Vec<(f64, f64)> = (0..n)
+        .map(|i| (((i as f64) * 0.017).sin(), ((i as f64) * 0.031).cos()))
+        .collect();
+    let c64in = Value::Tensor(
+        TensorValue::new_complex_values(
+            DType::Complex64,
+            Shape {
+                dims: vec![n as u32],
+            },
+            c64,
+        )
+        .unwrap(),
+    );
+    c.bench_function("eval/complex64_sort_4m_vsjax", |b| {
+        b.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&c64in), &p))
+    });
 }
 
 fn bench_int64_sort_vs_jax(c: &mut Criterion) {
