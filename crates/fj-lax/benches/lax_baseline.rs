@@ -1782,6 +1782,29 @@ fn bench_eigh_qr_vs_jax(c: &mut Criterion) {
     }
 }
 
+// Complex SVD vs JAX 0.10.2 x64 (jaxvenv, 2026-07-03): csvd_128 = 263ms, csvd_256 =
+// 1674ms (iterative complex SVD on CPU).
+fn bench_complex_svd_128_vs_jax(c: &mut Criterion) {
+    let n = 128usize;
+    let mut elems: Vec<Literal> = Vec::with_capacity(n * n);
+    for idx in 0..n * n {
+        let re = (((idx * 2654435761) % 1000019) as f64) * 1e-3 - 500.0;
+        let im = (((idx * 40503 + 7) % 1000003) as f64) * 1e-3 - 500.0;
+        elems.push(Literal::from_complex128(re, im));
+    }
+    let m = Value::Tensor(TensorValue {
+        dtype: DType::Complex128,
+        shape: Shape {
+            dims: vec![n as u32, n as u32],
+        },
+        elements: elems.into(),
+    });
+    let p = no_params();
+    c.bench_function("linalg/complex_svd_128x128_vsjax", |b| {
+        b.iter(|| eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&m), &p))
+    });
+}
+
 // Complex non-symmetric eig vs JAX 0.10.2 x64 (jaxvenv, 2026-07-03): ceig_256 =
 // 2709.8ms (iterative complex Schur — catastrophic). fj uses Francis + complex-QR Givens.
 fn bench_complex_eig_vs_jax(c: &mut Criterion) {
@@ -8088,6 +8111,7 @@ criterion_group!(
     bench_dot_256_matrix_f64,
     bench_eig_48,
     bench_eigh_qr_vs_jax,
+    bench_complex_svd_128_vs_jax,
     bench_complex_eig_vs_jax,
     bench_complex_qr_vs_jax,
     bench_complex_eigh_vs_jax,

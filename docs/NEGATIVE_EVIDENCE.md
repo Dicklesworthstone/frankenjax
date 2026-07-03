@@ -208,6 +208,9 @@ x_f64_vsjax`):
   = 1.54x**.
 - **COMPLEX EIG (non-symmetric): fj WINS BIG** — `linalg/complex_eig_256x256_vsjax` fj **237.5ms vs JAX
   2709.8ms (2.7s!) = 11.4x FASTER** (fj Francis + complex-QR Givens vs JAX iterative complex Schur).
+- **COMPLEX SVD: fj WINS** — `linalg/complex_svd_128x128_vsjax` fj **77.4ms vs JAX 263ms = 3.4x FASTER**
+  (JAX complex SVD is iterative; fj's is already competitive — no fix needed, unlike eigh). So the ENTIRE
+  complex-decomposition family now WINS: qr 3.7x, eig 11.4x, eigh 5.4x (fixed 2026-07-03), svd 3.4x.
   DIAGNOSIS CONFIRMED: complex QR (3.7x) AND complex eig (11.4x) BOTH win because they use the fast
   Householder/Schur family; complex EIGH is the LONE complex-decomposition LOSS (10x) precisely because
   it uses slow complex JACOBI. So the complex-eigh fix is well-motivated + de-risked: "port eigh to
