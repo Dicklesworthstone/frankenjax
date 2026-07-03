@@ -130,6 +130,22 @@ over the 4x-larger dilated input=5.42ms (the bulk).** Two decisive findings for 
   + Value/tensor construction + a second im2col build — a separate smaller ~28% overhead lever, secondary to
   the zero-multiply waste.) Bench committed as a permanent marker; no production code changed this pass.
 
+## 2026-07-03 - UNBLOCKED (correctness model resolved): conv_transpose polyphase is LEGAL — conv parity is TOLERANCE, not bit-exact (TealMarten)
+
+Resolved the open correctness question that made the conv_transpose polyphase look "risky" (the flagged
+hazard was: would s^2 sub-convs, reassociating the GEMM vs the one dilated conv, break a bit-exact golden?).
+Checked the goldens: `crates/fj-conformance/tests/conv_oracle.rs` — INCLUDING the lhs_dilation/transposed
+case `oracle_conv_1d_lhs_dilation_transposed` — asserts TOLERANCE (`(v - expected).abs() < 1e-10`)
+throughout, NOT bits. So conv (forward + transposed) JAX-parity is tolerance, same class as dot/linalg/VJP.
+Polyphase reassociation yields ~1e-13 relative error, WELL within 1e-10 → the rewrite is LEGAL. The ONLY
+bit-exact assertion anywhere is the fj-INTERNAL consistency test
+`conv_lhs_dilation_matches_explicitly_dilated_input` (compares the lhs_dilation path to a hand-built dilated
+conv — both through the SAME GEMM, so trivially bit-equal today); when the polyphase lands it must be relaxed
+to a 1e-10 tolerance (or kept pointing at the dilate+conv FALLBACK path). This removes the bit-exactness
+fear that dominated the risk. conv_transpose lever is now FULLY de-risked: gap 8.6ms vs JAX 2.04ms (5.3x) →
+bottleneck = conv-on-zeros 5.4ms (not the 0.79ms dilate) → polyphase ceiling 1.35ms (BEATS JAX) → and the
+reassociation is LEGAL (tolerance parity). Ready for a dedicated implementation session; no code changed.
+
 ## 2026-07-03 - NEGATIVE (DO-NOT): native-f64 SIMD tan is a NO-WIN — glibc tan too fast (both approaches tried) (TealMarten)
 
 UPDATE: the filed single-reduction lever was executed and ALSO failed. First a sin/cos-RATIO tan = 1.10x
