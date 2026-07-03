@@ -62,7 +62,22 @@ benches `nn/scalar_broadcast_fill_4m_f64`, `nn/bias_broadcast_4096x1024_f64`, al
   already delivers 6.4ms). LESSON (again): measure sibling sites before assuming a shared mis-gate — 2 of
   3 here were already fast.
 
-## 2026-07-02 - WIN (recorded): fj cumsum-axis1 1.55x + cummax 2.0x FASTER than JAX (TealMarten)
+## 2026-07-02 - NEGATIVE/BOUNDARY: the "decomposed softmax 34x fusion" is a PHANTOM — no confirmed user path produces it (TealMarten)
+
+Definitively closing the softmax-fusion lever I'd deferred to across several passes. I'd measured a
+hand-constructed decomposed-softmax jaxpr (reduce_max->broadcast->sub->exp->reduce_sum->broadcast->div)
+at 302ms vs the fused `nn::softmax_2d` 9ms and called it a 34x interpreter-wiring opportunity. But there
+is **NO softmax ProgramSpec** (fj-core builds only single-primitive specs: `LaxReduceMax` etc.), **NO
+fj-api nn functions**, and softmax exists ONLY as the fj-lax `nn::softmax`/`softmax_2d` HELPER (fast,
+tolerance-tested directly). `softmax_custom_jvp` in fj-py is just a config toggle. So NO confirmed
+frankenjax user path emits that decomposed jaxpr — an interpreter fusion peephole would optimize a jaxpr
+nobody produces. The 34x is not a reachable win. DO-NOT build the `try_eval_top_level_softmax` peephole
+without FIRST confirming a real decomposed-softmax jaxpr source (would require a Python jnp tracer path
+that does not appear to exist in this surface). Supersedes the earlier "softmax fusion filed as next
+lever" notes — it is NOT a lever until a real decomposed path is shown. The reachable ML-hotpath softmax
+is already the fast helper.
+
+## 2026-07-02 - WIN (recorded): fj cumulative family beats JAX — cumsum-axis1 1.55x, cumprod-axis1 1.97x, cummax 2.0x, cummin 2.35x (TealMarten)
 
 Data-dependent op sweep vs JAX 0.10.2 x64 (jaxvenv, `ddep_sweep.py`) surfaced cumulative scans as fj
 wins (JAX median/percentile 4M = ~1002ms via full sort is pathological but jnp-level, not an fj
@@ -70,8 +85,10 @@ primitive — noted, not reachable). Measured at scale (new `eval/cumsum_axis1_4
 `eval/cummax_4m_f64`):
 - **cumsum axis1 4096x1024 f64: fj 7.88ms vs JAX 12.19ms = 1.55x FASTER** — fj threads the 4096
   independent row-scans (`scan_contiguous_lines_to_vec`, gate 262K, bit-identical per line).
+- **cumprod axis1 4096x1024 f64: fj 8.01ms vs JAX 15.78ms = 1.97x FASTER** — same row-parallel line scan.
 - **cummax 4M f64: fj 7.91ms vs JAX 15.88ms = 2.0x FASTER** — 1D cummax uses fj's associative all-cores
   parallel-prefix (`parallel_cummax_f64`, bit-identical fwd/rev incl NaN).
+- **cummin 4M f64: fj 7.93ms vs JAX 18.64ms = 2.35x FASTER** — associative parallel-prefix sibling.
 Both already-shipped kernels; this RECORDS the vs-JAX ratios at production scale + pins them with benches.
 Adds to the order-statistics/scan domination map (sort 6.1x, argsort 4.3x, argmax 1.76x). Note: 1D float
 cumsum is NOT here — it's memory-bound + worker-confounded (see cumsum-worker-confound ledger); the WINS

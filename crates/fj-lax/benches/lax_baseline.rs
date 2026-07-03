@@ -3214,6 +3214,12 @@ fn bench_cumulative_vs_jax(c: &mut Criterion) {
     c.bench_function("eval/cummax_4m_f64", |b| {
         b.iter(|| eval_primitive(Primitive::Cummax, std::slice::from_ref(&vec1), &ax0))
     });
+    c.bench_function("eval/cummin_4m_f64", |b| {
+        b.iter(|| eval_primitive(Primitive::Cummin, std::slice::from_ref(&vec1), &ax0))
+    });
+    c.bench_function("eval/cumprod_axis1_4096x1024_f64", |b| {
+        b.iter(|| eval_primitive(Primitive::Cumprod, std::slice::from_ref(&mat), &ax1))
+    });
 }
 
 // ConvertElementType over a 64k dense f64 tensor: dense fast path (pass103,
