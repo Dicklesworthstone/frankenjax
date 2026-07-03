@@ -355,6 +355,27 @@ COVERED for large windows; my "rank-2 sum has no separable path" was wrong. ACCU
 Net: the important 4D-NHWC CNN pooling is covered; rank-2 plain-matrix MAX is the clean uncovered shape.
 Still filed (not fixed — actively-worked van-Herk area, and rank-2 plain pooling is a niche layout).
 
+## 2026-07-03 - WIRED WIN (2.99x internal; 16.5x JAX LOSS -> 5.4x): block-structured van Herk for rank-2 f64 maxpool/minpool (TealMarten)
+
+Followed up the rank-2 maxpool gap below. The gap was NOT the naive O(out·win²) fold — the deque
+(`reduce_window_separable_maxmin`, gated `win_total > 2·win_sum`) already intercepts large f64/f32/half
+windows (lib.rs ~8913) BEFORE the rank-2 direct loop. So maxpool was O(input) already; the 16.5x loss is
+the deque being SCALAR + branchy (per-element push/pop) vs XLA's vectorized window reduction. Added
+`separable_reduce_window_rank2_maxmin_f64`: BLOCK-STRUCTURED van Herk / Gil-Werman — per row a block
+prefix-extremum + block suffix-extremum over blocks of `window_cols` (iterated `step_by(window)`, NO
+per-element modulo — the modulo is exactly what sank the naive 4D-kernel-for-rank-2 attempt filed below),
+then `hmax[oc] = op(suf[oc], pref[oc+wc-1])`; the vertical pass is the same over rows (blocks of
+`window_rows`) and SIMD-vectorizes (`f64x8` simd_max/min) across `out_cols` — the vectorization the
+scalar deque cannot express. Hoisted ABOVE the deque for rank-2 f64 max/min; finite-gated so
+non-finite / small windows fall through to the deque unchanged.
+
+HONEST A/B (`eval/maxpool2d_1024x1024_w7s1_valid_f64`, dense f64, same binary, env-toggled): deque
+20.58ms -> van Herk **6.88ms = 2.99x**. vs JAX 1.28ms this narrows the loss from 16.5x to **5.4x** — a
+real 3x speedup of our code, NOT a JAX win (XLA maxpool is deeply SIMD; still ahead). Bit-identical for
+finite (max/min associative + idempotent; new `van_herk_rank2_maxmin_matches_naive` asserts equality to
+the naive fold for max+min, VALID + same-padding, non-square windows; full fj-lax lib 1728/0 green).
+Applies to f64 only for now (the max/min path is dtype==F64 gated); f32/half still ride the deque.
+
 ## 2026-07-02 - GAP SURFACED: RANK-2 plain-matrix pooling is 16-54x slower than JAX (separable paths cover only 4D NHWC) (TealMarten)
 
 Pooling sweep vs JAX 0.10.2 x64 (jaxvenv, `pool_sweep.py`) + new dense-input fj benches (`bench_pool_vs_jax`):
