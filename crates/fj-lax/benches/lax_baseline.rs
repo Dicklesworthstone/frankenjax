@@ -3138,6 +3138,28 @@ fn bench_argsort_64k_f64(c: &mut Criterion) {
     });
 }
 
+// Production-scale (4M) sort + argsort vs JAX. JAX 0.10.2 x64 CPU is pathologically
+// slow here (full comparison/bitonic sort in XLA): sort 4M = 1187.6ms, argsort 4M =
+// 1352.5ms (jaxvenv, 2026-07-02). fj's LSD radix path (total_cmp-bit keys) should
+// dominate by an order of magnitude. Isolates whether the radix win HOLDS at scale
+// (vs the 64k rows above) and whether argsort (index radix) keeps pace with sort.
+fn bench_sort_argsort_4m_f64(c: &mut Criterion) {
+    let n = 1usize << 22; // 4_194_304, matches the JAX sweep
+    let data: Vec<f64> = (0..n)
+        .map(|i| ((i as f64) * 1.000_173).sin() * 1e6 - (i as f64))
+        .collect();
+    let input = Value::vector_f64(&data).unwrap();
+    let mut p = BTreeMap::new();
+    p.insert("dimension".to_owned(), "0".to_owned());
+    p.insert("descending".to_owned(), "false".to_owned());
+    c.bench_function("eval/sort_4m_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &p))
+    });
+    c.bench_function("eval/argsort_4m_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Argsort, std::slice::from_ref(&input), &p))
+    });
+}
+
 // ConvertElementType over a 64k dense f64 tensor: dense fast path (pass103,
 // reads as_f64_slice) vs the generic per-element Literal-materialize + convert.
 fn bench_convert_64k_f64_to_i64(c: &mut Criterion) {
@@ -7191,20 +7213,30 @@ fn bench_softmax_decomposed_vs_fused_ab(c: &mut Criterion) {
 
     c.bench_function("nn/softmax_4096x1024_decomposed_primitives", |bencher| {
         bencher.iter(|| {
-            let m = eval_primitive(Primitive::ReduceMax, std::slice::from_ref(&input), &reduce_p)
-                .unwrap();
-            let mb =
-                eval_primitive(Primitive::BroadcastInDim, std::slice::from_ref(&m), &bcast_p)
-                    .unwrap();
+            let m = eval_primitive(
+                Primitive::ReduceMax,
+                std::slice::from_ref(&input),
+                &reduce_p,
+            )
+            .unwrap();
+            let mb = eval_primitive(
+                Primitive::BroadcastInDim,
+                std::slice::from_ref(&m),
+                &bcast_p,
+            )
+            .unwrap();
             let shifted =
                 eval_primitive(Primitive::Sub, &[input.clone(), mb], &no_params()).unwrap();
             let e = eval_primitive(Primitive::Exp, std::slice::from_ref(&shifted), &no_params())
                 .unwrap();
-            let s = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&e), &reduce_p)
-                .unwrap();
-            let sb =
-                eval_primitive(Primitive::BroadcastInDim, std::slice::from_ref(&s), &bcast_p)
-                    .unwrap();
+            let s =
+                eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&e), &reduce_p).unwrap();
+            let sb = eval_primitive(
+                Primitive::BroadcastInDim,
+                std::slice::from_ref(&s),
+                &bcast_p,
+            )
+            .unwrap();
             black_box(eval_primitive(Primitive::Div, &[e, sb], &no_params()).unwrap())
         })
     });
@@ -7214,29 +7246,49 @@ fn bench_softmax_decomposed_vs_fused_ab(c: &mut Criterion) {
     });
 
     // Per-primitive breakdown of the decomposed path (attribute the 34x gap).
-    let maxv =
-        eval_primitive(Primitive::ReduceMax, std::slice::from_ref(&input), &reduce_p).unwrap();
-    let maxb =
-        eval_primitive(Primitive::BroadcastInDim, std::slice::from_ref(&maxv), &bcast_p).unwrap();
-    let shifted = eval_primitive(Primitive::Sub, &[input.clone(), maxb.clone()], &no_params())
-        .unwrap();
+    let maxv = eval_primitive(
+        Primitive::ReduceMax,
+        std::slice::from_ref(&input),
+        &reduce_p,
+    )
+    .unwrap();
+    let maxb = eval_primitive(
+        Primitive::BroadcastInDim,
+        std::slice::from_ref(&maxv),
+        &bcast_p,
+    )
+    .unwrap();
+    let shifted =
+        eval_primitive(Primitive::Sub, &[input.clone(), maxb.clone()], &no_params()).unwrap();
     let e = eval_primitive(Primitive::Exp, std::slice::from_ref(&shifted), &no_params()).unwrap();
     let sumv = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&e), &reduce_p).unwrap();
-    let sumb =
-        eval_primitive(Primitive::BroadcastInDim, std::slice::from_ref(&sumv), &bcast_p).unwrap();
+    let sumb = eval_primitive(
+        Primitive::BroadcastInDim,
+        std::slice::from_ref(&sumv),
+        &bcast_p,
+    )
+    .unwrap();
     c.bench_function("nn/softmax_step_reduce_max", |b| {
         b.iter(|| {
             black_box(
-                eval_primitive(Primitive::ReduceMax, std::slice::from_ref(&input), &reduce_p)
-                    .unwrap(),
+                eval_primitive(
+                    Primitive::ReduceMax,
+                    std::slice::from_ref(&input),
+                    &reduce_p,
+                )
+                .unwrap(),
             )
         })
     });
     c.bench_function("nn/softmax_step_broadcast", |b| {
         b.iter(|| {
             black_box(
-                eval_primitive(Primitive::BroadcastInDim, std::slice::from_ref(&maxv), &bcast_p)
-                    .unwrap(),
+                eval_primitive(
+                    Primitive::BroadcastInDim,
+                    std::slice::from_ref(&maxv),
+                    &bcast_p,
+                )
+                .unwrap(),
             )
         })
     });
@@ -7458,6 +7510,7 @@ criterion_group!(
     bench_cumsum_4096x1024_f64_axis1,
     bench_cumsum_64k_f64_literal_reference,
     bench_sort_64k_i64,
+    bench_sort_argsort_4m_f64,
     bench_sort_64k_f64,
     bench_sort3d_mid_256x1024x64_f64,
     bench_argsort_64k_f64,

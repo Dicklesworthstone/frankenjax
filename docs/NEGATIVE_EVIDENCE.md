@@ -25,6 +25,21 @@ peephole (mirrors existing `try_eval_top_level_scan_*` in fj-interpreters lib.rs
 on resolving softmax parity as TOLERANCE (softmax_2d's scalar `fold(f64::max)`/`+=` differ from fj-lax
 SIMD reduce_max/sum on +/-0 and NaN, so it is NOT a bit-identical drop-in for the decomposed path).
 
+## 2026-07-02 - WIN (recorded at scale): fj sort/argsort 4M f64 are 6.1x / 4.3x FASTER than JAX (TealMarten)
+
+Non-softmax primitive sweep vs JAX 0.10.2 x64 (jaxvenv, `prim_sweep.py`) to find the biggest non-FFT gap:
+JAX's order-statistics ops are pathologically slow on CPU (full comparison/bitonic sort in XLA) —
+**sort 4M f64 = 1187.6ms, argsort 4M = 1352.5ms**. fj's LSD radix path (total_cmp-bit keys, pass74/75 +
+index radix) DOMINATES and the win HOLDS at production scale (prior benches were only 64k): new
+`eval/sort_4m_f64` = **194.7ms = 6.10x FASTER**, `eval/argsort_4m_f64` = **313.0ms = 4.32x FASTER**
+(same-binary, private target). argsort trails sort ~1.6x (carries indices alongside keys — expected;
+still a decisive win, not a lever). Benches committed (`bench_sort_argsort_4m_f64`) to pin the ratio.
+Other sweep results (all fj-favorable or mined): cumsum/cumprod 19ms (mined), where 4.2ms, take/gather
+2.4ms, concatenate 42ms, one_hot 16ms, roll 13ms — none a fj LOSS. The general binary-broadcast path
+(`broadcast_binary_f64`) is ALREADY optimized (contiguous-inner (1,1)/(1,0)/(0,1) row/col-broadcast
+special-cases + outer-block threading) so implicit `[n,m] op [n,1]` bias/scale is NOT a lever. The one
+open non-FFT lever remains the softmax-fusion interpreter wiring (below).
+
 ## 2026-07-02 - NEGATIVE/BOUNDARY: decomposed-softmax residual is memory-bound-by-design; only interpreter fusion remains (TealMarten)
 
 Follow-up to the BroadcastInDim fill win above. HONEST dense-input per-step breakdown of the decomposed
