@@ -3579,6 +3579,18 @@ fn bench_half_f32_sort_vs_jax(c: &mut Criterion) {
 
 // int64 sort/argsort 4M vs JAX 0.10.2 x64 (jaxvenv, 2026-07-03): int64 sort = 199.3ms
 // (XLA vectorizes int sort — faster than f64), but int64 argsort = 1123.7ms (slow).
+// Complex sort 4M vs JAX 0.10.2 x64 (jaxvenv, 2026-07-03): complex sort 4M = 1207.9ms
+// (lexicographic full sort). fj sorts complex by (real, imag) lexicographic key.
+fn bench_complex_sort_4m_vsjax(c: &mut Criterion) {
+    let input = complex_vector(1 << 22);
+    let mut p = BTreeMap::new();
+    p.insert("dimension".to_owned(), "0".to_owned());
+    p.insert("descending".to_owned(), "false".to_owned());
+    c.bench_function("eval/complex_sort_4m_vsjax", |b| {
+        b.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &p))
+    });
+}
+
 fn bench_int64_sort_vs_jax(c: &mut Criterion) {
     let n = 1usize << 22;
     let data: Vec<i64> = (0..n)
@@ -8263,6 +8275,7 @@ criterion_group!(
     bench_sort_64k_i64,
     bench_sort_argsort_4m_f64,
     bench_half_f32_sort_vs_jax,
+    bench_complex_sort_4m_vsjax,
     bench_int64_sort_vs_jax,
     bench_full_reduce_4m_f64,
     bench_sort2d_vs_jax,

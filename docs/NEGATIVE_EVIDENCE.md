@@ -249,6 +249,16 @@ v_1=[i,0], ⟨v_0,v_1⟩=i≠0, reconstruction FAILS). Fix: complex Gram-Schmidt
 group. That degeneracy handling is the only intricate part; the rest reuses real eigh. Multi-turn/careful
 (parity-absolute), NOT rushed — but this is the concrete de-risked path, superseding the Householder plan.
 
+## 2026-07-03 - WIN (modest) + BOUNDARY: complex sort 1.38x FASTER (comparison-based, not the radix crush) (TealMarten)
+
+`eval/complex_sort_4m_vsjax`: fj **872.7ms vs JAX 1207.9ms = 1.38x FASTER**. MODEST (the exception to the
+6-42x real/int sort wins): complex sort uses a LEXICOGRAPHIC (real, imag) COMPARISON sort (complex keys
+don't radix cleanly), same algorithm class as JAX's — so fj is only slightly faster, not the radix crush.
+Recorded honestly: the big sort wins come from RADIX (real/int/half); complex falls back to comparison for
+both, hence near-parity. Also NORMS are a LOSS/parity (JAX matrix norms 0.2-0.62ms — threaded reductions
+on idle cores; fj's memory-bound norm reduces lose on the contended host, same class as the reduction
+losses — NOT a win, not recorded as one).
+
 ## 2026-07-03 - WIN (recorded): fj f32/bf16 sort 6.9-13.9x FASTER than JAX (the ML dtypes) (TealMarten)
 
 Extended the sort domination to the ML training/inference dtypes. JAX full-sorts them (4M): bf16 sort =
