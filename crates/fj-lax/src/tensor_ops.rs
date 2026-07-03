@@ -13363,10 +13363,54 @@ fn parse_conv_lhs_dilation(
 /// dilate+conv route, so output shape + padding match exactly. Parity is TOLERANCE (conv_oracle asserts
 /// `< 1e-10`, not bits), so the GEMM reassociation vs the dilated conv is legal.
 ///
-/// Handles f64 AND f32 (JAX's default dtype): both accumulate the GEMM in f64 (`matmul_2d`) and the f32
-/// path rounds the f64 result back to f32 — the SAME promote→f64→round contract fj's forward f32 conv uses,
-/// so it stays tolerance-close to the dilate+conv route (and f32's ~1e-7 resolution dwarfs the ~1e-13
-/// reassociation error).
+/// Scatter-add one kernel tap's GEMM output `y[N·H·W, Cout]` into the transposed-conv output `out`
+/// (f64 cross-tap accumulator): input pixel `(ni, iy, ix)` lands at `(oy, ox) = (iy·sy + pad_top − ky,
+/// ix·sx + pad_left − kx)` when in bounds. Generic over the Y element type (f64 or f32 → f64) so both
+/// dtype paths share the identical, bounds-checked scatter. See `try_conv_transpose_scatter_gemm_2d`.
+#[allow(clippy::too_many_arguments)]
+fn conv_transpose_scatter_add<T: Copy + Into<f64>>(
+    out: &mut [f64],
+    y: &[T],
+    n: usize,
+    h: usize,
+    w: usize,
+    c_out: usize,
+    out_h: usize,
+    out_w: usize,
+    sy: usize,
+    sx: usize,
+    pad_top: usize,
+    pad_left: usize,
+    ky: usize,
+    kx: usize,
+) {
+    for ni in 0..n {
+        for iy in 0..h {
+            let oy = iy as isize * sy as isize + pad_top as isize - ky as isize;
+            if oy < 0 || oy >= out_h as isize {
+                continue;
+            }
+            let oy = oy as usize;
+            for ix in 0..w {
+                let ox = ix as isize * sx as isize + pad_left as isize - kx as isize;
+                if ox < 0 || ox >= out_w as isize {
+                    continue;
+                }
+                let ox = ox as usize;
+                let y_base = ((ni * h + iy) * w + ix) * c_out;
+                let o_base = ((ni * out_h + oy) * out_w + ox) * c_out;
+                for co in 0..c_out {
+                    out[o_base + co] += y[y_base + co].into();
+                }
+            }
+        }
+    }
+}
+
+/// Handles f64 AND f32 (JAX's default dtype). f64 GEMMs via `matmul_2d`; f32 GEMMs via fj's production
+/// native-f32 `batched_matmul_2d_f32_in` (2x SIMD lanes + half the input bandwidth) and rounds the f64
+/// cross-tap accumulation back to f32. Cross-tap accumulation is f64 in BOTH, so the result stays
+/// tolerance-close to the dilate+conv route (f32's ~1e-7 resolution dwarfs the reassociation error).
 ///
 /// Returns `Ok(None)` — deferring to the exact dilate+conv fallback — for every case not covered:
 /// non-rank-4, dtype other than f64/f32, feature/batch grouping, rhs_dilation (atrous) > 1, or conv
@@ -13418,14 +13462,7 @@ fn try_conv_transpose_scatter_gemm_2d(
     if rhs_c_in != c_in {
         return Ok(None);
     }
-    // Promote inputs to f64 (borrowed for f64, owned f32->f64 map). matmul_2d accumulates in f64.
-    let (Some(x), Some(ker)) = (
-        conv_real_elements_as_f64(lhs),
-        conv_real_elements_as_f64(rhs),
-    ) else {
-        return Ok(None);
-    };
-    if x.len() != n * h * w * c_in || ker.len() != kh * kw * c_in * c_out {
+    if lhs.elements.len() != n * h * w * c_in || rhs.elements.len() != kh * kw * c_in * c_out {
         return Ok(None);
     }
     if n == 0 || h == 0 || w == 0 || c_in == 0 || c_out == 0 || kh == 0 || kw == 0 {
@@ -13450,40 +13487,54 @@ fn try_conv_transpose_scatter_gemm_2d(
 
     let m = n * h * w; // GEMM rows: one per input spatial pixel (batch-major).
     let mut out = vec![0.0f64; total];
-    let mut ker_slice = vec![0.0f64; c_in * c_out];
-    for ky in 0..kh {
-        for kx in 0..kw {
-            // Extract ker[ky, kx, :, :] as a contiguous [Cin, Cout] panel.
-            for ci in 0..c_in {
-                let src = ((ky * kw + kx) * c_in + ci) * c_out;
-                let dst = ci * c_out;
-                ker_slice[dst..dst + c_out].copy_from_slice(&ker[src..src + c_out]);
-            }
-            // Y[N*H*W, Cout] = X[N*H*W, Cin] @ ker_slice[Cin, Cout].
-            let y = matmul_2d(&x, m, c_in, &ker_slice, c_out);
-            // Scatter-add each input pixel's contribution to its output pixel.
-            for ni in 0..n {
-                for iy in 0..h {
-                    let oy = iy as isize * sy as isize + pad_top as isize - ky as isize;
-                    if oy < 0 || oy >= out_h as isize {
-                        continue;
+    // Per-kernel-tap GEMM + scatter-add. Cross-tap accumulation stays in f64 (matches the dilate+conv
+    // reference), but the per-GEMM inner product uses the dtype-native kernel: f64 `matmul_2d` for f64,
+    // and fj's production native-f32 `batched_matmul_2d_f32_in` for f32 (2x SIMD lanes + half the input
+    // bandwidth at the short Cin here — what lets f32 approach JAX's native-f32 conv_transpose).
+    match lhs.dtype {
+        DType::F64 => {
+            let (Some(x), Some(ker)) = (lhs.elements.as_f64_slice(), rhs.elements.as_f64_slice())
+            else {
+                return Ok(None);
+            };
+            let mut ker_slice = vec![0.0f64; c_in * c_out];
+            for ky in 0..kh {
+                for kx in 0..kw {
+                    for ci in 0..c_in {
+                        let src = ((ky * kw + kx) * c_in + ci) * c_out;
+                        ker_slice[ci * c_out..ci * c_out + c_out]
+                            .copy_from_slice(&ker[src..src + c_out]);
                     }
-                    let oy = oy as usize;
-                    for ix in 0..w {
-                        let ox = ix as isize * sx as isize + pad_left as isize - kx as isize;
-                        if ox < 0 || ox >= out_w as isize {
-                            continue;
-                        }
-                        let ox = ox as usize;
-                        let y_base = ((ni * h + iy) * w + ix) * c_out;
-                        let o_base = ((ni * out_h + oy) * out_w + ox) * c_out;
-                        for co in 0..c_out {
-                            out[o_base + co] += y[y_base + co];
-                        }
-                    }
+                    let y = matmul_2d(x, m, c_in, &ker_slice, c_out);
+                    conv_transpose_scatter_add(
+                        &mut out, &y, n, h, w, c_out, out_h, out_w, sy, sx, pad_top, pad_left, ky,
+                        kx,
+                    );
                 }
             }
         }
+        DType::F32 => {
+            let (Some(x), Some(ker)) = (lhs.elements.as_f32_slice(), rhs.elements.as_f32_slice())
+            else {
+                return Ok(None);
+            };
+            let mut ker_slice = vec![0.0f32; c_in * c_out];
+            for ky in 0..kh {
+                for kx in 0..kw {
+                    for ci in 0..c_in {
+                        let src = ((ky * kw + kx) * c_in + ci) * c_out;
+                        ker_slice[ci * c_out..ci * c_out + c_out]
+                            .copy_from_slice(&ker[src..src + c_out]);
+                    }
+                    let y = batched_matmul_2d_f32_in(x, 1, m, c_in, &ker_slice, c_out);
+                    conv_transpose_scatter_add(
+                        &mut out, &y, n, h, w, c_out, out_h, out_w, sy, sx, pad_top, pad_left, ky,
+                        kx,
+                    );
+                }
+            }
+        }
+        _ => return Ok(None),
     }
 
     let shape = Shape {

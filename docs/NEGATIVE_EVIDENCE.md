@@ -115,13 +115,17 @@ regression risk; `FJ_CONVT_NAIVE` forces the old path. Full fj-lax lib green.
 UPDATE (f32 sibling shipped): generalized to F32 (JAX's default dtype) via the promote→f64-GEMM→round
 contract fj's forward f32 conv already uses (`conv_real_elements_as_f64` in, round the f64 result to f32
 out), tolerance-verified by `conv_transpose_scatter_gemm_f32_matches_dilate_conv` (4 configs within 1e-4).
-Same-invocation A/B [1,64,64,16]*[3,3,16,32] lhsdil2 SAME **f32: dilate+conv=10.23ms vs scatter-GEMM=2.22ms
-= 4.62x FASTER**. Honest vs-JAX: **JAX f32 = 1.49ms, so fj f32 is now ~1.48x SLOWER (was ~6.9x)** — a big
-improvement but NOT yet a win, because fj GEMMs f32 in f64 (matmul_2d, 2x the FLOPs + f64 memory) to match
-its own f64-accumulating forward conv, while JAX uses a native f32 GEMM. To BEAT JAX f32, swap matmul_2d for
-a native-f32 GEMM (fj has the f32 register microkernel) — a follow-up with an accuracy trade (f32 vs f64
-accum, still tolerance-legal). Remaining follow-ups: native-f32 GEMM for f32, 1D (rank-3), threaded
-scatter-add.
+Same-invocation A/B [1,64,64,16]*[3,3,16,32] lhsdil2 SAME **f32: scatter-GEMM=2.22ms** (promote→f64 GEMM),
+still ~1.48x slower than JAX f32 (1.49ms) at that stage.
+
+UPDATE 2 (native-f32 GEMM — f32 now BEATS JAX): swapped the f32 path's GEMM from `matmul_2d` (f64,
+promote-materialized) to fj's production native-f32 `batched_matmul_2d_f32_in` (Cin=16 is a short inner dim,
+so f32's 2x SIMD lanes + half the input bandwidth dominate), keeping CROSS-TAP accumulation in f64 (a shared
+generic `conv_transpose_scatter_add<T: Into<f64>>`) so accuracy still matches the dilate+conv reference —
+f32 tolerance test unchanged (within 1e-4). Median-of-3 stable: **fj f32 scatter-GEMM ~1.28ms (1.27/1.28/1.35)
+vs JAX f32 1.49ms → fj now ~1.16x FASTER than JAX** (naive dilate+conv f32 baseline is noisy 4.8-7.0ms
+cross-invocation, ~4-5.5x the fast path). So BOTH dtypes now beat JAX: f64 1.95ms vs 2.04ms, f32 1.28ms vs
+1.49ms. Full fj-lax lib green. Remaining follow-ups: 1D (rank-3) conv_transpose, threaded scatter-add.
 
 ## 2026-07-03 - GAP SURFACED (data-backed, 5.3x): conv_transpose (lhs_dilation) wastes ~stride² on zero-multiplies (TealMarten)
 
