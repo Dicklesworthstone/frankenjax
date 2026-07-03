@@ -25,6 +25,27 @@ peephole (mirrors existing `try_eval_top_level_scan_*` in fj-interpreters lib.rs
 on resolving softmax parity as TOLERANCE (softmax_2d's scalar `fold(f64::max)`/`+=` differ from fj-lax
 SIMD reduce_max/sum on +/-0 and NaN, so it is NOT a bit-identical drop-in for the decomposed path).
 
+## 2026-07-02 - NEGATIVE/BOUNDARY: replicated broadcast fill can't be beaten SERIALLY — threading (shipped) is the fix; sibling fills already fast (TealMarten)
+
+Follow-up: checked whether the replicated-axis fill (shipped threaded at 6.4ms) could instead be fixed
+SERIALLY (avoiding threading), and whether sibling fill/copy sites share the mis-gate. Findings (new
+benches `nn/scalar_broadcast_fill_4m_f64`, `nn/bias_broadcast_4096x1024_f64`, all 4M f64):
+- **Scalar broadcast fill (`jnp.full`/zeros/ones) = 2.07ms** — already fast (`vec![v; n]` reuses warm
+  malloc pages). NOT a lever (its 8.4M gate is irrelevant; serial is already near-bandwidth).
+- **Bias broadcast `[1024]->[4096,1024]` (input-mapped COPY path) = 4.16ms serial** — `copy_from_slice`
+  hits ~8 GB/s. Already fast. NOT a lever.
+- **Replicated fill `[4096]->[4096,1024]` = ~17-18ms SERIAL regardless of method**: `<[f64]>::fill`
+  (18ms), doubling `copy_from_slice` (17ms), seed-64 doubling (18ms) all identical — 3 variants measured,
+  none approached the bias path's 4ms for the same 4M write volume. Root cause is a genuine puzzle (same
+  calloc'd output, same `copy_from_slice` bulk, warm source — yet 4x slower than the copy path), but the
+  EMPIRICAL conclusion is firm: the replicated fill is NOT serially fixable, and threading it (SHIPPED,
+  6.4ms, page-fault-parallelized) is the correct and only win. Reverted all 3 serial-fill experiments to
+  the shipped threaded `.fill`. DO-NOT re-attempt a serial-fill (doubling/seed/memcpy) rewrite of the
+  replicated broadcast — measured dead 3 ways. A further win would need a portable_simd f64-splat store
+  specialization (breaks the generic `broadcast_replicate_into<T>` — separate, low-EV given threading
+  already delivers 6.4ms). LESSON (again): measure sibling sites before assuming a shared mis-gate — 2 of
+  3 here were already fast.
+
 ## 2026-07-02 - WIN: thread the BroadcastInDim replicated-axis fill — page-fault-bound, 2.83x more (6.3x total vs odometer) (TealMarten)
 
 Follow-up to the replicated-axis FILL fast-path. The fill was gated serial at

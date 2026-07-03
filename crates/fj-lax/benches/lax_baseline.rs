@@ -7336,10 +7336,50 @@ criterion_group!(
     targets = bench_qr_blocked_ab
 );
 
+// Scalar->tensor broadcast fill (jnp.full/zeros/ones/scalar-broadcast) at 4M f64.
+// First-touch-page-fault bound; measures the fill threading gate.
+fn bench_scalar_broadcast_fill_4m(c: &mut Criterion) {
+    let total = 1usize << 22;
+    let scalar = Value::Scalar(Literal::from_f64(1.5));
+    let mut p = BTreeMap::new();
+    p.insert("shape".to_string(), format!("{total}"));
+    c.bench_function("nn/scalar_broadcast_fill_4m_f64", |b| {
+        b.iter(|| {
+            black_box(
+                eval_primitive(Primitive::BroadcastInDim, std::slice::from_ref(&scalar), &p)
+                    .unwrap(),
+            )
+        })
+    });
+
+    // Bias-broadcast [1024] -> [4096,1024] (bdims=[1]): the input-mapped COPY path
+    // (contiguous src block repeated per row). Writes 4M fresh into a calloc'd output,
+    // so also first-touch-page-fault bound. The dominant layernorm/attention bias/scale
+    // broadcast shape.
+    let bias: Vec<f64> = (0..1024).map(|i| (i as f64) * 0.001).collect();
+    let bias_v = Value::vector_f64(&bias).unwrap();
+    let mut bp = BTreeMap::new();
+    bp.insert("shape".to_string(), "4096,1024".to_string());
+    bp.insert("broadcast_dimensions".to_string(), "1".to_string());
+    c.bench_function("nn/bias_broadcast_4096x1024_f64", |b| {
+        b.iter(|| {
+            black_box(
+                eval_primitive(
+                    Primitive::BroadcastInDim,
+                    std::slice::from_ref(&bias_v),
+                    &bp,
+                )
+                .unwrap(),
+            )
+        })
+    });
+}
+
 criterion_group!(
     softmax_2d_fused_ab,
     bench_softmax_2d_fused_ab,
-    bench_softmax_decomposed_vs_fused_ab
+    bench_softmax_decomposed_vs_fused_ab,
+    bench_scalar_broadcast_fill_4m
 );
 
 criterion_group!(
