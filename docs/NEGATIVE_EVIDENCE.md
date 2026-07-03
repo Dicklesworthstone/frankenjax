@@ -292,6 +292,10 @@ primitive — noted, not reachable). Measured at scale (new `eval/cumsum_axis1_4
 - **cummax 4M f64: fj 7.91ms vs JAX 15.88ms = 2.0x FASTER** — 1D cummax uses fj's associative all-cores
   parallel-prefix (`parallel_cummax_f64`, bit-identical fwd/rev incl NaN).
 - **cummin 4M f64: fj 7.93ms vs JAX 18.64ms = 2.35x FASTER** — associative parallel-prefix sibling.
+- **cumsum axis0 (LEADING) 4096x1024: fj 7.55ms vs JAX 21.13ms = 2.8x FASTER**; **cummax axis0: fj 7.63ms
+  vs JAX 22.76ms = 2.98x FASTER** — the leading-axis (strided) scan wins MORE than axis1 (1.55x) because
+  JAX's leading-axis scan is slower (strided/cache-unfriendly) while fj threads blocked row-slabs +
+  parallel-prefix well (`scan_leading_axis_to_vec_threaded`).
 Both already-shipped kernels; this RECORDS the vs-JAX ratios at production scale + pins them with benches.
 Adds to the order-statistics/scan domination map (sort 6.1x, argsort 4.3x, argmax 1.76x). Note: 1D float
 cumsum is NOT here — it's memory-bound + worker-confounded (see cumsum-worker-confound ledger); the WINS

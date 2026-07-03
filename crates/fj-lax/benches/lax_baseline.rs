@@ -3522,6 +3522,16 @@ fn bench_cumulative_vs_jax(c: &mut Criterion) {
     c.bench_function("eval/cumprod_axis1_4096x1024_f64", |b| {
         b.iter(|| eval_primitive(Primitive::Cumprod, std::slice::from_ref(&mat), &ax1))
     });
+    // LEADING-axis (axis0) cumulative — strided scan path. JAX 0.10.2 x64 4096x1024:
+    // cumsum axis0 = 21.13ms, cummax axis0 = 22.76ms.
+    let mut ax0m = BTreeMap::new();
+    ax0m.insert("axis".to_owned(), "0".to_owned());
+    c.bench_function("eval/cumsum_axis0_4096x1024_f64", |b| {
+        b.iter(|| eval_primitive(Primitive::Cumsum, std::slice::from_ref(&mat), &ax0m))
+    });
+    c.bench_function("eval/cummax_axis0_4096x1024_f64", |b| {
+        b.iter(|| eval_primitive(Primitive::Cummax, std::slice::from_ref(&mat), &ax0m))
+    });
 }
 
 // ConvertElementType over a 64k dense f64 tensor: dense fast path (pass103,
