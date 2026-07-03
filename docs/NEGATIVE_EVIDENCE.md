@@ -116,6 +116,22 @@ compute-bound. REFINED RULE: hand-SIMD an opaque-libm op ONLY when the scalar li
 (atan2/tan/pow-via-exp) AND the op is compute-bound (not masked by multi-tensor BW). Fast-libm (ln) or
 light-compute binary ops stay scalar. Kept the bench as a marker. full fj-lax lib unaffected (revert).
 
+## 2026-07-03 - NEGATIVE (DO-NOT, CLOSED): fj hypot ~13x slower than JAX is a DELIBERATE overflow-safety choice, not a bug (TealMarten)
+
+fj Hypot uses scalar glibc `f64::hypot` (overflow-SAFE scaling). Measured fj hypot 4M f64 ≈ 9ms vs JAX
+0.70ms = ~13x. Tried native-f64 SIMD `hypot_f64x8` = √(x²+y²) + scalar overflow fallback (tolerance-
+verified; overflow/±inf/NaN bit-exact; Pythagorean triples exact). A/B (`eval/hypot_4m_f64`,
+`FJ_HYPOT_SCALAR`): SIMD 10.94ms vs scalar 8.99ms = 0.82x (SLOWER — the per-chunk `ok.all()` overflow guard
+cost more than √(x²+y²) saved). Reverted. THE ROOT CAUSE (verified): **JAX `hypot(1e200,3e200)=inf`** —
+XLA uses RAW √(x²+y²), which OVERFLOWS for large inputs (fast: 0.70ms). fj's conformance oracle
+`hypot_oracle.rs::oracle_hypot_large_values` DELIBERATELY pins overflow-SAFE behavior (`hypot(1e200,1e200)`
+== `1e200·√2`, NOT inf). So fj is INTENTIONALLY more correct than JAX here, and overflow-safe hypot is
+inherently more expensive than raw √. The ~13x is the COST OF CORRECTNESS, not a fixable perf gap: matching
+JAX's speed requires raw √ (no guard), which breaks fj's own `oracle_hypot_large_values`. DO-NOT re-attempt
+— hypot cannot be sped to JAX parity without abandoning fj's chosen overflow-safety. Lesson: not every
+"fj slower than JAX" is a gap — some are fj doing MORE (correct) work by design; check the oracle intent
+before chasing. Left a DO-NOT comment + bench marker.
+
 ## 2026-07-03 - NEGATIVE: SCALAR-BROADCAST atan2 SIMD is a no-win (1.0x) despite same-shape winning 1.9x (TealMarten)
 
 Tried extending the atan2_f64x8 win to the scalar-broadcast case (`atan2(tensor, k)` — splat k, reuse the

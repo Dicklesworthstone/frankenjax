@@ -3557,6 +3557,23 @@ fn bench_atan2_bcast_4m_f64(c: &mut Criterion) {
     });
 }
 
+// f64 hypot = sqrt(x²+y²) — native-f64 SIMD vs scalar glibc f64::hypot (opaque overflow-scaled, slow).
+// JAX hypot 4M f64 = 0.70ms (measured). env-toggle FJ_HYPOT_SCALAR.
+fn bench_hypot_4m_f64(c: &mut Criterion) {
+    let n = 1usize << 22;
+    let xs: Vec<f64> = (0..n).map(|i| (i % 47000) as f64 * 0.0001 - 2.3).collect();
+    let ys: Vec<f64> = (0..n).map(|i| (i % 39000) as f64 * 0.0001 - 1.9).collect();
+    let sh = Shape {
+        dims: vec![n as u32],
+    };
+    let xt = Value::Tensor(TensorValue::new_f64_values(sh.clone(), xs).unwrap());
+    let yt = Value::Tensor(TensorValue::new_f64_values(sh, ys).unwrap());
+    let p = BTreeMap::new();
+    c.bench_function("eval/hypot_4m_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Hypot, &[xt.clone(), yt.clone()], &p))
+    });
+}
+
 // f64 xlogy = x*ln(y) (cross-entropy/KL hot path) — native-f64 SIMD (x*log_f64x8(y)) vs the scalar
 // libm-ln map (env-toggle FJ_XLOGY_SCALAR). y.ln() is opaque libm (no autovec); log wins no-FMA.
 fn bench_xlogy_2m_f64(c: &mut Criterion) {
@@ -8618,6 +8635,7 @@ criterion_group!(
     bench_rsqrt_8m_f64,
     bench_atan2_8m_f64,
     bench_atan2_bcast_4m_f64,
+    bench_hypot_4m_f64,
     bench_xlogy_2m_f64,
     bench_tan_2m_f64,
     bench_conv_transpose_lhsdil2_f64,

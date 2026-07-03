@@ -291,6 +291,11 @@ fn eval_primitive_inner(
                 )
             }
         }
+        // NOTE (TealMarten 2026-07-03): fj hypot is ~13x slower than JAX (9ms vs 0.70ms @4M) BY DESIGN —
+        // JAX uses raw sqrt(x²+y²) which OVERFLOWS (hypot(1e200,3e200)=inf), whereas fj's oracle
+        // `hypot_oracle::oracle_hypot_large_values` pins the overflow-SAFE glibc result. A native SIMD
+        // sqrt(x²+y²) was a no-win (0.82x, the overflow guard costs as much as it saves) AND would break
+        // the oracle. DO-NOT — this gap is the cost of fj's chosen overflow-safety, not a bug. See ledger.
         Primitive::Hypot => eval_binary_elementwise(
             primitive,
             inputs,
