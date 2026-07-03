@@ -2,6 +2,26 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-03 - NEGATIVE (0.61x): block-column fused transpose+sort for axis-0 rank-2 f64 sort REGRESSES (TealMarten)
+
+Second attempt at the sort2d(axis=0) gap (after the single-column-gather negative above). Hypothesis: the
+ledger's rejected single-column gather was cache-hostile because it read ONE element per 64-byte line (1/8
+utilization); a BLOCK of B columns would read B CONTIGUOUS f64 per row (full cache lines, 8x the read BW)
+and keep the sort in-cache, collapsing the double-transpose's ~3-4 strided DRAM passes to ~2. Implemented
+`sort_axis0_rank2_blocked_f64` (gather B-col block into a `[B, rows]` buffer with contiguous reads, sort
+each contiguous column via the existing radix, scatter back with contiguous writes) + a same-invocation
+interleaved A/B (`bench_sort2d_axis0_blocked_ab`) + a bit-identical correctness test (vs the double-transpose,
+incl NaN/±0/±inf, aligned + tail blocks, asc/desc — the approach was PROVEN correct). Result on 2048^2 f64:
+**double-transpose=130.6ms vs blocked=215.7ms = 0.61x (SLOWER)**. REVERTED. Root cause: the read side became
+contiguous but the GATHER-WRITE `block[j*rows + r]` is STRIDED (stride=rows) into a >=L2-sized block buffer
+(B=32 cols × 2048 rows × 8B = 512KB = full Zen3 L2), so it is exactly as cache-hostile as the transpose it
+replaced — the strided access just moved from transpose-write to gather-write, net-neutral — PLUS per-block
+TensorValue+recursion overhead (64 blocks). Lesson: fusing a transpose into a sort does NOT dodge the
+transpose cost; SOME side of the gather is always strided, and if its target exceeds L2 you pay the same
+misses. This CONFIRMS the prior entry's conclusion: the only real lever is a properly cache-blocked (tiled)
+transpose — which is separately memory-flagged DO-NOT (`transpose_already_optimal`). Axis-0 sort stays on the
+double-transpose. DO-NOT re-attempt gather-fusion of the sort transpose (both column-granularities now fail).
+
 ## 2026-07-03 - WIRED WIN (3.2-6.6x internal): U32/U64 integer SUM-pool routed onto the N-D separable core (TealMarten)
 
 The unsigned tail of the integer sum-pool family. i64/i32 rank>=2 SUM already ran the N-D separable
