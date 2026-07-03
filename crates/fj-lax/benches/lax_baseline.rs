@@ -1545,6 +1545,57 @@ fn bench_eig_48(c: &mut Criterion) {
     });
 }
 
+// eigh/qr vs JAX 0.10.2 x64 (jaxvenv, 2026-07-02): XLA CPU uses ITERATIVE Jacobi/QR
+// (not LAPACK), so it is very slow: eigh_256 = 288ms, eigh_512 = 1003ms, qr_256 =
+// 107ms, qr_512 = 557ms. fj's tred2/tql2 eigh + blocked/Householder qr should dominate.
+// (cholesky/det/inv are LAPACK-fast in JAX 0.3-43ms — NOT included, they are fj losses.)
+fn bench_eigh_qr_vs_jax(c: &mut Criterion) {
+    for n in [256usize, 512] {
+        // Symmetric well-conditioned matrix for eigh.
+        let mut sym = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in i..n {
+                let v = if i == j {
+                    (n as f64) + (i as f64)
+                } else {
+                    (((i * 7 + j * 13) % 5) as f64) - 2.0
+                };
+                sym[i * n + j] = v;
+                sym[j * n + i] = v;
+            }
+        }
+        let msym = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                sym,
+            )
+            .unwrap(),
+        );
+        // General matrix for qr.
+        let genm: Vec<f64> = (0..n * n)
+            .map(|idx| (((idx * 2654435761) % 1000019) as f64) * 1e-3 - 500.0)
+            .collect();
+        let mgen = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                genm,
+            )
+            .unwrap(),
+        );
+        let p = no_params();
+        c.bench_function(&format!("linalg/eigh_{n}x{n}_f64_vsjax"), |b| {
+            b.iter(|| eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&msym), &p))
+        });
+        c.bench_function(&format!("linalg/qr_{n}x{n}_f64_vsjax"), |b| {
+            b.iter(|| eval_primitive_multi(Primitive::Qr, std::slice::from_ref(&mgen), &p))
+        });
+    }
+}
+
 fn bench_eigh_48(c: &mut Criterion) {
     // Real symmetric eigendecomposition (Eigh) via Jacobi. Diagonally dominant
     // symmetric 48×48 so the iterative path (not the 3×3 analytic shortcut)
@@ -7665,6 +7716,7 @@ criterion_group!(
     bench_dot_100,
     bench_dot_256_matrix_f64,
     bench_eig_48,
+    bench_eigh_qr_vs_jax,
     bench_eigh_48,
     bench_cholesky_128_f64,
     bench_cholesky_512_f64,

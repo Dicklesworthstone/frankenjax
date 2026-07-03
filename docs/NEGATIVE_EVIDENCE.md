@@ -62,6 +62,20 @@ benches `nn/scalar_broadcast_fill_4m_f64`, `nn/bias_broadcast_4096x1024_f64`, al
   already delivers 6.4ms). LESSON (again): measure sibling sites before assuming a shared mis-gate — 2 of
   3 here were already fast.
 
+## 2026-07-02 - WIN (recorded): fj eigh/qr 5-16x FASTER than JAX (XLA CPU uses iterative Jacobi/QR) (TealMarten)
+
+A NEW win family beyond order-statistics: matrix DECOMPOSITIONS. JAX 0.10.2 x64 uses ITERATIVE
+Jacobi/QR on CPU (not LAPACK) and is very slow: eigh_256 = 288ms, eigh_512 = 1003ms, qr_256 = 107ms,
+qr_512 = 557ms. fj's tred2/tql2 eigh + blocked/Householder QR (new benches `linalg/{eigh,qr}_{256,512}
+x_f64_vsjax`):
+- **eigh 256: fj 23.86ms vs JAX 288ms = 12.1x FASTER**; **eigh 512: fj 191.8ms vs 1003ms = 5.2x**
+- **qr 256: fj 6.80ms vs JAX 107ms = 15.7x FASTER**; **qr 512: fj 49.3ms vs 557ms = 11.3x**
+BOUNDARY (honest): cholesky/det/inv are LAPACK-backed in JAX and FAST (0.34/0.55/11.4ms at n=256), so
+those are fj LOSSES (LAPACK is hard to beat) — NOT recorded as wins. The eigh/qr wins are where JAX's
+CPU path is iterative; fj's direct tridiag/Householder algorithms dominate. Adds the decomposition family
+to the domination map (order-statistics 6-205x + eigh/qr 5-16x); both are ALGORITHM wins (fj picks the
+better method), threading-independent.
+
 ## 2026-07-02 - WIN (recorded, BIG): fj 2D per-row/column sort 31-42x FASTER than JAX (TealMarten)
 
 Sibling of the top_k win: JAX full-sorts each row/column of a matrix. JAX 0.10.2 x64 4096x1024:
