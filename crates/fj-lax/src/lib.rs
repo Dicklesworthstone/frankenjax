@@ -1947,18 +1947,191 @@ where
     F: Fn(T) -> T + Sync,
 {
     let n = vals.len();
-    if n >= crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN
-        && crate::arithmetic::work_scaled_threads(n) > 1
-    {
-        let mut out = vec![T::default(); n];
-        crate::arithmetic::threaded_index_fill_into(
-            &mut out,
-            crate::arithmetic::work_scaled_threads(n),
-            |i| f(vals[i]),
-        );
-        out
+    let mut out = vec![T::default(); n];
+    let threads = crate::arithmetic::work_scaled_threads(n);
+    if n < crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN || threads <= 1 {
+        for (o, &v) in out.iter_mut().zip(vals) {
+            *o = f(v);
+        }
+        return out;
+    }
+    // SLICE-chunk (not index-fill): zip `out` + `vals` iterators per chunk so the inner
+    // loop has no cross-slice bounds check and a MONOMORPHIC `f` (the hoisted per-op
+    // closure) AUTOVECTORIZES to the memory-BW ceiling — the index-based
+    // `threaded_index_fill_into` (`out[i] = f(vals[i])`) could not vectorize (measured
+    // ~12 GB/s regardless of match-hoisting; slice-chunk lifts it toward the add ceiling).
+    let chunk = n.div_ceil(threads);
+    let fref = &f;
+    std::thread::scope(|scope| {
+        for (ochunk, vchunk) in out.chunks_mut(chunk).zip(vals.chunks(chunk)) {
+            scope.spawn(move || {
+                for (o, &v) in ochunk.iter_mut().zip(vchunk) {
+                    *o = fref(v);
+                }
+            });
+        }
+    });
+    out
+}
+
+/// Hoisted-match scalar⊗tensor bitwise/shift for i64. The 6-way `primitive` match runs
+/// ONCE here (loop-invariant), then a MONOMORPHIC threaded map runs per op — the trivial
+/// per-element op inlines and autovectorizes to the memory-BW ceiling, vs the prior
+/// `apply_bitwise_binary_i64(primitive, ..)` closure which re-evaluated the 6-way branch
+/// per element (the ~12 GB/s cap). `tensor_is_lhs` picks `v OP scalar` vs `scalar OP v`
+/// (shifts are non-commutative). Bit-identical to `apply_bitwise_binary_i64` (same ops,
+/// same order); the `_` arm mirrors its `_ => lhs` passthrough (unreachable — dispatch
+/// only routes the 6 bitwise/shift primitives here).
+#[inline]
+fn threaded_scalar_bitwise_i64(
+    vals: &[i64],
+    primitive: Primitive,
+    scalar: i64,
+    tensor_is_lhs: bool,
+) -> Vec<i64> {
+    let s = scalar;
+    if tensor_is_lhs {
+        match primitive {
+            Primitive::BitwiseAnd => threaded_scalar_bitwise_map(vals, |v| v & s),
+            Primitive::BitwiseOr => threaded_scalar_bitwise_map(vals, |v| v | s),
+            Primitive::BitwiseXor => threaded_scalar_bitwise_map(vals, |v| v ^ s),
+            Primitive::ShiftLeft => threaded_scalar_bitwise_map(vals, |v| v.wrapping_shl(s as u32)),
+            Primitive::ShiftRightArithmetic => {
+                threaded_scalar_bitwise_map(vals, |v| v.wrapping_shr(s as u32))
+            }
+            Primitive::ShiftRightLogical => {
+                threaded_scalar_bitwise_map(vals, |v| ((v as u64).wrapping_shr(s as u32)) as i64)
+            }
+            _ => vals.to_vec(),
+        }
     } else {
-        vals.iter().map(|&v| f(v)).collect()
+        match primitive {
+            Primitive::BitwiseAnd => threaded_scalar_bitwise_map(vals, |v| s & v),
+            Primitive::BitwiseOr => threaded_scalar_bitwise_map(vals, |v| s | v),
+            Primitive::BitwiseXor => threaded_scalar_bitwise_map(vals, |v| s ^ v),
+            Primitive::ShiftLeft => threaded_scalar_bitwise_map(vals, |v| s.wrapping_shl(v as u32)),
+            Primitive::ShiftRightArithmetic => {
+                threaded_scalar_bitwise_map(vals, |v| s.wrapping_shr(v as u32))
+            }
+            Primitive::ShiftRightLogical => {
+                threaded_scalar_bitwise_map(vals, |v| ((s as u64).wrapping_shr(v as u32)) as i64)
+            }
+            _ => vec![s; vals.len()],
+        }
+    }
+}
+
+/// Hoisted-match scalar⊗tensor bitwise/shift for i32-width values stored sign-extended in
+/// i64 (mirrors `apply_bitwise_binary_i32`: compute at i32 width, sign-extend back to i64).
+#[inline]
+fn threaded_scalar_bitwise_i32(
+    vals: &[i64],
+    primitive: Primitive,
+    scalar: i64,
+    tensor_is_lhs: bool,
+) -> Vec<i64> {
+    let b = scalar as i32;
+    if tensor_is_lhs {
+        match primitive {
+            Primitive::BitwiseAnd => threaded_scalar_bitwise_map(vals, |v| i64::from(v as i32 & b)),
+            Primitive::BitwiseOr => threaded_scalar_bitwise_map(vals, |v| i64::from(v as i32 | b)),
+            Primitive::BitwiseXor => threaded_scalar_bitwise_map(vals, |v| i64::from(v as i32 ^ b)),
+            Primitive::ShiftLeft => {
+                threaded_scalar_bitwise_map(vals, |v| i64::from((v as i32).wrapping_shl(b as u32)))
+            }
+            Primitive::ShiftRightArithmetic => {
+                threaded_scalar_bitwise_map(vals, |v| i64::from((v as i32).wrapping_shr(b as u32)))
+            }
+            Primitive::ShiftRightLogical => threaded_scalar_bitwise_map(vals, |v| {
+                i64::from(((v as i32 as u32).wrapping_shr(b as u32)) as i32)
+            }),
+            _ => vals.to_vec(),
+        }
+    } else {
+        match primitive {
+            Primitive::BitwiseAnd => threaded_scalar_bitwise_map(vals, |v| i64::from(b & v as i32)),
+            Primitive::BitwiseOr => threaded_scalar_bitwise_map(vals, |v| i64::from(b | v as i32)),
+            Primitive::BitwiseXor => threaded_scalar_bitwise_map(vals, |v| i64::from(b ^ v as i32)),
+            Primitive::ShiftLeft => {
+                threaded_scalar_bitwise_map(vals, |v| i64::from(b.wrapping_shl(v as u32)))
+            }
+            Primitive::ShiftRightArithmetic => {
+                threaded_scalar_bitwise_map(vals, |v| i64::from(b.wrapping_shr(v as u32)))
+            }
+            Primitive::ShiftRightLogical => threaded_scalar_bitwise_map(vals, |v| {
+                i64::from(((b as u32).wrapping_shr(v as u32)) as i32)
+            }),
+            _ => vec![i64::from(b); vals.len()],
+        }
+    }
+}
+
+/// Hoisted-match scalar⊗tensor bitwise/shift for u32 (mirrors `apply_bitwise_binary_u32`:
+/// arithmetic and logical right shift both `wrapping_shr` on the unsigned value).
+#[inline]
+fn threaded_scalar_bitwise_u32(
+    vals: &[u32],
+    primitive: Primitive,
+    scalar: u32,
+    tensor_is_lhs: bool,
+) -> Vec<u32> {
+    let s = scalar;
+    if tensor_is_lhs {
+        match primitive {
+            Primitive::BitwiseAnd => threaded_scalar_bitwise_map(vals, |v| v & s),
+            Primitive::BitwiseOr => threaded_scalar_bitwise_map(vals, |v| v | s),
+            Primitive::BitwiseXor => threaded_scalar_bitwise_map(vals, |v| v ^ s),
+            Primitive::ShiftLeft => threaded_scalar_bitwise_map(vals, |v| v.wrapping_shl(s)),
+            Primitive::ShiftRightArithmetic | Primitive::ShiftRightLogical => {
+                threaded_scalar_bitwise_map(vals, |v| v.wrapping_shr(s))
+            }
+            _ => vals.to_vec(),
+        }
+    } else {
+        match primitive {
+            Primitive::BitwiseAnd => threaded_scalar_bitwise_map(vals, |v| s & v),
+            Primitive::BitwiseOr => threaded_scalar_bitwise_map(vals, |v| s | v),
+            Primitive::BitwiseXor => threaded_scalar_bitwise_map(vals, |v| s ^ v),
+            Primitive::ShiftLeft => threaded_scalar_bitwise_map(vals, |v| s.wrapping_shl(v)),
+            Primitive::ShiftRightArithmetic | Primitive::ShiftRightLogical => {
+                threaded_scalar_bitwise_map(vals, |v| s.wrapping_shr(v))
+            }
+            _ => vec![s; vals.len()],
+        }
+    }
+}
+
+/// Hoisted-match scalar⊗tensor bitwise/shift for u64 (mirrors `apply_bitwise_binary_u64`).
+#[inline]
+fn threaded_scalar_bitwise_u64(
+    vals: &[u64],
+    primitive: Primitive,
+    scalar: u64,
+    tensor_is_lhs: bool,
+) -> Vec<u64> {
+    let s = scalar;
+    if tensor_is_lhs {
+        match primitive {
+            Primitive::BitwiseAnd => threaded_scalar_bitwise_map(vals, |v| v & s),
+            Primitive::BitwiseOr => threaded_scalar_bitwise_map(vals, |v| v | s),
+            Primitive::BitwiseXor => threaded_scalar_bitwise_map(vals, |v| v ^ s),
+            Primitive::ShiftLeft => threaded_scalar_bitwise_map(vals, |v| v.wrapping_shl(s as u32)),
+            Primitive::ShiftRightArithmetic | Primitive::ShiftRightLogical => {
+                threaded_scalar_bitwise_map(vals, |v| v.wrapping_shr(s as u32))
+            }
+            _ => vals.to_vec(),
+        }
+    } else {
+        match primitive {
+            Primitive::BitwiseAnd => threaded_scalar_bitwise_map(vals, |v| s & v),
+            Primitive::BitwiseOr => threaded_scalar_bitwise_map(vals, |v| s | v),
+            Primitive::BitwiseXor => threaded_scalar_bitwise_map(vals, |v| s ^ v),
+            Primitive::ShiftLeft => threaded_scalar_bitwise_map(vals, |v| s.wrapping_shl(v as u32)),
+            Primitive::ShiftRightArithmetic | Primitive::ShiftRightLogical => {
+                threaded_scalar_bitwise_map(vals, |v| s.wrapping_shr(v as u32))
+            }
+            _ => vec![s; vals.len()],
+        }
     }
 }
 
@@ -2017,9 +2190,7 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             // is Some for I64 and I32, but this arm is gated to I64. Bit-identical:
             // same apply_bitwise_binary_i64(scalar, v), same I64 dense storage.
             if let Some(vals) = tensor.elements.as_i64_slice() {
-                let out = threaded_scalar_bitwise_map(vals, |v| {
-                    apply_bitwise_binary_i64(primitive, *scalar, v)
-                });
+                let out = threaded_scalar_bitwise_i64(vals, primitive, *scalar, false);
                 return Ok(Value::Tensor(
                     TensorValue::new_i64_values(tensor.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2051,9 +2222,7 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             if tensor.dtype == fj_core::DType::I32 =>
         {
             if let Some(vals) = tensor.elements.as_i64_slice() {
-                let out = threaded_scalar_bitwise_map(vals, |v| {
-                    apply_bitwise_binary_i32(primitive, i64::from(*scalar), v)
-                });
+                let out = threaded_scalar_bitwise_i32(vals, primitive, i64::from(*scalar), false);
                 return Ok(Value::Tensor(
                     TensorValue::new_i32_values(tensor.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2082,9 +2251,7 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             if tensor.dtype == fj_core::DType::I32 =>
         {
             if let Some(vals) = tensor.elements.as_i64_slice() {
-                let out = threaded_scalar_bitwise_map(vals, |v| {
-                    apply_bitwise_binary_i32(primitive, v, i64::from(*scalar))
-                });
+                let out = threaded_scalar_bitwise_i32(vals, primitive, i64::from(*scalar), true);
                 return Ok(Value::Tensor(
                     TensorValue::new_i32_values(tensor.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2114,9 +2281,7 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             if tensor.dtype == fj_core::DType::I32 =>
         {
             if let Some(vals) = tensor.elements.as_i64_slice() {
-                let out = threaded_scalar_bitwise_map(vals, |v| {
-                    apply_bitwise_binary_i32(primitive, *scalar, v)
-                });
+                let out = threaded_scalar_bitwise_i32(vals, primitive, *scalar, false);
                 return Ok(Value::Tensor(
                     TensorValue::new_i32_values(tensor.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2143,9 +2308,7 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             if tensor.dtype == fj_core::DType::I32 =>
         {
             if let Some(vals) = tensor.elements.as_i64_slice() {
-                let out = threaded_scalar_bitwise_map(vals, |v| {
-                    apply_bitwise_binary_i32(primitive, v, *scalar)
-                });
+                let out = threaded_scalar_bitwise_i32(vals, primitive, *scalar, true);
                 return Ok(Value::Tensor(
                     TensorValue::new_i32_values(tensor.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2172,9 +2335,7 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             if tensor.dtype == fj_core::DType::U32 =>
         {
             if let Some(vals) = tensor.elements.as_u32_slice() {
-                let out = threaded_scalar_bitwise_map(vals, |v| {
-                    apply_bitwise_binary_u32(primitive, *scalar, v)
-                });
+                let out = threaded_scalar_bitwise_u32(vals, primitive, *scalar, false);
                 return Ok(Value::Tensor(
                     TensorValue::new_u32_values(tensor.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2205,9 +2366,7 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             if tensor.dtype == fj_core::DType::U64 =>
         {
             if let Some(vals) = tensor.elements.as_u64_slice() {
-                let out = threaded_scalar_bitwise_map(vals, |v| {
-                    apply_bitwise_binary_u64(primitive, *scalar, v)
-                });
+                let out = threaded_scalar_bitwise_u64(vals, primitive, *scalar, false);
                 return Ok(Value::Tensor(
                     TensorValue::new_u64_values(tensor.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2242,9 +2401,7 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             // Dense I64 fast path (tensor⊗scalar direction): same as above with the
             // scalar as the rhs of apply_bitwise_binary_i64. Bit-identical.
             if let Some(vals) = tensor.elements.as_i64_slice() {
-                let out = threaded_scalar_bitwise_map(vals, |v| {
-                    apply_bitwise_binary_i64(primitive, v, *scalar)
-                });
+                let out = threaded_scalar_bitwise_i64(vals, primitive, *scalar, true);
                 return Ok(Value::Tensor(
                     TensorValue::new_i64_values(tensor.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2275,9 +2432,7 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             if tensor.dtype == fj_core::DType::U32 =>
         {
             if let Some(vals) = tensor.elements.as_u32_slice() {
-                let out = threaded_scalar_bitwise_map(vals, |v| {
-                    apply_bitwise_binary_u32(primitive, v, *scalar)
-                });
+                let out = threaded_scalar_bitwise_u32(vals, primitive, *scalar, true);
                 return Ok(Value::Tensor(
                     TensorValue::new_u32_values(tensor.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -2308,9 +2463,7 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             if tensor.dtype == fj_core::DType::U64 =>
         {
             if let Some(vals) = tensor.elements.as_u64_slice() {
-                let out = threaded_scalar_bitwise_map(vals, |v| {
-                    apply_bitwise_binary_u64(primitive, v, *scalar)
-                });
+                let out = threaded_scalar_bitwise_u64(vals, primitive, *scalar, true);
                 return Ok(Value::Tensor(
                     TensorValue::new_u64_values(tensor.shape.clone(), out)
                         .map_err(EvalError::InvalidTensor)?,
@@ -14591,16 +14744,35 @@ mod tests {
             println!("SCALARBIT {label}: {:.3}ms", b * 1e3);
         };
         // Same-invocation, contention-immune A/B (min of 8 each, back-to-back).
+        // black_box the primitive so the compiler cannot const-fold the 6-way match
+        // (production dispatches on a RUNTIME `primitive`), making the A/B honest.
+        let prim = std::hint::black_box(Primitive::ShiftRightLogical);
         time_it("shr_i64_16M_serial", &|| {
             vals.iter()
-                .map(|&v| super::apply_bitwise_binary_i64(Primitive::ShiftRightLogical, v, 3))
+                .map(|&v| super::apply_bitwise_binary_i64(prim, v, 3))
                 .collect()
         });
-        time_it("shr_i64_16M_threaded", &|| {
+        time_it("shr_i64_16M_threaded_match", &|| {
             super::threaded_scalar_bitwise_map(&vals, |v| {
-                super::apply_bitwise_binary_i64(Primitive::ShiftRightLogical, v, 3)
+                super::apply_bitwise_binary_i64(prim, v, 3)
             })
         });
+        time_it("shr_i64_16M_threaded_hoisted", &|| {
+            super::threaded_scalar_bitwise_i64(&vals, prim, 3, true)
+        });
+        // Disambiguate BW-bound vs op-bound: a trivial add through the SAME slice-chunk
+        // framework. If add ~= shift, the threaded map is at the worker's memory-BW
+        // ceiling (op is irrelevant) — not a bitwise/match weakness.
+        time_it("add_i64_16M_threaded", &|| {
+            super::threaded_scalar_bitwise_map(&vals, |v: i64| v.wrapping_add(3))
+        });
+        println!(
+            "THREADINFO work_scaled_threads(16M)={} avail_par={}",
+            crate::arithmetic::work_scaled_threads(n),
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(0)
+        );
     }
 
     fn no_params() -> BTreeMap<String, String> {

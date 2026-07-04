@@ -2,6 +2,37 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 1.20x: bitwise scalar-broadcast match-HOIST + slice-chunk map → reaches the add-op rate (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. File: `lib.rs`. Follow-up to `f9c6267f`
+  (scalar-bitwise threading 2.61x). Remote via rch (`CARGO_TARGET_DIR=.../blackthrush`).
+- LEVER (two parts, both required):
+  1. HOIST the 6-way `apply_bitwise_binary_*` primitive match OUT of the per-element
+     threaded closure — new `threaded_scalar_bitwise_{i64,i32,u32,u64}(vals, primitive,
+     scalar, tensor_is_lhs)` match the op ONCE, then run a MONOMORPHIC per-element op.
+     All 10 scalar⊗tensor dense arms route through them.
+  2. Switch `threaded_scalar_bitwise_map` from the index-based `threaded_index_fill_into`
+     (`out[i] = f(vals[i])` — a cross-slice bounds-checked index that BLOCKS
+     autovectorization) to a SLICE-chunk map (zip `out` + `vals` iterators per chunk), so
+     the hoisted monomorphic op AUTOVECTORIZES. Neither part alone helped — the hoist fed
+     into the non-vectorizing index fill (measured 0.97-1.03x); together they vectorize.
+  Bit-identical (per-element op, lane-independent).
+- MEASURED (rch, same-invocation min-of-8, 16M i64 `x >> 3` with a `black_box`'d runtime
+  primitive so the match is NOT const-folded; quiesced 10-core worker):
+  serial **54.174ms** | threaded_match **21.453ms** | threaded_HOISTED **17.932ms** |
+  add-ref **18.868ms**. **HOIST vs per-element-match = 1.20x**; the hoisted bitwise reaches
+  the trivial-`wrapping_add` op's measured rate (17.9 ≈ 18.9ms) — so the per-element 6-way
+  branch WAS the residual cost over a bare op, and the hoist removes it.
+- CROSS-INVOCATION: on two contended workers the benefit was masked (hoisted ≈ match ≈
+  22ms) — under memory contention both converge at the worker's DRAM rate. The absolute
+  256MB / 17.9ms ≈ 14 GB/s equals the add op on the SAME worker; the residual to JAX's
+  20-24 GB/s (a different, faster-memory host) is that worker's DRAM bandwidth, evidenced by
+  the add reference exhibiting the identical rate — not a hoistable compute cost. The only
+  further lever would be cutting memory traffic, which a fresh-output elementwise cannot.
+- Correctness: `threaded_scalar_bitwise_bit_identical_to_serial` (i64/u64/u32 × 6 ops, now
+  through the hoisted eval path) + 33 bitwise/shift tests GREEN. EV: KEEP (bit-identical,
+  1.20x quiesced, never a regression, reaches the add-op rate).
+
 ## 2026-07-04 - WIN 2.61x: scalar-broadcast bitwise/shift (x OP k) THREADED — 16M i64 shift 55.3ms -> 21.2ms, bit-identical (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. File: `lib.rs` (`eval_bitwise_binary`). Remote via
