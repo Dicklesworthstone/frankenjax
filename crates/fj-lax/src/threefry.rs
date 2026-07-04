@@ -559,11 +559,102 @@ pub fn random_normal(key: PRNGKey, count: usize) -> Vec<f64> {
     // JAX: lo = nextafter(float32(-1), float32(0)), hi = float32(1)
     let lo = f64::from(f32::from_bits((-1.0_f32).to_bits() - 1)); // nextafter_f32(-1.0, 0.0)
     let hi = 1.0_f64;
+    if std::env::var_os("FJ_RANDOM_NORMAL_BUFFERED").is_some() {
+        return random_normal_buffered(key, count, lo, hi);
+    }
+    random_normal_fused(key, count, lo, hi)
+}
+
+fn random_normal_buffered(key: PRNGKey, count: usize, lo: f64, hi: f64) -> Vec<f64> {
     let uniforms = random_uniform(key, count, lo, hi);
     random_normal_from_uniforms(&uniforms)
 }
 
 const RANDOM_NORMAL_PARALLEL_MIN_ELEMS: usize = 1 << 14;
+
+fn random_normal_fused(key: PRNGKey, count: usize, lo: f64, hi: f64) -> Vec<f64> {
+    let hardware = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    let threads = if count >= RANDOM_NORMAL_PARALLEL_MIN_ELEMS {
+        hardware.min(count)
+    } else {
+        1
+    };
+    if threads <= 1 {
+        let mut out = vec![0.0_f64; count];
+        fill_normal_simd(&mut out, 0, key, lo, hi - lo);
+        return out;
+    }
+
+    let mut out = vec![0.0_f64; count];
+    let chunk = count.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f64] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < count {
+            let len = chunk.min(count - start);
+            let (block, tail) = rest.split_at_mut(len);
+            rest = tail;
+            scope.spawn(move || fill_normal_simd(block, start, key, lo, hi - lo));
+            start += len;
+        }
+    });
+    out
+}
+
+fn fill_normal_simd(out: &mut [f64], global_start: usize, key: PRNGKey, minval: f64, scale: f64) {
+    use std::simd::{Simd, num::SimdUint};
+
+    const LANES: usize = 8;
+    const KS_PARITY: u32 = 0x1BD1_1BDA;
+    const INV_2POW23: f64 = 1.0 / 8_388_608.0;
+
+    let [k0, k1] = key.0;
+    let ks2 = k0 ^ k1 ^ KS_PARITY;
+    let ksched = [k0, k1, ks2];
+
+    let k0v: Simd<u32, LANES> = Simd::splat(k0);
+    let k1v: Simd<u32, LANES> = Simd::splat(k1);
+    let lane_off: Simd<u32, LANES> = Simd::from_array(std::array::from_fn(|r| r as u32));
+    let inv2_23: Simd<f64, LANES> = Simd::splat(INV_2POW23);
+    let scalev: Simd<f64, LANES> = Simd::splat(scale);
+    let minv: Simd<f64, LANES> = Simd::splat(minval);
+    let sqrt2 = std::f64::consts::SQRT_2;
+
+    let n = out.len();
+    let chunks = n / LANES;
+    for c in 0..chunks {
+        let base = (global_start + c * LANES) as u32;
+        let mut x0 = k0v;
+        let mut x1 = (Simd::splat(base) + lane_off) + k1v;
+        for round in 0..NUM_ROUNDS {
+            x0 += x1;
+            let r = ROTATIONS[round % 8];
+            let rotated = (x1 << Simd::splat(r)) | (x1 >> Simd::splat(32 - r));
+            x1 = rotated ^ x0;
+            if (round + 1) % 4 == 0 {
+                let inject_idx = (round + 1) / 4;
+                x0 += Simd::splat(ksched[inject_idx % 3]);
+                x1 += Simd::splat(ksched[(inject_idx + 1) % 3].wrapping_add(inject_idx as u32));
+            }
+        }
+        let mantissa = (x0 ^ x1) >> Simd::splat(9_u32);
+        let unit = mantissa.cast::<f64>() * inv2_23;
+        let uniforms = (minv + unit * scalev).to_array();
+        for lane in 0..LANES {
+            out[c * LANES + lane] = sqrt2 * crate::arithmetic::erf_inv_approx(uniforms[lane]);
+        }
+    }
+
+    for (j, slot) in out.iter_mut().enumerate().skip(chunks * LANES) {
+        let i = (global_start + j) as u32;
+        let [a, b] = threefry2x32(key.0, [0, i]);
+        let mantissa = (a ^ b) >> 9;
+        let u = minval + f64::from(mantissa) * INV_2POW23 * scale;
+        *slot = sqrt2 * crate::arithmetic::erf_inv_approx(u);
+    }
+}
 
 fn random_normal_from_uniforms(uniforms: &[f64]) -> Vec<f64> {
     let count = uniforms.len();
@@ -2181,6 +2272,42 @@ mod tests {
         for threads in [2usize, 3, 7, 16, 64] {
             let threaded = random_normal_from_uniforms_with_threads(&uniforms, threads);
             assert_eq!(threaded, serial, "threads={threads}");
+        }
+    }
+
+    #[test]
+    fn fused_random_normal_matches_buffered_bits() {
+        let lo = f64::from(f32::from_bits((-1.0_f32).to_bits() - 1));
+        let hi = 1.0_f64;
+        for key in [
+            PRNGKey([0, 0]),
+            PRNGKey([7, 0]),
+            PRNGKey([0x9E37_79B9, 0x1234_5678]),
+            PRNGKey([u32::MAX, u32::MAX]),
+        ] {
+            for count in [
+                0usize,
+                1,
+                7,
+                8,
+                9,
+                64,
+                257,
+                4096,
+                2 * RANDOM_NORMAL_PARALLEL_MIN_ELEMS + 7,
+                70_003,
+            ] {
+                let fused = random_normal_fused(key, count, lo, hi);
+                let buffered = random_normal_buffered(key, count, lo, hi);
+                assert_eq!(fused.len(), buffered.len());
+                for (idx, (f, b)) in fused.iter().zip(buffered.iter()).enumerate() {
+                    assert_eq!(
+                        f.to_bits(),
+                        b.to_bits(),
+                        "key={key:?} count={count} idx={idx}"
+                    );
+                }
+            }
         }
     }
 

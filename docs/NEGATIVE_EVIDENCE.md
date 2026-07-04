@@ -2,6 +2,37 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - KEEP 1.17-1.29x: fused Threefry -> erfinv random_normal; fj widens JAX win 1.25x -> 1.49x (ProudSalmon)
+
+- Agent: ProudSalmon. Crate: `fj-lax`. Primitive family: `random_normal`, deliberately different from
+  the covered elementwise/FFT/scatter/gather paths. Land-or-dig audit found no measured July `.scratch`
+  / `.worktrees` win absent from `origin/main`; the visible off-main keep commits are ancestors or
+  explicitly recorded as already landed. This pass dug the RNG normal transform, where uniform already
+  wins but normal still paid a full uniform buffer write/read before `sqrt(2) * erfinv(u)`.
+- LEVER: fuse counter-based Threefry uniform generation directly into the normal output fill. Each output
+  uses the same absolute counter, same 23-bit mantissa scaling, and same pinned `erf_inv_approx`; it just
+  avoids materializing the intermediate `Vec<f64>` of uniforms. `FJ_RANDOM_NORMAL_BUFFERED=1` preserves
+  the old two-phase path as a same-binary A/B hook. Correctness is bit-for-bit against the old path
+  (`fused_random_normal_matches_buffered_bits`) and the existing normal SHA golden remains unchanged.
+- REQUESTED bench shape first:
+  `AGENT_NAME=ProudSalmon CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod rch exec -- cargo bench --release -p fj-lax --bench lax_baseline -- 'random/normal_4m_f64_vsjax$' ...`
+  Cargo rejected this workspace's `bench --release` form (`unexpected argument '--release'`), so the
+  measured release form was `cargo bench -p fj-lax --profile release --bench lax_baseline`.
+- MEASURED A/B (per-crate, same local fallback host/target dir after RCH had no admissible worker for the
+  buffered arm; remote fused row landed on cold `vmi1167313` and is discarded as non-comparable):
+
+| Row | Original buffered midpoint | Fused midpoint | Ratio vs ORIG | JAX comparator | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `random/normal_4m_f64_vsjax` | 42.488ms (`rch exec` local fallback) | 36.467ms (warm local fallback) | 1.17x faster | JAX 54.3ms: ORIG 1.28x faster, fused 1.49x faster | KEEP |
+| symmetric warm rerun | 46.876ms (`FJ_RANDOM_NORMAL_BUFFERED=1`) | 36.467ms | 1.29x faster | same | confirms direction |
+
+- Gates: `cargo test -p fj-lax --profile release random_normal --lib -- --nocapture` passed
+  (`fused_random_normal_matches_buffered_bits`, `threaded_random_normal_transform_matches_serial`,
+  `random_normal_threaded_golden_sha256`); focused conformance
+  `cargo test -p fj-conformance --profile release rng_determinism -- --nocapture` passed
+  `e2e_rng_determinism_full`; `cargo fmt --check -p fj-lax` and `git diff --check` clean. Pre-existing
+  `fj-lax` warnings are unrelated and were present in the focused builds.
+
 ## 2026-07-04 - scatter_add f64 BEATS JAX 1.69x (measured); all 4 alien-graveyard candidate primitives closed (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. Remote via rch, `--test-threads=1`. Dig conclusion for the
