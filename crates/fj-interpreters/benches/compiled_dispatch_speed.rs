@@ -1524,6 +1524,45 @@ fn build_covariance_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
     )
 }
 
+fn build_l2_norm_2d_jaxpr() -> Jaxpr {
+    let x = VarId(1);
+    let sq = VarId(2);
+    let s = VarId(3);
+    let out = VarId(4);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    Jaxpr::new(
+        vec![x],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(x), Atom::Var(x)],
+                outputs: smallvec::smallvec![sq],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(sq)],
+                outputs: smallvec::smallvec![s],
+                params: reduce_axis1,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Sqrt,
+                inputs: smallvec::smallvec![Atom::Var(s)],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_logsumexp_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
     let x = VarId(1);
     let max = VarId(2);
@@ -2318,6 +2357,16 @@ fn eval_covariance_2d_decomposed(a: &Value, b: &Value, rows: usize, cols: usize)
     eval_primitive(Primitive::Div, &[s, n], &empty).expect("covariance")
 }
 
+fn eval_l2_norm_2d_decomposed(input: &Value) -> Value {
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let empty = BTreeMap::new();
+    let sq = eval_primitive(Primitive::Mul, &[input.clone(), input.clone()], &empty)
+        .expect("square");
+    let s = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&sq), &reduce_axis1)
+        .expect("reduce sum sq");
+    eval_primitive(Primitive::Sqrt, std::slice::from_ref(&s), &empty).expect("l2_norm")
+}
+
 fn eval_logsumexp_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let bcast = BTreeMap::from([
@@ -3023,6 +3072,17 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     });
     group.bench_function("covariance_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| black_box(eval_jaxpr(black_box(&covariance_jaxpr), black_box(&covariance_args)).unwrap()))
+    });
+    let l2_norm_jaxpr = build_l2_norm_2d_jaxpr();
+    group.bench_function("l2_norm_2d/orig_decomposed_4096x1024", |b| {
+        b.iter(|| black_box(eval_l2_norm_2d_decomposed(black_box(&softmax_input))))
+    });
+    group.bench_function("l2_norm_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(black_box(&l2_norm_jaxpr), std::slice::from_ref(&softmax_input)).unwrap(),
+            )
+        })
     });
     let logsumexp_jaxpr = build_logsumexp_2d_jaxpr(rows, cols);
     group.bench_function("logsumexp_2d/orig_decomposed_4096x1024", |b| {

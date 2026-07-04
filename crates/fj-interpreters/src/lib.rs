@@ -1146,6 +1146,10 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) = try_eval_top_level_l2_norm_2d_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_cosine_similarity_2d_f64(jaxpr, const_values, args) {
         return result;
     }
@@ -2714,6 +2718,84 @@ fn try_eval_top_level_covariance_2d_f64(
     }
 
     let output = fj_lax::nn::covariance_2d(a_v, b_v, rows, cols);
+    Some(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32],
+            },
+            output,
+        )
+        .map(Value::Tensor)
+        .map(|value| vec![value])
+        .map_err(EvalError::InvalidTensor)
+        .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for the row-wise L2 (Euclidean / Frobenius) norm `sqrt(Σ x²)`
+/// (`jax.numpy.linalg.norm(x, axis=-1)`): the 3-equation graph `Mul(x,x) → ReduceSum(axis=1) → Sqrt`,
+/// one f64 [rows,cols] input, one [rows] output (rank-reducing). NO transcendentals (a sum-of-squares
+/// reduction + a correctly-rounded `Sqrt`), and the simplest graph in the reduction family — no `Div`
+/// or `BroadcastInDim`. The general fuser cannot fuse it (the reduction breaks the elementwise fuser),
+/// so the decomposed path materializes the full [rows,cols] squared intermediate plus the reduction
+/// Vec. Fused via the row-parallel `l2_norm_2d`, whose index-order sum-of-squares + `f64::sqrt` match
+/// the graph bit-for-bit. Finite dense rank-2 f64 only, else falls through.
+fn try_eval_top_level_l2_norm_2d_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 1
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 3
+        || args.len() != 1
+    {
+        return None;
+    }
+
+    let x = jaxpr.invars[0];
+    let out = jaxpr.outvars[0];
+    let [sq_eq, sum_eq, sqrt_eq] = jaxpr.equations.as_slice() else {
+        return None;
+    };
+
+    // sq = x * x (both operands the same var)
+    let sq = single_output_for_primitive(sq_eq, Primitive::Mul)?;
+    if sq_eq.inputs.as_slice() != [Atom::Var(x), Atom::Var(x)] {
+        return None;
+    }
+    // s = ReduceSum(sq, axis=1)
+    let s = single_output_for_param_primitive(sum_eq, Primitive::ReduceSum)?;
+    if sum_eq.inputs.as_slice() != [Atom::Var(sq)] || !axis1_reduce_params(&sum_eq.params) {
+        return None;
+    }
+    // out = Sqrt(s)
+    let norm = single_output_for_primitive(sqrt_eq, Primitive::Sqrt)?;
+    if sqrt_eq.inputs.as_slice() != [Atom::Var(s)] || norm != out {
+        return None;
+    }
+
+    let Value::Tensor(input) = &args[0] else {
+        return None;
+    };
+    if input.dtype != DType::F64 || input.shape.dims.len() != 2 {
+        return None;
+    }
+    let rows = input.shape.dims[0] as usize;
+    let cols = input.shape.dims[1] as usize;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+
+    let values = input.elements.as_f64_slice()?;
+    if !values.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::l2_norm_2d(values, rows, cols);
     Some(
         TensorValue::new_f64_values(
             Shape {
@@ -22670,6 +22752,86 @@ mod tests {
             .expect("nonfinite cosine falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite cosine");
+        assert_eq!(through_eval, through_generic);
+    }
+
+    fn make_l2_norm_2d_jaxpr() -> Jaxpr {
+        // The L2-norm graph carries no shape-bearing Div/Broadcast params; shape lives on the input.
+        let x = VarId(1);
+        let sq = VarId(2);
+        let s = VarId(3);
+        let out = VarId(4);
+        let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+        Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(x), Atom::Var(x)],
+                    outputs: smallvec![sq],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(sq)],
+                    outputs: smallvec![s],
+                    params: reduce_axis1,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sqrt,
+                    inputs: smallvec![Atom::Var(s)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn eval_top_level_l2_norm_2d_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        let data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.29).sin() * 4.0 - ((idx % cols) as f64) * 0.5)
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data,
+            )
+            .expect("dense f64 input"),
+        );
+        let jaxpr = make_l2_norm_2d_jaxpr();
+
+        let fast = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).expect("fast l2_norm");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[input]).expect("generic l2_norm");
+        assert_eq!(fast, generic);
+
+        let mut nonfinite_data: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.01).collect();
+        nonfinite_data[cols + 1] = f64::NAN;
+        let nonfinite = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                nonfinite_data,
+            )
+            .expect("dense nonfinite f64 input"),
+        );
+        let through_eval = eval_jaxpr(&jaxpr, std::slice::from_ref(&nonfinite))
+            .expect("nonfinite l2_norm falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite]).expect("generic nonfinite l2_norm");
         assert_eq!(through_eval, through_generic);
     }
 

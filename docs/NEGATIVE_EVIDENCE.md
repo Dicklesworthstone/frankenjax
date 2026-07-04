@@ -2,6 +2,46 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 5.86x vs ORIG: row-wise L2 (Euclidean/Frobenius) norm recognized as a fused (row-parallel) interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::l2_norm_2d`). Branches OUT of
+  the centered-moment sub-family into a structurally distinct, fundamental reduction: row-wise L2 norm
+  `‖x‖₂ = sqrt(Σ x²)` (`jax.numpy.linalg.norm(x, axis=-1)`). The SIMPLEST graph in the reduction
+  family — a 3-equation `Mul(x,x) → ReduceSum(axis=1) → Sqrt`, one f64 [rows,cols] input → one [rows]
+  output (rank-reducing), with NO `Div` and NO `BroadcastInDim` at all. NO transcendentals (sum-of-
+  squares + a correctly-rounded `Sqrt`). The general fuser cannot fuse it (the reduction breaks the
+  elementwise fuser), so the decomposed path materializes the full [rows,cols] squared intermediate
+  plus the reduction Vec. Worktree audit: HEAD==origin/main (my covariance tip 3c5f168f), no unlanded
+  win to land. NOTE ON NON-COLLISION: the fj-lax standalone `frobenius_norm`/`vector_norm` kernels are
+  already threaded (ledger 2026-06-28), but that is an ORTHOGONAL concern — this recognizes the
+  top-level decomposed JAXPR GRAPH `sqrt((x**2).sum(-1))` and bypasses per-equation dispatch +
+  intermediate materialization; the standalone primitive is never invoked here.
+- LEVER: a top-level 1-input superinstruction for the exact 3-eq finite dense f64 L2-norm graph,
+  computed via the row-parallel `l2_norm_2d`. BIT-IDENTICAL: `l2_norm_row` does an index-order sum of
+  `x[i]·x[i]` (matching `Mul(x,x)` then the per-row `ReduceSum`), then `f64::sqrt` (IEEE-754
+  correctly-rounded = the `Sqrt` primitive). Only the OUTER row loop is threaded, so per-row summation
+  order is preserved (unlike the threaded flat-buffer `frobenius_norm`, which reorders and is NOT
+  bit-identical). Finite dense rank-2 f64 only, else falls through (matching the graph's NaN/Inf
+  propagation via the generic path).
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed l2_norm_2d
+  -m 3 -s 20`, 4096x1024, x=softmax_input):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/l2_norm_2d/orig_decomposed_4096x1024` | 28.370 ms |
+  | `compiled_dispatch/l2_norm_2d/fast_eval_jaxpr_4096x1024` | 4.8447 ms |
+
+  Ratio vs ORIG: **0.1708x time / 5.86x faster** (worst-case CI 5.28x, best 6.49x; robustly ≥2x).
+  Smaller multiple than the centered moments (var/std/kurt ~13-15x) because the 3-eq decomposed
+  baseline is light (28.4 ms — only one [rows,cols] square + one reduce), so there is less
+  intermediate materialization to eliminate; the fused row kernel is 4.84 ms.
+- VALIDATION: `eval_top_level_l2_norm_2d_f64_matches_generic_and_preserves_edges` GREEN (fused==generic
+  bit-for-bit on mixed-sign random f64; nonfinite falls through to the generic path); fj-lax `nn::`
+  61/61 GREEN. Pre-existing INDEPENDENT RED (NOT this change): fj-interpreters
+  `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)` — this diff touches no
+  cbrt/arena code.
+
 ## 2026-07-04 - WIN 8.09x vs ORIG: row-wise population covariance recognized as a fused (row-parallel) 2-input interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::covariance_2d`). Extends the

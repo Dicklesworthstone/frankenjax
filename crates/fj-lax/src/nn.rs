@@ -732,6 +732,62 @@ pub fn covariance_2d(a: &[f64], b: &[f64], rows: usize, cols: usize) -> Vec<f64>
     result
 }
 
+/// Row-wise L2 (Euclidean / Frobenius) norm `sqrt(Σ x²)`, bit-identical to the decomposed
+/// `Mul(x,x) → ReduceSum → Sqrt` graph: an index-order sum of `x[i]·x[i]`, then `f64::sqrt`
+/// (IEEE-754 correctly-rounded = the `Sqrt` primitive). Callers guarantee a non-empty row.
+fn l2_norm_row(x: &[f64]) -> f64 {
+    let mut s = 0.0;
+    for &v in x {
+        s += v * v;
+    }
+    s.sqrt()
+}
+
+/// Row-wise L2 norm along the last axis of a 2D array, one scalar per row
+/// (`jax.numpy.linalg.norm(x, axis=-1)`). ROW-PARALLEL and BIT-IDENTICAL to the decomposed
+/// `Mul(x,x) → ReduceSum(axis=1) → Sqrt` graph: the per-row sum-of-squares is an index-order
+/// accumulation via [`l2_norm_row`] (matching the primitive `ReduceSum`), then correctly-rounded
+/// `f64::sqrt` (= the `Sqrt` primitive). Only the outer row loop is threaded (rows independent), above
+/// the `softmax_2d_thread_count` work gate, so per-row summation order is preserved. Used by the
+/// interpreter L2-norm superinstruction. NOTE: distinct from the threaded standalone `frobenius_norm`
+/// kernel (which reorders one flat sum across the whole buffer); here each row sums serially.
+#[must_use]
+pub fn l2_norm_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let _len = checked_2d_row_major_len("2D l2_norm", x, rows, cols);
+    let mut result = vec![0.0; rows];
+    if cols == 0 || rows == 0 {
+        return result;
+    }
+    let threads = softmax_2d_thread_count(rows, rows * cols);
+    if threads <= 1 {
+        for (i, slot) in result.iter_mut().enumerate() {
+            let start = i * cols;
+            *slot = l2_norm_row(&x[start..start + cols]);
+        }
+        return result;
+    }
+
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut out_rest: &mut [f64] = &mut result;
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let row_count = rows_per.min(rows - row0);
+            let (out_block, out_tail) = out_rest.split_at_mut(row_count);
+            out_rest = out_tail;
+            let x_block = &x[row0 * cols..(row0 + row_count) * cols];
+            row0 += row_count;
+            scope.spawn(move || {
+                for (k, out_slot) in out_block.iter_mut().enumerate() {
+                    let start = k * cols;
+                    *out_slot = l2_norm_row(&x_block[start..start + cols]);
+                }
+            });
+        }
+    });
+    result
+}
+
 /// Cosine similarity of a single pair of rows, `Σ(a·b) / (√Σa² · √Σb²)`, bit-identical to the
 /// decomposed `Mul → ReduceSum(dot) | Mul → ReduceSum(‖a‖²) → Sqrt | Mul → ReduceSum(‖b‖²) → Sqrt |
 /// Mul(denom) → Div` graph. The three dot/‖a‖²/‖b‖² accumulators are INDEPENDENT index-order sums, so
