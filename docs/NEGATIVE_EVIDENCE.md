@@ -2,6 +2,45 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - MEASURED gap sweep: FFT single-row is AT PARITY (stale "7-43x" corrected); complex transcendentals are the biggest elementwise gap (clog 6.88x), SIMD lever sized (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. Remote via rch (`CARGO_TARGET_DIR=.../blackthrush`),
+  `--test-threads=1` isolated. All numbers min-of-6/8, 16M elements unless noted.
+- FFT CORRECTION (actionable, overturns a stale ledger/memory claim): the note "FFT is MEASURED
+  7-43x slower than JAX" is STALE. `bench_fft_1d_pow2_vs_jax` (single-row 2^20 complex):
+  **fj 17.029ms vs JAX 15.95ms = 1.07x — at parity.** The radix-2/4 + SoA-tiled + mixed-radix
+  + Bluestein + plan-cache work landed since closed it. Single-row large-FFT is DONE; do NOT
+  re-open it as a "biggest gap". (Un-mined FFT micro-levers remain but are ≤7%: single-row
+  power-of-FOUR still routes `radix2_fft_1d_into` not the radix-4 plan; odd powers of two
+  8/32/…/8192 use pure radix-2 vs even powers' radix-4 — a split-radix ~25%-fewer-multiplies
+  lever, but chasing a 1.07x base is low-EV.)
+- BIGGEST elementwise gaps NOW (from a full `vs_jax` sweep), most-severe first:
+  - **complex transcendentals**: clog **6.88x** (154.77 vs 22.5), ctanh **3.88x** (152.77 vs
+    39.4), cexp **3.65x** (137.16 vs 37.6), csin **3.31x** (123.62 vs 37.3) — 16M Complex64.
+  - tan f64 2.46x (58.18/23.6); pow x^2.5 f32 2.32x (54.85/23.6); select 1.88x (27.75/14.78);
+    zeta f32 1.79x; select_n 4-way 1.76x (33.87/19.2); clamp f64 1.72x (32.03/18.58);
+    logaddexp f64 1.57x (63.80/40.6); asin f64 1.51x.
+- ROOT CAUSE of the complex-transcendental gap (measured, NOT a threading gap): the dense
+  complex unary map (`eval_unary_complex_map`, arithmetic.rs:6039) ALREADY threads across all
+  cores above `COMPLEX_UNARY_PARALLEL_MIN=8192` — so at 16M it IS fully threaded. The 3-7x
+  residual is that each element runs SCALAR libm (`complex_log` = `sq.ln()` + `im.atan2(re)`;
+  `complex_exp` = `exp(re)` + `sin_cos(im)`) while XLA runs SIMD-poly transcendentals across
+  lanes. fj's REAL transcendentals already SIMD this (log_f64x8, atan2_f64x8, sincos_reduce_f64x8
+  all present + tolerance-parity), but the COMPLEX path never composes them.
+- LEVER SIZED (not landed this turn — needs golden-parity validation + multiple build cycles
+  beyond a ~20-min window): a dedicated dense SoA f64x8 `complex_log` fast path in `eval_log`'s
+  complex branch (arithmetic.rs:6377), gathering re/im into `Simd<f64,8>`, computing
+  `sq = re²+im²`, `ln_mag = 0.5·log_f64x8(sq)` (normal-lane fast path, scalar `hypot().ln()`
+  tail for non-normal `sq`), `ang = atan2_f64x8(im, re)`, scatter back — threaded, tolerance-
+  equal (both blocks are ≤1-2 ulp, complex parity is tolerance). Est floor ≈ time(16M atan2 SIMD
+  ≈ 34ms) + time(16M ln SIMD ≈ 20ms) ≈ ~55ms => ~2.8x self-win (154→55), narrowing clog from
+  6.88x to ~2.4x. cexp/csin/ctanh get the sibling treatment (exp_*/sincos composition). This is
+  the single richest remaining elementwise vein and is NOT policy/host-blocked — it is a
+  bounded multi-build implementation task, the right next-session swing.
+- EV: the FFT correction is KEEP (prevents wasted effort re-opening a closed gap). The complex
+  SIMD lever is the identified high-EV target; deferred only for lack of build budget this turn.
+
+
 ## 2026-07-04 - WIN 3.97x: bf16/f16 argmax full-reduce (outer_count==1) THREADED — completes the argmax dtype family (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. File: `tensor_ops.rs` (`extremum_along_axis` half-float
