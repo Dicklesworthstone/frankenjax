@@ -33,6 +33,38 @@ Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
   `e2e_rng_determinism_full`; `cargo fmt --check -p fj-lax` and `git diff --check` clean. Pre-existing
   `fj-lax` warnings are unrelated and were present in the focused builds.
 
+## 2026-07-04 - WIN 4.79x vs ORIG: top-level finite f64 softmax graph recognized as a fused macro-op (BlackThrush)
+
+- Agent: BlackThrush (`AGENT_NAME=BlackThrush`). Crate: `fj-interpreters`. Scratch/worktree audit
+  found no fresh unlanded measured win: the apparent KEEP heads for erfc SIMD, mixed-radix FFT leaf
+  fusion, boxed complex FFT extraction, and complex BoolWords select were already present on `main`.
+- LEVER: dug a different primitive family from the fj-lax SIMD/FFT lanes: a top-level interpreter
+  superinstruction for the canonical finite dense f64 2D softmax graph
+  `ReduceMax(axis=1) -> BroadcastInDim(axis0) -> Sub -> Exp -> ReduceSum(axis=1) ->
+  BroadcastInDim(axis0) -> Div`. The recognizer is exact-shape/exact-graph only and requires finite
+  dense rank-2 f64 input; nonfinite or noncanonical programs fall through to the existing generic
+  interpreter, preserving edge semantics.
+- MEASURED per-crate bench (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod`,
+  worker `ovh-a`, `cargo bench -p fj-interpreters --profile release --bench
+  compiled_dispatch_speed softmax_2d -- --warm-up-time 1 --measurement-time 2 --sample-size 10
+  --noplot`; the requested `cargo bench --release` spelling was attempted first and Cargo rejected it
+  as an unexpected argument):
+
+  | row | midpoint |
+  | --- | ---: |
+  | `compiled_dispatch/softmax_2d/orig_decomposed_4096x1024` | 49.957 ms |
+  | `compiled_dispatch/softmax_2d/fast_eval_jaxpr_4096x1024` | 10.434 ms |
+
+  Ratio vs ORIG: **0.209x time / 4.79x faster**. Existing JAX oracle entry for the same f64
+  4096x1024 shape is **4.79 ms**, so the old decomposed interpreter path was **10.43x slower than
+  JAX** and this candidate is **2.18x slower than JAX** while removing 79.1% of interpreter time for
+  the canonical decomposed softmax graph.
+- VALIDATION: focused unit test
+  `eval_top_level_softmax_2d_f64_matches_generic_and_preserves_edges` passed; `cargo fmt -p
+  fj-interpreters --check` passed; `cargo clippy -p fj-interpreters --profile release --all-targets
+  --no-deps -- -D warnings` passed for the touched crate (dependency `fj-lax` still emits existing
+  warnings); `rch exec -- cargo test -p fj-conformance --profile release` passed on `ovh-a`.
+
 ## 2026-07-04 - scatter_add f64 BEATS JAX 1.69x (measured); all 4 alien-graveyard candidate primitives closed (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. Remote via rch, `--test-threads=1`. Dig conclusion for the

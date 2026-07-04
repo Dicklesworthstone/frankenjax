@@ -1101,6 +1101,10 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) = try_eval_top_level_softmax_2d_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_scalar_half_arith(jaxpr, const_values, args) {
         return result;
     }
@@ -1251,6 +1255,127 @@ fn try_eval_top_level_scalar_half_arith(
         Literal::F16Bits(out_bits)
     };
     Some(Ok(vec![Value::Scalar(literal)]))
+}
+
+fn try_eval_top_level_softmax_2d_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 1
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 7
+        || args.len() != 1
+    {
+        return None;
+    }
+
+    let x = jaxpr.invars[0];
+    let out = jaxpr.outvars[0];
+    let [
+        max_eq,
+        max_bcast_eq,
+        sub_eq,
+        exp_eq,
+        sum_eq,
+        sum_bcast_eq,
+        div_eq,
+    ] = jaxpr.equations.as_slice()
+    else {
+        return None;
+    };
+
+    let max = single_output_for_param_primitive(max_eq, Primitive::ReduceMax)?;
+    if max_eq.inputs.as_slice() != [Atom::Var(x)] || !axis1_reduce_params(&max_eq.params) {
+        return None;
+    }
+
+    let max_bcast = single_output_for_param_primitive(max_bcast_eq, Primitive::BroadcastInDim)?;
+    if max_bcast_eq.inputs.as_slice() != [Atom::Var(max)]
+        || !rank2_axis0_broadcast_params(&max_bcast_eq.params)
+    {
+        return None;
+    }
+
+    let shifted = single_output_for_primitive(sub_eq, Primitive::Sub)?;
+    if sub_eq.inputs.as_slice() != [Atom::Var(x), Atom::Var(max_bcast)] {
+        return None;
+    }
+
+    let exp = single_output_for_primitive(exp_eq, Primitive::Exp)?;
+    if exp_eq.inputs.as_slice() != [Atom::Var(shifted)] {
+        return None;
+    }
+
+    let sum = single_output_for_param_primitive(sum_eq, Primitive::ReduceSum)?;
+    if sum_eq.inputs.as_slice() != [Atom::Var(exp)] || !axis1_reduce_params(&sum_eq.params) {
+        return None;
+    }
+
+    let sum_bcast = single_output_for_param_primitive(sum_bcast_eq, Primitive::BroadcastInDim)?;
+    if sum_bcast_eq.inputs.as_slice() != [Atom::Var(sum)]
+        || sum_bcast_eq.params != max_bcast_eq.params
+    {
+        return None;
+    }
+
+    let div = single_output_for_primitive(div_eq, Primitive::Div)?;
+    if div != out || div_eq.inputs.as_slice() != [Atom::Var(exp), Atom::Var(sum_bcast)] {
+        return None;
+    }
+
+    let Value::Tensor(input) = &args[0] else {
+        return None;
+    };
+    if input.dtype != DType::F64 || input.shape.dims.len() != 2 {
+        return None;
+    }
+    let rows = input.shape.dims[0] as usize;
+    let cols = input.shape.dims[1] as usize;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+    let expected_shape = format!("{rows},{cols}");
+    if max_bcast_eq.params.get("shape").map(String::as_str) != Some(expected_shape.as_str()) {
+        return None;
+    }
+
+    let values = input.elements.as_f64_slice()?;
+    if !values.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::softmax_2d(values, rows, cols);
+    Some(
+        TensorValue::new_f64_values(input.shape.clone(), output)
+            .map(Value::Tensor)
+            .map(|value| vec![value])
+            .map_err(EvalError::InvalidTensor)
+            .map_err(InterpreterError::Primitive),
+    )
+}
+
+fn axis1_reduce_params(params: &std::collections::BTreeMap<String, String>) -> bool {
+    params.len() == 1 && params.get("axes").map(String::as_str) == Some("1")
+}
+
+fn rank2_axis0_broadcast_params(params: &std::collections::BTreeMap<String, String>) -> bool {
+    params.len() == 2 && params.get("broadcast_dimensions").map(String::as_str) == Some("0")
+}
+
+fn single_output_for_param_primitive(equation: &Equation, primitive: Primitive) -> Option<VarId> {
+    if equation.primitive == primitive
+        && equation.sub_jaxprs.is_empty()
+        && equation.effects.is_empty()
+        && equation.outputs.len() == 1
+    {
+        Some(equation.outputs[0])
+    } else {
+        None
+    }
 }
 
 fn single_output_for_primitive(equation: &Equation, primitive: Primitive) -> Option<VarId> {
@@ -2033,15 +2158,15 @@ fn apply_f64_scalar_adds_simd(values: &mut [f64], adds: &[f64]) {
     use std::simd::Simd;
 
     const LANES: usize = 8;
-    let mut chunks = values.chunks_exact_mut(LANES);
-    for chunk in &mut chunks {
+    let (chunks, remainder) = values.as_chunks_mut::<LANES>();
+    for chunk in chunks {
         let mut lanes = Simd::<f64, LANES>::from_slice(chunk);
         for &add in adds {
             lanes += Simd::splat(add);
         }
         chunk.copy_from_slice(lanes.as_array());
     }
-    for value in chunks.into_remainder() {
+    for value in remainder {
         for &add in adds {
             *value += add;
         }
@@ -12358,6 +12483,85 @@ mod tests {
         )
     }
 
+    fn make_softmax_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
+        let x = VarId(1);
+        let max = VarId(2);
+        let max_b = VarId(3);
+        let shifted = VarId(4);
+        let exp = VarId(5);
+        let sum = VarId(6);
+        let sum_b = VarId(7);
+        let out = VarId(8);
+        let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+        let bcast = BTreeMap::from([
+            ("shape".to_owned(), format!("{rows},{cols}")),
+            ("broadcast_dimensions".to_owned(), "0".to_owned()),
+        ]);
+        Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::ReduceMax,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![max],
+                    params: reduce_axis1.clone(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::BroadcastInDim,
+                    inputs: smallvec![Atom::Var(max)],
+                    outputs: smallvec![max_b],
+                    params: bcast.clone(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sub,
+                    inputs: smallvec![Atom::Var(x), Atom::Var(max_b)],
+                    outputs: smallvec![shifted],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Exp,
+                    inputs: smallvec![Atom::Var(shifted)],
+                    outputs: smallvec![exp],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(exp)],
+                    outputs: smallvec![sum],
+                    params: reduce_axis1,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::BroadcastInDim,
+                    inputs: smallvec![Atom::Var(sum)],
+                    outputs: smallvec![sum_b],
+                    params: bcast,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Div,
+                    inputs: smallvec![Atom::Var(exp), Atom::Var(sum_b)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
     fn make_scan_body_f32_add_emit_carry_jaxpr() -> Jaxpr {
         Jaxpr::new(
             vec![VarId(1), VarId(2)],
@@ -18350,6 +18554,46 @@ mod tests {
             digest,
             "2605a56fa3e47ffab29ebca2c7ce5605d03f513c40995213043a4cb123dbc434"
         );
+    }
+
+    #[test]
+    fn eval_top_level_softmax_2d_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        let data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.37).sin() * 8.0 - ((idx % cols) as f64) * 0.125)
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data,
+            )
+            .expect("dense f64 input"),
+        );
+        let jaxpr = make_softmax_2d_jaxpr(rows, cols);
+
+        let fast = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).expect("fast softmax");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[input]).expect("generic softmax");
+        assert_eq!(fast, generic);
+
+        let mut nonfinite_data: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.01).collect();
+        nonfinite_data[cols + 1] = f64::NAN;
+        let nonfinite = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                nonfinite_data,
+            )
+            .expect("dense nonfinite f64 input"),
+        );
+        let through_eval = eval_jaxpr(&jaxpr, std::slice::from_ref(&nonfinite))
+            .expect("nonfinite softmax falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite]).expect("generic nonfinite softmax");
+        assert_eq!(through_eval, through_generic);
     }
 
     #[test]
