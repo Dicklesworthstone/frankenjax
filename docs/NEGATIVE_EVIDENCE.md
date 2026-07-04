@@ -2,6 +2,39 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 5.34x vs ORIG: GEGLU gated-MLP unit recognized as a fused (threaded) 2-input interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ `fj-lax::nn::geglu`). Genuinely different from the
+  just-shipped SwiGLU (silu gate) and the single-input activation/reduction macro-ops: GEGLU =
+  `gelu(a) * b` = `(0.5·a·(1 + erf(a/√2))) · b`, the gated FFN of T5-v1.1 / GLM / PaLM-variant blocks
+  (erf-gelu gate instead of silu). A TWO-input, 6-equation graph
+  `Div(a,√2) → Erf → Add(1, ·) → Mul(a,0.5) → Mul → Mul(·, b)` — the exact gelu-erf subgraph on `a`
+  plus a final `Mul` by `b`. The general fuser cannot fuse it (`Erf` ∉ `cheap_op`), so the decomposed
+  path materializes 6 intermediate [rows,cols] Vecs. Worktree audit: HEAD==origin/main, no unlanded
+  win.
+- LEVER: a top-level 2-input superinstruction for the exact 6-eq finite dense f64 GEGLU graph,
+  computed in one threaded `nn::geglu` pass (reuses the `threaded_f64_zip` 2-slice helper landed with
+  swiglu). BIT-IDENTICAL: `geglu` reuses `gelu_erf`'s exact `(a·0.5)·(1 + erf_approx(a/√2))` grouping
+  (its scalar `erf_approx` is bit-identical to the SIMD `erf_f64x8` the `Erf` primitive dispatches —
+  proven by the GELU superinstruction) then the per-element `Mul` by `b`. Recognizer enforces `Div`
+  numerator = gate `a` and matches √2/1.0/0.5 by `to_bits`; `Add`/`Mul` commutative operands accepted
+  either order; both inputs F64 with identical shapes; finite dense only, else falls through.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed geglu -m 3 -s 20`,
+  4096x1024, a=softmax_input / b=layer_norm_input; TIGHT CIs → low variance):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/geglu/orig_decomposed_4096x1024` | 83.952 ms |
+  | `compiled_dispatch/geglu/fast_eval_jaxpr_4096x1024` | 15.707 ms |
+
+  Ratio vs ORIG: **0.187x time / 5.34x faster** (worst-case CI 5.23x, best 5.46x; robustly ≥2x).
+- VALIDATION: `eval_top_level_geglu_f64_matches_generic_and_preserves_edges` GREEN (fused==generic
+  bit-for-bit on random f64; nonfinite gate falls through); fj-lax `nn::` 61/61 GREEN; all 13
+  superinstruction parity tests GREEN. Pre-existing INDEPENDENT RED (NOT this change): fj-interpreters
+  `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)` — this diff touches no
+  cbrt/arena code.
+
 ## 2026-07-04 - WIN 5.56x vs ORIG: SwiGLU gated-MLP unit recognized as a fused (threaded) 2-input interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ `fj-lax::nn::swiglu` / new `threaded_f64_zip`).

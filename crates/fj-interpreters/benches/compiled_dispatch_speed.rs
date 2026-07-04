@@ -419,6 +419,73 @@ fn build_softplus_jaxpr() -> Jaxpr {
     )
 }
 
+fn build_geglu_jaxpr() -> Jaxpr {
+    let a = VarId(1);
+    let b = VarId(2);
+    let arg = VarId(3);
+    let e = VarId(4);
+    let one_plus = VarId(5);
+    let half_a = VarId(6);
+    let gelu_a = VarId(7);
+    let out = VarId(8);
+    let sqrt2 = Literal::from_f64(2.0_f64.sqrt());
+    Jaxpr::new(
+        vec![a, b],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Div,
+                inputs: smallvec::smallvec![Atom::Var(a), Atom::Lit(sqrt2)],
+                outputs: smallvec::smallvec![arg],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Erf,
+                inputs: smallvec::smallvec![Atom::Var(arg)],
+                outputs: smallvec::smallvec![e],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![Atom::Lit(Literal::from_f64(1.0)), Atom::Var(e)],
+                outputs: smallvec::smallvec![one_plus],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(a), Atom::Lit(Literal::from_f64(0.5))],
+                outputs: smallvec::smallvec![half_a],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(half_a), Atom::Var(one_plus)],
+                outputs: smallvec::smallvec![gelu_a],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(gelu_a), Atom::Var(b)],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_swiglu_jaxpr() -> Jaxpr {
     let a = VarId(1);
     let b = VarId(2);
@@ -1036,6 +1103,23 @@ fn eval_swiglu_decomposed(a: &Value, b: &Value) -> Value {
     eval_primitive(Primitive::Mul, &[silu_a, b.clone()], &empty).expect("mul")
 }
 
+fn eval_geglu_decomposed(a: &Value, b: &Value) -> Value {
+    let empty = BTreeMap::new();
+    let arg = eval_primitive(
+        Primitive::Div,
+        &[a.clone(), Value::scalar_f64(2.0_f64.sqrt())],
+        &empty,
+    )
+    .expect("div");
+    let e = eval_primitive(Primitive::Erf, std::slice::from_ref(&arg), &empty).expect("erf");
+    let one_plus =
+        eval_primitive(Primitive::Add, &[Value::scalar_f64(1.0), e], &empty).expect("add one");
+    let half_a =
+        eval_primitive(Primitive::Mul, &[a.clone(), Value::scalar_f64(0.5)], &empty).expect("half");
+    let gelu_a = eval_primitive(Primitive::Mul, &[half_a, one_plus], &empty).expect("gelu");
+    eval_primitive(Primitive::Mul, &[gelu_a, b.clone()], &empty).expect("gate")
+}
+
 fn eval_logsumexp_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let bcast = BTreeMap::from([
@@ -1640,6 +1724,18 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     });
     group.bench_function("swiglu/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| black_box(eval_jaxpr(black_box(&swiglu_jaxpr), black_box(&swiglu_args)).unwrap()))
+    });
+    let geglu_jaxpr = build_geglu_jaxpr();
+    group.bench_function("geglu/orig_decomposed_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_geglu_decomposed(
+                black_box(&swiglu_args[0]),
+                black_box(&swiglu_args[1]),
+            ))
+        })
+    });
+    group.bench_function("geglu/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| black_box(eval_jaxpr(black_box(&geglu_jaxpr), black_box(&swiglu_args)).unwrap()))
     });
     for &(rows, cols) in &[(4096usize, 1024usize), (16384, 1024)] {
         let arg: Vec<f64> = (0..cols).map(|idx| idx as f64 * 0.001 + 1.0).collect();

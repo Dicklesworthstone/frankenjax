@@ -160,6 +160,21 @@ pub fn swiglu(a: &[f64], b: &[f64]) -> Vec<f64> {
     threaded_f64_zip(a, b, |av, bv| (av / (1.0 + (-av).exp())) * bv)
 }
 
+/// GEGLU gate: `gelu(a) * b` = `(0.5·a·(1 + erf(a/√2))) · b`, elementwise over two equal-length
+/// inputs. The gated-MLP unit of T5-v1.1 / GLM / PaLM-variant FFN blocks. BIT-IDENTICAL to the
+/// decomposed `Div(a,√2) → Erf → Add(1) → Mul(a,0.5) → Mul → Mul(·,b)` graph: reuses [`gelu_erf`]'s
+/// exact `(a·0.5)·(1 + erf_approx(a/√2))` grouping (its `erf_approx` is bit-identical to the SIMD
+/// `erf_f64x8` the `Erf` primitive dispatches) then the per-element `Mul` by `b`. Used by the
+/// interpreter geglu superinstruction. Callers guarantee `a.len() == b.len()`.
+#[must_use]
+pub fn geglu(a: &[f64], b: &[f64]) -> Vec<f64> {
+    let sqrt2 = 2.0_f64.sqrt();
+    threaded_f64_zip(a, b, move |av, bv| {
+        let e = crate::arithmetic::erf_approx(av / sqrt2);
+        ((av * 0.5) * (1.0 + e)) * bv
+    })
+}
+
 /// Hard SiLU / Hard Swish: x * hard_sigmoid(x)
 ///
 /// Matches `jax.nn.hard_silu(x)` and `jax.nn.hard_swish(x)`.

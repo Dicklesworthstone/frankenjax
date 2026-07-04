@@ -1145,6 +1145,10 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) = try_eval_top_level_geglu_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_scalar_half_arith(jaxpr, const_values, args) {
         return result;
     }
@@ -2453,6 +2457,118 @@ fn try_eval_top_level_swiglu_f64(
     }
 
     let output = fj_lax::nn::swiglu(a_v, b_v);
+    Some(
+        TensorValue::new_f64_values(a_t.shape.clone(), output)
+            .map(Value::Tensor)
+            .map(|value| vec![value])
+            .map_err(EvalError::InvalidTensor)
+            .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for the GEGLU gated-MLP unit `gelu(a) * b` =
+/// `(0.5·a·(1 + erf(a/√2))) · b` (the gated FFN of T5-v1.1 / GLM / PaLM variants): the 6-equation,
+/// TWO-input graph `Div(a, √2) → Erf → Add(1, ·) → Mul(a, 0.5) → Mul → Mul(·, b)` — the exact
+/// gelu-erf subgraph on `a` followed by a per-element `Mul` by `b`. Pure elementwise over two
+/// equal-shape f64 inputs; the general fuser cannot fuse it because `Erf` ∉ `cheap_op`. Finite dense
+/// f64 only, else falls through. Bit-identical: `fj_lax::nn::geglu` reuses `gelu_erf`'s exact
+/// `(a·0.5)·(1 + erf_approx(a/√2))` grouping (its `erf_approx` is bit-identical to the SIMD
+/// `erf_f64x8` that the `Erf` primitive dispatches) then the `Mul` by `b` (commutative → order-
+/// agnostic; `Add(1,·)`/`Mul(a,0.5)` likewise; `Div` numerator enforced = `a`).
+fn try_eval_top_level_geglu_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 2
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 6
+        || args.len() != 2
+    {
+        return None;
+    }
+
+    let a = jaxpr.invars[0];
+    let b = jaxpr.invars[1];
+    let out = jaxpr.outvars[0];
+    let [div_eq, erf_eq, add_eq, half_eq, gelu_mul_eq, gate_mul_eq] = jaxpr.equations.as_slice()
+    else {
+        return None;
+    };
+
+    // Div(a, √2)
+    let arg = single_output_for_primitive(div_eq, Primitive::Div)?;
+    let [Atom::Var(div_lhs), div_rhs] = div_eq.inputs.as_slice() else {
+        return None;
+    };
+    if *div_lhs != a || f64_literal(div_rhs)?.to_bits() != 2.0_f64.sqrt().to_bits() {
+        return None;
+    }
+    // Erf(arg)
+    let e = single_output_for_primitive(erf_eq, Primitive::Erf)?;
+    if erf_eq.inputs.as_slice() != [Atom::Var(arg)] {
+        return None;
+    }
+    // Add(1, e) (either order)
+    let one_plus = single_output_for_primitive(add_eq, Primitive::Add)?;
+    let add_const = match add_eq.inputs.as_slice() {
+        [Atom::Var(v), atom] if *v == e => f64_literal(atom),
+        [atom, Atom::Var(v)] if *v == e => f64_literal(atom),
+        _ => None,
+    };
+    if add_const?.to_bits() != 1.0_f64.to_bits() {
+        return None;
+    }
+    // Mul(a, 0.5) (either order)
+    let half_a = single_output_for_primitive(half_eq, Primitive::Mul)?;
+    let half_const = match half_eq.inputs.as_slice() {
+        [Atom::Var(v), atom] if *v == a => f64_literal(atom),
+        [atom, Atom::Var(v)] if *v == a => f64_literal(atom),
+        _ => None,
+    };
+    if half_const?.to_bits() != 0.5_f64.to_bits() {
+        return None;
+    }
+    // Mul(half_a, one_plus) → gelu_a (either order; commutative → bit-identical)
+    let gelu_a = single_output_for_primitive(gelu_mul_eq, Primitive::Mul)?;
+    let gelu_ok = matches!(
+        gelu_mul_eq.inputs.as_slice(),
+        [Atom::Var(x), Atom::Var(y)]
+            if (*x == half_a && *y == one_plus) || (*x == one_plus && *y == half_a)
+    );
+    if !gelu_ok {
+        return None;
+    }
+    // Mul(gelu_a, b) → out (either order)
+    let product = single_output_for_primitive(gate_mul_eq, Primitive::Mul)?;
+    let gate_ok = matches!(
+        gate_mul_eq.inputs.as_slice(),
+        [Atom::Var(x), Atom::Var(y)]
+            if (*x == gelu_a && *y == b) || (*x == b && *y == gelu_a)
+    );
+    if product != out || !gate_ok {
+        return None;
+    }
+
+    let Value::Tensor(a_t) = &args[0] else {
+        return None;
+    };
+    let Value::Tensor(b_t) = &args[1] else {
+        return None;
+    };
+    if a_t.dtype != DType::F64 || b_t.dtype != DType::F64 || a_t.shape.dims != b_t.shape.dims {
+        return None;
+    }
+    let a_v = a_t.elements.as_f64_slice()?;
+    let b_v = b_t.elements.as_f64_slice()?;
+    if !a_v.iter().all(|value| value.is_finite()) || !b_v.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::geglu(a_v, b_v);
     Some(
         TensorValue::new_f64_values(a_t.shape.clone(), output)
             .map(Value::Tensor)
@@ -21006,6 +21122,116 @@ mod tests {
             eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()]).expect("nonfinite swiglu falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite swiglu");
+        assert_eq!(through_eval, through_generic);
+    }
+
+    fn make_geglu_jaxpr() -> Jaxpr {
+        let a = VarId(1);
+        let b = VarId(2);
+        let arg = VarId(3);
+        let e = VarId(4);
+        let one_plus = VarId(5);
+        let half_a = VarId(6);
+        let gelu_a = VarId(7);
+        let out = VarId(8);
+        let sqrt2 = Literal::from_f64(2.0_f64.sqrt());
+        Jaxpr::new(
+            vec![a, b],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Div,
+                    inputs: smallvec![Atom::Var(a), Atom::Lit(sqrt2)],
+                    outputs: smallvec![arg],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Erf,
+                    inputs: smallvec![Atom::Var(arg)],
+                    outputs: smallvec![e],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Lit(Literal::from_f64(1.0)), Atom::Var(e)],
+                    outputs: smallvec![one_plus],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(a), Atom::Lit(Literal::from_f64(0.5))],
+                    outputs: smallvec![half_a],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(half_a), Atom::Var(one_plus)],
+                    outputs: smallvec![gelu_a],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(gelu_a), Atom::Var(b)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn eval_top_level_geglu_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        let a_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.27).sin() * 4.0 - 1.5)
+            .collect();
+        let b_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.19).cos() * 2.0 + 0.25)
+            .collect();
+        let dims = vec![rows as u32, cols as u32];
+        let a = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_data).expect("gate input"),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, b_data).expect("value input"),
+        );
+        let jaxpr = make_geglu_jaxpr();
+
+        let fast = eval_jaxpr(&jaxpr, &[a.clone(), b.clone()]).expect("fast geglu");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[a, b]).expect("generic geglu");
+        assert_eq!(fast, generic);
+
+        let mut a_nonfinite: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.01).collect();
+        a_nonfinite[cols + 1] = f64::NAN;
+        let a_nf = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_nonfinite)
+                .expect("nonfinite gate"),
+        );
+        let b_ok = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape { dims },
+                (0..rows * cols).map(|idx| idx as f64 * 0.02).collect(),
+            )
+            .expect("finite value"),
+        );
+        let through_eval =
+            eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()]).expect("nonfinite geglu falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite geglu");
         assert_eq!(through_eval, through_generic);
     }
 
