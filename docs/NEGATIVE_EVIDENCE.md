@@ -2,6 +2,40 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - reduce_sum STALE-LOSS RESOLVED (now BEATS JAX 1.6-2.7x) + SIMD-per-thread partial NO-SHIP 0.98x (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. Bench: `reduction::tests::bench_full_reduce_vs_jax`
+  (16M f64 full `ReduceSum`), remote via rch (`CARGO_TARGET_DIR=.../blackthrush`).
+- STALE-LEDGER CORRECTION of `frankenjax-cc-reduce-sum-jax-loss` (2026-06-19, "reduce_sum
+  LOSES 2.87x to JAX", 13.36ms single-accumulator sequential fold). That entry is now
+  **RESOLVED**: `threaded_tree_reduce_sum_f64` (8-thread tree, tolerance-legal on the
+  n>=CHEAP_BINARY_PARALLEL_MIN=8.4M path) shipped AFTER it. Measured today:
+  **fj `sum` f64 16M = 2.928ms** (loaded worker) / **1.712ms** (fresh worker) vs the
+  entry's recorded **JAX `jnp.sum` = 4.65ms** => **fj BEATS JAX 1.59x-2.71x.** The
+  ledger's "2.87x LOSS, blocked on maintainer golden re-baseline" is obsolete: the
+  threaded path already reassociates within tolerance while the sub-8.4M serial path
+  stays a strict ascending scalar fold, so the frozen bit-exact `reduce_sum_64k` golden
+  and `dense_f64_reduce_sum_full_fast_path_bit_identical_to_literal_path` guard are
+  untouched. No maintainer decision was needed; the win was already banked.
+- NO-SHIP lever probed: the threaded per-thread partial is still a SCALAR dependent
+  `acc += x` chain, whereas the `simd_max` reduce (`max` f64 16M = 2.292ms) beats the
+  scalar-partial `sum` on identical 128MB traffic — suggesting per-thread SIMD ILP could
+  reach the max BW floor. Implemented `sum_chunk_f64_simd` (four independent `f64x8`
+  accumulators + horizontal `reduce_sum`, 32-wide add ILP, threaded path only so the
+  golden/guard stay pinned) and A/B'd it same-invocation (min-of-8, contention-immune):
+  - **scalar-per-thread partial: 1.907ms** vs **SIMD f64x8-4acc per-thread: 1.950ms**
+    => **0.98x (SIMD 1.02x SLOWER — NOISE, straddles 1.0).**
+- EV decision: **NO-SHIP, reverted** (reduction.rs byte-identical to HEAD). The threaded
+  16M sum is aggregate-DRAM-BW-bound at the 8-thread cap, so extra per-thread add ILP
+  does not help — the exact class TealMarten measured yesterday for the min/max reduce
+  (reduction.rs:138 "tried 4 INDEPENDENT accumulators ... 0.98-1.22x ... DO-NOT re-attempt
+  multi-accumulator reduce ILP; the 2x JAX gap is multi-core aggregate BW"). This confirms
+  that DO-NOT generalizes from min/max to sum/prod. The `max<sum` gap (2.29 vs 2.93 on the
+  loaded worker) is the thread-count difference (max uses uncapped `work_scaled_threads`=32,
+  sum caps at `.min(8)`), NOT a per-thread compute deficit — and raising the sum cap is
+  itself a measured DO-NOT (evidence ledger: "DRAM saturates at ~8 cores ... Do not raise
+  the 8-thread cap"). Do NOT re-probe SIMD-per-thread or thread-cap on f64/f32/prod reduce.
+
 ## 2026-07-04 - NO-SHIP (0.94x): scatter-add borrowed dense indices regresses vs original clone path (BlackThrush)
 
 Followed up the 2026-07-03 f64 scatter-add residual, whose prior end-to-end row was **3.74ms** vs JAX
