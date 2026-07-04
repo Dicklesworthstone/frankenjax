@@ -1017,6 +1017,20 @@ const GAMMA_PARALLEL_MIN_ELEMS: usize = 1 << 13;
 /// (guarded by `gamma_map_parallel_matches_serial_bits`). `FJ_GAMMA_SERIAL` forces the
 /// serial reference for a same-invocation A/B.
 fn gamma_one_map_parallel(keys: Vec<PRNGKey>, alpha: f64, log_space: bool) -> Vec<f64> {
+    gamma_one_map_parallel_indexed(&keys, log_space, |_| alpha)
+}
+
+/// Generalization of [`gamma_one_map_parallel`] where element `i` draws with shape
+/// `alpha_of(i)` — for `random_dirichlet`, whose element `i*k+j` uses `alpha[j]`. Output
+/// `i` depends ONLY on `keys[i]` and `alpha_of(i)` (no shared state), so any thread
+/// partition is BIT-IDENTICAL to the serial index map (guarded by
+/// `gamma_map_parallel_matches_serial_bits` for the constant case and
+/// `dirichlet_threaded_matches_serial_bits` for the indexed case). `FJ_GAMMA_SERIAL`
+/// forces the serial reference for a same-invocation A/B.
+fn gamma_one_map_parallel_indexed<F>(keys: &[PRNGKey], log_space: bool, alpha_of: F) -> Vec<f64>
+where
+    F: Fn(usize) -> f64 + Sync,
+{
     let count = keys.len();
     let threads =
         if count >= GAMMA_PARALLEL_MIN_ELEMS && std::env::var_os("FJ_GAMMA_SERIAL").is_none() {
@@ -1028,15 +1042,14 @@ fn gamma_one_map_parallel(keys: Vec<PRNGKey>, alpha: f64, log_space: bool) -> Ve
             1
         };
     if threads <= 1 {
-        return keys
-            .into_iter()
-            .map(|k| gamma_one(k, alpha, log_space))
+        return (0..count)
+            .map(|i| gamma_one(keys[i], alpha_of(i), log_space))
             .collect();
     }
     let mut out = vec![0.0_f64; count];
     let chunk = count.div_ceil(threads);
     std::thread::scope(|scope| {
-        let keys_ref = &keys;
+        let alpha_of = &alpha_of;
         let mut rest: &mut [f64] = out.as_mut_slice();
         let mut start = 0usize;
         while start < count {
@@ -1046,7 +1059,8 @@ fn gamma_one_map_parallel(keys: Vec<PRNGKey>, alpha: f64, log_space: bool) -> Ve
             let s = start;
             scope.spawn(move || {
                 for (j, slot) in blk.iter_mut().enumerate() {
-                    *slot = gamma_one(keys_ref[s + j], alpha, log_space);
+                    let idx = s + j;
+                    *slot = gamma_one(keys[idx], alpha_of(idx), log_space);
                 }
             });
             start += len;
@@ -1416,16 +1430,18 @@ pub fn random_dirichlet(key: PRNGKey, count: usize, alpha: &[f64]) -> Vec<f64> {
     // log-space normalize. Replaces the prior plain-gamma + sequential-split + direct
     // ratio, which matched neither the algorithm nor JAX's key schedule.
     let keys = random_split_n(key, output_len);
+    // The per-element loggamma draw (element i*k+j uses alpha[j]) is the cost; each is an
+    // independent `gamma_one` rejection loop, so thread it — bit-identical because idx%k == j
+    // for idx = i*k+j (guard `dirichlet_threaded_matches_serial_bits`). The per-row softmax
+    // below is cheap and stays serial.
+    let log_g_all = gamma_one_map_parallel_indexed(&keys, true, |idx| alpha[idx % k]);
     let mut result = Vec::with_capacity(output_len);
     for i in 0..count {
         let base = i * k;
-        let mut log_g = Vec::with_capacity(k);
-        for (j, &a) in alpha.iter().enumerate() {
-            log_g.push(gamma_one(keys[base + j], a, true));
-        }
+        let row = &log_g_all[base..base + k];
         // softmax over the row: exp(x - max) / sum(exp(x - max)).
-        let max = log_g.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let exps: Vec<f64> = log_g.iter().map(|&x| (x - max).exp()).collect();
+        let max = row.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let exps: Vec<f64> = row.iter().map(|&x| (x - max).exp()).collect();
         let sum: f64 = exps.iter().sum();
         for e in exps {
             result.push(e / sum);
@@ -1562,6 +1578,71 @@ mod tests {
             1226.0 / (g04_thr * 1e3),
             beta_thr * 1e3,
             1341.0 / (beta_thr * 1e3),
+        );
+    }
+
+    // Threaded dirichlet loggamma draw must be BIT-for-bit identical to the serial index map.
+    // Element i*k+j draws gamma_one(keys[i*k+j], alpha[j]) with j == (i*k+j)%k, from its own subkey.
+    #[test]
+    fn dirichlet_threaded_matches_serial_bits() {
+        let k = 4usize;
+        let count = (GAMMA_PARALLEL_MIN_ELEMS / k) + 123; // output_len above threshold, non-aligned
+        let output_len = count * k;
+        let alpha = [0.3_f64, 1.0, 2.5, 5.0];
+        let keys = random_split_n(random_key(99), output_len);
+        let serial: Vec<f64> = (0..output_len)
+            .map(|i| gamma_one(keys[i], alpha[i % k], true))
+            .collect();
+        let parallel = gamma_one_map_parallel_indexed(&keys, true, |idx| alpha[idx % k]);
+        assert_eq!(parallel.len(), output_len);
+        for (i, (p, s)) in parallel.iter().zip(&serial).enumerate() {
+            assert_eq!(
+                p.to_bits(),
+                s.to_bits(),
+                "dirichlet loggamma mismatch at {i}"
+            );
+        }
+    }
+
+    // Dirichlet vs JAX 0.10.2 CPU (jaxvenv, jit'd, min-of-7): count=262144, k=4 (1M loggamma draws)
+    // = 920ms. Per-element loggamma is an independent Marsaglia-Tsang rejection loop XLA can't
+    // vectorize/thread; fj threads it. Same-invocation serial A/B (serial = split + serial gamma map).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_random_dirichlet_vs_jax() {
+        use std::time::Instant;
+        let count = 1_usize << 18; // 262144 samples
+        let k = 4usize;
+        let output_len = count * k;
+        let alpha = [0.3_f64, 1.0, 2.5, 5.0];
+        let key = random_key(7);
+        let best = |f: &dyn Fn()| -> f64 {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..7 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            b
+        };
+        // Serial reference: the dominant loggamma draw without the thread fan-out.
+        let ser = best(&|| {
+            let keys = random_split_n(key, output_len);
+            let out: Vec<f64> = (0..output_len)
+                .map(|i| gamma_one(keys[i], alpha[i % k], true))
+                .collect();
+            std::hint::black_box(out);
+        });
+        let thr = best(&|| {
+            std::hint::black_box(random_dirichlet(key, count, &alpha));
+        });
+        println!(
+            "[dirichlet 262144x4 (1M draws) vs JAX] serial-gamma={:.1}ms threaded-full={:.1}ms ({:.2}x self | JAX 920, {:.1}x)",
+            ser * 1e3,
+            thr * 1e3,
+            ser / thr,
+            920.0 / (thr * 1e3),
         );
     }
 
