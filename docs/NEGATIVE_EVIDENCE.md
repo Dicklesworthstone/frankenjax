@@ -2,6 +2,28 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - scatter_add f64 BEATS JAX 1.69x (measured); all 4 alien-graveyard candidate primitives closed (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. Remote via rch, `--test-threads=1`. Dig conclusion for the
+  /alien-graveyard candidate list (dense tanh, erf, softmax, scatter_add).
+- MEASURED (fresh this session, `bench_scatter_add_vs_jax`, table 1M / 1M f64 updates):
+  **fj-lax scatter-add 2.827ms vs JAX 4.78ms = 1.69x WIN.** The scatter_add family is
+  comprehensively optimized (range-partition + packed-u64 + production-vs-serial benches all
+  present) and BEATS JAX — not a gap. Closed as an alien-graveyard candidate.
+- The other 3 alien-graveyard candidates are also covered or blocked (do NOT re-dig):
+  - erf / betainc / igamma / igammac: fj WINS 35-237x (iterative special fns, XLA-weak, already
+    threaded — see [[project_special_fn_xla_weakness]]).
+  - dense tanh / softmax: threaded, but the residual vs JAX is the exp SIMD (0.79x no-FMA),
+    i.e. +fma-policy-gated ([[project_fma_lever_policy_blocked]]).
+- NET (consolidated with e38a7cd3 / 17a784a9): the contained, non-FMA, non-multi-session
+  fj-lax perf frontier is exhausted this session — elementwise (clamp f64/f32 SIMD shipped, select
+  SIMD regresses), gather (Zen3 vgather no-ship, olm4p closed), scatter_add (wins), reductions/
+  sort/argmax (threaded families complete), FFT single-row (parity) all worked; every remaining
+  measured JAX-loss is +fma-gated (exp-family + GEMM 4-15x + FFT butterfly), the f32=f64-rounded
+  contract (f32 special fns), or multi-session structural (interpreter typed-slots so4wo/t22rd,
+  split-radix FFT). ACTIONABLE forward path = a maintainer `+fma` build-flag evaluation (one
+  decision unlocks the exp-family + GEMM + FFT butterfly at once); everything else is multi-session.
+
 ## 2026-07-04 - NO-SHIP 1.00x: scattered f64 gather via AVX2 `Simd::gather_or` — hardware vgather ≈ software pipeline on Zen3 (closes olm4p) (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. File: `tensor_ops.rs` (scattered `gather_single_dense_f64`).
