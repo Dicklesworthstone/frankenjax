@@ -2,6 +2,42 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - BLOCKER (measured): non-FMA elementwise frontier exhausted; remaining gaps root-caused to +fma / f64-compute-contract / multi-session (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. Consolidates this session's dig sweep; each remaining
+  measured JAX-loss is now root-caused so future sessions do NOT re-dig them. Every claim below
+  is a measured or code-verified fact.
+- SHIPPED this session (real wins, all bit-identical/tolerance, rch `--test-threads=1`):
+  clog dense SoA f64x8 SIMD **1.58x** (faa58c03, log_f64x8+atan2_f64x8), clamp f64 f64x8 SIMD
+  **1.22x** (8a247056), clamp f32 f32x16 SIMD **1.16x** (d233ca10). Plus the FFT-single-row
+  parity correction (b661e808).
+- REMAINING measured gaps, each BLOCKED (do not re-dig without the named unlock):
+  1. **exp/log-based (FMA-policy-gated):** cexp 3.65x (SIMD sincos+scalar exp = 1.05x no-ship,
+     3ea16579), ctanh 3.88x, csin 3.31x, pow x^2.5 f32 2.32x, logaddexp 1.57x, zeta f32 1.79x.
+     ROOT: these compute `exp`/`log` (or `powf`=exp·ln), and SIMD-poly exp REGRESSES 0.79x on
+     this no-FMA host so real `eval_exp` uses scalar `f64::exp`. Unlock = global `+fma` build
+     flag (SIMD exp 2.20x w/FMA) — one maintainer decision, [[project_fma_lever_policy_blocked]].
+  2. **f32 special fns computed-in-f64 (contract, not a bug):** zeta f32 1.79x — s32/q32 ARE
+     dense+threaded (eval_same_shape_f32_expensive_parallel), but the Euler-Maclaurin series runs
+     in f64 then rounds to f32 (the standard f32=f64-rounded contract, bit-identical to the
+     generic f32 path). Doing ~2x work for an f32 output. igamma/betainc WIN 35-237x on the SAME
+     path because their per-element cost (continued fractions) dwarfs the f64 penalty; zeta's
+     cheaper series makes it visible. Native-f32 zeta would break bit-identity + goldens — NOT a
+     legal lever. Same class as every f32 transcendental.
+  3. **FFT batched (split-radix + SIMD + FMA, multi-session):** 2D [1024,1024] ≈ 11x (bb5b11f2);
+     inv-branch hoist no-ship 0.61x; single-row 2^20 at parity. Contained butterfly vein
+     exhausted; also contention-sensitive on the shared host ([[project_fft_jax_loss_frontier]]).
+  4. **GEMM (FMA-policy-gated):** 4-15x, needs `+fma` ([[project_fma_lever_policy_blocked]]).
+- COVERED (verified already-optimal, do not re-probe): select/select_n (threaded — select_n's
+  "single-threaded" bench comment is STALE, `select_n_pick_fused_i64` uses work_scaled_threads +
+  thread::scope), clamp (SIMD f64/f32 done, SIMD-select regresses 0.86x fff73fbc), tan f64
+  (glibc, sin/cos-ratio rejected), argmax/sort/top_k/reduce (threaded families complete).
+- NET: the contained, non-FMA, non-multi-session elementwise/reduction lever space is worked
+  through. The next material fj-lax speedups require a maintainer `+fma` decision (unlocks the
+  exp-family + GEMM + FFT butterfly at once) or a multi-session split-radix FFT — both out of a
+  60-min contained-lever scope.
+
+
 ## 2026-07-04 - NO-SHIP 0.61x: radix-4 SoA butterfly inv-branch hoist — the branch is FREE, ×sgn adds multiplies (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. File: `fft.rs` (`soa_radix4_butterfly_stages`). Remote
