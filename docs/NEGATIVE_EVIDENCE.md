@@ -2,6 +2,21 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - CLOSEOUT: sort_key_val remains a 40x JAX/XLA-CPU win; s2yc8 closed (ProudSalmon)
+
+Fresh strict-remote RCH release proof for `frankenjax-sortkeyval-argsort-permute-s2yc8` on worker
+`vmi1149989`:
+
+- `cargo test -p fj-lax --release --lib bench_sort_key_val -- --ignored --nocapture --test-threads=1`
+- `sort_key_val f64 [4096,4096] axis1`: fj-lax **69.142ms** vs JAX **2739ms** = **39.6x FASTER**
+- `sort_key_val MIXED f32key+i64val [4096,4096] axis1`: fj-lax **66.378ms** vs JAX **2750ms** =
+  **41.4x FASTER**
+
+This reconfirms the bead title was stale/internal: the old "13x slower" comparison was against key-only
+sorting inside fj-lax, not against the legacy JAX/XLA-CPU parity target. Common sort_key_val cases are
+already well ahead of JAX; only unbenchmarked niche dtype tails remain low-priority cleanup, not an active
+vs-JAX perf gap. No code change.
+
 ## 2026-07-03 - WIRED WIN (5x; 3.6x JAX LOSS -> BEATS JAX): contiguous row-gather was WRONGLY THREADED at moderate sizes (TealMarten)
 
 Profile-first found a huge gap on the MOST common ML op: fj **gather rows [16384,256]->[4096,256] f64 =
