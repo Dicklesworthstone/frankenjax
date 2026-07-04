@@ -2,6 +2,28 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - NO-SHIP (0.94x): scatter-add borrowed dense indices regresses vs original clone path (BlackThrush)
+
+Followed up the 2026-07-03 f64 scatter-add residual, whose prior end-to-end row was **3.74ms** vs JAX
+**2.71ms** = **1.38x slower** after the tight serial cache-resident path. The suggested cheap lever was to
+borrow dense i64/i32 index tensors in `eval_scatter` instead of cloning the 1M index vector (`index_vals.to_vec()`),
+removing about 8MB of copy traffic before the dense scatter-add path.
+
+Implemented the borrow via `Cow<'_, [i64]>` and kept the original clone path behind a private Criterion flag
+(`__fj_scatter_clone_indices`) for same-binary A/B, then dropped the code after measurement. Decisive RCH
+per-crate bench, `vmi1227854`, `CARGO_TARGET_DIR=/data/projects/frankenjax/.rch-targets/blackthrush`,
+`cargo bench --profile release -p fj-lax --bench lax_baseline 'eval/scatter_add_1m_f64_1d'`:
+
+- borrowed production row: **9.9474 ms** midpoint (`[9.4730, 10.511]`)
+- forced-clone original row: **9.3546 ms** midpoint (`[8.8930, 10.017]`)
+- ratio vs original: **0.94x** (borrowed is **1.06x slower**)
+
+Root cause: the clone is not the dominant cost on this path; the random RMW/output allocation/interpreter wrapper
+dominate, and the borrowed `Cow` dispatch shape does not improve the hot dense scatter core. Production code was
+restored to the original clone path; do not retry the dense-index borrow lever for 1M f64 scatter-add unless a
+fresh profile shows the clone as a top local cost. JAX residual remains the prior **1.38x slower** marker; this
+variant does not narrow it.
+
 ## 2026-07-04 - KEEP (1.86x): SIMD-exp tail branch for dense f64 erf; narrows the JAX loss (BlackThrush)
 
 Dug the erf gap (a real dispatch-path `Primitive::Erf` JAX loss, ~4.6-15x depending on size). Fresh code read
