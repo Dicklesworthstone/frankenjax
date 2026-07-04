@@ -2,6 +2,46 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 7.33x vs ORIG: row-wise min-max (feature-scaling) normalize recognized as a fused (row-parallel) RANK-PRESERVING interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::minmax_normalize_2d`). This is the
+  crucial COUNTERPART to the earlier ptp NO-SHIP (`9c63599a`): ptp (`max − min` alone) REGRESSED because it
+  has no eliminable materialized intermediate and native `ReduceMax`/`ReduceMin` are SIMD + cache-hot on the
+  2nd pass. Min-max normalize `(x − x.min(-1)) / (x.max(-1) − x.min(-1))` (per-row sklearn `MinMaxScaler` to
+  `[0,1]`) uses the SAME two reductions but is a big WIN — because the FULL-OUTPUT decomposed path
+  materializes FOUR [rows,cols] intermediates (the max broadcast, the min broadcast, `x − min`, and the
+  `max − min` range) that the fused kernel eliminates. So the reduction primitive is not what decides the
+  win — the number of eliminable materialized PRODUCERS is. A 7-equation graph
+  `ReduceMax(axis=1) → BroadcastInDim | ReduceMin(axis=1) → BroadcastInDim | Sub(x,min) | Sub(max,min) → Div`,
+  one f64 [rows,cols] input → one [rows,cols] output (rank-PRESERVING). Worktree audit: HEAD==origin/main
+  (my zscore tip `be341365`), no unlanded win to land → DIG turn. DISTINCT from `zscore_2d`
+  (centered/std via `ReduceSum`+`Sqrt`) and from the producerless `ptp` NO-SHIP.
+- LEVER: a top-level 1-input superinstruction for the exact 7-eq finite dense f64 min-max graph, computed
+  via the row-parallel `minmax_normalize_2d`. BIT-IDENTICAL: `minmax_normalize_row_into` computes the per-row
+  max/min in ONE fused pass — `f64::max` from `−∞` == the `ReduceMax` fold and `f64::min` from `+∞` == the
+  `ReduceMin` fold, and interleaving the two folds does not change either result (both order-independent;
+  ±0 convention `max(+0,−0)=+0`/`min(+0,−0)=−0` verified with an explicit ±0 row in the recognizer test).
+  The row range `max − min` is the constant value of every element of the broadcast `Sub(max,min)` tensor,
+  so dividing `(x − min)` by the scalar range == the elementwise `Div`; the division is TRUE division, NOT
+  reciprocal-multiply. Finite dense rank-2 f64 only, else falls through (a nonfinite element would make the
+  fused max/min diverge from the folds); a constant row gives `0/0`=NaN via EITHER path.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed minmax_normalize_2d
+  -m 3 -s 20`, 4096x1024, x=softmax_input):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/minmax_normalize_2d/orig_decomposed_4096x1024` | 53.319 ms |
+  | `compiled_dispatch/minmax_normalize_2d/fast_eval_jaxpr_4096x1024` | 7.269 ms |
+
+  Ratio vs ORIG: **0.1363x time / 7.33x faster** (worst-case CI 7.20x, best 7.46x; robustly ≥2x). The 53 ms
+  decomposed baseline is heavy (4 materialized [rows,cols] intermediates + 2 reduction Vecs); the fused path
+  is 7.27 ms.
+- VALIDATION: `eval_top_level_minmax_normalize_2d_f64_matches_generic_and_preserves_edges` GREEN (fused==generic
+  bit-for-bit on mixed-sign random f64 WITH an explicit ±0 row; nonfinite falls through to the generic path);
+  fj-lax `nn::` 61/61 GREEN. Pre-existing INDEPENDENT RED (NOT this change): fj-interpreters
+  `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)` — this diff touches no cbrt/arena code.
+
 ## 2026-07-04 - WIN 7.24x vs ORIG: row-wise z-score standardize recognized as a fused (row-parallel) RANK-PRESERVING interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::zscore_2d`). Confirms the

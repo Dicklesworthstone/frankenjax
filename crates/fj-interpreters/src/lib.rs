@@ -1166,6 +1166,10 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) = try_eval_top_level_minmax_normalize_2d_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_cosine_similarity_2d_f64(jaxpr, const_values, args) {
         return result;
     }
@@ -3215,6 +3219,118 @@ fn try_eval_top_level_zscore_2d_f64(
     }
 
     let output = fj_lax::nn::zscore_2d(values, rows, cols);
+    Some(
+        TensorValue::new_f64_values(input.shape.clone(), output)
+            .map(Value::Tensor)
+            .map(|value| vec![value])
+            .map_err(EvalError::InvalidTensor)
+            .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for row-wise min-max (feature-scaling) normalization
+/// `(x − x.min(-1)) / (x.max(-1) − x.min(-1))` (per-row sklearn `MinMaxScaler` to `[0,1]`): the
+/// 7-equation graph `ReduceMax(axis=1) → BroadcastInDim | ReduceMin(axis=1) → BroadcastInDim |
+/// Sub(x, min) | Sub(max, min) | Div`, one f64 [rows,cols] input → one [rows,cols] output
+/// (rank-PRESERVING). Computed via the row-parallel [`fj_lax::nn::minmax_normalize_2d`], which fuses the
+/// max/min into one pass (bit-identical to the two separate `ReduceMax`/`ReduceMin` folds — see the
+/// kernel doc) and divides `(x − min)` by the scalar row range (identical to the elementwise `Div` by
+/// the constant broadcast `Sub(max, min)` tensor). DISTINCT from `zscore_2d` (centered/std, uses
+/// `ReduceSum`+`Sqrt`) and from the producerless `ptp` (`max − min` alone regresses — this op has the
+/// materialized shifted/range intermediates a fused kernel eliminates). Falls through unless the input
+/// is dense finite rank-2 f64 (a nonfinite element makes the fused max/min diverge from the folds).
+fn try_eval_top_level_minmax_normalize_2d_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 1
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 7
+        || args.len() != 1
+    {
+        return None;
+    }
+
+    let x = jaxpr.invars[0];
+    let out = jaxpr.outvars[0];
+    let [
+        max_eq,
+        max_bcast_eq,
+        min_eq,
+        min_bcast_eq,
+        num_eq,
+        den_eq,
+        div_eq,
+    ] = jaxpr.equations.as_slice()
+    else {
+        return None;
+    };
+
+    // max = ReduceMax(x, axis=1), broadcast to [rows,cols]
+    let mx = single_output_for_param_primitive(max_eq, Primitive::ReduceMax)?;
+    if max_eq.inputs.as_slice() != [Atom::Var(x)] || !axis1_reduce_params(&max_eq.params) {
+        return None;
+    }
+    let mx_b = single_output_for_param_primitive(max_bcast_eq, Primitive::BroadcastInDim)?;
+    if max_bcast_eq.inputs.as_slice() != [Atom::Var(mx)]
+        || !rank2_axis0_broadcast_params(&max_bcast_eq.params)
+    {
+        return None;
+    }
+    // min = ReduceMin(x, axis=1), broadcast to [rows,cols]
+    let mn = single_output_for_param_primitive(min_eq, Primitive::ReduceMin)?;
+    if min_eq.inputs.as_slice() != [Atom::Var(x)] || !axis1_reduce_params(&min_eq.params) {
+        return None;
+    }
+    let mn_b = single_output_for_param_primitive(min_bcast_eq, Primitive::BroadcastInDim)?;
+    if min_bcast_eq.inputs.as_slice() != [Atom::Var(mn)]
+        || !rank2_axis0_broadcast_params(&min_bcast_eq.params)
+    {
+        return None;
+    }
+    // num = Sub(x, min_b); den = Sub(max_b, min_b) (both non-commutative → operand order fixed)
+    let num = single_output_for_primitive(num_eq, Primitive::Sub)?;
+    if num_eq.inputs.as_slice() != [Atom::Var(x), Atom::Var(mn_b)] {
+        return None;
+    }
+    let den = single_output_for_primitive(den_eq, Primitive::Sub)?;
+    if den_eq.inputs.as_slice() != [Atom::Var(mx_b), Atom::Var(mn_b)] {
+        return None;
+    }
+    // out = Div(num, den)
+    let quotient = single_output_for_primitive(div_eq, Primitive::Div)?;
+    if quotient != out || div_eq.inputs.as_slice() != [Atom::Var(num), Atom::Var(den)] {
+        return None;
+    }
+
+    let Value::Tensor(input) = &args[0] else {
+        return None;
+    };
+    if input.dtype != DType::F64 || input.shape.dims.len() != 2 {
+        return None;
+    }
+    let rows = input.shape.dims[0] as usize;
+    let cols = input.shape.dims[1] as usize;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+    let expected_shape = format!("{rows},{cols}");
+    if max_bcast_eq.params.get("shape").map(String::as_str) != Some(expected_shape.as_str())
+        || min_bcast_eq.params.get("shape").map(String::as_str) != Some(expected_shape.as_str())
+    {
+        return None;
+    }
+
+    let values = input.elements.as_f64_slice()?;
+    if !values.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::minmax_normalize_2d(values, rows, cols);
     Some(
         TensorValue::new_f64_values(input.shape.clone(), output)
             .map(Value::Tensor)
@@ -23414,6 +23530,129 @@ mod tests {
             .expect("nonfinite zscore falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite]).expect("generic nonfinite zscore");
+        assert_eq!(through_eval, through_generic);
+    }
+
+    fn make_minmax_normalize_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
+        let x = VarId(1);
+        let mx = VarId(2);
+        let mx_b = VarId(3);
+        let mn = VarId(4);
+        let mn_b = VarId(5);
+        let num = VarId(6);
+        let den = VarId(7);
+        let out = VarId(8);
+        let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+        let bcast = BTreeMap::from([
+            ("shape".to_owned(), format!("{rows},{cols}")),
+            ("broadcast_dimensions".to_owned(), "0".to_owned()),
+        ]);
+        Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::ReduceMax,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![mx],
+                    params: reduce_axis1.clone(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::BroadcastInDim,
+                    inputs: smallvec![Atom::Var(mx)],
+                    outputs: smallvec![mx_b],
+                    params: bcast.clone(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceMin,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![mn],
+                    params: reduce_axis1,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::BroadcastInDim,
+                    inputs: smallvec![Atom::Var(mn)],
+                    outputs: smallvec![mn_b],
+                    params: bcast,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sub,
+                    inputs: smallvec![Atom::Var(x), Atom::Var(mn_b)],
+                    outputs: smallvec![num],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sub,
+                    inputs: smallvec![Atom::Var(mx_b), Atom::Var(mn_b)],
+                    outputs: smallvec![den],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Div,
+                    inputs: smallvec![Atom::Var(num), Atom::Var(den)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn eval_top_level_minmax_normalize_2d_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        // Mixed-sign, per-row-varying data (no constant row → no 0/0), plus ±0 in one row to exercise
+        // the max(+0,−0)=+0 / min(+0,−0)=−0 conventions shared by the fused pass and the folds.
+        let mut data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.47).cos() * 2.5 - ((idx % cols) as f64) * 0.4 + 0.15)
+            .collect();
+        data[0] = 0.0;
+        data[1] = -0.0;
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data,
+            )
+            .expect("dense f64 input"),
+        );
+        let jaxpr = make_minmax_normalize_2d_jaxpr(rows, cols);
+
+        let fast = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).expect("fast minmax");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[input]).expect("generic minmax");
+        assert_eq!(fast, generic);
+
+        let mut nonfinite_data: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.01).collect();
+        nonfinite_data[cols + 1] = f64::NAN;
+        let nonfinite = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                nonfinite_data,
+            )
+            .expect("dense nonfinite f64 input"),
+        );
+        let through_eval = eval_jaxpr(&jaxpr, std::slice::from_ref(&nonfinite))
+            .expect("nonfinite minmax falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite]).expect("generic nonfinite minmax");
         assert_eq!(through_eval, through_generic);
     }
 

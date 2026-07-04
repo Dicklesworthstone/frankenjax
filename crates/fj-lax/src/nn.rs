@@ -1036,6 +1036,72 @@ pub fn zscore_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     result
 }
 
+fn minmax_normalize_row_into(src: &[f64], dst: &mut [f64]) {
+    let mut mx = f64::NEG_INFINITY;
+    let mut mn = f64::INFINITY;
+    for &v in src {
+        mx = mx.max(v);
+        mn = mn.min(v);
+    }
+    let range = mx - mn;
+    for (d, &v) in dst.iter_mut().zip(src.iter()) {
+        *d = (v - mn) / range;
+    }
+}
+
+/// Min-max (feature-scaling) normalize along the last axis of a 2D array,
+/// `(x − x.min(-1)) / (x.max(-1) − x.min(-1))` per row (per-row sklearn `MinMaxScaler` to `[0,1]`, no
+/// clamp). Output keeps the input shape [rows,cols] (rank-PRESERVING). ROW-PARALLEL and BIT-IDENTICAL
+/// to the decomposed `ReduceMax → BroadcastInDim | ReduceMin → BroadcastInDim | Sub(x,min) |
+/// Sub(max,min) | Div` graph via [`minmax_normalize_row_into`]. The per-row max/min are computed in a
+/// single fused pass — `f64::max` from `-∞` matches `ReduceMax` and `f64::min` from `+∞` matches
+/// `ReduceMin` bit-for-bit, and interleaving the two folds does not change either result (both are
+/// order-independent). The row range `max − min` is the constant value of every element of the
+/// broadcast `Sub(max,min)` tensor, so dividing by the scalar matches the elementwise `Div`; the
+/// division is TRUE division `(x−min)/range`, NOT reciprocal-multiply. Rows are independent so only the
+/// outer loop is threaded, above the `softmax_2d_thread_count` work gate. Used by the interpreter
+/// min-max superinstruction. NOTE: the interpreter recognizer only dispatches here for all-finite input
+/// (a constant row would give a `0/0` NaN via either path, but nonfinite input falls through anyway).
+#[must_use]
+pub fn minmax_normalize_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let len = checked_2d_row_major_len("2D minmax_normalize", x, rows, cols);
+    let mut result = vec![0.0; len];
+    if cols == 0 {
+        return result;
+    }
+    let threads = softmax_2d_thread_count(rows, len);
+    if threads <= 1 {
+        for i in 0..rows {
+            let start = i * cols;
+            minmax_normalize_row_into(&x[start..start + cols], &mut result[start..start + cols]);
+        }
+        return result;
+    }
+
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut dst_rest: &mut [f64] = &mut result;
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let row_count = rows_per.min(rows - row0);
+            let elem_count = row_count * cols;
+            let (dst_block, dst_tail) = dst_rest.split_at_mut(elem_count);
+            dst_rest = dst_tail;
+            let src_block = &x[row0 * cols..(row0 + row_count) * cols];
+            row0 += row_count;
+            scope.spawn(move || {
+                for (src_row, dst_row) in src_block
+                    .chunks_exact(cols)
+                    .zip(dst_block.chunks_exact_mut(cols))
+                {
+                    minmax_normalize_row_into(src_row, dst_row);
+                }
+            });
+        }
+    });
+    result
+}
+
 /// Cosine similarity of a single pair of rows, `Σ(a·b) / (√Σa² · √Σb²)`, bit-identical to the
 /// decomposed `Mul → ReduceSum(dot) | Mul → ReduceSum(‖a‖²) → Sqrt | Mul → ReduceSum(‖b‖²) → Sqrt |
 /// Mul(denom) → Div` graph. The three dot/‖a‖²/‖b‖² accumulators are INDEPENDENT index-order sums, so
