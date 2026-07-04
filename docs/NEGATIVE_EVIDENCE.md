@@ -2,6 +2,42 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - NO-SHIP 0.48-0.65x: row-wise peak-to-peak (ptp = max−min) as an interpreter superinstruction REGRESSES — delineates the fusion-vein boundary (BlackThrush)
+
+- Agent: BlackThrush. Attempted extension of the interpreter-superinstruction vein to the first
+  MIN/MAX-reduction graph (all prior members reduce with sum): row-wise peak-to-peak `max(x) − min(x)`
+  (`jax.numpy.ptp(x, axis=-1)`), the 3-eq graph `ReduceMax(axis=1) → ReduceMin(axis=1) → Sub`, f64
+  [rows,cols] → [rows]. Built + validated bit-identical (incl. a ±0 row: `max(+0,-0)=+0`,
+  `min(+0,-0)=-0`, verified against the generic path), then MEASURED — and it REGRESSES. REVERTED
+  (working tree byte-identical to HEAD b1a6eadd again); recording the negative evidence + the lesson.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed ptp_2d -m 3 -s 20`,
+  4096x1024, x=softmax_input), two variants of the fused row kernel:
+
+  | fused kernel | orig_decomposed | fast_eval_jaxpr | ratio |
+  | --- | ---: | ---: | ---: |
+  | two folds (max pass + min pass) | 3.9625 ms | 6.1108 ms | 0.65x (SLOWER) |
+  | single pass (max+min interleaved) | 1.6424 ms | 3.4517 ms | 0.48x (SLOWER) |
+
+  (The orig baseline itself dropped 3.96→1.64 ms between runs = rch-worker contention variance; both
+  same-invocation ratios agree the fused path LOSES.)
+- ROOT CAUSE (the vein boundary): the superinstruction wins elsewhere because the decomposed path
+  MATERIALIZES a full [rows,cols] elementwise intermediate (the squared tensor for L2/var/rms/kurt, the
+  |x| tensor for L1, the centered tensor for cov/std) that the fused kernel ELIMINATES. A ptp graph has
+  NO such producer — `ReduceMax`/`ReduceMin` read the input directly and emit only [rows]. So there is
+  nothing to fuse away. Worse: the two decomposed reductions are (a) native SIMD-vectorized and (b) the
+  second reads `x` CACHE-HOT after the first warmed it (≈ one effective RAM pass for both), whereas the
+  fused replacement is a SCALAR single pass — a SIMD-vs-scalar loss even at equal memory traffic.
+- LESSON (reusable, for the swarm): the interpreter-fusion vein requires an ELIMINABLE materialized
+  intermediate — i.e. an elementwise PRODUCER (Mul/Abs/Sub/Exp/Log…) feeding the reduction. Graphs that
+  are pure reductions with no elementwise producer (`ptp`, and by extension bare `jnp.max`/`min`/`sum`
+  /`argmax` along an axis, or `max−min`-style range/spread ops) do NOT benefit and REGRESS against the
+  native SIMD reductions — do NOT pursue them as superinstructions. Winning next rungs stay in the
+  producer-fed-reduction shape: standardize/z-score `(x−μ)/σ`, sample var/std (ddof=1), excess kurtosis.
+- VALIDATION during the experiment: `eval_top_level_ptp_2d_f64_matches_generic_and_preserves_edges`
+  (incl. ±0 row) was GREEN and fj-lax `nn::` 61/61 GREEN — the code was correct, just not faster, so it
+  was reverted rather than shipped. No code lands from this entry; conformance unchanged.
+
 ## 2026-07-04 - WIN 3.55x vs ORIG: row-wise root-mean-square (RMS) recognized as a fused (row-parallel) interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::rms_2d`). Extends the
