@@ -1484,6 +1484,18 @@ impl LiteralBuffer {
         }
     }
 
+    pub fn try_into_f64_values(self) -> Result<Vec<f64>, Self> {
+        match self.storage {
+            LiteralBufferStorage::F64 { values, literals } => match Arc::try_unwrap(values) {
+                Ok(values) => Ok(values),
+                Err(values) => Err(Self {
+                    storage: LiteralBufferStorage::F64 { values, literals },
+                }),
+            },
+            storage => Err(Self { storage }),
+        }
+    }
+
     /// Borrow the dense half-float storage as a packed `&[u16]` bit slice, if this
     /// buffer is half-float-backed. Returns `None` otherwise. The logical dtype
     /// (`BF16`/`F16`) is available via [`Self::half_float_dtype`].

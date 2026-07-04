@@ -30,6 +30,41 @@ Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
   not a contained lever. Do NOT re-attempt the GEMM-route or ≥4×4 register-blocking of the Schur
   update on an AVX2 host; both are measured regressions.
 
+## 2026-07-04 - KEEP 1.64-2.08x: dense-f64 dead-intermediate donation for `broadcast_in_dim -> reciprocal` (ProudSalmon)
+
+- Agent: ProudSalmon. Crate: `fj-interpreters` (+ owned-buffer helper in `fj-core`). Primitive family:
+  dense env output-buffer donation for a deliberately different path from the covered RNG, FFT,
+  scatter/gather, and cheap-chain fusion lanes. The measured gap was the open `frankenjax-jjb1h`
+  class: a large dense f64 intermediate is consumed once by a unary op, but the legacy interpreter
+  cloned/read the intermediate and allocated a fresh output.
+- LEVER: liveness-gated owned-buffer donation in the dense interpreter. When an equation is a
+  single-output f64 unary (`reciprocal` or an existing CheapOp unary), its sole input is a Var whose
+  `last_use` is the current equation, and the backing `LiteralBuffer::F64` Arc is uniquely owned,
+  the interpreter takes the tensor out of the env, unwraps the `Vec<f64>`, mutates it in-place with
+  the existing chunk driver, and rewraps it. External args, returned outvars, non-unique Arcs,
+  non-f64/lazy/composite buffers, literals, params guard misses, and multi-output/sub-jaxpr effects
+  all fall through to the old path. `DENSE_F64_DONATION_DISABLE` is the same-binary A/B atomic.
+- REQUESTED bench shape first:
+  `AGENT_NAME=ProudSalmon CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod rch exec -- cargo bench --release -p fj-interpreters --bench compiled_dispatch_speed donate_broadcast_reciprocal ...`
+  Cargo rejected this workspace's `bench --release` form (`unexpected argument '--release'`), so the
+  measured release form was
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed donate_broadcast_reciprocal -- --warm-up-time 1 --measurement-time 2 --sample-size 10`.
+- MEASURED A/B (per-crate, same binary, `rch exec` local fallback because no workers were admissible
+  for the fallback bench run; target dir `/data/projects/.rch-targets/frankenjax-cod`):
+
+| Row | ORIG no-donation midpoint | Donated midpoint | Ratio vs ORIG | Conservative interval ratio | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `compiled_dispatch/original_no_donation/donate_broadcast_reciprocal_f64_4096x1024` vs `donated/...` | 100.41ms | 48.169ms | 2.08x faster | 83.605/51.003 = 1.64x faster | KEEP |
+| `compiled_dispatch/original_no_donation/donate_broadcast_reciprocal_f64_16384x1024` vs `donated/...` | 103.31ms | 79.831ms | 1.29x faster | 89.785/85.850 = 1.05x faster | supporting |
+
+- Gates: focused interpreter test
+  `rch exec -- cargo test -p fj-interpreters eval_donated_broadcast_reciprocal_matches_generic -- --nocapture`
+  passed on `hz2`; remote full conformance failed only because `.rchignore` excludes `artifacts/`
+  and the worker missed `artifacts/phase2c/...` schema inputs; local full conformance with the real
+  artifacts passed:
+  `AGENT_NAME=ProudSalmon CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod cargo test -p fj-conformance --profile release`.
+  Existing `fj-lax` warnings were present in the focused/release builds and are unrelated.
+
 ## 2026-07-04 - KEEP 1.17-1.29x: fused Threefry -> erfinv random_normal; fj widens JAX win 1.25x -> 1.49x (ProudSalmon)
 
 - Agent: ProudSalmon. Crate: `fj-lax`. Primitive family: `random_normal`, deliberately different from

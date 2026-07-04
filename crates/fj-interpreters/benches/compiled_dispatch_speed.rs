@@ -11,10 +11,11 @@
 //! `compiled_jaxpr_eval_matches_eager_eval_jaxpr`; this file only measures speed.
 use criterion::{Criterion, criterion_group, criterion_main};
 use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
-use fj_interpreters::{compile_jaxpr_for_repeated_eval, eval_jaxpr};
+use fj_interpreters::{DENSE_F64_DONATION_DISABLE, compile_jaxpr_for_repeated_eval, eval_jaxpr};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
 use std::hint::black_box;
+use std::sync::atomic::Ordering;
 
 /// `x -> x+1 -> x+2 -> ... ` : an n-equation Add chain. The added literal is `lit`, so
 /// passing an I64 lit + scalar arg gives a pure-scalar chain, and an F64 lit + f64-vector
@@ -206,6 +207,38 @@ fn eval_softmax_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value 
     eval_primitive(Primitive::Div, &[exp, sum_b], &empty).expect("divide")
 }
 
+fn build_broadcast_reciprocal_jaxpr(rows: usize, cols: usize) -> Jaxpr {
+    let x = VarId(1);
+    let bcast = VarId(2);
+    let out = VarId(3);
+    let mut broadcast_params = BTreeMap::new();
+    broadcast_params.insert("shape".to_owned(), format!("{rows},{cols}"));
+    broadcast_params.insert("broadcast_dimensions".to_owned(), "1".to_owned());
+    Jaxpr::new(
+        vec![x],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::BroadcastInDim,
+                inputs: smallvec::smallvec![Atom::Var(x)],
+                outputs: smallvec::smallvec![bcast],
+                params: broadcast_params,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Reciprocal,
+                inputs: smallvec::smallvec![Atom::Var(bcast)],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn bench_one(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     tag: &str,
@@ -238,6 +271,33 @@ fn bench_one(
             })
         });
     }
+}
+
+fn bench_donation_one(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    tag: &str,
+    jaxpr: &Jaxpr,
+    args: &[Value],
+) {
+    DENSE_F64_DONATION_DISABLE.store(1, Ordering::Relaxed);
+    let original = eval_jaxpr(jaxpr, args).expect("original eval");
+    DENSE_F64_DONATION_DISABLE.store(0, Ordering::Relaxed);
+    let donated = eval_jaxpr(jaxpr, args).expect("donated eval");
+    assert_eq!(original, donated, "{tag}: donation changed result");
+
+    group.bench_function(format!("original_no_donation/{tag}"), |b| {
+        b.iter(|| {
+            DENSE_F64_DONATION_DISABLE.store(1, Ordering::Relaxed);
+            black_box(eval_jaxpr(black_box(jaxpr), black_box(args)).unwrap());
+        })
+    });
+    group.bench_function(format!("donated/{tag}"), |b| {
+        b.iter(|| {
+            DENSE_F64_DONATION_DISABLE.store(0, Ordering::Relaxed);
+            black_box(eval_jaxpr(black_box(jaxpr), black_box(args)).unwrap());
+        })
+    });
+    DENSE_F64_DONATION_DISABLE.store(0, Ordering::Relaxed);
 }
 
 fn bench_compiled_dispatch(c: &mut Criterion) {
@@ -412,6 +472,17 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
             )
         })
     });
+    for &(rows, cols) in &[(4096usize, 1024usize), (16384, 1024)] {
+        let arg: Vec<f64> = (0..cols).map(|idx| idx as f64 * 0.001 + 1.0).collect();
+        let args = [Value::vector_f64(&arg).expect("broadcast vector")];
+        let jaxpr = build_broadcast_reciprocal_jaxpr(rows, cols);
+        bench_donation_one(
+            &mut group,
+            &format!("donate_broadcast_reciprocal_f64_{rows}x{cols}"),
+            &jaxpr,
+            &args,
+        );
+    }
     group.finish();
 }
 

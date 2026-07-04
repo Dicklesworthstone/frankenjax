@@ -1724,6 +1724,11 @@ const FUSION_ELEMS_PER_THREAD: usize = 1 << 18; // 256 Ki / worker
 pub static FUSION_THREAD_CAP_OVERRIDE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Benchmark-only A/B knob for the dense-f64 donation path. Default 0 enables
+/// production donation; nonzero forces the old clone-then-allocate unary path.
+pub static DENSE_F64_DONATION_DISABLE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 #[inline]
 fn fusion_thread_count(n: usize) -> usize {
     if n < FUSION_THREAD_MIN_ELEMS {
@@ -2057,6 +2062,31 @@ fn apply_f64_unary_chunk(out: &mut [f64], op: CheapOp) {
         // mirror f64_fused_unary's binary arm (identity no-op) for exhaustiveness.
         CheapOp::Add | CheapOp::Sub | CheapOp::Mul | CheapOp::Div | CheapOp::Max | CheapOp::Min => {
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum InplaceF64Unary {
+    Cheap(CheapOp),
+    Reciprocal,
+}
+
+fn inplace_f64_unary(
+    primitive: Primitive,
+    params: &std::collections::BTreeMap<String, String>,
+) -> Option<InplaceF64Unary> {
+    if primitive == Primitive::Reciprocal && params.is_empty() {
+        return Some(InplaceF64Unary::Reciprocal);
+    }
+    let op = cheap_float_op(primitive, params)?;
+    op.is_unary().then_some(InplaceF64Unary::Cheap(op))
+}
+
+#[inline]
+fn apply_inplace_f64_unary_chunk(out: &mut [f64], op: InplaceF64Unary) {
+    match op {
+        InplaceF64Unary::Cheap(op) => apply_f64_unary_chunk(out, op),
+        InplaceF64Unary::Reciprocal => out.iter_mut().for_each(|o| *o = 1.0 / *o),
     }
 }
 
@@ -9579,6 +9609,82 @@ fn run_dense_plan_into_core(
     run_dense_env_into(jaxpr, const_values, args, env, &plan.last_use, scratch, out)
 }
 
+fn try_eval_donated_dense_f64_unary(
+    eqn: &Equation,
+    eqn_index: usize,
+    env: &mut [Option<Value>],
+    last_use: &[usize],
+) -> Option<Result<(), InterpreterError>> {
+    if DENSE_F64_DONATION_DISABLE.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        return None;
+    }
+    if !eqn.sub_jaxprs.is_empty()
+        || !eqn.effects.is_empty()
+        || eqn.inputs.len() != 1
+        || eqn.outputs.len() != 1
+        || is_multi_output_primitive(eqn.primitive)
+    {
+        return None;
+    }
+    let op = inplace_f64_unary(eqn.primitive, &eqn.params)?;
+    let Atom::Var(input_var) = eqn.inputs[0] else {
+        return None;
+    };
+    let input_slot = input_var.0 as usize;
+    let out_slot = eqn.outputs[0].0 as usize;
+    if input_slot >= env.len() {
+        return Some(Err(InterpreterError::MissingVariable(input_var)));
+    }
+    if out_slot >= env.len() {
+        return Some(Err(InterpreterError::MissingVariable(eqn.outputs[0])));
+    }
+    if last_use.get(input_slot).copied() != Some(eqn_index) {
+        return None;
+    }
+
+    let Some(value) = env[input_slot].take() else {
+        return Some(Err(InterpreterError::MissingVariable(input_var)));
+    };
+    let Value::Tensor(tensor) = value else {
+        env[input_slot] = Some(value);
+        return None;
+    };
+    if tensor.dtype != DType::F64 {
+        env[input_slot] = Some(Value::Tensor(tensor));
+        return None;
+    }
+
+    let TensorValue {
+        dtype,
+        shape,
+        elements,
+    } = tensor;
+    let mut values = match elements.try_into_f64_values() {
+        Ok(values) => values,
+        Err(elements) => {
+            env[input_slot] = Some(Value::Tensor(TensorValue {
+                dtype,
+                shape,
+                elements,
+            }));
+            return None;
+        }
+    };
+    drive_fusion_chunks(&mut values, |chunk, _base| {
+        apply_inplace_f64_unary_chunk(chunk, op);
+    });
+    let output = match TensorValue::new_f64_values(shape, values) {
+        Ok(tensor) => Value::Tensor(tensor),
+        Err(err) => {
+            return Some(Err(InterpreterError::Primitive(EvalError::InvalidTensor(
+                err,
+            ))));
+        }
+    };
+    env[out_slot] = Some(output);
+    Some(Ok(()))
+}
+
 /// [`run_dense_env`] writing its `outvars` into a caller-owned `out` buffer and
 /// resolving inputs through a caller-owned `scratch` buffer, so a loop re-running
 /// the same sub-jaxpr reuses BOTH allocations instead of a fresh `Vec` per call.
@@ -9634,6 +9740,12 @@ fn run_dense_env_into(
         }
 
         let eqn = &jaxpr.equations[i];
+        if let Some(result) = try_eval_donated_dense_f64_unary(eqn, i, env, last_use) {
+            result?;
+            i += 1;
+            continue;
+        }
+
         scratch.clear();
         scratch.reserve(eqn.inputs.len());
         for atom in &eqn.inputs {
@@ -9765,6 +9877,52 @@ mod tests {
     }
     fn lit(x: f64) -> Atom {
         Atom::Lit(Literal::from_f64(x))
+    }
+
+    #[test]
+    fn eval_donated_broadcast_reciprocal_matches_generic() {
+        let x = VarId(0);
+        let bcast = VarId(1);
+        let out = VarId(2);
+        let mut broadcast_params = BTreeMap::new();
+        broadcast_params.insert("shape".to_owned(), "4,3".to_owned());
+        broadcast_params.insert("broadcast_dimensions".to_owned(), "1".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::BroadcastInDim,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![bcast],
+                    params: broadcast_params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Reciprocal,
+                    inputs: smallvec![Atom::Var(bcast)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let arg = Value::vector_f64(&[1.0, 2.0, 4.0]).expect("vector");
+        let planned = eval_jaxpr(&jaxpr, std::slice::from_ref(&arg)).expect("planned");
+        let generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], std::slice::from_ref(&arg)).expect("generic");
+
+        assert_eq!(planned, generic);
+        assert_eq!(
+            f64_vec(&planned[0]),
+            vec![
+                1.0, 0.5, 0.25, 1.0, 0.5, 0.25, 1.0, 0.5, 0.25, 1.0, 0.5, 0.25,
+            ]
+        );
+        assert_eq!(f64_vec(&arg), vec![1.0, 2.0, 4.0]);
     }
 
     fn f32_tensor(n: usize, f: impl Fn(usize) -> f32) -> Value {
