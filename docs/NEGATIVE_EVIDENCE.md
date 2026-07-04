@@ -2,6 +2,36 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 3.92x vs ORIG: row-wise probability cross-entropy fused interpreter superinstruction (DustyDog)
+
+- Agent: DustyDog. Crate: `fj-interpreters` (+ `fj-lax::nn::cross_entropy_2d` row kernel).
+  This finishes the local in-flight cross-entropy recognizer as measured evidence instead of leaving
+  an uncommitted partial. Primitive: two-input dense finite f64 rank-2 graph
+  `Log(q) -> Mul(p, log_q) -> ReduceSum(axis=1) -> Neg`, one [rows] output.
+- LEVER: top-level recognizer dispatches directly to the row-parallel `cross_entropy_2d`, avoiding
+  materialized `[rows,cols]` `log(q)` and `p*log(q)` intermediates. The benchmark uses strictly
+  positive probability-style `p` and `q` tensors so the row is a finite cross-entropy workload.
+  Shape, dtype, graph, or nonfinite input mismatches fall through to the generic interpreter path.
+- MEASURED per-crate (`rch exec`, worker `hz2`,
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod`, `AGENT_NAME=DustyDog`):
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed
+  '^compiled_dispatch/cross_entropy_2d/' -- --warm-up-time 1 --measurement-time 2
+  --sample-size 10 --noplot`.
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/cross_entropy_2d/orig_decomposed_4096x1024` | 44.441 ms |
+  | `compiled_dispatch/cross_entropy_2d/fast_eval_jaxpr_4096x1024` | 11.344 ms |
+
+  Ratio vs ORIG: **0.2553x time / 3.92x faster**.
+- VALIDATION: `cargo test -p fj-interpreters --profile release cross_entropy -- --nocapture`
+  GREEN on RCH `vmi1149989` (2 filtered-in tests: `cross_entropy` and existing
+  `softmax_cross_entropy`). `cargo fmt -p fj-lax -p fj-interpreters` GREEN before the bench.
+  `cargo fmt -p fj-lax -p fj-interpreters -- --check` GREEN after the ledger update.
+  `cargo test -p fj-conformance --profile release -- --nocapture` GREEN on RCH `vmi1152480`.
+  The runs still report the pre-existing `fj-lax` warnings in arithmetic/reduction/linalg; they are
+  unrelated to this change.
+
 ## 2026-07-04 - WIN 8.66x and 4.03x vs ORIG: chi-squared distance plus row-wise logmeanexp fused interpreter superinstructions (DustyDog)
 
 - Agent: DustyDog. Crate: `fj-interpreters` (+ `fj-lax::nn` row kernels).

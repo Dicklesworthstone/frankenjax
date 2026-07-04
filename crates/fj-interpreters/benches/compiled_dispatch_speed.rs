@@ -1209,6 +1209,55 @@ fn build_entropy_2d_jaxpr() -> Jaxpr {
     )
 }
 
+fn build_cross_entropy_2d_jaxpr() -> Jaxpr {
+    let p = VarId(1);
+    let q = VarId(2);
+    let log_q = VarId(3);
+    let weighted = VarId(4);
+    let summed = VarId(5);
+    let out = VarId(6);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    Jaxpr::new(
+        vec![p, q],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Log,
+                inputs: smallvec::smallvec![Atom::Var(q)],
+                outputs: smallvec::smallvec![log_q],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(p), Atom::Var(log_q)],
+                outputs: smallvec::smallvec![weighted],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(weighted)],
+                outputs: smallvec::smallvec![summed],
+                params: reduce_axis1,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec::smallvec![Atom::Var(summed)],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_kl_divergence_2d_jaxpr() -> Jaxpr {
     let p = VarId(1);
     let q = VarId(2);
@@ -3126,6 +3175,20 @@ fn eval_manhattan_distance_2d_decomposed(a: &Value, b: &Value) -> Value {
     .expect("sum abs")
 }
 
+fn eval_cross_entropy_2d_decomposed(p: &Value, q: &Value) -> Value {
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let empty = BTreeMap::new();
+    let log_q = eval_primitive(Primitive::Log, std::slice::from_ref(q), &empty).expect("log q");
+    let weighted = eval_primitive(Primitive::Mul, &[p.clone(), log_q], &empty).expect("p*log q");
+    let summed = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&weighted),
+        &reduce_axis1,
+    )
+    .expect("sum");
+    eval_primitive(Primitive::Neg, std::slice::from_ref(&summed), &empty).expect("neg")
+}
+
 fn eval_entropy_2d_decomposed(p: &Value) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let empty = BTreeMap::new();
@@ -4197,6 +4260,49 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
                 eval_jaxpr(
                     black_box(&entropy_jaxpr),
                     std::slice::from_ref(&softmax_input),
+                )
+                .unwrap(),
+            )
+        })
+    });
+    let cross_entropy_jaxpr = build_cross_entropy_2d_jaxpr();
+    let cross_entropy_p = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            (0..rows * cols)
+                .map(|idx| ((idx as f64) * 0.000_31).sin() * 0.3 + 1.1)
+                .collect(),
+        )
+        .expect("cross entropy p"),
+    );
+    let cross_entropy_q = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            (0..rows * cols)
+                .map(|idx| ((idx as f64) * 0.000_23).cos() * 0.4 + 1.4)
+                .collect(),
+        )
+        .expect("cross entropy q"),
+    );
+    let cross_entropy_args = [cross_entropy_p, cross_entropy_q];
+    group.bench_function("cross_entropy_2d/orig_decomposed_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_cross_entropy_2d_decomposed(
+                black_box(&cross_entropy_args[0]),
+                black_box(&cross_entropy_args[1]),
+            ))
+        })
+    });
+    group.bench_function("cross_entropy_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(
+                    black_box(&cross_entropy_jaxpr),
+                    black_box(&cross_entropy_args),
                 )
                 .unwrap(),
             )
