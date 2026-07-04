@@ -1138,6 +1138,10 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) = try_eval_top_level_manhattan_distance_2d_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_gelu_erf_f64(jaxpr, const_values, args) {
         return result;
     }
@@ -2408,6 +2412,89 @@ fn try_eval_top_level_euclidean_distance_2d_f64(
     }
 
     let output = fj_lax::nn::euclidean_distance_2d(a_v, b_v, rows, cols);
+    Some(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32],
+            },
+            output,
+        )
+        .map(Value::Tensor)
+        .map(|value| vec![value])
+        .map_err(EvalError::InvalidTensor)
+        .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for row-wise Manhattan (L1) distance `Σ|a-b|` along the last axis:
+/// the 3-equation, TWO-input graph `Sub(a,b) -> Abs -> ReduceSum(axis=1)`. The decomposed path
+/// materializes `a-b` and `abs(a-b)` as full [rows,cols] tensors; this streams each row once and
+/// writes one [rows] output. Finite dense rank-2 f64 only, else falls through.
+fn try_eval_top_level_manhattan_distance_2d_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 2
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 3
+        || args.len() != 2
+    {
+        return None;
+    }
+
+    let a = jaxpr.invars[0];
+    let b = jaxpr.invars[1];
+    let out = jaxpr.outvars[0];
+    let [sub_eq, abs_eq, sum_eq] = jaxpr.equations.as_slice() else {
+        return None;
+    };
+
+    let diff = single_output_for_primitive(sub_eq, Primitive::Sub)?;
+    if sub_eq.inputs.as_slice() != [Atom::Var(a), Atom::Var(b)] {
+        return None;
+    }
+    let abs = single_output_for_primitive(abs_eq, Primitive::Abs)?;
+    if abs_eq.inputs.as_slice() != [Atom::Var(diff)] {
+        return None;
+    }
+    let summed = single_output_for_param_primitive(sum_eq, Primitive::ReduceSum)?;
+    if summed != out
+        || sum_eq.inputs.as_slice() != [Atom::Var(abs)]
+        || !axis1_reduce_params(&sum_eq.params)
+    {
+        return None;
+    }
+
+    let Value::Tensor(a_t) = &args[0] else {
+        return None;
+    };
+    let Value::Tensor(b_t) = &args[1] else {
+        return None;
+    };
+    if a_t.dtype != DType::F64
+        || b_t.dtype != DType::F64
+        || a_t.shape.dims.len() != 2
+        || b_t.shape.dims != a_t.shape.dims
+    {
+        return None;
+    }
+    let rows = a_t.shape.dims[0] as usize;
+    let cols = a_t.shape.dims[1] as usize;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+
+    let a_v = a_t.elements.as_f64_slice()?;
+    let b_v = b_t.elements.as_f64_slice()?;
+    if !a_v.iter().all(|value| value.is_finite()) || !b_v.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::manhattan_distance_2d(a_v, b_v, rows, cols);
     Some(
         TensorValue::new_f64_values(
             Shape {
@@ -20843,6 +20930,89 @@ mod tests {
             .expect("nonfinite euclidean falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite euclidean");
+        assert_eq!(through_eval, through_generic);
+    }
+
+    fn make_manhattan_distance_2d_jaxpr() -> Jaxpr {
+        let a = VarId(1);
+        let b = VarId(2);
+        let diff = VarId(3);
+        let abs = VarId(4);
+        let out = VarId(5);
+        let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+        Jaxpr::new(
+            vec![a, b],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Sub,
+                    inputs: smallvec![Atom::Var(a), Atom::Var(b)],
+                    outputs: smallvec![diff],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Abs,
+                    inputs: smallvec![Atom::Var(diff)],
+                    outputs: smallvec![abs],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(abs)],
+                    outputs: smallvec![out],
+                    params: reduce_axis1,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn eval_top_level_manhattan_distance_2d_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        let a_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.19).sin() * 5.0 - 2.0)
+            .collect();
+        let b_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.23).cos() * 2.5 + 0.75)
+            .collect();
+        let dims = vec![rows as u32, cols as u32];
+        let a = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_data).expect("a input"),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, b_data).expect("b input"),
+        );
+        let jaxpr = make_manhattan_distance_2d_jaxpr();
+
+        let fast = eval_jaxpr(&jaxpr, &[a.clone(), b.clone()]).expect("fast manhattan");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[a, b]).expect("generic manhattan");
+        assert_eq!(fast, generic);
+
+        let mut a_nonfinite: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.01).collect();
+        a_nonfinite[cols + 1] = f64::NAN;
+        let a_nf = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_nonfinite)
+                .expect("nonfinite a"),
+        );
+        let b_ok = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape { dims },
+                (0..rows * cols).map(|idx| idx as f64 * 0.02).collect(),
+            )
+            .expect("finite b"),
+        );
+        let through_eval = eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()])
+            .expect("nonfinite manhattan falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite manhattan");
         assert_eq!(through_eval, through_generic);
     }
 

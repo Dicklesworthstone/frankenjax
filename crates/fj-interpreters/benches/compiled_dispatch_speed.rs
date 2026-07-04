@@ -639,6 +639,46 @@ fn build_euclidean_distance_2d_jaxpr() -> Jaxpr {
     )
 }
 
+fn build_manhattan_distance_2d_jaxpr() -> Jaxpr {
+    let a = VarId(1);
+    let b = VarId(2);
+    let diff = VarId(3);
+    let abs = VarId(4);
+    let out = VarId(5);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    Jaxpr::new(
+        vec![a, b],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec::smallvec![Atom::Var(a), Atom::Var(b)],
+                outputs: smallvec::smallvec![diff],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Abs,
+                inputs: smallvec::smallvec![Atom::Var(diff)],
+                outputs: smallvec::smallvec![abs],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(abs)],
+                outputs: smallvec::smallvec![out],
+                params: reduce_axis1,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_cosine_similarity_2d_jaxpr() -> Jaxpr {
     let a = VarId(1);
     let b = VarId(2);
@@ -1327,6 +1367,19 @@ fn eval_euclidean_distance_2d_decomposed(a: &Value, b: &Value) -> Value {
     eval_primitive(Primitive::Sqrt, std::slice::from_ref(&s), &empty).expect("sqrt")
 }
 
+fn eval_manhattan_distance_2d_decomposed(a: &Value, b: &Value) -> Value {
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let empty = BTreeMap::new();
+    let diff = eval_primitive(Primitive::Sub, &[a.clone(), b.clone()], &empty).expect("a-b");
+    let abs = eval_primitive(Primitive::Abs, std::slice::from_ref(&diff), &empty).expect("abs");
+    eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&abs),
+        &reduce_axis1,
+    )
+    .expect("sum abs")
+}
+
 fn eval_cosine_similarity_2d_decomposed(a: &Value, b: &Value) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let empty = BTreeMap::new();
@@ -1922,6 +1975,21 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     group.bench_function("euclidean_distance_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| {
             black_box(eval_jaxpr(black_box(&euclidean_jaxpr), black_box(&euclidean_args)).unwrap())
+        })
+    });
+    let manhattan_jaxpr = build_manhattan_distance_2d_jaxpr();
+    let manhattan_args = [softmax_input.clone(), layer_norm_input.clone()];
+    group.bench_function("manhattan_distance_2d/orig_decomposed_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_manhattan_distance_2d_decomposed(
+                black_box(&manhattan_args[0]),
+                black_box(&manhattan_args[1]),
+            ))
+        })
+    });
+    group.bench_function("manhattan_distance_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_jaxpr(black_box(&manhattan_jaxpr), black_box(&manhattan_args)).unwrap())
         })
     });
     let cosine_jaxpr = build_cosine_similarity_2d_jaxpr();
