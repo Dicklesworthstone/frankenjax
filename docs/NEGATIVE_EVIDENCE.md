@@ -2,6 +2,37 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 3.74x vs ORIG: fused finite f64 rank-2 layer-norm graph macro-op (BlackThrush)
+
+- Agent: BlackThrush (`AGENT_NAME=BlackThrush`). Crate: `fj-interpreters`. Scratch/worktree audit
+  found no measured KEEP still absent from `main`; the visible off-main candidates were already present
+  on `main` or previously recorded. This pass dug a different primitive family from the covered
+  softmax/exp/FFT/SIMD lanes.
+- LEVER: exact top-level interpreter recognizer for the finite dense f64 rank-2 layer-normalization graph
+  `ReduceSum(axis=1) -> Div(cols) -> BroadcastInDim(axis0) -> Sub -> Square -> ReduceSum(axis=1) ->
+  Div(cols) -> Add(epsilon) -> Rsqrt -> BroadcastInDim(axis0) -> Mul`. This is a partial-evaluation /
+  loop-fusion macro-op: three row-major passes over the input/output replace eleven primitive dispatches
+  plus intermediate tensors. Nonfinite inputs, noncanonical graphs, wrong axes/shapes/divisors, or negative
+  epsilon fall through to the existing interpreter.
+- REQUESTED bench shape first:
+  `AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod rch exec -- cargo bench --release -p fj-interpreters --bench compiled_dispatch_speed layer_norm_2d ...`
+  ran on `hz2` and Cargo rejected this workspace's `bench --release` spelling (`unexpected argument
+  '--release'`). Measured release command was `cargo bench -p fj-interpreters --profile release --bench
+  compiled_dispatch_speed layer_norm_2d -- --warm-up-time 1 --measurement-time 2 --sample-size 10
+  --noplot`.
+
+| Row | ORIG midpoint | Fused midpoint | Ratio vs ORIG | Verdict |
+| --- | ---: | ---: | ---: | --- |
+| `compiled_dispatch/layer_norm_2d/4096x1024` | 96.762ms | 25.893ms | **3.74x faster** | KEEP |
+
+- Gates: `cargo fmt -p fj-interpreters --check` passed; focused interpreter test
+  `eval_top_level_layer_norm_2d_f64_matches_generic_and_preserves_edges` passed via `rch exec`; clippy
+  `cargo clippy -p fj-interpreters --profile release --all-targets --no-deps -- -D warnings` passed via
+  `rch exec` (pre-existing `fj-lax` dependency warnings printed but the touched-crate clippy exited 0);
+  `cargo test -p fj-conformance --profile release` passed via `rch exec` on `vmi1152480`, including
+  doctests. A first local-fallback conformance attempt passed test bodies but hit a doctest missing-rlib
+  race after concurrent RCH artifact retrieval, so only the clean remote rerun is counted.
+
 ## 2026-07-04 - NO-SHIP: Cholesky trailing-update (SYRK) GEMM-route 0.93x + 4×4 register-block 0.84x — AVX2 register/BW ceiling (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. File: `linalg.rs` (`cholesky_schur_update_lower*`). Genuinely

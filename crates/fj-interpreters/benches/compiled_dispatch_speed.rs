@@ -180,6 +180,130 @@ fn build_softmax_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
     )
 }
 
+fn build_layer_norm_2d_jaxpr(rows: usize, cols: usize, epsilon: f64) -> Jaxpr {
+    let x = VarId(1);
+    let sum = VarId(2);
+    let mean = VarId(3);
+    let mean_b = VarId(4);
+    let centered = VarId(5);
+    let squared = VarId(6);
+    let var_sum = VarId(7);
+    let variance = VarId(8);
+    let var_eps = VarId(9);
+    let inv = VarId(10);
+    let inv_b = VarId(11);
+    let out = VarId(12);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let bcast = BTreeMap::from([
+        ("shape".to_owned(), format!("{rows},{cols}")),
+        ("broadcast_dimensions".to_owned(), "0".to_owned()),
+    ]);
+    Jaxpr::new(
+        vec![x],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(x)],
+                outputs: smallvec::smallvec![sum],
+                params: reduce_axis1.clone(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Div,
+                inputs: smallvec::smallvec![
+                    Atom::Var(sum),
+                    Atom::Lit(Literal::from_f64(cols as f64))
+                ],
+                outputs: smallvec::smallvec![mean],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::BroadcastInDim,
+                inputs: smallvec::smallvec![Atom::Var(mean)],
+                outputs: smallvec::smallvec![mean_b],
+                params: bcast.clone(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec::smallvec![Atom::Var(x), Atom::Var(mean_b)],
+                outputs: smallvec::smallvec![centered],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Square,
+                inputs: smallvec::smallvec![Atom::Var(centered)],
+                outputs: smallvec::smallvec![squared],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(squared)],
+                outputs: smallvec::smallvec![var_sum],
+                params: reduce_axis1,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Div,
+                inputs: smallvec::smallvec![
+                    Atom::Var(var_sum),
+                    Atom::Lit(Literal::from_f64(cols as f64))
+                ],
+                outputs: smallvec::smallvec![variance],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![
+                    Atom::Var(variance),
+                    Atom::Lit(Literal::from_f64(epsilon))
+                ],
+                outputs: smallvec::smallvec![var_eps],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Rsqrt,
+                inputs: smallvec::smallvec![Atom::Var(var_eps)],
+                outputs: smallvec::smallvec![inv],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::BroadcastInDim,
+                inputs: smallvec::smallvec![Atom::Var(inv)],
+                outputs: smallvec::smallvec![inv_b],
+                params: bcast,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(centered), Atom::Var(inv_b)],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn eval_softmax_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let bcast = BTreeMap::from([
@@ -205,6 +329,55 @@ fn eval_softmax_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value 
     .expect("reduce sum");
     let sum_b = eval_primitive(Primitive::BroadcastInDim, &[sum], &bcast).expect("broadcast sum");
     eval_primitive(Primitive::Div, &[exp, sum_b], &empty).expect("divide")
+}
+
+fn eval_layer_norm_2d_decomposed(input: &Value, rows: usize, cols: usize, epsilon: f64) -> Value {
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let bcast = BTreeMap::from([
+        ("shape".to_owned(), format!("{rows},{cols}")),
+        ("broadcast_dimensions".to_owned(), "0".to_owned()),
+    ]);
+    let empty = BTreeMap::new();
+    let sum = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(input),
+        &reduce_axis1,
+    )
+    .expect("reduce sum");
+    let mean = eval_primitive(
+        Primitive::Div,
+        &[sum, Value::scalar_f64(cols as f64)],
+        &empty,
+    )
+    .expect("mean");
+    let mean_b =
+        eval_primitive(Primitive::BroadcastInDim, &[mean], &bcast).expect("broadcast mean");
+    let centered =
+        eval_primitive(Primitive::Sub, &[input.clone(), mean_b], &empty).expect("center");
+    let squared =
+        eval_primitive(Primitive::Square, std::slice::from_ref(&centered), &empty).expect("square");
+    let var_sum = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&squared),
+        &reduce_axis1,
+    )
+    .expect("variance sum");
+    let variance = eval_primitive(
+        Primitive::Div,
+        &[var_sum, Value::scalar_f64(cols as f64)],
+        &empty,
+    )
+    .expect("variance");
+    let var_eps = eval_primitive(
+        Primitive::Add,
+        &[variance, Value::scalar_f64(epsilon)],
+        &empty,
+    )
+    .expect("variance epsilon");
+    let inv =
+        eval_primitive(Primitive::Rsqrt, std::slice::from_ref(&var_eps), &empty).expect("rsqrt");
+    let inv_b = eval_primitive(Primitive::BroadcastInDim, &[inv], &bcast).expect("broadcast inv");
+    eval_primitive(Primitive::Mul, &[centered, inv_b], &empty).expect("scale")
 }
 
 fn build_broadcast_reciprocal_jaxpr(rows: usize, cols: usize) -> Jaxpr {
@@ -467,6 +640,41 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
                 eval_jaxpr(
                     black_box(&softmax_jaxpr),
                     std::slice::from_ref(&softmax_input),
+                )
+                .unwrap(),
+            )
+        })
+    });
+    let epsilon = 1.0e-5;
+    let layer_norm_data: Vec<f64> = (0..rows * cols)
+        .map(|idx| ((idx as f64) * 0.0013).cos() * 3.0 + ((idx % cols) as f64) * 0.0002)
+        .collect();
+    let layer_norm_input = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            layer_norm_data,
+        )
+        .expect("layer norm input"),
+    );
+    let layer_norm_jaxpr = build_layer_norm_2d_jaxpr(rows, cols, epsilon);
+    group.bench_function("layer_norm_2d/orig_decomposed_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_layer_norm_2d_decomposed(
+                black_box(&layer_norm_input),
+                rows,
+                cols,
+                epsilon,
+            ))
+        })
+    });
+    group.bench_function("layer_norm_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(
+                    black_box(&layer_norm_jaxpr),
+                    std::slice::from_ref(&layer_norm_input),
                 )
                 .unwrap(),
             )
