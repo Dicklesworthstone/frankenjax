@@ -2,6 +2,32 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - NO-SHIP 1.00x: scattered f64 gather via AVX2 `Simd::gather_or` — hardware vgather ≈ software pipeline on Zen3 (closes olm4p) (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. File: `tensor_ops.rs` (scattered `gather_single_dense_f64`).
+  Remote via rch (`CARGO_TARGET_DIR=.../blackthrush`), `--test-threads=1`.
+- CONTEXT: scattered single-element gather is the biggest NON-FMA JAX-loss (~15x, ledger
+  d551956b got it 28x→15x via a branchless 8-way software pipeline `gather_single_dense_f64_
+  interleaved`; the remaining gap was flagged "needs `std::simd Simd::gather_or` for more
+  outstanding loads" — bead olm4p, the explicit un-done next lever).
+- LEVER: replaced the manual 8-way unroll with `Simd::<f64,8>::gather_or(src, idx8, 0)` (one AVX2
+  `vgatherqpd` per 8). Compiles clean (API stable on this nightly) and is BIT-IDENTICAL to the
+  scalar loads (a gather is an exact load; in-bounds indices never touch the OOB `or`) — verified
+  by `gather_single_dense_f64_simd_matches_interleaved` (5 lengths incl. scalar tail).
+- MEASURED (rch, same-invocation min-of-8 A/B, `--test-threads=1`, 16M-from-4M scattered f64,
+  `bench_gather_single_simd_vs_interleaved`): run1 interleaved 185.9 → gather 168.4 = 1.10x, run2
+  interleaved 151.5 → gather 150.9 = **1.00x**. The run1 "1.10x" was cross-invocation NOISE (the
+  interleaved arm itself swung 186→151ms = 23%); the same-invocation ratios average ≈1.0x. NO-SHIP
+  (reverted; #[cfg(test)] fn + test + bench removed).
+- ROOT CAUSE / closes olm4p: on the Zen3 5975WX bench host, AVX2 `vgatherqpd` is microcoded — its
+  per-element uop cost ≈ the manual scalar loads, so it issues no more effective memory-level
+  parallelism than the 8-way software pipeline the OoO engine already runs. The scattered-gather
+  gap to JAX is FUNDAMENTAL memory latency (src is L3-resident, ~40-cycle loads; MLP is capped by
+  the L3 miss-queue depth), NOT instruction selection. Hardware gather does not help here. Do NOT
+  re-attempt Simd::gather for scattered gather on this host (bead olm4p = no-ship). The only
+  further lever would be prefetch/larger unroll (miss-queue-depth-bound, low EV) — see
+  [[project_parallelization_compute_vs_memory_bound]] (branchless-MLP gather d551956b).
+
 ## 2026-07-04 - BLOCKER (measured): non-FMA elementwise frontier exhausted; remaining gaps root-caused to +fma / f64-compute-contract / multi-session (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. Consolidates this session's dig sweep; each remaining
