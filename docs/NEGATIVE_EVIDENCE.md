@@ -2,6 +2,42 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 6.28x vs ORIG: row-wise L1 (Manhattan/taxicab) norm recognized as a fused (row-parallel) interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::l1_norm_2d`). Broadens the
+  reduction family with a NEW elementwise op (absolute value, not square): row-wise L1 norm `‖x‖₁ = Σ|x|`
+  (`jax.numpy.linalg.norm(x, ord=1, axis=-1)`). The SMALLEST graph in the family — a 2-equation
+  `Abs(x) → ReduceSum(axis=1)`, one f64 [rows,cols] input → one [rows] output (rank-reducing). NO
+  transcendentals (an abs elementwise op + a reduction). The general fuser cannot fuse it (the reduction
+  breaks the elementwise fuser), so the decomposed path materializes the full [rows,cols] absolute-value
+  intermediate plus the reduction Vec. Worktree audit: HEAD==origin/main (my l2_normalize tip 5a02244d),
+  no unlanded win to land. DISTINCT from the already-shipped 2-input Manhattan DISTANCE `Σ|a-b|`
+  (SlateBridge/DustyDog) — this is the 1-input `Σ|x|` (different invar count + graph: no Sub).
+- LEVER: a top-level 1-input superinstruction for the exact 2-eq finite dense f64 L1-norm graph,
+  computed via the row-parallel `l1_norm_2d`. BIT-IDENTICAL: `l1_norm_row` does an index-order sum of
+  `x[i].abs()` (`f64::abs` = the `Abs` primitive; matching the per-row `ReduceSum`). Only the OUTER row
+  loop is threaded, so per-row summation order is preserved. Finite dense rank-2 f64 only, else falls
+  through (matching the graph's NaN/Inf propagation via the generic path).
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed l1_norm_2d
+  -m 3 -s 20`, 4096x1024, x=softmax_input; VERY TIGHT CIs → low variance):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/l1_norm_2d/orig_decomposed_4096x1024` | 16.109 ms |
+  | `compiled_dispatch/l1_norm_2d/fast_eval_jaxpr_4096x1024` | 2.5663 ms |
+
+  Ratio vs ORIG: **0.1593x time / 6.28x faster** (worst-case CI 6.15x, best 6.41x; robustly ≥2x).
+  Slightly larger multiple than L2-norm (5.86x): the fused kernel is a bare abs+add per element (2.57 ms,
+  no square/sqrt), while the decomposed path still pays a full [rows,cols] `Abs` materialization + a
+  reduce (16.1 ms).
+- VALIDATION: `eval_top_level_l1_norm_2d_f64_matches_generic_and_preserves_edges` GREEN (fused==generic
+  bit-for-bit on mixed-sign random f64; nonfinite falls through to the generic path); fj-lax `nn::`
+  61/61 GREEN. Pre-existing INDEPENDENT RED (NOT this change): fj-interpreters
+  `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)` — this diff touches no
+  cbrt/arena code. (Two `std::simd::{Select,StdFloat}` unused-import warnings are pre-existing
+  nightly drift, not from this change.)
+
 ## 2026-07-04 - WIN 3.80x vs ORIG: row-wise L2-normalize recognized as a fused (row-parallel) RANK-PRESERVING interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::l2_normalize_2d`). First

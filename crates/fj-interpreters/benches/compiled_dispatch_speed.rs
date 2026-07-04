@@ -1624,6 +1624,36 @@ fn build_l2_normalize_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
     )
 }
 
+fn build_l1_norm_2d_jaxpr() -> Jaxpr {
+    let x = VarId(1);
+    let a = VarId(2);
+    let out = VarId(3);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    Jaxpr::new(
+        vec![x],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Abs,
+                inputs: smallvec::smallvec![Atom::Var(x)],
+                outputs: smallvec::smallvec![a],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(a)],
+                outputs: smallvec::smallvec![out],
+                params: reduce_axis1,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_logsumexp_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
     let x = VarId(1);
     let max = VarId(2);
@@ -2445,6 +2475,14 @@ fn eval_l2_normalize_2d_decomposed(input: &Value, rows: usize, cols: usize) -> V
     eval_primitive(Primitive::Div, &[input.clone(), norm_b], &empty).expect("l2_normalize")
 }
 
+fn eval_l1_norm_2d_decomposed(input: &Value) -> Value {
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let empty = BTreeMap::new();
+    let a = eval_primitive(Primitive::Abs, std::slice::from_ref(input), &empty).expect("abs");
+    eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&a), &reduce_axis1)
+        .expect("l1_norm")
+}
+
 fn eval_logsumexp_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let bcast = BTreeMap::from([
@@ -3177,6 +3215,17 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
             black_box(
                 eval_jaxpr(black_box(&l2_normalize_jaxpr), std::slice::from_ref(&softmax_input))
                     .unwrap(),
+            )
+        })
+    });
+    let l1_norm_jaxpr = build_l1_norm_2d_jaxpr();
+    group.bench_function("l1_norm_2d/orig_decomposed_4096x1024", |b| {
+        b.iter(|| black_box(eval_l1_norm_2d_decomposed(black_box(&softmax_input))))
+    });
+    group.bench_function("l1_norm_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(black_box(&l1_norm_jaxpr), std::slice::from_ref(&softmax_input)).unwrap(),
             )
         })
     });
