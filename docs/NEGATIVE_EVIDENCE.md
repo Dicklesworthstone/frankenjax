@@ -2,6 +2,40 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 5.56x vs ORIG: SwiGLU gated-MLP unit recognized as a fused (threaded) 2-input interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ `fj-lax::nn::swiglu` / new `threaded_f64_zip`).
+  Genuinely different from the shipped single-input activation/reduction macro-ops: SwiGLU =
+  `silu(a) * b` = `(a / (1 + exp(-a))) * b`, the core GATED FFN unit of every modern transformer
+  (LLaMA/PaLM/Mistral compute `silu(W_gate·x) * (W_up·x)`). A TWO-input, 5-equation elementwise graph
+  `Neg(a) → Exp → Add(1, ·) → Div(a, ·) → Mul(·, b)`. Exp-only (safe bits). The general elementwise
+  fuser cannot fuse it because `Exp` ∉ `cheap_op`, so the decomposed path materializes 5 intermediate
+  [rows,cols] Vecs. Worktree audit: HEAD==origin/main, no unlanded win.
+- LEVER: a top-level 2-input superinstruction for the exact 5-eq finite dense f64 SwiGLU graph,
+  computed in one threaded `nn::swiglu` pass (new `threaded_f64_zip` = 2-slice sibling of
+  `threaded_f64_map`, bit-identical to the sequential zip-map — no reduction). BIT-IDENTICAL to the
+  generic path: `swiglu` computes `(av / (1.0 + (-av).exp())) * bv`, reproducing `nn::silu`'s exact
+  `a/(1+exp(-a))` form then a per-element `Mul` by `b`. Recognizer ENFORCES `Div` operand order
+  (non-commutative — numerator = gate input `a`); `Mul(silu_a, b)` and `Add(1, e)` are commutative →
+  matched in either order; both inputs must be F64 with identical shapes; finite dense only, else
+  falls through.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed swiglu -m 3 -s 20`,
+  4096x1024, inputs a=softmax_input / b=layer_norm_input):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/swiglu/orig_decomposed_4096x1024` | 100.46 ms |
+  | `compiled_dispatch/swiglu/fast_eval_jaxpr_4096x1024` | 18.082 ms |
+
+  Ratio vs ORIG: **0.180x time / 5.56x faster** (worst-case CI 5.08x, best 6.27x; robustly ≥2x).
+- VALIDATION: `eval_top_level_swiglu_f64_matches_generic_and_preserves_edges` GREEN (fused==generic
+  bit-for-bit on random f64; nonfinite gate falls through); fj-lax `nn::` 61/61 GREEN (new
+  threaded_f64_zip + swiglu are bit-safe); all 12 superinstruction parity tests GREEN. Pre-existing
+  INDEPENDENT RED (NOT this change): fj-interpreters
+  `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)` — this diff touches no
+  cbrt/arena code.
+
 ## 2026-07-04 - WIN 3.93x vs ORIG: softplus activation graph recognized as a fused (threaded) interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ `fj-lax::nn::softplus_direct`). Genuinely different

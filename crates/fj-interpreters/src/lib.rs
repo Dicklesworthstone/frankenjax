@@ -1141,6 +1141,10 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) = try_eval_top_level_swiglu_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_scalar_half_arith(jaxpr, const_values, args) {
         return result;
     }
@@ -2362,6 +2366,95 @@ fn try_eval_top_level_silu_f64(
     let output = fj_lax::nn::silu(values);
     Some(
         TensorValue::new_f64_values(input.shape.clone(), output)
+            .map(Value::Tensor)
+            .map(|value| vec![value])
+            .map_err(EvalError::InvalidTensor)
+            .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for the SwiGLU gated-MLP unit `silu(a) * b` =
+/// `(a / (1 + exp(-a))) * b` (the core gated FFN of LLaMA/PaLM/Mistral): the 5-equation,
+/// TWO-input elementwise graph `Neg(a) → Exp → Add(1, ·) → Div(a, ·) → Mul(·, b)`. Pure
+/// elementwise over two equal-shape f64 inputs; the general fuser cannot fuse it because `Exp` is
+/// not a `CheapOp`. Finite dense f64 only, else falls through. Bit-identical: `fj_lax::nn::swiglu`
+/// computes `(av / (1.0 + (-av).exp())) * bv`, reproducing `silu`'s exact `a/(1+exp(-a))` form
+/// (`Div` order enforced — non-commutative) then the per-element `Mul` by `b` (`Mul` commutative →
+/// operand order agnostic; `Add(1, e)` likewise).
+fn try_eval_top_level_swiglu_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 2
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 5
+        || args.len() != 2
+    {
+        return None;
+    }
+
+    let a = jaxpr.invars[0];
+    let b = jaxpr.invars[1];
+    let out = jaxpr.outvars[0];
+    let [neg_eq, exp_eq, add_eq, div_eq, mul_eq] = jaxpr.equations.as_slice() else {
+        return None;
+    };
+
+    let na = single_output_for_primitive(neg_eq, Primitive::Neg)?;
+    if neg_eq.inputs.as_slice() != [Atom::Var(a)] {
+        return None;
+    }
+    let e = single_output_for_primitive(exp_eq, Primitive::Exp)?;
+    if exp_eq.inputs.as_slice() != [Atom::Var(na)] {
+        return None;
+    }
+    let one_plus = single_output_for_primitive(add_eq, Primitive::Add)?;
+    let add_const = match add_eq.inputs.as_slice() {
+        [Atom::Var(v), atom] if *v == e => f64_literal(atom),
+        [atom, Atom::Var(v)] if *v == e => f64_literal(atom),
+        _ => None,
+    };
+    if add_const?.to_bits() != 1.0_f64.to_bits() {
+        return None;
+    }
+    // `Div` is non-commutative — numerator must be the gate input `a`, denominator `1 + exp(-a)`.
+    let silu_a = single_output_for_primitive(div_eq, Primitive::Div)?;
+    if div_eq.inputs.as_slice() != [Atom::Var(a), Atom::Var(one_plus)] {
+        return None;
+    }
+    // `Mul` is commutative — gate `silu_a` times the value input `b`, in either operand order.
+    let product = single_output_for_primitive(mul_eq, Primitive::Mul)?;
+    let mul_ok = matches!(
+        mul_eq.inputs.as_slice(),
+        [Atom::Var(x), Atom::Var(y)]
+            if (*x == silu_a && *y == b) || (*x == b && *y == silu_a)
+    );
+    if product != out || !mul_ok {
+        return None;
+    }
+
+    let Value::Tensor(a_t) = &args[0] else {
+        return None;
+    };
+    let Value::Tensor(b_t) = &args[1] else {
+        return None;
+    };
+    if a_t.dtype != DType::F64 || b_t.dtype != DType::F64 || a_t.shape.dims != b_t.shape.dims {
+        return None;
+    }
+    let a_v = a_t.elements.as_f64_slice()?;
+    let b_v = b_t.elements.as_f64_slice()?;
+    if !a_v.iter().all(|value| value.is_finite()) || !b_v.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::swiglu(a_v, b_v);
+    Some(
+        TensorValue::new_f64_values(a_t.shape.clone(), output)
             .map(Value::Tensor)
             .map(|value| vec![value])
             .map_err(EvalError::InvalidTensor)
@@ -20813,6 +20906,106 @@ mod tests {
             eval_jaxpr(&jaxpr, std::slice::from_ref(&nonfinite)).expect("nonfinite silu falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite]).expect("generic nonfinite silu");
+        assert_eq!(through_eval, through_generic);
+    }
+
+    fn make_swiglu_jaxpr() -> Jaxpr {
+        let a = VarId(1);
+        let b = VarId(2);
+        let na = VarId(3);
+        let e = VarId(4);
+        let one_plus = VarId(5);
+        let silu_a = VarId(6);
+        let out = VarId(7);
+        Jaxpr::new(
+            vec![a, b],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(a)],
+                    outputs: smallvec![na],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Exp,
+                    inputs: smallvec![Atom::Var(na)],
+                    outputs: smallvec![e],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Lit(Literal::from_f64(1.0)), Atom::Var(e)],
+                    outputs: smallvec![one_plus],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Div,
+                    inputs: smallvec![Atom::Var(a), Atom::Var(one_plus)],
+                    outputs: smallvec![silu_a],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(silu_a), Atom::Var(b)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn eval_top_level_swiglu_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        let a_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.31).sin() * 5.0 - 2.0)
+            .collect();
+        let b_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.23).cos() * 3.0 + 0.5)
+            .collect();
+        let dims = vec![rows as u32, cols as u32];
+        let a = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_data).expect("gate input"),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, b_data).expect("value input"),
+        );
+        let jaxpr = make_swiglu_jaxpr();
+
+        let fast = eval_jaxpr(&jaxpr, &[a.clone(), b.clone()]).expect("fast swiglu");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[a, b]).expect("generic swiglu");
+        assert_eq!(fast, generic);
+
+        let mut a_nonfinite: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.01).collect();
+        a_nonfinite[cols + 1] = f64::NAN;
+        let a_nf = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_nonfinite)
+                .expect("nonfinite gate"),
+        );
+        let b_ok = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape { dims },
+                (0..rows * cols).map(|idx| idx as f64 * 0.02).collect(),
+            )
+            .expect("finite value"),
+        );
+        let through_eval =
+            eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()]).expect("nonfinite swiglu falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite swiglu");
         assert_eq!(through_eval, through_generic);
     }
 

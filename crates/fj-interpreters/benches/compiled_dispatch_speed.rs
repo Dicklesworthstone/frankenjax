@@ -419,6 +419,63 @@ fn build_softplus_jaxpr() -> Jaxpr {
     )
 }
 
+fn build_swiglu_jaxpr() -> Jaxpr {
+    let a = VarId(1);
+    let b = VarId(2);
+    let na = VarId(3);
+    let e = VarId(4);
+    let one_plus = VarId(5);
+    let silu_a = VarId(6);
+    let out = VarId(7);
+    Jaxpr::new(
+        vec![a, b],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec::smallvec![Atom::Var(a)],
+                outputs: smallvec::smallvec![na],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Exp,
+                inputs: smallvec::smallvec![Atom::Var(na)],
+                outputs: smallvec::smallvec![e],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![Atom::Lit(Literal::from_f64(1.0)), Atom::Var(e)],
+                outputs: smallvec::smallvec![one_plus],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Div,
+                inputs: smallvec::smallvec![Atom::Var(a), Atom::Var(one_plus)],
+                outputs: smallvec::smallvec![silu_a],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(silu_a), Atom::Var(b)],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_silu_jaxpr() -> Jaxpr {
     let x = VarId(1);
     let nx = VarId(2);
@@ -967,6 +1024,16 @@ fn eval_softplus_decomposed(input: &Value) -> Value {
     let one_plus =
         eval_primitive(Primitive::Add, &[Value::scalar_f64(1.0), e], &empty).expect("add one");
     eval_primitive(Primitive::Log, std::slice::from_ref(&one_plus), &empty).expect("log")
+}
+
+fn eval_swiglu_decomposed(a: &Value, b: &Value) -> Value {
+    let empty = BTreeMap::new();
+    let na = eval_primitive(Primitive::Neg, std::slice::from_ref(a), &empty).expect("neg");
+    let e = eval_primitive(Primitive::Exp, std::slice::from_ref(&na), &empty).expect("exp");
+    let one_plus =
+        eval_primitive(Primitive::Add, &[Value::scalar_f64(1.0), e], &empty).expect("add one");
+    let silu_a = eval_primitive(Primitive::Div, &[a.clone(), one_plus], &empty).expect("div");
+    eval_primitive(Primitive::Mul, &[silu_a, b.clone()], &empty).expect("mul")
 }
 
 fn eval_logsumexp_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value {
@@ -1560,6 +1627,19 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
                 eval_jaxpr(black_box(&silu_jaxpr), std::slice::from_ref(&softmax_input)).unwrap(),
             )
         })
+    });
+    let swiglu_jaxpr = build_swiglu_jaxpr();
+    let swiglu_args = [softmax_input.clone(), layer_norm_input.clone()];
+    group.bench_function("swiglu/orig_decomposed_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_swiglu_decomposed(
+                black_box(&swiglu_args[0]),
+                black_box(&swiglu_args[1]),
+            ))
+        })
+    });
+    group.bench_function("swiglu/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| black_box(eval_jaxpr(black_box(&swiglu_jaxpr), black_box(&swiglu_args)).unwrap()))
     });
     for &(rows, cols) in &[(4096usize, 1024usize), (16384, 1024)] {
         let arg: Vec<f64> = (0..cols).map(|idx| idx as f64 * 0.001 + 1.0).collect();

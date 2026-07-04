@@ -42,6 +42,39 @@ fn threaded_f64_map(x: &[f64], f: impl Fn(f64) -> f64 + Sync) -> Vec<f64> {
     out
 }
 
+/// Like [`threaded_f64_map`] but for a 2-input elementwise op over two equal-length slices.
+/// Chunks both inputs identically and applies `f(a[i], b[i])` per element; BIT-IDENTICAL to the
+/// sequential `a.iter().zip(b).map(f)` (same values, same per-element order — no reduction).
+/// Callers guarantee `a.len() == b.len()`.
+fn threaded_f64_zip(a: &[f64], b: &[f64], f: impl Fn(f64, f64) -> f64 + Sync) -> Vec<f64> {
+    let n = a.len();
+    let threads = crate::arithmetic::work_scaled_threads(n);
+    if threads <= 1 {
+        return a.iter().zip(b).map(|(&x, &y)| f(x, y)).collect();
+    }
+    let mut out = vec![0.0f64; n];
+    let chunk = n.div_ceil(threads);
+    let f = &f;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f64] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let sa = &a[start..start + len];
+            let sb = &b[start..start + len];
+            scope.spawn(move || {
+                for (o, (&x, &y)) in blk.iter_mut().zip(sa.iter().zip(sb)) {
+                    *o = f(x, y);
+                }
+            });
+            start += len;
+        }
+    });
+    out
+}
+
 /// Like [`threaded_f64_map`] but for CHEAP, bandwidth-bound elementwise ops (relu/clamp):
 /// only threads past L3 (`>= 1<<23` elems), where aggregate DRAM bandwidth across cores
 /// wins ~1.7-2x; below that a single core already saturates L3 and threading a memory-bound
@@ -114,6 +147,17 @@ pub fn silu(x: &[f64]) -> Vec<f64> {
 #[must_use]
 pub fn swish(x: &[f64]) -> Vec<f64> {
     silu(x)
+}
+
+/// SwiGLU gate: `silu(a) * b` = `(a / (1 + exp(-a))) * b`, elementwise over two equal-length
+/// inputs. The core gated-MLP unit of modern transformers (LLaMA/PaLM/Mistral FFN blocks:
+/// `silu(W_gate·x) * (W_up·x)`). BIT-IDENTICAL to the decomposed `Neg(a) → Exp → Add(1) →
+/// Div(a,·) → Mul(·, b)` graph: the `Div` reproduces [`silu`]'s exact `a/(1+exp(-a))` form (Div
+/// non-commutative → numerator `a`), then a per-element `Mul` by `b`. Used by the interpreter
+/// swiglu superinstruction. Callers guarantee `a.len() == b.len()`.
+#[must_use]
+pub fn swiglu(a: &[f64], b: &[f64]) -> Vec<f64> {
+    threaded_f64_zip(a, b, |av, bv| (av / (1.0 + (-av).exp())) * bv)
 }
 
 /// Hard SiLU / Hard Swish: x * hard_sigmoid(x)
