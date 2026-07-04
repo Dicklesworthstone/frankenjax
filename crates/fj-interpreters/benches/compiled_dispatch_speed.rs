@@ -2355,6 +2355,97 @@ fn build_logsumexp_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
     )
 }
 
+fn build_logmeanexp_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
+    let x = VarId(1);
+    let max = VarId(2);
+    let max_b = VarId(3);
+    let shifted = VarId(4);
+    let exp = VarId(5);
+    let sum = VarId(6);
+    let logv = VarId(7);
+    let lse = VarId(8);
+    let out = VarId(9);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let bcast = BTreeMap::from([
+        ("shape".to_owned(), format!("{rows},{cols}")),
+        ("broadcast_dimensions".to_owned(), "0".to_owned()),
+    ]);
+    Jaxpr::new(
+        vec![x],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::ReduceMax,
+                inputs: smallvec::smallvec![Atom::Var(x)],
+                outputs: smallvec::smallvec![max],
+                params: reduce_axis1.clone(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::BroadcastInDim,
+                inputs: smallvec::smallvec![Atom::Var(max)],
+                outputs: smallvec::smallvec![max_b],
+                params: bcast,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec::smallvec![Atom::Var(x), Atom::Var(max_b)],
+                outputs: smallvec::smallvec![shifted],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Exp,
+                inputs: smallvec::smallvec![Atom::Var(shifted)],
+                outputs: smallvec::smallvec![exp],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(exp)],
+                outputs: smallvec::smallvec![sum],
+                params: reduce_axis1,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Log,
+                inputs: smallvec::smallvec![Atom::Var(sum)],
+                outputs: smallvec::smallvec![logv],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![Atom::Var(max), Atom::Var(logv)],
+                outputs: smallvec::smallvec![lse],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec::smallvec![
+                    Atom::Var(lse),
+                    Atom::Lit(Literal::from_f64((cols as f64).ln()))
+                ],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_softmax_cross_entropy_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
     let logits = VarId(1);
     let labels = VarId(2);
@@ -3394,6 +3485,17 @@ fn eval_logsumexp_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Valu
     eval_primitive(Primitive::Add, &[max, logv], &empty).expect("add max")
 }
 
+fn eval_logmeanexp_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value {
+    let lse = eval_logsumexp_2d_decomposed(input, rows, cols);
+    let empty = BTreeMap::new();
+    eval_primitive(
+        Primitive::Sub,
+        &[lse, Value::scalar_f64((cols as f64).ln())],
+        &empty,
+    )
+    .expect("subtract log n")
+}
+
 fn eval_softmax_cross_entropy_2d_decomposed(
     logits: &Value,
     labels: &Value,
@@ -4282,6 +4384,27 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
             black_box(
                 eval_jaxpr(
                     black_box(&logsumexp_jaxpr),
+                    std::slice::from_ref(&softmax_input),
+                )
+                .unwrap(),
+            )
+        })
+    });
+    let logmeanexp_jaxpr = build_logmeanexp_2d_jaxpr(rows, cols);
+    group.bench_function("logmeanexp_2d/orig_decomposed_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_logmeanexp_2d_decomposed(
+                black_box(&softmax_input),
+                rows,
+                cols,
+            ))
+        })
+    });
+    group.bench_function("logmeanexp_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(
+                    black_box(&logmeanexp_jaxpr),
                     std::slice::from_ref(&softmax_input),
                 )
                 .unwrap(),

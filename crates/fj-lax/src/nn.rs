@@ -400,6 +400,52 @@ pub fn logsumexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     result
 }
 
+/// Compute log-mean-exp along the last axis of a 2D array.
+///
+/// Returns `logsumexp(row) - ln(cols)` for each row, one scalar per row. ROW-PARALLEL and
+/// BIT-IDENTICAL to the decomposed logsumexp graph followed by `Sub(logsumexp, ln(cols))`:
+/// each row reuses [`logsumexp`] with its fold-max and index-order exp-sum, then applies the
+/// trailing scalar subtraction with the same `ln(cols)` literal.
+#[must_use]
+pub fn logmeanexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let _len = checked_2d_row_major_len("2D logmeanexp", x, rows, cols);
+    let mut result = vec![0.0; rows];
+    let threads = if cols == 0 {
+        1
+    } else {
+        softmax_2d_thread_count(rows, rows * cols)
+    };
+    if threads <= 1 {
+        let log_n = (cols as f64).ln();
+        for (i, slot) in result.iter_mut().enumerate() {
+            let start = i * cols;
+            *slot = logsumexp(&x[start..start + cols]) - log_n;
+        }
+        return result;
+    }
+
+    let log_n = (cols as f64).ln();
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut out_rest: &mut [f64] = &mut result;
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let row_count = rows_per.min(rows - row0);
+            let (out_block, out_tail) = out_rest.split_at_mut(row_count);
+            out_rest = out_tail;
+            let x_block = &x[row0 * cols..(row0 + row_count) * cols];
+            row0 += row_count;
+            scope.spawn(move || {
+                for (k, out_slot) in out_block.iter_mut().enumerate() {
+                    let start = k * cols;
+                    *out_slot = logsumexp(&x_block[start..start + cols]) - log_n;
+                }
+            });
+        }
+    });
+    result
+}
+
 /// Population variance of a single row, `mean((x - mean(x))²)`, bit-identical to the decomposed
 /// `ReduceSum → Div(·, n) → Sub → Mul(·, ·) → ReduceSum → Div(·, n)` jaxpr: index-order sum for the
 /// mean, then index-order sum of squared centered deviations, both divided by `n = cols`. Callers
