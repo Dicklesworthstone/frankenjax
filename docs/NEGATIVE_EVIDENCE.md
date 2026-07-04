@@ -2,6 +2,41 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 4.69x vs ORIG: RMSNorm graph recognized as a fused (threaded) interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ `fj-lax::nn::rms_norm_2d` threaded kernel). Same
+  superinstruction macro-op vein as the shipped softmax/log_softmax/layer_norm macro-ops; RMSNorm
+  (`x * rsqrt(mean(x²) + eps)`, no learned scale) is the modern-transformer / Llama normalization and
+  was still running the generic per-equation interpreter with full intermediate materialization.
+  Worktree audit found no unlanded measured win (all `.scratch` worktrees are stale prunable baselines).
+- LEVER: a top-level superinstruction for the exact 7-equation finite dense rank-2 f64 RMSNorm graph
+  `Square → ReduceSum(axis=1) → Div(cols) → Add(eps) → Rsqrt → BroadcastInDim(axis0) → Mul(x, ·)`,
+  computed in one row-parallel `rms_norm_2d` pass. BIT-IDENTICAL to the generic path (reuses the
+  layer-norm superinstruction's op forms: `Square`=`x*x`, index-order `ReduceSum`, `Rsqrt`=`1/√·`;
+  verified by `eval_top_level_rms_norm_2d_f64_matches_generic_and_preserves_edges`). Exact-graph /
+  exact-shape / finite-only; noncanonical or nonfinite programs fall through to the generic interpreter.
+- THREADING lifted the win 2.10x → 4.69x: the layer-norm superinstruction fuses INLINE SERIAL, but
+  RMSNorm's rows are independent so `rms_norm_2d` threads over row-chunks (`softmax_2d_thread_count` +
+  `thread::scope`, epsilon captured by closure — can't reuse the fn-pointer `fill_softmax_rows_parallel`).
+  Measured serial fused = 18.9ms (2.10x); threaded fused = 8.1ms (4.69x); bit-identical to serial
+  (rows are independent).
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed rms_norm_2d --
+  --warm-up-time 1 --measurement-time 2 --sample-size 10 --noplot`; `cargo bench --release` spelling
+  rejected by Cargo, `--profile release` used):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/rms_norm_2d/orig_decomposed_4096x1024` | 37.976 ms |
+  | `compiled_dispatch/rms_norm_2d/fast_eval_jaxpr_4096x1024` | 8.092 ms |
+
+  Ratio vs ORIG: **0.213x time / 4.69x faster.**
+- VALIDATION: all superinstruction tests (softmax / log_softmax / layer_norm / rms_norm) GREEN;
+  fj-lax `nn::` 61/61 GREEN. Pre-existing INDEPENDENT RED (NOT this additive change): fj-interpreters
+  `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)` f64 (scalar-arena vs generic),
+  in the recently-churned arena/native-f32 cbrt area (commits 84b44a86 / c047af73). This diff touches
+  no cbrt/arena code, so that RED exists at HEAD regardless of this commit.
+
 ## 2026-07-04 - WIN 5.36x vs ORIG: log_softmax_2d graph recognized as a fused interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ `fj-lax::nn` fused kernel). Scratch/worktree audit

@@ -474,6 +474,72 @@ pub fn log_softmax_2d_shifted(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     result
 }
 
+#[inline]
+fn rms_norm_row_into(src: &[f64], dst: &mut [f64], cols_f64: f64, epsilon: f64) {
+    // RMSNorm row: `x * rsqrt(mean(x²) + eps)`, no mean subtraction. Bit-identical to the
+    // decomposed Square → ReduceSum → Div → Add → Rsqrt → Mul jaxpr: `x*x` Square, index-order
+    // sum, `1/√·` Rsqrt (matching the layer-norm superinstruction's op forms).
+    let mut sum_sq = 0.0;
+    for &value in src {
+        sum_sq += value * value;
+    }
+    let inv_rms = 1.0 / ((sum_sq / cols_f64) + epsilon).sqrt();
+    for (d, &value) in dst.iter_mut().zip(src.iter()) {
+        *d = value * inv_rms;
+    }
+}
+
+/// RMS-norm along the last axis of a 2D array: `x * rsqrt(mean(x²) + eps)` (no learned scale —
+/// the modern-transformer normalization). Row-parallel (rows are independent), bit-for-bit
+/// identical to the decomposed jaxpr and to the serial per-row fold. Used by the interpreter
+/// RMS-norm superinstruction. `epsilon` is a runtime value, so this cannot reuse the
+/// fn-pointer [`fill_softmax_rows_parallel`] and threads via a captured closure.
+#[must_use]
+pub fn rms_norm_2d(x: &[f64], rows: usize, cols: usize, epsilon: f64) -> Vec<f64> {
+    let len = checked_2d_row_major_len("2D rms_norm", x, rows, cols);
+    let mut result = vec![0.0; len];
+    if cols == 0 {
+        return result;
+    }
+    let cols_f64 = cols as f64;
+    let threads = softmax_2d_thread_count(rows, len);
+    if threads <= 1 {
+        for i in 0..rows {
+            let start = i * cols;
+            rms_norm_row_into(
+                &x[start..start + cols],
+                &mut result[start..start + cols],
+                cols_f64,
+                epsilon,
+            );
+        }
+        return result;
+    }
+
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut dst_rest: &mut [f64] = &mut result;
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let row_count = rows_per.min(rows - row0);
+            let elem_count = row_count * cols;
+            let (dst_block, dst_tail) = dst_rest.split_at_mut(elem_count);
+            dst_rest = dst_tail;
+            let src_block = &x[row0 * cols..(row0 + row_count) * cols];
+            row0 += row_count;
+            scope.spawn(move || {
+                for (src_row, dst_row) in src_block
+                    .chunks_exact(cols)
+                    .zip(dst_block.chunks_exact_mut(cols))
+                {
+                    rms_norm_row_into(src_row, dst_row, cols_f64, epsilon);
+                }
+            });
+        }
+    });
+    result
+}
+
 /// Normalize input to have zero mean and unit variance.
 ///
 /// Matches `jax.nn.standardize(x)` for a 1D array.
