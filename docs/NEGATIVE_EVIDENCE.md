@@ -42,6 +42,34 @@ Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
   conformance runs still report the pre-existing `fj-lax` warnings in arithmetic/reduction/linalg;
   they are unrelated to this change.
 
+## 2026-07-04 - WIN 3.25x vs ORIG: row-wise signed mean error recognized as a fused 2-input interpreter superinstruction (DustyDog)
+
+- Agent: DustyDog. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::mean_error_2d`).
+  Signed mean error / bias `sum(a-b) / n` along the last axis: the exact 3-equation, TWO-input
+  graph `Sub(a,b) -> ReduceSum(axis=1) -> Div(cols)`, two f64 `[rows,cols]` inputs -> one
+  `[rows]` output. DISTINCT from MAE/MSE/RMSE/R2: signed residual mean, no absolute value, no
+  square, no sqrt, no variance denominator.
+- LEVER: top-level dense finite f64 recognizer streams each row through one residual sum and one
+  scalar divide, avoiding the full `[rows,cols]` residual tensor from the decomposed interpreter.
+  BIT-IDENTICAL: each `a[i]-b[i]` is computed in graph operand order, accumulated in index order
+  matching `ReduceSum(axis=1)`, and divided by exactly `cols` as f64. Nonfinite input, wrong rank,
+  dtype, axis, or divisor falls through to the generic interpreter.
+- MEASURED per-crate (`AGENT_NAME=DustyDog`, `rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed mean_error_2d
+  -- --warm-up-time 1 --measurement-time 2 --sample-size 10 --noplot`, 4096x1024,
+  a=softmax_input b=layer_norm_input, RCH worker `ovh-a`).
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/mean_error_2d/orig_decomposed_4096x1024` | 18.238 ms |
+  | `compiled_dispatch/mean_error_2d/fast_eval_jaxpr_4096x1024` | 5.6203 ms |
+
+  Ratio vs ORIG: **0.308x time / 3.25x faster** (conservative CI 17.974/5.7560 = 3.12x).
+- VALIDATION: `eval_top_level_mean_error_2d_f64_matches_generic_and_preserves_edges` GREEN on RCH
+  worker `ovh-a`, comparing fused `eval_jaxpr` to `eval_jaxpr_hashed_env` and covering nonfinite
+  fall-through. Local conformance with the same dedicated target dir was GREEN:
+  `cargo test -p fj-conformance --profile release -- --nocapture` passed.
+
 ## 2026-07-04 - WIN 12.90x vs ORIG: row-wise explained variance as a fused interpreter superinstruction (DustyDog)
 
 - Agent: DustyDog. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::explained_variance_score_2d`).

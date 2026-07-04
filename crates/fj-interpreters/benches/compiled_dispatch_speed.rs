@@ -801,6 +801,49 @@ fn build_chi_squared_distance_2d_jaxpr() -> Jaxpr {
     )
 }
 
+fn build_mean_error_2d_jaxpr(cols: usize) -> Jaxpr {
+    let a = VarId(1);
+    let b = VarId(2);
+    let diff = VarId(3);
+    let s = VarId(4);
+    let out = VarId(5);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    Jaxpr::new(
+        vec![a, b],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec::smallvec![Atom::Var(a), Atom::Var(b)],
+                outputs: smallvec::smallvec![diff],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(diff)],
+                outputs: smallvec::smallvec![s],
+                params: reduce_axis1,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Div,
+                inputs: smallvec::smallvec![
+                    Atom::Var(s),
+                    Atom::Lit(Literal::from_f64(cols as f64))
+                ],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_root_mean_squared_error_2d_jaxpr(cols: usize) -> Jaxpr {
     let a = VarId(1);
     let b = VarId(2);
@@ -2954,6 +2997,20 @@ fn eval_chi_squared_distance_2d_decomposed(a: &Value, b: &Value) -> Value {
     .expect("chi2 sum")
 }
 
+fn eval_mean_error_2d_decomposed(a: &Value, b: &Value, cols: usize) -> Value {
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let empty = BTreeMap::new();
+    let diff = eval_primitive(Primitive::Sub, &[a.clone(), b.clone()], &empty).expect("a-b");
+    let s = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&diff),
+        &reduce_axis1,
+    )
+    .expect("sum diff");
+    eval_primitive(Primitive::Div, &[s, Value::scalar_f64(cols as f64)], &empty)
+        .expect("mean error")
+}
+
 fn eval_root_mean_squared_error_2d_decomposed(a: &Value, b: &Value, cols: usize) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let empty = BTreeMap::new();
@@ -4015,6 +4072,24 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     });
     group.bench_function("mean_squared_error_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| black_box(eval_jaxpr(black_box(&mse_jaxpr), black_box(&mse_args)).unwrap()))
+    });
+    let mean_error_jaxpr = build_mean_error_2d_jaxpr(cols);
+    let mean_error_args = [softmax_input.clone(), layer_norm_input.clone()];
+    group.bench_function("mean_error_2d/orig_decomposed_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_mean_error_2d_decomposed(
+                black_box(&mean_error_args[0]),
+                black_box(&mean_error_args[1]),
+                cols,
+            ))
+        })
+    });
+    group.bench_function("mean_error_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(black_box(&mean_error_jaxpr), black_box(&mean_error_args)).unwrap(),
+            )
+        })
     });
     let mae_jaxpr = build_mean_absolute_error_2d_jaxpr(cols);
     let mae_args = [softmax_input.clone(), layer_norm_input.clone()];
