@@ -2,6 +2,31 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - NO-SHIP 0.86x: select f64 branchless SIMD blend REGRESSES vs branch-select — memory-bound select reads both branches (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. File: `arithmetic.rs` (`select_f64_same_shape_fast_path`
+  packed-words path). Remote via rch (`CARGO_TARGET_DIR=.../blackthrush`), `--test-threads=1`.
+  Sibling attempt to the SHIPPED clamp f64x8 SIMD win (8a247056, 1.22x).
+- HYPOTHESIS: `select`/`where` f64 was 1.88x slower than JAX (27.7ms vs 14.78ms, 16M). Its
+  threaded path used `threaded_index_fill_into(|i| if bit(i) {t[i]} else {f[i]})` — the same
+  autovec-blocked per-index closure that clamp had. Tried the same fix: a threaded f64x8
+  `Mask::select` blend (extract a packed-mask byte per 8-block → `Mask<i64,8>` → select(t8,f8)).
+- MEASURED (rch, same-invocation min-of-8 A/B, `--test-threads=1`, 16M f64,
+  `bench_select_f64_packed_simd_vs_index_fill`): **index-fill 23.382ms → simd 27.163ms = 0.86x
+  (14% SLOWER).** REVERTED (correctness `select_f64_packed_words_simd_matches_scalar` had PASSED
+  bit-for-bit; it was correct, just slower).
+- ROOT CAUSE (why clamp won but select lost — the reusable lesson): a branchless SIMD BLEND must
+  LOAD BOTH branches every element (t8 AND f8 = 256MB read for 16M), whereas the scalar
+  branch-select `if bit {t[i]} else {f[i]}` touches predominantly the TAKEN branch, so the
+  hardware streams less. `select` is memory-bound with TWO input arrays, so doubling the read
+  traffic outweighs removing the per-element branch. `clamp` reads ONE input array (x) with
+  scalar bounds, so its SIMD had no extra-traffic penalty and won (1.22x). RULE: the
+  index-fill→SIMD lever wins for memory-bound elementwise ops with ONE streamed input
+  (clamp/unary), but LOSES for a SELECT/blend that would force reading both branches. Do NOT
+  re-attempt SIMD-blend for select/where on this host. (JAX's 14.78ms = ~27 GB/s comes from
+  multi-channel DRAM + fusion, not a blend trick fj can replicate in an isolated select op.)
+
+
 ## 2026-07-04 - WIN 1.22x: clamp f64 scalar-bounds threaded f64x8 SIMD (comparison/select) — clamp 1.72x→1.28x vs JAX, bit-identical (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. File: `arithmetic.rs` (`eval_clamp`
