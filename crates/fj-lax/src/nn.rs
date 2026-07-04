@@ -254,6 +254,16 @@ pub fn log_sigmoid_direct(x: &[f64]) -> Vec<f64> {
     threaded_f64_map(x, |v| -((1.0 + (-v).exp()).ln()))
 }
 
+/// Softplus computed in the DIRECT grouping `log(1 + exp(x))` (the naive `Exp → Add(1) → Log`
+/// graph), NOT the stable `max(x,0) + log1p(exp(-|x|))` grouping of [`softplus`] (which differs
+/// in the last bit). Uses only `exp`/`ln`, both bit-identical to the `Exp`/`Log` primitives (as
+/// proven by the softmax/log-softmax superinstructions), so this matches the decomposed graph
+/// bit-for-bit. Used by the interpreter softplus superinstruction. Elementwise → threads flat.
+#[must_use]
+pub fn softplus_direct(x: &[f64]) -> Vec<f64> {
+    threaded_f64_map(x, |v| (1.0 + v.exp()).ln())
+}
+
 /// Compute log-sum-exp in a numerically stable way.
 ///
 /// Matches `jax.scipy.special.logsumexp(x)`.

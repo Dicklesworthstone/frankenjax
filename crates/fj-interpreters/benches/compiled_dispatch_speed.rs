@@ -381,6 +381,44 @@ fn build_log_sigmoid_jaxpr() -> Jaxpr {
     )
 }
 
+fn build_softplus_jaxpr() -> Jaxpr {
+    let x = VarId(1);
+    let e = VarId(2);
+    let one_plus = VarId(3);
+    let out = VarId(4);
+    Jaxpr::new(
+        vec![x],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Exp,
+                inputs: smallvec::smallvec![Atom::Var(x)],
+                outputs: smallvec::smallvec![e],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![Atom::Lit(Literal::from_f64(1.0)), Atom::Var(e)],
+                outputs: smallvec::smallvec![one_plus],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Log,
+                inputs: smallvec::smallvec![Atom::Var(one_plus)],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_silu_jaxpr() -> Jaxpr {
     let x = VarId(1);
     let nx = VarId(2);
@@ -921,6 +959,14 @@ fn eval_silu_decomposed(input: &Value) -> Value {
     let one_plus =
         eval_primitive(Primitive::Add, &[Value::scalar_f64(1.0), e], &empty).expect("add one");
     eval_primitive(Primitive::Div, &[input.clone(), one_plus], &empty).expect("div")
+}
+
+fn eval_softplus_decomposed(input: &Value) -> Value {
+    let empty = BTreeMap::new();
+    let e = eval_primitive(Primitive::Exp, std::slice::from_ref(input), &empty).expect("exp");
+    let one_plus =
+        eval_primitive(Primitive::Add, &[Value::scalar_f64(1.0), e], &empty).expect("add one");
+    eval_primitive(Primitive::Log, std::slice::from_ref(&one_plus), &empty).expect("log")
 }
 
 fn eval_logsumexp_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value {
@@ -1483,6 +1529,21 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
             black_box(
                 eval_jaxpr(
                     black_box(&log_sigmoid_jaxpr),
+                    std::slice::from_ref(&softmax_input),
+                )
+                .unwrap(),
+            )
+        })
+    });
+    let softplus_jaxpr = build_softplus_jaxpr();
+    group.bench_function("softplus/orig_decomposed_4096x1024", |b| {
+        b.iter(|| black_box(eval_softplus_decomposed(black_box(&softmax_input))))
+    });
+    group.bench_function("softplus/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(
+                    black_box(&softplus_jaxpr),
                     std::slice::from_ref(&softmax_input),
                 )
                 .unwrap(),

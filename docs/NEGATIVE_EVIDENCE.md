@@ -2,6 +2,41 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 3.93x vs ORIG: softplus activation graph recognized as a fused (threaded) interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ `fj-lax::nn::softplus_direct`). Genuinely different
+  primitive from the shipped silu/log_sigmoid/gelu/logsumexp macro-ops: `jax.nn.softplus(x)` =
+  `log(1 + exp(x))`, THE canonical smooth-ReLU / `logaddexp(x,0)`, a PURE-ELEMENTWISE 3-equation chain
+  `Exp → Add(1, ·) → Log`. Exp/Log-only (safe bits — both proven scalar-bit-identical; avoids the
+  unverified SIMD `tanh_f64x8`). The general elementwise fuser cannot fuse it because `Exp`/`Log` are
+  not `CheapOp`s (`cheap_op` = Add/Sub/Mul/Div/Neg/Max/Min/Abs only), so the decomposed path breaks at
+  Exp and materializes 3 intermediate Vecs. Worktree audit: HEAD==origin/main, no unlanded win.
+- LEVER: a top-level superinstruction for the exact 3-equation finite dense f64 softplus graph,
+  computed in one threaded `softplus_direct` pass. BIT-IDENTICAL to the generic path:
+  `softplus_direct` uses only `exp`/`ln` in the graph grouping `(1.0 + v.exp()).ln()`. Constant `1.0`
+  matched by `to_bits`; `Add(1, e)` commutative → order-agnostic bits. NOTE: the pre-existing
+  `nn::softplus` uses the numerically-STABLE `max(x,0) + log1p(exp(-|x|))` grouping which differs from
+  the naive graph in the last bit, so a dedicated `softplus_direct` matches the decomposed graph
+  exactly (same trap as log_sigmoid_direct / log_softmax_2d_shifted). Shape-agnostic (elementwise);
+  finite dense f64 only, else falls through.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed softplus -m 3
+  -s 20`, 4096x1024):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/softplus/orig_decomposed_4096x1024` | 72.705 ms |
+  | `compiled_dispatch/softplus/fast_eval_jaxpr_4096x1024` | 18.477 ms |
+
+  Ratio vs ORIG: **0.254x time / 3.93x faster** (worst-case CI 3.49x, best 4.43x; robustly ≥2x).
+  Smaller multiple than log_sigmoid (8.70x, 5 eqs) because softplus is only 3 eqs (Exp/Add/Log, no
+  leading/trailing Neg) → fewer intermediate materializations to save.
+- VALIDATION: `eval_top_level_softplus_f64_matches_generic_and_preserves_edges` GREEN (fused==generic
+  bit-for-bit on random f64; nonfinite falls through); all 11 superinstruction parity tests GREEN. Pre-
+  existing INDEPENDENT RED (NOT this additive change): fj-interpreters
+  `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)` — this diff touches no
+  cbrt/arena code.
+
 ## 2026-07-04 - WIN 5.53x vs ORIG: row-wise log-sum-exp reduction recognized as a fused (row-parallel) interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallelized `fj-lax::nn::logsumexp_2d`).
