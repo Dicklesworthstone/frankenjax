@@ -1117,7 +1117,8 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
-    if let Some(result) = try_eval_top_level_softmax_cross_entropy_2d_f64(jaxpr, const_values, args) {
+    if let Some(result) = try_eval_top_level_softmax_cross_entropy_2d_f64(jaxpr, const_values, args)
+    {
         return result;
     }
 
@@ -1130,6 +1131,10 @@ pub fn eval_jaxpr_with_consts(
     }
 
     if let Some(result) = try_eval_top_level_cosine_similarity_2d_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
+    if let Some(result) = try_eval_top_level_euclidean_distance_2d_f64(jaxpr, const_values, args) {
         return result;
     }
 
@@ -1988,8 +1993,7 @@ fn try_eval_top_level_logsumexp_2d_f64(
 
     let x = jaxpr.invars[0];
     let out = jaxpr.outvars[0];
-    let [max_eq, max_bcast_eq, sub_eq, exp_eq, sum_eq, log_eq, add_eq] =
-        jaxpr.equations.as_slice()
+    let [max_eq, max_bcast_eq, sub_eq, exp_eq, sum_eq, log_eq, add_eq] = jaxpr.equations.as_slice()
     else {
         return None;
     };
@@ -2312,6 +2316,98 @@ fn try_eval_top_level_cosine_similarity_2d_f64(
     }
 
     let output = fj_lax::nn::cosine_similarity_2d(a_v, b_v, rows, cols);
+    Some(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32],
+            },
+            output,
+        )
+        .map(Value::Tensor)
+        .map(|value| vec![value])
+        .map_err(EvalError::InvalidTensor)
+        .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for the row-wise Euclidean (L2) distance `√Σ(a - b)²` along the
+/// last axis (the ubiquitous kNN / clustering / contrastive-loss metric): the 4-equation, TWO-input
+/// graph `Sub(a, b) → Mul(square) → ReduceSum(axis=1) → Sqrt`. Two f64 [rows,cols] inputs, one
+/// [rows] output (rank-reducing). NO transcendentals (`Sqrt` = `f64::sqrt`, IEEE-exact). The general
+/// fuser cannot fuse it (the reduction breaks the elementwise fuser), so the decomposed path
+/// materializes two full [rows,cols] intermediates (`a-b`, `(a-b)²`). Fused via the row-parallel
+/// `euclidean_distance_2d`, whose index-order `Σ(a-b)²` + `sqrt` match the graph bit-for-bit;
+/// finite dense rank-2 f64 only, else falls through.
+fn try_eval_top_level_euclidean_distance_2d_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 2
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 4
+        || args.len() != 2
+    {
+        return None;
+    }
+
+    let a = jaxpr.invars[0];
+    let b = jaxpr.invars[1];
+    let out = jaxpr.outvars[0];
+    let [sub_eq, sq_eq, sum_eq, sqrt_eq] = jaxpr.equations.as_slice() else {
+        return None;
+    };
+
+    // diff = a - b (Sub non-commutative — operand order fixed)
+    let diff = single_output_for_primitive(sub_eq, Primitive::Sub)?;
+    if sub_eq.inputs.as_slice() != [Atom::Var(a), Atom::Var(b)] {
+        return None;
+    }
+    // sq = diff * diff (both operands the same var)
+    let sq = single_output_for_primitive(sq_eq, Primitive::Mul)?;
+    if sq_eq.inputs.as_slice() != [Atom::Var(diff), Atom::Var(diff)] {
+        return None;
+    }
+    // s = ReduceSum(sq, axis=1)
+    let s = single_output_for_param_primitive(sum_eq, Primitive::ReduceSum)?;
+    if sum_eq.inputs.as_slice() != [Atom::Var(sq)] || !axis1_reduce_params(&sum_eq.params) {
+        return None;
+    }
+    // out = Sqrt(s)
+    let rooted = single_output_for_primitive(sqrt_eq, Primitive::Sqrt)?;
+    if rooted != out || sqrt_eq.inputs.as_slice() != [Atom::Var(s)] {
+        return None;
+    }
+
+    let Value::Tensor(a_t) = &args[0] else {
+        return None;
+    };
+    let Value::Tensor(b_t) = &args[1] else {
+        return None;
+    };
+    if a_t.dtype != DType::F64
+        || b_t.dtype != DType::F64
+        || a_t.shape.dims.len() != 2
+        || b_t.shape.dims != a_t.shape.dims
+    {
+        return None;
+    }
+    let rows = a_t.shape.dims[0] as usize;
+    let cols = a_t.shape.dims[1] as usize;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+
+    let a_v = a_t.elements.as_f64_slice()?;
+    let b_v = b_t.elements.as_f64_slice()?;
+    if !a_v.iter().all(|value| value.is_finite()) || !b_v.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::euclidean_distance_2d(a_v, b_v, rows, cols);
     Some(
         TensorValue::new_f64_values(
             Shape {
@@ -20658,6 +20754,98 @@ mod tests {
         assert_eq!(through_eval, through_generic);
     }
 
+    fn make_euclidean_distance_2d_jaxpr() -> Jaxpr {
+        let a = VarId(1);
+        let b = VarId(2);
+        let diff = VarId(3);
+        let sq = VarId(4);
+        let s = VarId(5);
+        let out = VarId(6);
+        let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+        Jaxpr::new(
+            vec![a, b],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Sub,
+                    inputs: smallvec![Atom::Var(a), Atom::Var(b)],
+                    outputs: smallvec![diff],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(diff), Atom::Var(diff)],
+                    outputs: smallvec![sq],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(sq)],
+                    outputs: smallvec![s],
+                    params: reduce_axis1,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sqrt,
+                    inputs: smallvec![Atom::Var(s)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn eval_top_level_euclidean_distance_2d_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        let a_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.31).sin() * 4.0 - 1.0)
+            .collect();
+        let b_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.17).cos() * 3.0 + 0.5)
+            .collect();
+        let dims = vec![rows as u32, cols as u32];
+        let a = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_data).expect("a input"),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, b_data).expect("b input"),
+        );
+        let jaxpr = make_euclidean_distance_2d_jaxpr();
+
+        let fast = eval_jaxpr(&jaxpr, &[a.clone(), b.clone()]).expect("fast euclidean");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[a, b]).expect("generic euclidean");
+        assert_eq!(fast, generic);
+
+        let mut a_nonfinite: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.01).collect();
+        a_nonfinite[cols + 1] = f64::NAN;
+        let a_nf = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_nonfinite)
+                .expect("nonfinite a"),
+        );
+        let b_ok = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape { dims },
+                (0..rows * cols).map(|idx| idx as f64 * 0.02).collect(),
+            )
+            .expect("finite b"),
+        );
+        let through_eval = eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()])
+            .expect("nonfinite euclidean falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite euclidean");
+        assert_eq!(through_eval, through_generic);
+    }
+
     fn make_cosine_similarity_2d_jaxpr() -> Jaxpr {
         let a = VarId(1);
         let b = VarId(2);
@@ -20745,7 +20933,9 @@ mod tests {
         let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[a, b]).expect("generic cosine");
         assert_eq!(fast, generic);
 
-        let mut a_nonfinite: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.01 + 0.1).collect();
+        let mut a_nonfinite: Vec<f64> = (0..rows * cols)
+            .map(|idx| idx as f64 * 0.01 + 0.1)
+            .collect();
         a_nonfinite[cols + 1] = f64::NAN;
         let a_nf = Value::Tensor(
             TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_nonfinite)
@@ -20754,12 +20944,14 @@ mod tests {
         let b_ok = Value::Tensor(
             TensorValue::new_f64_values(
                 Shape { dims },
-                (0..rows * cols).map(|idx| idx as f64 * 0.02 + 0.3).collect(),
+                (0..rows * cols)
+                    .map(|idx| idx as f64 * 0.02 + 0.3)
+                    .collect(),
             )
             .expect("finite b"),
         );
-        let through_eval =
-            eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()]).expect("nonfinite cosine falls through");
+        let through_eval = eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()])
+            .expect("nonfinite cosine falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite cosine");
         assert_eq!(through_eval, through_generic);
@@ -20878,8 +21070,8 @@ mod tests {
             )
             .expect("dense nonfinite f64 input"),
         );
-        let through_eval =
-            eval_jaxpr(&jaxpr, std::slice::from_ref(&nonfinite)).expect("nonfinite var falls through");
+        let through_eval = eval_jaxpr(&jaxpr, std::slice::from_ref(&nonfinite))
+            .expect("nonfinite var falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite]).expect("generic nonfinite var");
         assert_eq!(through_eval, through_generic);
@@ -21348,8 +21540,8 @@ mod tests {
         );
         let through_eval = eval_jaxpr(&jaxpr, std::slice::from_ref(&nonfinite))
             .expect("nonfinite log_sigmoid falls through");
-        let through_generic =
-            eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite]).expect("generic nonfinite log_sigmoid");
+        let through_generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite])
+            .expect("generic nonfinite log_sigmoid");
         assert_eq!(through_eval, through_generic);
     }
 
@@ -21511,8 +21703,8 @@ mod tests {
             )
             .expect("dense nonfinite f64 input"),
         );
-        let through_eval =
-            eval_jaxpr(&jaxpr, std::slice::from_ref(&nonfinite)).expect("nonfinite silu falls through");
+        let through_eval = eval_jaxpr(&jaxpr, std::slice::from_ref(&nonfinite))
+            .expect("nonfinite silu falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite]).expect("generic nonfinite silu");
         assert_eq!(through_eval, through_generic);
@@ -21611,8 +21803,8 @@ mod tests {
             )
             .expect("finite value"),
         );
-        let through_eval =
-            eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()]).expect("nonfinite swiglu falls through");
+        let through_eval = eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()])
+            .expect("nonfinite swiglu falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite swiglu");
         assert_eq!(through_eval, through_generic);
@@ -21721,8 +21913,8 @@ mod tests {
             )
             .expect("finite value"),
         );
-        let through_eval =
-            eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()]).expect("nonfinite geglu falls through");
+        let through_eval = eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()])
+            .expect("nonfinite geglu falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite geglu");
         assert_eq!(through_eval, through_generic);

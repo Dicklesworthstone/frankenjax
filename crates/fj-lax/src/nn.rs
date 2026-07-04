@@ -529,6 +529,66 @@ pub fn cosine_similarity_2d(a: &[f64], b: &[f64], rows: usize, cols: usize) -> V
     result
 }
 
+/// Euclidean (L2) distance of a single pair of rows, `√Σ(a - b)²`, bit-identical to the decomposed
+/// `Sub → Mul(square) → ReduceSum → Sqrt` graph: an index-order sum of `(a[i]-b[i])²`, then
+/// `f64::sqrt` (IEEE-exact, same as the `Sqrt` primitive). Callers guarantee equal-length rows.
+fn euclidean_distance_row(a: &[f64], b: &[f64]) -> f64 {
+    let mut sum_sq = 0.0;
+    for (&av, &bv) in a.iter().zip(b.iter()) {
+        let diff = av - bv;
+        sum_sq += diff * diff;
+    }
+    sum_sq.sqrt()
+}
+
+/// Euclidean (L2) distance along the last axis of two 2D arrays, one scalar per row
+/// (`√Σ(a-b)²`, the ubiquitous kNN / clustering / contrastive-loss metric). ROW-PARALLEL and
+/// BIT-IDENTICAL to the decomposed `Sub → Mul(square) → ReduceSum → Sqrt` graph (index-order
+/// reduction via [`euclidean_distance_row`]); rows are independent so only the outer loop is
+/// threaded, above the `softmax_2d_thread_count` work gate. Used by the interpreter
+/// euclidean-distance superinstruction. Callers guarantee `a`/`b` share the same `rows,cols` layout.
+#[must_use]
+pub fn euclidean_distance_2d(a: &[f64], b: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let _ = checked_2d_row_major_len("2D euclidean_distance a", a, rows, cols);
+    let _ = checked_2d_row_major_len("2D euclidean_distance b", b, rows, cols);
+    let mut result = vec![0.0; rows];
+    if cols == 0 || rows == 0 {
+        return result;
+    }
+    let threads = softmax_2d_thread_count(rows, rows * cols);
+    if threads <= 1 {
+        for (i, slot) in result.iter_mut().enumerate() {
+            let start = i * cols;
+            *slot = euclidean_distance_row(&a[start..start + cols], &b[start..start + cols]);
+        }
+        return result;
+    }
+
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut out_rest: &mut [f64] = &mut result;
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let row_count = rows_per.min(rows - row0);
+            let (out_block, out_tail) = out_rest.split_at_mut(row_count);
+            out_rest = out_tail;
+            let a_block = &a[row0 * cols..(row0 + row_count) * cols];
+            let b_block = &b[row0 * cols..(row0 + row_count) * cols];
+            row0 += row_count;
+            scope.spawn(move || {
+                for (k, out_slot) in out_block.iter_mut().enumerate() {
+                    let start = k * cols;
+                    *out_slot = euclidean_distance_row(
+                        &a_block[start..start + cols],
+                        &b_block[start..start + cols],
+                    );
+                }
+            });
+        }
+    });
+    result
+}
+
 /// Softmax: exp(x - max(x)) / sum(exp(x - max(x)))
 ///
 /// Matches `jax.nn.softmax(x)` for a 1D array.
@@ -823,7 +883,12 @@ fn softmax_cross_entropy_row(logits: &[f64], labels: &[f64]) -> f64 {
 /// grouping + index-order reductions as the log-softmax superinstruction). Used by the
 /// interpreter cross-entropy superinstruction.
 #[must_use]
-pub fn softmax_cross_entropy_2d(logits: &[f64], labels: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+pub fn softmax_cross_entropy_2d(
+    logits: &[f64],
+    labels: &[f64],
+    rows: usize,
+    cols: usize,
+) -> Vec<f64> {
     let _ = checked_2d_row_major_len("2D softmax_cross_entropy logits", logits, rows, cols);
     let _ = checked_2d_row_major_len("2D softmax_cross_entropy labels", labels, rows, cols);
     let mut result = vec![0.0; rows];

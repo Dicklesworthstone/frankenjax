@@ -590,6 +590,55 @@ fn build_silu_jaxpr() -> Jaxpr {
     )
 }
 
+fn build_euclidean_distance_2d_jaxpr() -> Jaxpr {
+    let a = VarId(1);
+    let b = VarId(2);
+    let diff = VarId(3);
+    let sq = VarId(4);
+    let s = VarId(5);
+    let out = VarId(6);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    Jaxpr::new(
+        vec![a, b],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec::smallvec![Atom::Var(a), Atom::Var(b)],
+                outputs: smallvec::smallvec![diff],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(diff), Atom::Var(diff)],
+                outputs: smallvec::smallvec![sq],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(sq)],
+                outputs: smallvec::smallvec![s],
+                params: reduce_axis1,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Sqrt,
+                inputs: smallvec::smallvec![Atom::Var(s)],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_cosine_similarity_2d_jaxpr() -> Jaxpr {
     let a = VarId(1);
     let b = VarId(2);
@@ -1264,19 +1313,45 @@ fn eval_geglu_decomposed(a: &Value, b: &Value) -> Value {
     eval_primitive(Primitive::Mul, &[gelu_a, b.clone()], &empty).expect("gate")
 }
 
+fn eval_euclidean_distance_2d_decomposed(a: &Value, b: &Value) -> Value {
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let empty = BTreeMap::new();
+    let diff = eval_primitive(Primitive::Sub, &[a.clone(), b.clone()], &empty).expect("a-b");
+    let sq = eval_primitive(Primitive::Mul, &[diff.clone(), diff], &empty).expect("square");
+    let s = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&sq),
+        &reduce_axis1,
+    )
+    .expect("sum sq");
+    eval_primitive(Primitive::Sqrt, std::slice::from_ref(&s), &empty).expect("sqrt")
+}
+
 fn eval_cosine_similarity_2d_decomposed(a: &Value, b: &Value) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let empty = BTreeMap::new();
     let ab = eval_primitive(Primitive::Mul, &[a.clone(), b.clone()], &empty).expect("a*b");
-    let dot = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&ab), &reduce_axis1)
-        .expect("dot");
+    let dot = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&ab),
+        &reduce_axis1,
+    )
+    .expect("dot");
     let a2 = eval_primitive(Primitive::Mul, &[a.clone(), a.clone()], &empty).expect("a*a");
-    let sa = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&a2), &reduce_axis1)
-        .expect("sum a2");
+    let sa = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&a2),
+        &reduce_axis1,
+    )
+    .expect("sum a2");
     let na = eval_primitive(Primitive::Sqrt, std::slice::from_ref(&sa), &empty).expect("norm a");
     let b2 = eval_primitive(Primitive::Mul, &[b.clone(), b.clone()], &empty).expect("b*b");
-    let sb = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&b2), &reduce_axis1)
-        .expect("sum b2");
+    let sb = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&b2),
+        &reduce_axis1,
+    )
+    .expect("sum b2");
     let nb = eval_primitive(Primitive::Sqrt, std::slice::from_ref(&sb), &empty).expect("norm b");
     let denom = eval_primitive(Primitive::Mul, &[na, nb], &empty).expect("denom");
     eval_primitive(Primitive::Div, &[dot, denom], &empty).expect("cosine")
@@ -1301,12 +1376,7 @@ fn eval_var_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value {
         eval_primitive(Primitive::BroadcastInDim, &[mean], &bcast).expect("broadcast mean");
     let centered =
         eval_primitive(Primitive::Sub, &[input.clone(), mean_b], &empty).expect("subtract mean");
-    let sq = eval_primitive(
-        Primitive::Mul,
-        &[centered.clone(), centered],
-        &empty,
-    )
-    .expect("square");
+    let sq = eval_primitive(Primitive::Mul, &[centered.clone(), centered], &empty).expect("square");
     let s2 = eval_primitive(
         Primitive::ReduceSum,
         std::slice::from_ref(&sq),
@@ -1329,8 +1399,12 @@ fn eval_logsumexp_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Valu
         &reduce_axis1,
     )
     .expect("reduce max");
-    let max_b =
-        eval_primitive(Primitive::BroadcastInDim, &[max.clone()], &bcast).expect("broadcast max");
+    let max_b = eval_primitive(
+        Primitive::BroadcastInDim,
+        std::slice::from_ref(&max),
+        &bcast,
+    )
+    .expect("broadcast max");
     let shifted =
         eval_primitive(Primitive::Sub, &[input.clone(), max_b], &empty).expect("subtract max");
     let exp = eval_primitive(Primitive::Exp, std::slice::from_ref(&shifted), &empty).expect("exp");
@@ -1835,6 +1909,21 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
             black_box(eval_jaxpr(black_box(&cross_entropy_jaxpr), black_box(&ce_args)).unwrap())
         })
     });
+    let euclidean_jaxpr = build_euclidean_distance_2d_jaxpr();
+    let euclidean_args = [softmax_input.clone(), layer_norm_input.clone()];
+    group.bench_function("euclidean_distance_2d/orig_decomposed_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_euclidean_distance_2d_decomposed(
+                black_box(&euclidean_args[0]),
+                black_box(&euclidean_args[1]),
+            ))
+        })
+    });
+    group.bench_function("euclidean_distance_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_jaxpr(black_box(&euclidean_jaxpr), black_box(&euclidean_args)).unwrap())
+        })
+    });
     let cosine_jaxpr = build_cosine_similarity_2d_jaxpr();
     let cosine_args = [softmax_input.clone(), layer_norm_input.clone()];
     group.bench_function("cosine_similarity_2d/orig_decomposed_4096x1024", |b| {
@@ -1850,7 +1939,13 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     });
     let var_jaxpr = build_var_2d_jaxpr(rows, cols);
     group.bench_function("var_2d/orig_decomposed_4096x1024", |b| {
-        b.iter(|| black_box(eval_var_2d_decomposed(black_box(&softmax_input), rows, cols)))
+        b.iter(|| {
+            black_box(eval_var_2d_decomposed(
+                black_box(&softmax_input),
+                rows,
+                cols,
+            ))
+        })
     });
     group.bench_function("var_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| {

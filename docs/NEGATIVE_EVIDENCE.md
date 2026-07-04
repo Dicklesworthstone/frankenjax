@@ -2,6 +2,37 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 6.12x vs ORIG: row-wise Euclidean distance recognized as a fused 2-input interpreter superinstruction (SlateBridge)
+
+- Agent: SlateBridge. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::euclidean_distance_2d`).
+  New primitive distinct from the already-landed variance/cosine lane: row-wise L2 distance =
+  `sqrt(sum((a - b)^2, axis=1))`, a TWO-input rank-reducing metric used by nearest-neighbor,
+  clustering, and contrastive-loss workloads. The exact 4-equation graph is
+  `Sub(a,b) -> Mul(diff,diff) -> ReduceSum(axis=1) -> Sqrt`, f64 `[rows,cols] x 2 -> [rows]`.
+  The decomposed path materializes two full `[rows,cols]` intermediates (`a-b`, `(a-b)^2`) before
+  reducing; the fused path streams each row once and writes one scalar per row.
+- LEVER: a top-level finite dense f64 recognizer for that exact 4-equation graph, falling through for
+  consts/effects, shape or dtype mismatch, nonfinite values, empty axes, or non-matching operand
+  topology. The row kernel preserves graph order: index-order `diff = a[i] - b[i]`, index-order
+  `sum += diff * diff`, then `f64::sqrt`, so the fused and generic paths compare bit-for-bit on the
+  focused parity test.
+- MEASURED per-crate (`AGENT_NAME=SlateBridge`, `rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed euclidean_distance_2d -- --warm-up-time 1 --measurement-time 2 --sample-size 10 --noplot`,
+  worker `ovh-a`, 4096x1024, `a=softmax_input`, `b=layer_norm_input`):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/euclidean_distance_2d/orig_decomposed_4096x1024` | 34.690 ms |
+  | `compiled_dispatch/euclidean_distance_2d/fast_eval_jaxpr_4096x1024` | 5.6708 ms |
+
+  Ratio vs ORIG: **0.164x time / 6.12x faster** (conservative CI ratio 34.379/5.8202 = 5.91x).
+- VALIDATION: `eval_top_level_euclidean_distance_2d_f64_matches_generic_and_preserves_edges` GREEN
+  (fast path equals generic; nonfinite input falls through). `cargo test -p fj-conformance --profile release -- --nocapture`
+  GREEN earlier in this session via `rch exec` local fallback. `cargo check -p fj-interpreters --all-targets`
+  GREEN; `cargo clippy -p fj-interpreters --all-targets --no-deps -- -D warnings` GREEN for the package
+  (dependency warnings printed). Scoped `ubs` exits 1 on inherited panic/indexing/security-heuristic
+  inventories in these large files, while its fmt/clippy/check/test-build subchecks are GREEN.
+
 ## 2026-07-04 - WIN 9.59x vs ORIG: row-wise cosine similarity recognized as a fused (row-parallel) 2-input interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::cosine_similarity_2d`).
