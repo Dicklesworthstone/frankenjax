@@ -691,6 +691,58 @@ fn build_mean_squared_error_2d_jaxpr(cols: usize) -> Jaxpr {
     )
 }
 
+fn build_mean_absolute_error_2d_jaxpr(cols: usize) -> Jaxpr {
+    let a = VarId(1);
+    let b = VarId(2);
+    let diff = VarId(3);
+    let abs = VarId(4);
+    let s = VarId(5);
+    let out = VarId(6);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    Jaxpr::new(
+        vec![a, b],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec::smallvec![Atom::Var(a), Atom::Var(b)],
+                outputs: smallvec::smallvec![diff],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Abs,
+                inputs: smallvec::smallvec![Atom::Var(diff)],
+                outputs: smallvec::smallvec![abs],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(abs)],
+                outputs: smallvec::smallvec![s],
+                params: reduce_axis1,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Div,
+                inputs: smallvec::smallvec![
+                    Atom::Var(s),
+                    Atom::Lit(Literal::from_f64(cols as f64))
+                ],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_root_mean_squared_error_2d_jaxpr(cols: usize) -> Jaxpr {
     let a = VarId(1);
     let b = VarId(2);
@@ -2625,6 +2677,20 @@ fn eval_mean_squared_error_2d_decomposed(a: &Value, b: &Value, cols: usize) -> V
     eval_primitive(Primitive::Div, &[s, Value::scalar_f64(cols as f64)], &empty).expect("mse")
 }
 
+fn eval_mean_absolute_error_2d_decomposed(a: &Value, b: &Value, cols: usize) -> Value {
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let empty = BTreeMap::new();
+    let diff = eval_primitive(Primitive::Sub, &[a.clone(), b.clone()], &empty).expect("a-b");
+    let abs = eval_primitive(Primitive::Abs, std::slice::from_ref(&diff), &empty).expect("abs");
+    let s = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&abs),
+        &reduce_axis1,
+    )
+    .expect("sum abs");
+    eval_primitive(Primitive::Div, &[s, Value::scalar_f64(cols as f64)], &empty).expect("mae")
+}
+
 fn eval_root_mean_squared_error_2d_decomposed(a: &Value, b: &Value, cols: usize) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let empty = BTreeMap::new();
@@ -2649,8 +2715,7 @@ fn eval_r2_score_2d_decomposed(a: &Value, b: &Value, rows: usize, cols: usize) -
     ]);
     let empty = BTreeMap::new();
     let resid = eval_primitive(Primitive::Sub, &[a.clone(), b.clone()], &empty).expect("a-b");
-    let resid_sq =
-        eval_primitive(Primitive::Mul, &[resid.clone(), resid], &empty).expect("resid²");
+    let resid_sq = eval_primitive(Primitive::Mul, &[resid.clone(), resid], &empty).expect("resid²");
     let ss_res = eval_primitive(
         Primitive::ReduceSum,
         std::slice::from_ref(&resid_sq),
@@ -2659,12 +2724,11 @@ fn eval_r2_score_2d_decomposed(a: &Value, b: &Value, rows: usize, cols: usize) -
     .expect("ss_res");
     let s = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(a), &reduce_axis1)
         .expect("sum a");
-    let mean = eval_primitive(Primitive::Div, &[s, Value::scalar_f64(cols as f64)], &empty)
-        .expect("mean");
+    let mean =
+        eval_primitive(Primitive::Div, &[s, Value::scalar_f64(cols as f64)], &empty).expect("mean");
     let mean_b =
         eval_primitive(Primitive::BroadcastInDim, &[mean], &bcast).expect("broadcast mean");
-    let centered =
-        eval_primitive(Primitive::Sub, &[a.clone(), mean_b], &empty).expect("centered");
+    let centered = eval_primitive(Primitive::Sub, &[a.clone(), mean_b], &empty).expect("centered");
     let centered_sq =
         eval_primitive(Primitive::Mul, &[centered.clone(), centered], &empty).expect("centered²");
     let ss_tot = eval_primitive(
@@ -2695,8 +2759,12 @@ fn eval_entropy_2d_decomposed(p: &Value) -> Value {
     let empty = BTreeMap::new();
     let log_p = eval_primitive(Primitive::Log, std::slice::from_ref(p), &empty).expect("log p");
     let weighted = eval_primitive(Primitive::Mul, &[p.clone(), log_p], &empty).expect("p*log");
-    let summed = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&weighted), &reduce_axis1)
-        .expect("sum");
+    let summed = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&weighted),
+        &reduce_axis1,
+    )
+    .expect("sum");
     eval_primitive(Primitive::Neg, std::slice::from_ref(&summed), &empty).expect("neg")
 }
 
@@ -2846,11 +2914,19 @@ fn eval_skewness_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value
     let d = eval_primitive(Primitive::Sub, &[input.clone(), mean_b], &empty).expect("center");
     let d2 = eval_primitive(Primitive::Mul, &[d.clone(), d.clone()], &empty).expect("square");
     let d3 = eval_primitive(Primitive::Mul, &[d2.clone(), d], &empty).expect("cube");
-    let sum2 = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&d2), &reduce_axis1)
-        .expect("reduce sum sq");
+    let sum2 = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&d2),
+        &reduce_axis1,
+    )
+    .expect("reduce sum sq");
     let m2 = eval_primitive(Primitive::Div, &[sum2, n.clone()], &empty).expect("m2");
-    let sum3 = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&d3), &reduce_axis1)
-        .expect("reduce sum cube");
+    let sum3 = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&d3),
+        &reduce_axis1,
+    )
+    .expect("reduce sum cube");
     let m3 = eval_primitive(Primitive::Div, &[sum3, n], &empty).expect("m3");
     let s = eval_primitive(Primitive::Sqrt, std::slice::from_ref(&m2), &empty).expect("sqrt m2");
     let denom = eval_primitive(Primitive::Mul, &[m2, s], &empty).expect("denom");
@@ -2877,11 +2953,19 @@ fn eval_kurtosis_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value
     let d = eval_primitive(Primitive::Sub, &[input.clone(), mean_b], &empty).expect("center");
     let d2 = eval_primitive(Primitive::Mul, &[d.clone(), d], &empty).expect("square");
     let d4 = eval_primitive(Primitive::Mul, &[d2.clone(), d2.clone()], &empty).expect("fourth");
-    let sum2 = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&d2), &reduce_axis1)
-        .expect("reduce sum sq");
+    let sum2 = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&d2),
+        &reduce_axis1,
+    )
+    .expect("reduce sum sq");
     let m2 = eval_primitive(Primitive::Div, &[sum2, n.clone()], &empty).expect("m2");
-    let sum4 = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&d4), &reduce_axis1)
-        .expect("reduce sum fourth");
+    let sum4 = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&d4),
+        &reduce_axis1,
+    )
+    .expect("reduce sum fourth");
     let m4 = eval_primitive(Primitive::Div, &[sum4, n], &empty).expect("m4");
     let denom = eval_primitive(Primitive::Mul, &[m2.clone(), m2], &empty).expect("denom");
     eval_primitive(Primitive::Div, &[m4, denom], &empty).expect("kurtosis")
@@ -2908,18 +2992,26 @@ fn eval_covariance_2d_decomposed(a: &Value, b: &Value, rows: usize, cols: usize)
     let ca = eval_primitive(Primitive::Sub, &[a.clone(), mean_a_b], &empty).expect("center a");
     let cb = eval_primitive(Primitive::Sub, &[b.clone(), mean_b_b], &empty).expect("center b");
     let prod = eval_primitive(Primitive::Mul, &[ca, cb], &empty).expect("product");
-    let s = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&prod), &reduce_axis1)
-        .expect("reduce sum product");
+    let s = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&prod),
+        &reduce_axis1,
+    )
+    .expect("reduce sum product");
     eval_primitive(Primitive::Div, &[s, n], &empty).expect("covariance")
 }
 
 fn eval_l2_norm_2d_decomposed(input: &Value) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let empty = BTreeMap::new();
-    let sq = eval_primitive(Primitive::Mul, &[input.clone(), input.clone()], &empty)
-        .expect("square");
-    let s = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&sq), &reduce_axis1)
-        .expect("reduce sum sq");
+    let sq =
+        eval_primitive(Primitive::Mul, &[input.clone(), input.clone()], &empty).expect("square");
+    let s = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&sq),
+        &reduce_axis1,
+    )
+    .expect("reduce sum sq");
     eval_primitive(Primitive::Sqrt, std::slice::from_ref(&s), &empty).expect("l2_norm")
 }
 
@@ -2930,10 +3022,14 @@ fn eval_l2_normalize_2d_decomposed(input: &Value, rows: usize, cols: usize) -> V
         ("broadcast_dimensions".to_owned(), "0".to_owned()),
     ]);
     let empty = BTreeMap::new();
-    let sq = eval_primitive(Primitive::Mul, &[input.clone(), input.clone()], &empty)
-        .expect("square");
-    let s = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&sq), &reduce_axis1)
-        .expect("reduce sum sq");
+    let sq =
+        eval_primitive(Primitive::Mul, &[input.clone(), input.clone()], &empty).expect("square");
+    let s = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&sq),
+        &reduce_axis1,
+    )
+    .expect("reduce sum sq");
     let norm = eval_primitive(Primitive::Sqrt, std::slice::from_ref(&s), &empty).expect("sqrt");
     let norm_b =
         eval_primitive(Primitive::BroadcastInDim, &[norm], &bcast).expect("broadcast norm");
@@ -2944,18 +3040,26 @@ fn eval_l1_norm_2d_decomposed(input: &Value) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let empty = BTreeMap::new();
     let a = eval_primitive(Primitive::Abs, std::slice::from_ref(input), &empty).expect("abs");
-    eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&a), &reduce_axis1)
-        .expect("l1_norm")
+    eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&a),
+        &reduce_axis1,
+    )
+    .expect("l1_norm")
 }
 
 fn eval_rms_2d_decomposed(input: &Value, cols: usize) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let empty = BTreeMap::new();
     let n = Value::scalar_f64(cols as f64);
-    let sq = eval_primitive(Primitive::Mul, &[input.clone(), input.clone()], &empty)
-        .expect("square");
-    let s = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&sq), &reduce_axis1)
-        .expect("reduce sum sq");
+    let sq =
+        eval_primitive(Primitive::Mul, &[input.clone(), input.clone()], &empty).expect("square");
+    let s = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&sq),
+        &reduce_axis1,
+    )
+    .expect("reduce sum sq");
     let ms = eval_primitive(Primitive::Div, &[s, n], &empty).expect("mean square");
     eval_primitive(Primitive::Sqrt, std::slice::from_ref(&ms), &empty).expect("rms")
 }
@@ -2979,10 +3083,18 @@ fn eval_zscore_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value {
         eval_primitive(Primitive::BroadcastInDim, &[mean], &bcast).expect("broadcast mean");
     let centered =
         eval_primitive(Primitive::Sub, &[input.clone(), mean_b], &empty).expect("center");
-    let sq = eval_primitive(Primitive::Mul, &[centered.clone(), centered.clone()], &empty)
-        .expect("square");
-    let s2 = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&sq), &reduce_axis1)
-        .expect("reduce sum sq");
+    let sq = eval_primitive(
+        Primitive::Mul,
+        &[centered.clone(), centered.clone()],
+        &empty,
+    )
+    .expect("square");
+    let s2 = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&sq),
+        &reduce_axis1,
+    )
+    .expect("reduce sum sq");
     let var = eval_primitive(Primitive::Div, &[s2, n], &empty).expect("var");
     let std = eval_primitive(Primitive::Sqrt, std::slice::from_ref(&var), &empty).expect("sqrt");
     let std_b = eval_primitive(Primitive::BroadcastInDim, &[std], &bcast).expect("broadcast std");
@@ -3578,20 +3690,40 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     group.bench_function("mean_squared_error_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| black_box(eval_jaxpr(black_box(&mse_jaxpr), black_box(&mse_args)).unwrap()))
     });
-    let rmse_jaxpr = build_root_mean_squared_error_2d_jaxpr(cols);
-    let rmse_args = [softmax_input.clone(), layer_norm_input.clone()];
-    group.bench_function("root_mean_squared_error_2d/orig_decomposed_4096x1024", |b| {
+    let mae_jaxpr = build_mean_absolute_error_2d_jaxpr(cols);
+    let mae_args = [softmax_input.clone(), layer_norm_input.clone()];
+    group.bench_function("mean_absolute_error_2d/orig_decomposed_4096x1024", |b| {
         b.iter(|| {
-            black_box(eval_root_mean_squared_error_2d_decomposed(
-                black_box(&rmse_args[0]),
-                black_box(&rmse_args[1]),
+            black_box(eval_mean_absolute_error_2d_decomposed(
+                black_box(&mae_args[0]),
+                black_box(&mae_args[1]),
                 cols,
             ))
         })
     });
-    group.bench_function("root_mean_squared_error_2d/fast_eval_jaxpr_4096x1024", |b| {
-        b.iter(|| black_box(eval_jaxpr(black_box(&rmse_jaxpr), black_box(&rmse_args)).unwrap()))
+    group.bench_function("mean_absolute_error_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| black_box(eval_jaxpr(black_box(&mae_jaxpr), black_box(&mae_args)).unwrap()))
     });
+    let rmse_jaxpr = build_root_mean_squared_error_2d_jaxpr(cols);
+    let rmse_args = [softmax_input.clone(), layer_norm_input.clone()];
+    group.bench_function(
+        "root_mean_squared_error_2d/orig_decomposed_4096x1024",
+        |b| {
+            b.iter(|| {
+                black_box(eval_root_mean_squared_error_2d_decomposed(
+                    black_box(&rmse_args[0]),
+                    black_box(&rmse_args[1]),
+                    cols,
+                ))
+            })
+        },
+    );
+    group.bench_function(
+        "root_mean_squared_error_2d/fast_eval_jaxpr_4096x1024",
+        |b| {
+            b.iter(|| black_box(eval_jaxpr(black_box(&rmse_jaxpr), black_box(&rmse_args)).unwrap()))
+        },
+    );
     let r2_jaxpr = build_r2_score_2d_jaxpr(rows, cols);
     let r2_args = [softmax_input.clone(), layer_norm_input.clone()];
     group.bench_function("r2_score_2d/orig_decomposed_4096x1024", |b| {
@@ -3629,7 +3761,11 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     group.bench_function("entropy_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| {
             black_box(
-                eval_jaxpr(black_box(&entropy_jaxpr), std::slice::from_ref(&softmax_input)).unwrap(),
+                eval_jaxpr(
+                    black_box(&entropy_jaxpr),
+                    std::slice::from_ref(&softmax_input),
+                )
+                .unwrap(),
             )
         })
     });
@@ -3723,8 +3859,11 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     group.bench_function("skewness_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| {
             black_box(
-                eval_jaxpr(black_box(&skewness_jaxpr), std::slice::from_ref(&softmax_input))
-                    .unwrap(),
+                eval_jaxpr(
+                    black_box(&skewness_jaxpr),
+                    std::slice::from_ref(&softmax_input),
+                )
+                .unwrap(),
             )
         })
     });
@@ -3741,8 +3880,11 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     group.bench_function("kurtosis_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| {
             black_box(
-                eval_jaxpr(black_box(&kurtosis_jaxpr), std::slice::from_ref(&softmax_input))
-                    .unwrap(),
+                eval_jaxpr(
+                    black_box(&kurtosis_jaxpr),
+                    std::slice::from_ref(&softmax_input),
+                )
+                .unwrap(),
             )
         })
     });
@@ -3759,7 +3901,11 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
         })
     });
     group.bench_function("covariance_2d/fast_eval_jaxpr_4096x1024", |b| {
-        b.iter(|| black_box(eval_jaxpr(black_box(&covariance_jaxpr), black_box(&covariance_args)).unwrap()))
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(black_box(&covariance_jaxpr), black_box(&covariance_args)).unwrap(),
+            )
+        })
     });
     let l2_norm_jaxpr = build_l2_norm_2d_jaxpr();
     group.bench_function("l2_norm_2d/orig_decomposed_4096x1024", |b| {
@@ -3768,7 +3914,11 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     group.bench_function("l2_norm_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| {
             black_box(
-                eval_jaxpr(black_box(&l2_norm_jaxpr), std::slice::from_ref(&softmax_input)).unwrap(),
+                eval_jaxpr(
+                    black_box(&l2_norm_jaxpr),
+                    std::slice::from_ref(&softmax_input),
+                )
+                .unwrap(),
             )
         })
     });
@@ -3785,8 +3935,11 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     group.bench_function("l2_normalize_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| {
             black_box(
-                eval_jaxpr(black_box(&l2_normalize_jaxpr), std::slice::from_ref(&softmax_input))
-                    .unwrap(),
+                eval_jaxpr(
+                    black_box(&l2_normalize_jaxpr),
+                    std::slice::from_ref(&softmax_input),
+                )
+                .unwrap(),
             )
         })
     });
@@ -3797,7 +3950,11 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     group.bench_function("l1_norm_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| {
             black_box(
-                eval_jaxpr(black_box(&l1_norm_jaxpr), std::slice::from_ref(&softmax_input)).unwrap(),
+                eval_jaxpr(
+                    black_box(&l1_norm_jaxpr),
+                    std::slice::from_ref(&softmax_input),
+                )
+                .unwrap(),
             )
         })
     });
@@ -3807,7 +3964,9 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     });
     group.bench_function("rms_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| {
-            black_box(eval_jaxpr(black_box(&rms_jaxpr), std::slice::from_ref(&softmax_input)).unwrap())
+            black_box(
+                eval_jaxpr(black_box(&rms_jaxpr), std::slice::from_ref(&softmax_input)).unwrap(),
+            )
         })
     });
     let zscore_jaxpr = build_zscore_2d_jaxpr(rows, cols);
@@ -3823,7 +3982,11 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     group.bench_function("zscore_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| {
             black_box(
-                eval_jaxpr(black_box(&zscore_jaxpr), std::slice::from_ref(&softmax_input)).unwrap(),
+                eval_jaxpr(
+                    black_box(&zscore_jaxpr),
+                    std::slice::from_ref(&softmax_input),
+                )
+                .unwrap(),
             )
         })
     });

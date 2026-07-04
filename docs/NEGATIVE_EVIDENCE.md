@@ -2,6 +2,35 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 4.31x vs ORIG: row-wise mean absolute error recognized as a fused 2-input interpreter superinstruction (DustyDog)
+
+- Agent: DustyDog. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::mean_absolute_error_2d`).
+  Mean absolute error `Σ|a-b| / n` along the last axis (`sklearn.metrics.mean_absolute_error`): the exact
+  4-equation, TWO-input graph `Sub(a,b) -> Abs -> ReduceSum(axis=1) -> Div(cols)`, two f64
+  `[rows,cols]` inputs -> one `[rows]` output. DISTINCT from MSE/RMSE/R²: absolute-value loss, no square,
+  no sqrt, no variance denominator.
+- LEVER: top-level recognizer for the exact finite dense f64 MAE graph, computed by the row-parallel
+  `mean_absolute_error_2d`. BIT-IDENTICAL: `mean_absolute_error_row` computes `abs(a[i]-b[i])` in the same
+  element order as the decomposed `Sub` then `Abs`, accumulates that tensor in index order matching
+  `ReduceSum(axis=1)`, and divides by exactly `cols` as f64. Nonfinite input, wrong rank/dtype, wrong axis,
+  or wrong divisor falls through to the generic interpreter.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod`,
+  worker `vmi1149989`; Cargo rejected the requested `cargo bench --release ...` form, so the measured
+  command was `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed
+  mean_absolute_error_2d -- --warm-up-time 1 --measurement-time 2 --sample-size 10`, 4096x1024,
+  a=softmax_input b=layer_norm_input):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/mean_absolute_error_2d/orig_decomposed_4096x1024` | 40.263 ms |
+  | `compiled_dispatch/mean_absolute_error_2d/fast_eval_jaxpr_4096x1024` | 9.3472 ms |
+
+  Ratio vs ORIG: **0.232x time / 4.31x faster** (conservative CI 36.819/10.453 = 3.52x; best CI 5.20x).
+- VALIDATION: `eval_top_level_mean_absolute_error_2d_f64_matches_generic_and_preserves_edges` GREEN
+  (fused==generic bit-for-bit on mixed-sign finite f64; nonfinite falls through). This was built in a clean
+  detached worktree from `origin/main` because the shared checkout contained unrelated `.beads`/generated
+  artifact drift plus peer WIP in the same interpreter/lax files.
+
 ## 2026-07-04 - WIN 12.29x vs ORIG: row-wise R² / coefficient of determination recognized as a fused 2-input interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::r2_score_2d`). R² / coefficient of
