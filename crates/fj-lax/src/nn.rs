@@ -516,6 +516,78 @@ pub fn std_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     result
 }
 
+/// Population skewness of a single row, `m3 / m2^1.5` with `m2 = mean((x-μ)²)`, `m3 = mean((x-μ)³)`,
+/// bit-identical to the decomposed graph: one index-order pass for the mean, then one index-order
+/// pass accumulating `d² = (x-μ)²` and `d³ = (x-μ)²·(x-μ)` (the exact `Mul(d,d)` then `Mul(d2,d)`
+/// products the graph forms), both divided by `n`, with the denominator built as `m2 · sqrt(m2)`
+/// (= `m2^1.5`) via correctly-rounded `f64::sqrt` (= the `Sqrt` primitive). Callers guarantee a
+/// non-empty row.
+fn skewness_row(row: &[f64]) -> f64 {
+    let n = row.len() as f64;
+    let mut sum = 0.0;
+    for &v in row {
+        sum += v;
+    }
+    let mean = sum / n;
+    let mut sum2 = 0.0;
+    let mut sum3 = 0.0;
+    for &v in row {
+        let d = v - mean;
+        let d2 = d * d;
+        let d3 = d2 * d;
+        sum2 += d2;
+        sum3 += d3;
+    }
+    let m2 = sum2 / n;
+    let m3 = sum3 / n;
+    let denom = m2 * m2.sqrt();
+    m3 / denom
+}
+
+/// Population skewness (Fisher–Pearson, `ddof=0`) along the last axis of a 2D array, one scalar per
+/// row (`scipy.stats.skew(x, axis=-1)`). ROW-PARALLEL and BIT-IDENTICAL to the decomposed graph
+/// `ReduceSum → Div(mean) → BroadcastInDim → Sub → Mul(d²) → Mul(d³) → ReduceSum → Div(m2) →
+/// ReduceSum → Div(m3) → Sqrt → Mul(denom) → Div`: same index-order reductions + `sum/n` moment
+/// grouping via [`skewness_row`], denominator `m2·sqrt(m2)` with correctly-rounded `f64::sqrt`. Rows
+/// are independent so only the outer loop is threaded, above the `softmax_2d_thread_count` work gate.
+/// Used by the interpreter skewness superinstruction.
+#[must_use]
+pub fn skewness_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let _len = checked_2d_row_major_len("2D skewness", x, rows, cols);
+    let mut result = vec![0.0; rows];
+    if cols == 0 || rows == 0 {
+        return result;
+    }
+    let threads = softmax_2d_thread_count(rows, rows * cols);
+    if threads <= 1 {
+        for (i, slot) in result.iter_mut().enumerate() {
+            let start = i * cols;
+            *slot = skewness_row(&x[start..start + cols]);
+        }
+        return result;
+    }
+
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut out_rest: &mut [f64] = &mut result;
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let row_count = rows_per.min(rows - row0);
+            let (out_block, out_tail) = out_rest.split_at_mut(row_count);
+            out_rest = out_tail;
+            let x_block = &x[row0 * cols..(row0 + row_count) * cols];
+            row0 += row_count;
+            scope.spawn(move || {
+                for (k, out_slot) in out_block.iter_mut().enumerate() {
+                    let start = k * cols;
+                    *out_slot = skewness_row(&x_block[start..start + cols]);
+                }
+            });
+        }
+    });
+    result
+}
+
 /// Cosine similarity of a single pair of rows, `Σ(a·b) / (√Σa² · √Σb²)`, bit-identical to the
 /// decomposed `Mul → ReduceSum(dot) | Mul → ReduceSum(‖a‖²) → Sqrt | Mul → ReduceSum(‖b‖²) → Sqrt |
 /// Mul(denom) → Div` graph. The three dot/‖a‖²/‖b‖² accumulators are INDEPENDENT index-order sums, so
