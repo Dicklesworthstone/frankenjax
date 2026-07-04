@@ -9488,11 +9488,16 @@ fn extremum_along_axis(
             })
         };
         if axis_stride == 1 {
-            // Contiguous last axis (hot logits case): thread over the independent output rows.
-            let idx = parallel_argmax_fill(outer_count, total, |outer| {
-                let base = outer * axis_dim;
-                arg_extreme_float(axis_dim, find_max, |i| widen(values[base + i])) as i64
-            });
+            // Contiguous last axis (hot logits case): thread over the independent output rows;
+            // a single-output full reduction (outer_count == 1) threads WITHIN the row instead.
+            let idx = if outer_count == 1 {
+                vec![threaded_arg_extreme_half_contiguous(values, find_max, widen) as i64]
+            } else {
+                parallel_argmax_fill(outer_count, total, |outer| {
+                    let base = outer * axis_dim;
+                    arg_extreme_float(axis_dim, find_max, |i| widen(values[base + i])) as i64
+                })
+            };
             if result_shape.dims.is_empty() {
                 return Ok(Value::Scalar(Literal::I64(idx[0])));
             }
@@ -13167,6 +13172,69 @@ fn threaded_arg_extreme_i64_contiguous(values: &[i64], find_max: bool) -> usize 
         let gi = start + local;
         let v = values[gi];
         if first {
+            best_idx = gi;
+            best_val = v;
+            first = false;
+        } else if (find_max && v > best_val) || (!find_max && v < best_val) {
+            best_idx = gi;
+            best_val = v;
+        }
+    }
+    best_idx
+}
+
+/// Threaded single-row half-float (BF16/F16) arg-extreme — the `outer_count == 1` sibling of
+/// [`threaded_arg_extreme_f64_contiguous`] for a flat bf16/f16 full reduction (a token-
+/// prediction argmax over a 1-D logits row). Each chunk runs the scalar `arg_extreme_float`
+/// over its widened lanes; winners combine in ascending global-index order (sticky first-NaN
+/// | strictly-better widened value | lower global index). `widen` must widen a half-float
+/// bit pattern to f64 EXACTLY (NaN->NaN), so this is BIT-IDENTICAL to the single-thread scan.
+fn threaded_arg_extreme_half_contiguous(
+    values: &[u16],
+    find_max: bool,
+    widen: impl Fn(u16) -> f64 + Copy + Sync + Send,
+) -> usize {
+    let n = values.len();
+    let threads = crate::arithmetic::work_scaled_threads(n);
+    if n < crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN || threads <= 1 {
+        return arg_extreme_float(n, find_max, |i| widen(values[i]));
+    }
+    let chunk = n.div_ceil(threads);
+    let partials: Vec<(usize, usize)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = values
+            .chunks(chunk)
+            .enumerate()
+            .map(|(ci, cv)| {
+                scope.spawn(move || {
+                    (
+                        ci * chunk,
+                        arg_extreme_float(cv.len(), find_max, |i| widen(cv[i])),
+                    )
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| match handle.join() {
+                Ok(partial) => partial,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
+    });
+    let mut best_idx = 0usize;
+    let mut best_val = 0.0f64;
+    let mut seen_nan = false;
+    let mut first = true;
+    for (start, local) in partials {
+        if seen_nan {
+            break;
+        }
+        let gi = start + local;
+        let v = widen(values[gi]);
+        if v.is_nan() {
+            best_idx = gi;
+            seen_nan = true;
+        } else if first {
             best_idx = gi;
             best_val = v;
             first = false;
@@ -29221,6 +29289,82 @@ mod tests {
     }
 
     #[test]
+    fn threaded_arg_extreme_half_matches_serial() {
+        let min_par = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN;
+        // Both half formats: widen closures mirror the argmax dispatch (bf16 vs f16 decode).
+        let bf16_widen = move |b: u16| -> f64 {
+            f64::from(Literal::BF16Bits(b).as_bf16_f32().unwrap_or(f32::NAN))
+        };
+        let f16_widen = move |b: u16| -> f64 {
+            f64::from(Literal::F16Bits(b).as_f16_f32().unwrap_or(f32::NAN))
+        };
+        for &n in &[min_par + 1, min_par + 4_321, min_par * 2 + 57] {
+            // bf16: encode well-separated values + ±inf via from_bf16_f64.
+            let bf16: Vec<u16> = (0..n)
+                .map(|i| match i % 3500 {
+                    0 => convert_bf16_bits(6.5),
+                    1 => convert_bf16_bits(-6.5),
+                    2 => convert_bf16_bits(f64::INFINITY),
+                    3 => convert_bf16_bits(f64::NEG_INFINITY),
+                    _ => convert_bf16_bits(((i as f64) * 1.000_53).sin() * 8.0 - (i as f64) * 1e-4),
+                })
+                .collect();
+            // f16: same shape via from_f16_f64 bits.
+            let f16: Vec<u16> = (0..n)
+                .map(|i| {
+                    let v = match i % 3500 {
+                        0 => 6.5,
+                        1 => -6.5,
+                        2 => f64::INFINITY,
+                        3 => f64::NEG_INFINITY,
+                        _ => ((i as f64) * 1.000_53).cos() * 8.0 - (i as f64) * 1e-4,
+                    };
+                    match Literal::from_f16_f64(v) {
+                        Literal::F16Bits(b) => b,
+                        _ => unreachable!(),
+                    }
+                })
+                .collect();
+            for &find_max in &[true, false] {
+                assert_eq!(
+                    threaded_arg_extreme_half_contiguous(&bf16, find_max, bf16_widen),
+                    arg_extreme_float(bf16.len(), find_max, |i| bf16_widen(bf16[i])),
+                    "bf16 no-nan mismatch n={n} find_max={find_max}"
+                );
+                assert_eq!(
+                    threaded_arg_extreme_half_contiguous(&f16, find_max, f16_widen),
+                    arg_extreme_float(f16.len(), find_max, |i| f16_widen(f16[i])),
+                    "f16 no-nan mismatch n={n} find_max={find_max}"
+                );
+            }
+            // Inject NaN (first-occurrence sticky selection) at boundary + interior positions.
+            let bf16_nan = convert_bf16_bits(f64::NAN);
+            let f16_nan = match Literal::from_f16_f64(f64::NAN) {
+                Literal::F16Bits(b) => b,
+                _ => unreachable!(),
+            };
+            for &nan_at in &[0usize, 5, n / 3, n - 7, n - 1] {
+                let mut b2 = bf16.clone();
+                let mut h2 = f16.clone();
+                b2[nan_at] = bf16_nan;
+                h2[nan_at] = f16_nan;
+                for &find_max in &[true, false] {
+                    assert_eq!(
+                        threaded_arg_extreme_half_contiguous(&b2, find_max, bf16_widen),
+                        arg_extreme_float(b2.len(), find_max, |i| bf16_widen(b2[i])),
+                        "bf16 nan@{nan_at} mismatch n={n} find_max={find_max}"
+                    );
+                    assert_eq!(
+                        threaded_arg_extreme_half_contiguous(&h2, find_max, f16_widen),
+                        arg_extreme_float(h2.len(), find_max, |i| f16_widen(h2[i])),
+                        "f16 nan@{nan_at} mismatch n={n} find_max={find_max}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_argmax_full_reduce_threaded_vs_serial() {
         use std::time::Instant;
@@ -29256,6 +29400,19 @@ mod tests {
         });
         time_it("i64_16M_threaded", &|| {
             threaded_arg_extreme_i64_contiguous(&datai64, true)
+        });
+        // bf16 (mixed-precision logits): serial reference = the sub-gate widened scan the
+        // helper falls back to; threaded = the shipped within-row fan-out.
+        let databf16: Vec<u16> = (0..n)
+            .map(|i| convert_bf16_bits(0.5 + (i % 9973) as f64 * 1e-4))
+            .collect();
+        let bf16_widen =
+            |b: u16| -> f64 { f64::from(Literal::BF16Bits(b).as_bf16_f32().unwrap_or(f32::NAN)) };
+        time_it("bf16_16M_serial", &|| {
+            arg_extreme_float(databf16.len(), true, |i| bf16_widen(databf16[i]))
+        });
+        time_it("bf16_16M_threaded", &|| {
+            threaded_arg_extreme_half_contiguous(&databf16, true, bf16_widen)
         });
     }
 

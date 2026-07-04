@@ -2,6 +2,42 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 3.97x: bf16/f16 argmax full-reduce (outer_count==1) THREADED — completes the argmax dtype family (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. File: `tensor_ops.rs` (`extremum_along_axis` half-float
+  branch). Remote via rch (`CARGO_TARGET_DIR=.../blackthrush`). Follow-up to the shipped
+  f64/f32/i64 single-axis argmax full-reduce threading (c3e3ba61 / 0d3615e3).
+- GAP: the "outer_count == 1 full reduction never threads" bug-class — argmax over the last
+  axis of a single long half-float logits row (`argmax(bf16[N])`, the hot token-prediction
+  case) went through `parallel_argmax_fill`, which threads over OUTPUT ROWS. With one output
+  row it ran the whole widen+scan SERIALLY. f64/f32/i64 were fixed to thread WITHIN the row;
+  bf16/f16 were the last dtype left on the serial path.
+- LEVER: new `threaded_arg_extreme_half_contiguous(values: &[u16], find_max, widen)` — fans the
+  single row across `work_scaled_threads` scoped-thread chunks (above `CHEAP_BINARY_PARALLEL_MIN`),
+  each runs `arg_extreme_float` over its chunk with the half→f64 `widen` decode, then combines
+  partials by (sticky first-NaN | strictly-better widened value | lower global index). Wired
+  into the `axis_stride == 1 && outer_count == 1` half-float dispatch, mirroring f64/f32/i64.
+  Bit-identical: same `f64::from(bf16/f16 decode)` the generic path uses, same `arg_extreme_float`
+  reducer, same first-occurrence tie + sticky first-NaN selection (lane-independent).
+- MEASURED (rch, same-invocation min-of-8 A/B, `--test-threads=1` contention-free,
+  `bench_argmax_full_reduce_threaded_vs_serial`, 16M elements, argmax):
+  **bf16 serial 18.721ms -> threaded 4.709ms = 3.97x.** (Same run, already-shipped siblings:
+  f64 10.143->3.557 = 2.85x, f32 5.241->1.648 = 3.18x, i64 4.918->2.101 = 2.34x.) bf16 has the
+  BEST ratio of the family: the per-element `BF16Bits::as_bf16_f32` decode makes the scan
+  compute-bound (18.7ms serial vs f32's 5.2ms for the same 16M), so it is the most
+  thread-favorable — near-linear on the ~10-core worker before DRAM saturates.
+- Correctness: new `threaded_arg_extreme_half_matches_serial` (bf16 AND f16 × find_max/find_min,
+  3 sizes across the gate, ±inf + first-occurrence dup extrema, sticky-NaN injected at
+  0/5/n-3/n-7/n-1) — asserts the threaded helper == the serial widened `arg_extreme_float`
+  reference. All 4 `threaded_arg_extreme_*` tests GREEN. EV: KEEP (bit-identical, 3.97x, never a
+  regression — sub-gate it stays the serial scan). The argmax full-reduce dtype family
+  (f64/f32/i64/bf16/f16) is now COMPLETE.
+- METHODOLOGY CORRECTION carried over: the prior-turn note "mid-axis argmax [256,1024,64] axis1
+  = 21.35ms vs JAX 3.43ms = 6.2x" was a CONCURRENT-run artifact; re-measured ISOLATED
+  (`--test-threads=1`) = 4.608ms = 1.34x. Always bench full-reduce/argmax with `--test-threads=1`;
+  concurrent cargo-test benches inflate wall-clock 4-5x.
+
+
 ## 2026-07-04 - WIN 1.20x: bitwise scalar-broadcast match-HOIST + slice-chunk map → reaches the add-op rate (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. File: `lib.rs`. Follow-up to `f9c6267f`
