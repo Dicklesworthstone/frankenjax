@@ -12466,3 +12466,23 @@ RULE: the XLA-CPU-weakness map is now closed for contained primitives — the on
 cumsum/small-batched-linalg/kron are XLA strongholds; do not chase them. Remaining fj-vs-JAX gaps are the known
 BIG-SWING prior loops (FFT mixed-radix kernel 7-43x LOSS; interpreter→typed-slot compile), which are multi-session
 and out of scope for a single contained lever. No code change; boundary evidence only.
+
+## 2026-07-03 - NEGATIVE: f64 pad/concat contiguous + single-element gather all LOSE to XLA-CPU (BlackThrush)
+
+Two same-invocation measurement benches added to fj-lax (`bench_pad_concat_vs_jax`,
+`bench_gather_single_f64_serial_vs_threaded`), min-of-8/10, Zen3 5975WX AVX2. All confirm XLA-CPU memory-bandwidth
+strongholds — none is a contained fj lever:
+
+- **pad** [4096,4096]→[4098,4098] f64 = **37.1ms** vs JAX **24.7ms → fj 0.67x (LOSES 1.5x)**. Pad is a pure
+  block-memcpy into a zeroed buffer; already `extend_from_slice`-optimized (contiguous-block memcpy vein). The gap
+  is raw write-bandwidth of the larger zeroed destination — no algorithmic slack.
+- **concat axis1** 2×[4096,2048] f64 = **46.7ms** vs JAX **24.7ms → fj 0.53x (LOSES 1.9x)**. Strided interleave
+  of two operands into row-major output; memory-bound, no reassoc slack.
+- **concat axis0** 2×[2048,4096] f64 = **36.7ms** vs JAX **79.4ms → fj 2.17x (WINS)** — contiguous half-and-half
+  copy; the one win, and it's already the trivial memcpy path (no lever to add).
+- **single-element gather** 1M indices from 4M-elem (32MB, >L3) f64 table = threaded **3.02ms** /
+  serial-interleaved **7.99ms** vs JAX **1.72ms → fj 0.57x threaded (LOSES 1.75x)**. Latency-bound scattered reads;
+  threading already applied (2.65x over serial) and still loses. Confirms the closed gather/scatter XLA-strong map.
+
+RULE: pad/concat contiguous and scattered-gather are XLA memory-bandwidth strongholds; do NOT chase them as fj
+wins. Benches retained as the memory-bound loss contrast. No production code change; boundary evidence only.

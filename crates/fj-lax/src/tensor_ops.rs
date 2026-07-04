@@ -31731,6 +31731,97 @@ mod tests {
     // random RMW (operand L3-resident at 1M). Both apply updates in global i-order → bit-identical.
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
+    fn bench_pad_concat_vs_jax() {
+        use std::time::Instant;
+        let best = |f: &dyn Fn()| -> f64 {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..8 {
+                let t = Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        // pad [4096,4096] -> [4098,4098]
+        let x: Vec<f64> = (0..4096 * 4096).map(|i| (i % 7919) as f64).collect();
+        let op = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![4096, 4096] }, x).unwrap(),
+        );
+        let pv = Value::scalar_f64(0.0);
+        let mut pp = BTreeMap::new();
+        pp.insert("padding_low".into(), "1,1".into());
+        pp.insert("padding_high".into(), "1,1".into());
+        pp.insert("padding_interior".into(), "0,0".into());
+        let padt = best(&|| {
+            std::hint::black_box(eval_pad(&[op.clone(), pv.clone()], &pp).unwrap());
+        });
+        // concat 2x[4096,2048] axis1 and 2x[2048,4096] axis0
+        let a1: Vec<f64> = (0..4096 * 2048).map(|i| (i % 7919) as f64).collect();
+        let ta = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![4096, 2048] }, a1.clone()).unwrap(),
+        );
+        let mut cp1 = BTreeMap::new();
+        cp1.insert("dimension".into(), "1".into());
+        let cat1 = best(&|| {
+            std::hint::black_box(eval_concatenate(&[ta.clone(), ta.clone()], &cp1).unwrap());
+        });
+        let a0: Vec<f64> = (0..2048 * 4096).map(|i| (i % 7919) as f64).collect();
+        let ta0 = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![2048, 4096] }, a0).unwrap(),
+        );
+        let mut cp0 = BTreeMap::new();
+        cp0.insert("dimension".into(), "0".into());
+        let cat0 = best(&|| {
+            std::hint::black_box(eval_concatenate(&[ta0.clone(), ta0.clone()], &cp0).unwrap());
+        });
+        println!(
+            "[pad/concat f64] pad->4098^2={:.2}ms (JAX 24.7) | concat axis1={:.2}ms (JAX 24.7) | concat axis0={:.2}ms (JAX 79.4)",
+            padt * 1e3,
+            cat1 * 1e3,
+            cat0 * 1e3,
+        );
+    }
+
+    // Single-element gather (slice_elems==1) serial-interleaved vs threaded, vs JAX. Latency-bound
+    // scattered reads from a 4M (32MB, >L3) f64 table.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_gather_single_f64_serial_vs_threaded() {
+        use std::time::Instant;
+        let (n, k) = (1usize << 22, 1usize << 20);
+        let src: Vec<f64> = (0..n).map(|i| (i % 7919) as f64).collect();
+        let idx: Vec<usize> = (0..k).map(|i| (i.wrapping_mul(2_654_435_761)) % n).collect();
+        let best = |f: &dyn Fn()| -> f64 {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..10 {
+                let t = Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b
+        };
+        let thr = best(&|| {
+            let mut out = vec![0.0f64; k];
+            super::gather_single_dense_f64(&mut out, &src, &idx);
+            std::hint::black_box(out[0]);
+        });
+        let ser = best(&|| {
+            let mut out = vec![0.0f64; k];
+            super::gather_single_dense_f64_interleaved(&mut out, &src, &idx);
+            std::hint::black_box(out[0]);
+        });
+        println!(
+            "[gather single 1M from 4M f64] threaded={:.3}ms serial-interleaved={:.3}ms ratio(ser/thr)={:.2} | JAX=1.724ms",
+            thr * 1e3,
+            ser * 1e3,
+            ser / thr,
+        );
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
     fn bench_gather_rows_f64_i32_vs_jax() {
         use std::time::Instant;
         let (rows, cols, k) = (16384usize, 256usize, 4096usize);
