@@ -2,6 +2,44 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 5.36x vs ORIG: log_softmax_2d graph recognized as a fused interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ `fj-lax::nn` fused kernel). Scratch/worktree audit
+  found no fresh unlanded measured win (every `.scratch` worktree is a stale prunable baseline). Dug the
+  same superinstruction vein as the shipped softmax/layer_norm macro-ops: the canonical decomposed
+  log-softmax graph is ubiquitous (every cross-entropy loss) yet still ran the generic per-equation
+  interpreter with full intermediate materialization.
+- LEVER: a top-level interpreter superinstruction for the exact 8-equation finite dense rank-2 f64
+  log-softmax graph `ReduceMax(axis=1) → BroadcastInDim(axis0) → Sub → Exp → ReduceSum(axis=1) → Log →
+  BroadcastInDim(axis0) → Sub`, computed in one fused row-parallel `log_softmax_2d_shifted` pass.
+  BIT-IDENTICAL to the generic path: it reuses the SAME fold-max + index-order exp-sum as the proven
+  softmax superinstruction, and the SAME `(x - rowmax) - log(sum)` subtraction grouping as the jaxpr —
+  NOT the pre-existing `log_softmax_2d`'s `x - (rowmax + log(sum))` grouping, which differs in the last
+  bit by float non-associativity of the final subtract (a dedicated `log_softmax_row_shifted_into`
+  kernel was added for the correct grouping). Exact-graph / exact-shape / finite-only; noncanonical or
+  nonfinite programs fall through to the generic interpreter, preserving edge semantics.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed log_softmax_2d --
+  --warm-up-time 1 --measurement-time 2 --sample-size 10 --noplot`; the `cargo bench --release`
+  spelling is rejected by Cargo as an unexpected arg, so `--profile release` is used):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/log_softmax_2d/orig_decomposed_4096x1024` | 96.625 ms |
+  | `compiled_dispatch/log_softmax_2d/fast_eval_jaxpr_4096x1024` | 18.041 ms |
+
+  Ratio vs ORIG: **0.187x time / 5.36x faster** (criterion low estimates 93.6→16.8ms = 5.58x). The
+  softmax JAX oracle (f64 4096x1024 = 4.79ms) implies JAX log_softmax ≈ 5ms, so the ORIG decomposed
+  path was ~20x slower than JAX and this fused path is ~3.6x slower than JAX while removing 81% of the
+  interpreter time for the canonical decomposed log-softmax graph.
+- VALIDATION: `eval_top_level_log_softmax_2d_f64_matches_generic_and_preserves_edges` GREEN (fused ==
+  generic bit-for-bit on random f64; nonfinite input falls through to generic); softmax + layer_norm
+  superinstruction tests still GREEN. NOTE (pre-existing, INDEPENDENT of this additive change): the
+  fj-interpreters lib test `scalar_arena_transcendentals_bit_identical_to_generic` fails on `Cbrt(-5)`
+  f64 (scalar-arena vs generic bit mismatch) in the recently-churned arena/native-f32 cbrt area
+  (commits 84b44a86 / c047af73). This diff is purely additive and touches no cbrt/arena code, so that
+  RED exists at HEAD regardless of this commit.
+
 ## 2026-07-04 - WIN 3.74x vs ORIG: fused finite f64 rank-2 layer-norm graph macro-op (BlackThrush)
 
 - Agent: BlackThrush (`AGENT_NAME=BlackThrush`). Crate: `fj-interpreters`. Scratch/worktree audit

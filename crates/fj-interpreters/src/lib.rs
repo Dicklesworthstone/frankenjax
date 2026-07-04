@@ -1105,6 +1105,10 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) = try_eval_top_level_log_softmax_2d_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_layer_norm_2d_f64(jaxpr, const_values, args) {
         return result;
     }
@@ -1353,6 +1357,122 @@ fn try_eval_top_level_softmax_2d_f64(
     }
 
     let output = fj_lax::nn::softmax_2d(values, rows, cols);
+    Some(
+        TensorValue::new_f64_values(input.shape.clone(), output)
+            .map(Value::Tensor)
+            .map(|value| vec![value])
+            .map_err(EvalError::InvalidTensor)
+            .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for the canonical finite dense rank-2 f64 log-softmax
+/// graph `ReduceMax(axis=1) → BroadcastInDim(axis0) → Sub → Exp → ReduceSum(axis=1) →
+/// Log → BroadcastInDim(axis0) → Sub`, i.e. `shifted - log(sum(exp(shifted)))` with
+/// `shifted = x - rowmax`. Mirrors [`try_eval_top_level_softmax_2d_f64`] one equation
+/// longer (the extra `Log`, and a final `Sub` on `shifted` instead of `Div` on `exp`).
+/// Exact-graph/exact-shape only; nonfinite or noncanonical programs fall through to the
+/// generic interpreter. The fused `log_softmax_2d_shifted` uses the SAME reduction order
+/// and subtraction grouping as this graph, so it is bit-identical to the decomposed path.
+fn try_eval_top_level_log_softmax_2d_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 1
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 8
+        || args.len() != 1
+    {
+        return None;
+    }
+
+    let x = jaxpr.invars[0];
+    let out = jaxpr.outvars[0];
+    let [
+        max_eq,
+        max_bcast_eq,
+        sub_eq,
+        exp_eq,
+        sum_eq,
+        log_eq,
+        log_bcast_eq,
+        out_sub_eq,
+    ] = jaxpr.equations.as_slice()
+    else {
+        return None;
+    };
+
+    let max = single_output_for_param_primitive(max_eq, Primitive::ReduceMax)?;
+    if max_eq.inputs.as_slice() != [Atom::Var(x)] || !axis1_reduce_params(&max_eq.params) {
+        return None;
+    }
+
+    let max_bcast = single_output_for_param_primitive(max_bcast_eq, Primitive::BroadcastInDim)?;
+    if max_bcast_eq.inputs.as_slice() != [Atom::Var(max)]
+        || !rank2_axis0_broadcast_params(&max_bcast_eq.params)
+    {
+        return None;
+    }
+
+    let shifted = single_output_for_primitive(sub_eq, Primitive::Sub)?;
+    if sub_eq.inputs.as_slice() != [Atom::Var(x), Atom::Var(max_bcast)] {
+        return None;
+    }
+
+    let exp = single_output_for_primitive(exp_eq, Primitive::Exp)?;
+    if exp_eq.inputs.as_slice() != [Atom::Var(shifted)] {
+        return None;
+    }
+
+    let sum = single_output_for_param_primitive(sum_eq, Primitive::ReduceSum)?;
+    if sum_eq.inputs.as_slice() != [Atom::Var(exp)] || !axis1_reduce_params(&sum_eq.params) {
+        return None;
+    }
+
+    let logv = single_output_for_primitive(log_eq, Primitive::Log)?;
+    if log_eq.inputs.as_slice() != [Atom::Var(sum)] {
+        return None;
+    }
+
+    let log_bcast = single_output_for_param_primitive(log_bcast_eq, Primitive::BroadcastInDim)?;
+    if log_bcast_eq.inputs.as_slice() != [Atom::Var(logv)]
+        || log_bcast_eq.params != max_bcast_eq.params
+    {
+        return None;
+    }
+
+    let out_sub = single_output_for_primitive(out_sub_eq, Primitive::Sub)?;
+    if out_sub != out || out_sub_eq.inputs.as_slice() != [Atom::Var(shifted), Atom::Var(log_bcast)]
+    {
+        return None;
+    }
+
+    let Value::Tensor(input) = &args[0] else {
+        return None;
+    };
+    if input.dtype != DType::F64 || input.shape.dims.len() != 2 {
+        return None;
+    }
+    let rows = input.shape.dims[0] as usize;
+    let cols = input.shape.dims[1] as usize;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+    let expected_shape = format!("{rows},{cols}");
+    if max_bcast_eq.params.get("shape").map(String::as_str) != Some(expected_shape.as_str()) {
+        return None;
+    }
+
+    let values = input.elements.as_f64_slice()?;
+    if !values.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::log_softmax_2d_shifted(values, rows, cols);
     Some(
         TensorValue::new_f64_values(input.shape.clone(), output)
             .map(Value::Tensor)
@@ -12900,6 +13020,94 @@ mod tests {
         )
     }
 
+    fn make_log_softmax_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
+        let x = VarId(1);
+        let max = VarId(2);
+        let max_b = VarId(3);
+        let shifted = VarId(4);
+        let exp = VarId(5);
+        let sum = VarId(6);
+        let logv = VarId(7);
+        let log_b = VarId(8);
+        let out = VarId(9);
+        let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+        let bcast = BTreeMap::from([
+            ("shape".to_owned(), format!("{rows},{cols}")),
+            ("broadcast_dimensions".to_owned(), "0".to_owned()),
+        ]);
+        Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::ReduceMax,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![max],
+                    params: reduce_axis1.clone(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::BroadcastInDim,
+                    inputs: smallvec![Atom::Var(max)],
+                    outputs: smallvec![max_b],
+                    params: bcast.clone(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sub,
+                    inputs: smallvec![Atom::Var(x), Atom::Var(max_b)],
+                    outputs: smallvec![shifted],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Exp,
+                    inputs: smallvec![Atom::Var(shifted)],
+                    outputs: smallvec![exp],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(exp)],
+                    outputs: smallvec![sum],
+                    params: reduce_axis1,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Log,
+                    inputs: smallvec![Atom::Var(sum)],
+                    outputs: smallvec![logv],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::BroadcastInDim,
+                    inputs: smallvec![Atom::Var(logv)],
+                    outputs: smallvec![log_b],
+                    params: bcast,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sub,
+                    inputs: smallvec![Atom::Var(shifted), Atom::Var(log_b)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
     fn make_layer_norm_2d_jaxpr(rows: usize, cols: usize, epsilon: f64) -> Jaxpr {
         let x = VarId(1);
         let sum = VarId(2);
@@ -19049,6 +19257,46 @@ mod tests {
             .expect("nonfinite softmax falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite]).expect("generic nonfinite softmax");
+        assert_eq!(through_eval, through_generic);
+    }
+
+    #[test]
+    fn eval_top_level_log_softmax_2d_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        let data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.37).sin() * 8.0 - ((idx % cols) as f64) * 0.125)
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data,
+            )
+            .expect("dense f64 input"),
+        );
+        let jaxpr = make_log_softmax_2d_jaxpr(rows, cols);
+
+        let fast = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).expect("fast log_softmax");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[input]).expect("generic log_softmax");
+        assert_eq!(fast, generic);
+
+        let mut nonfinite_data: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.01).collect();
+        nonfinite_data[cols + 1] = f64::NAN;
+        let nonfinite = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                nonfinite_data,
+            )
+            .expect("dense nonfinite f64 input"),
+        );
+        let through_eval = eval_jaxpr(&jaxpr, std::slice::from_ref(&nonfinite))
+            .expect("nonfinite log_softmax falls through");
+        let through_generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite])
+            .expect("generic nonfinite log_softmax");
         assert_eq!(through_eval, through_generic);
     }
 

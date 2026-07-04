@@ -435,6 +435,45 @@ pub fn log_softmax_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     result
 }
 
+#[inline]
+fn log_softmax_row_shifted_into(src: &[f64], dst: &mut [f64]) {
+    // Log-softmax computed in the SAME operation grouping as the decomposed XLA/JAX
+    // graph: `shifted = x - rowmax`, then `shifted - log(sum(exp(shifted)))`. This
+    // differs from `log_softmax_row_into`'s `x - (rowmax + log(sum))` grouping by float
+    // (non-)associativity of the final subtract, so the two are NOT interchangeable for a
+    // bit-exact superinstruction. The row-max fold and index-order exp-sum are identical to
+    // `softmax_row_into`, so this equals the ReduceMax/Sub/Exp/ReduceSum/Log/Sub jaxpr
+    // bit-for-bit. Superinstruction callers guarantee finite input, so `rowmax` is finite.
+    let max_val = src.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let mut sum_exp = 0.0;
+    for (d, &v) in dst.iter_mut().zip(src.iter()) {
+        let shifted = v - max_val;
+        *d = shifted;
+        sum_exp += shifted.exp();
+    }
+    let log_val = sum_exp.ln();
+    for d in dst.iter_mut() {
+        *d -= log_val;
+    }
+}
+
+/// Log-softmax along the last axis of a 2D array, computed in the operation grouping
+/// of the decomposed XLA/JAX graph `shifted - log(sum(exp(shifted)))` (`shifted = x -
+/// rowmax`). Used by the interpreter log-softmax superinstruction so the fused result is
+/// bit-for-bit identical to the generic `ReduceMax → Sub → Exp → ReduceSum → Log → Sub`
+/// path. (Contrast [`log_softmax_2d`], which uses the 1D `x - (rowmax + log(sum))`
+/// grouping and so can differ in the last bit.)
+#[must_use]
+pub fn log_softmax_2d_shifted(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let len = checked_2d_row_major_len("2D log_softmax", x, rows, cols);
+    let mut result = vec![0.0; len];
+    if cols == 0 {
+        return result;
+    }
+    fill_softmax_rows_parallel(x, &mut result, rows, cols, log_softmax_row_shifted_into);
+    result
+}
+
 /// Normalize input to have zero mean and unit variance.
 ///
 /// Matches `jax.nn.standardize(x)` for a 1D array.
