@@ -2,6 +2,33 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - KEEP (3.59x): direct SIMD rank-2 f64 3x3 maxpool; broad 7x7 variant rejected (ProudSalmon)
+
+Land-or-dig audit found no measured `.scratch` / `.worktrees` bench win absent from `main`, so this pass dug a
+fresh non-FFT primitive gap: rank-2 `reduce_window(max/min)` pooling. The useful lever came from the
+alien-graveyard / artifact / extreme-optimization mapping of "vectorized query kernels": for exactly finite
+3x3 VALID f64 windows, direct SIMD over eight adjacent output columns avoids the prefix/suffix scratch buffers
+used by the lower-op-count van Herk path. The gate is intentionally narrow; the broader 7x7 experiment
+regressed and was dropped.
+
+Per-crate RCH Criterion command shape, with `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-proudsalmon`
+and `AGENT_NAME=ProudSalmon`: `rch exec -- cargo bench -p fj-lax --profile release --bench lax_baseline --
+'eval/maxpool2d_1024x1024_w(3|7)s1_valid_f64' --warm-up-time 1 --measurement-time 2 --sample-size 10 --noplot`.
+`cargo bench --release` is not accepted by this workspace's Cargo invocation; `--profile release` is the
+release-equivalent form used for the measured crate-local run.
+
+Same-worker proof on `vmi1293453`:
+
+| Case | Original `main` midpoint | Candidate midpoint | Ratio vs original | JAX comparator | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `eval/maxpool2d_1024x1024_w3s1_valid_f64` | 6.4165ms | 1.7893ms | 3.59x faster | JAX ~1.28ms: original 5.01x slower, candidate 1.40x slower | KEEP |
+| Broad direct-SIMD `w7` experiment | 7.5671ms | 8.5570ms | 0.88x, 18.6% regression | JAX ~1.28ms | DROP |
+
+Supporting final narrowed rerun on `ovh-a` measured `w3` at 1.0595ms and `w7` at 5.8352ms after the gate was
+restricted to 3x3 only; worker changed, so those numbers are routing evidence only. Correctness coverage:
+`cargo test -p fj-lax --profile release direct_simd_rank2_3x3_maxmin_matches_naive_bits --lib -- --nocapture`
+passed on RCH worker `vmi1152480`. Full crate conformance was run separately before landing.
+
 ## 2026-07-04 - CLOSEOUT: random_uniform 4M f64 is 9.46x faster than JAX/XLA-CPU (BlackThrush)
 
 Fresh strict-remote RCH Criterion proof for a different primitive family from the iterative special-function

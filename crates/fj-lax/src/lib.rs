@@ -5439,6 +5439,87 @@ fn separable_reduce_window_rank2_maxmin_f64(
     Some(output)
 }
 
+/// Direct SIMD rank-2 max/min for 3x3 VALID windows.
+///
+/// This is the opposite point in the design space from van Herk: it rereads the
+/// overlapping window taps, but avoids all prefix/suffix scratch buffers and
+/// compares eight adjacent output columns per vector. Keep it tightly gated to
+/// 3x3 finite VALID windows where the extra reads stay cache-resident.
+#[allow(clippy::too_many_arguments)]
+fn direct_simd_rank2_maxmin_f64(
+    src: &[f64],
+    input_rows: usize,
+    input_cols: usize,
+    out_rows: usize,
+    out_cols: usize,
+    window_rows: usize,
+    window_cols: usize,
+    stride_rows: usize,
+    stride_cols: usize,
+    pad_rows: usize,
+    pad_cols: usize,
+    is_max: bool,
+) -> Option<Vec<f64>> {
+    use std::simd::Simd;
+    use std::simd::num::SimdFloat;
+
+    if stride_rows != 1
+        || stride_cols != 1
+        || pad_rows != 0
+        || pad_cols != 0
+        || out_rows == 0
+        || out_cols < 8
+        || window_rows != 3
+        || window_cols != 3
+        || out_rows + window_rows > input_rows + 1
+        || out_cols + window_cols > input_cols + 1
+        || src.len() != input_rows.checked_mul(input_cols)?
+        || !src.iter().all(|v| v.is_finite())
+    {
+        return None;
+    }
+
+    let init = if is_max {
+        f64::NEG_INFINITY
+    } else {
+        f64::INFINITY
+    };
+    let sop = |a: f64, b: f64| if is_max { a.max(b) } else { a.min(b) };
+    let vop = |a: Simd<f64, 8>, b: Simd<f64, 8>| {
+        if is_max { a.simd_max(b) } else { a.simd_min(b) }
+    };
+
+    let mut output = vec![init; out_rows * out_cols];
+    for orow in 0..out_rows {
+        let out_base = orow * out_cols;
+        let mut oc = 0usize;
+        while oc + 8 <= out_cols {
+            let mut acc = Simd::<f64, 8>::splat(init);
+            for dr in 0..window_rows {
+                let row_base = (orow + dr) * input_cols + oc;
+                for dc in 0..window_cols {
+                    let v = Simd::<f64, 8>::from_slice(&src[row_base + dc..row_base + dc + 8]);
+                    acc = vop(acc, v);
+                }
+            }
+            acc.copy_to_slice(&mut output[out_base + oc..out_base + oc + 8]);
+            oc += 8;
+        }
+        while oc < out_cols {
+            let mut acc = init;
+            for dr in 0..window_rows {
+                let row_base = (orow + dr) * input_cols + oc;
+                for dc in 0..window_cols {
+                    acc = sop(acc, src[row_base + dc]);
+                }
+            }
+            output[out_base + oc] = acc;
+            oc += 1;
+        }
+    }
+    Some(output)
+}
+
 /// Integer sibling of [`separable_reduce_window_rank2_maxmin_f64`] — block-structured van Herk for rank-2
 /// i64/i32 max/min pooling. SIMPLER than the float path: integer max/min is a total order (no NaN, no ±0
 /// sign ambiguity), so it is BIT-EXACT with plain `Ord::max`/`min` and no scalar fallback. i32 tensors are
@@ -9077,6 +9158,41 @@ fn eval_reduce_window(
                     dims: out_dims.to_vec(),
                 },
                 obits,
+            )
+            .map_err(EvalError::from)?,
+        ));
+    }
+
+    // Rank-2 f64 small-window direct SIMD path — hoisted ABOVE van Herk for the
+    // finite VALID case where avoiding the prefix/suffix scratch buffers can beat
+    // the lower-op-count separable pass.
+    if no_base_dilation
+        && no_window_dilation
+        && rank == 2
+        && matches!(reduce_op, "max" | "min")
+        && output_dtype == fj_core::DType::F64
+        && let Some(src) = reduce_window_dense_f64_view(tensor)
+        && let Some(values) = direct_simd_rank2_maxmin_f64(
+            src.as_ref(),
+            tensor.shape.dims[0] as usize,
+            tensor.shape.dims[1] as usize,
+            out_dims[0] as usize,
+            out_dims[1] as usize,
+            window_dims[0],
+            window_dims[1],
+            strides[0],
+            strides[1],
+            pad_lows[0],
+            pad_lows[1],
+            reduce_op == "max",
+        )
+    {
+        return Ok(Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: out_dims.clone(),
+                },
+                values,
             )
             .map_err(EvalError::from)?,
         ));
@@ -13605,6 +13721,53 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn direct_simd_rank2_3x3_maxmin_matches_naive_bits() {
+        let (rows, cols) = (19usize, 23usize);
+        let mut src: Vec<f64> = (0..rows * cols)
+            .map(|i| (((i * 1103515245usize + 12345) % 8191) as f64) * 0.03125 - 128.0)
+            .collect();
+        src[7] = -0.0;
+        src[41] = 0.0;
+        src[97] = -0.0;
+        let out_rows = rows - 2;
+        let out_cols = cols - 2;
+        let naive = |is_max: bool| -> Vec<f64> {
+            let init = if is_max {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            };
+            let mut out = Vec::with_capacity(out_rows * out_cols);
+            for r in 0..out_rows {
+                for c in 0..out_cols {
+                    let mut acc = init;
+                    for dr in 0..3 {
+                        for dc in 0..3 {
+                            let v = src[(r + dr) * cols + c + dc];
+                            acc = if is_max { acc.max(v) } else { acc.min(v) };
+                        }
+                    }
+                    out.push(acc);
+                }
+            }
+            out
+        };
+
+        for &is_max in &[true, false] {
+            let got = super::direct_simd_rank2_maxmin_f64(
+                &src, rows, cols, out_rows, out_cols, 3, 3, 1, 1, 0, 0, is_max,
+            )
+            .expect("3x3 valid finite input should use direct SIMD");
+            let want = naive(is_max);
+            assert_eq!(
+                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "direct SIMD 3x3 max/min must preserve scalar fold bits; is_max={is_max}"
+            );
         }
     }
 
