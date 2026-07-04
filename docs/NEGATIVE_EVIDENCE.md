@@ -16,6 +16,22 @@ than a code-path change. JAX's CPU Threefry uniform path remains a clean win sur
 counter-based generator; the slower normal/randint transform rows are separate RNG subcases and are not claimed
 by this entry.
 
+## 2026-07-04 - CLOSEOUT: f32 cumulative extrema axis1 are 2.5-2.8x faster than JAX; rekyb closed (ProudSalmon)
+
+Fresh strict-remote RCH Criterion proof for a different primitive family from sort_key_val and
+reduce_window SUM: `cummax`/`cummin` cumulative scans, worker `ovh-a`, `AGENT_NAME=ProudSalmon`.
+Agent Mail registration/reservation was attempted first, but the shared mail DB still refused writes with
+the corruption circuit breaker open; edit surface stayed to this ledger plus Beads closeout.
+
+- `cargo bench -p fj-lax --bench lax_baseline -- 'eval/cum(max|min)_4096x1024_f32_axis1' --sample-size 10 --warm-up-time 1 --measurement-time 2 --noplot`
+- `eval/cummax_4096x1024_f32_axis1`: fj-lax **1.5811ms** vs JAX **3.967491ms** = **2.51x FASTER**
+- `eval/cummin_4096x1024_f32_axis1`: fj-lax **1.5486ms** vs JAX **4.3833035ms** = **2.83x FASTER**
+
+This closes the stale `frankenjax-cummax-scan-max-cost-rekyb` premise: the previously weak trailing-axis
+f32 cumulative-extrema rows now measure as clear JAX wins on the retained per-crate bench. No source lever
+was needed; the prior f32-native scan attempt remains rejected, and the cumulative family should not be
+re-probed without a genuinely new scan-kernel idea.
+
 ## 2026-07-04 - CLOSEOUT: sort_key_val remains a 40x JAX/XLA-CPU win; s2yc8 closed (ProudSalmon)
 
 Fresh strict-remote RCH release proof for `frankenjax-sortkeyval-argsort-permute-s2yc8` on worker
