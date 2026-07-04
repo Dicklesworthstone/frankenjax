@@ -1150,6 +1150,10 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) = try_eval_top_level_entropy_2d_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_manhattan_distance_2d_f64(jaxpr, const_values, args) {
         return result;
     }
@@ -2822,6 +2826,93 @@ fn try_eval_top_level_kl_divergence_2d_f64(
     }
 
     let output = fj_lax::nn::kl_divergence_2d(p_v, q_v, rows, cols);
+    Some(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32],
+            },
+            output,
+        )
+        .map(Value::Tensor)
+        .map(|value| vec![value])
+        .map_err(EvalError::InvalidTensor)
+        .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for the row-wise Shannon entropy `-Σ p·log(p)` along the last axis
+/// (the information-theoretic entropy / negentropy regularizer): the 4-equation, ONE-input graph
+/// `Log(p) → Mul(p, ·) → ReduceSum(axis=1) → Neg`. One f64 [rows,cols] input, one [rows] output
+/// (rank-reducing). The general fuser cannot fuse it (`Log` ∉ `cheap_op` AND the reduction breaks the
+/// elementwise fuser), so the decomposed path materializes two full [rows,cols] intermediates
+/// (`log(p)`, `p·log(p)`). Fused via the row-parallel `entropy_2d`, whose index-order `-Σ p·ln(p)`
+/// matches the graph bit-for-bit (`Log` = the same `.ln()` the `Log` primitive dispatches); finite
+/// dense rank-2 f64 only, else falls through.
+fn try_eval_top_level_entropy_2d_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 1
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 4
+        || args.len() != 1
+    {
+        return None;
+    }
+
+    let p = jaxpr.invars[0];
+    let out = jaxpr.outvars[0];
+    let [log_eq, mul_eq, sum_eq, neg_eq] = jaxpr.equations.as_slice() else {
+        return None;
+    };
+
+    // log_p = Log(p)
+    let log_p = single_output_for_primitive(log_eq, Primitive::Log)?;
+    if log_eq.inputs.as_slice() != [Atom::Var(p)] {
+        return None;
+    }
+    // weighted = p * log_p (Mul commutative → either operand order)
+    let weighted = single_output_for_primitive(mul_eq, Primitive::Mul)?;
+    let mul_ok = matches!(
+        mul_eq.inputs.as_slice(),
+        [Atom::Var(x), Atom::Var(y)] if (*x == p && *y == log_p) || (*x == log_p && *y == p)
+    );
+    if !mul_ok {
+        return None;
+    }
+    // summed = ReduceSum(weighted, axis=1)
+    let summed = single_output_for_param_primitive(sum_eq, Primitive::ReduceSum)?;
+    if sum_eq.inputs.as_slice() != [Atom::Var(weighted)] || !axis1_reduce_params(&sum_eq.params) {
+        return None;
+    }
+    // out = Neg(summed)
+    let negated = single_output_for_primitive(neg_eq, Primitive::Neg)?;
+    if negated != out || neg_eq.inputs.as_slice() != [Atom::Var(summed)] {
+        return None;
+    }
+
+    let Value::Tensor(p_t) = &args[0] else {
+        return None;
+    };
+    if p_t.dtype != DType::F64 || p_t.shape.dims.len() != 2 {
+        return None;
+    }
+    let rows = p_t.shape.dims[0] as usize;
+    let cols = p_t.shape.dims[1] as usize;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+
+    let p_v = p_t.elements.as_f64_slice()?;
+    if !p_v.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::entropy_2d(p_v, rows, cols);
     Some(
         TensorValue::new_f64_values(
             Shape {
@@ -21515,6 +21606,95 @@ mod tests {
             .expect("nonfinite manhattan falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite manhattan");
+        assert_eq!(through_eval, through_generic);
+    }
+
+    fn make_entropy_2d_jaxpr() -> Jaxpr {
+        let p = VarId(1);
+        let log_p = VarId(2);
+        let weighted = VarId(3);
+        let summed = VarId(4);
+        let out = VarId(5);
+        let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+        Jaxpr::new(
+            vec![p],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Log,
+                    inputs: smallvec![Atom::Var(p)],
+                    outputs: smallvec![log_p],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(p), Atom::Var(log_p)],
+                    outputs: smallvec![weighted],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(weighted)],
+                    outputs: smallvec![summed],
+                    params: reduce_axis1,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(summed)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn eval_top_level_entropy_2d_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        // entropy needs positive p (log p) for finite outputs; use strictly-positive data.
+        let p_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.29).sin() * 0.4 + 1.3)
+            .collect();
+        let p = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                p_data,
+            )
+            .expect("p input"),
+        );
+        let jaxpr = make_entropy_2d_jaxpr();
+
+        let fast = eval_jaxpr(&jaxpr, std::slice::from_ref(&p)).expect("fast entropy");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[p]).expect("generic entropy");
+        assert_eq!(fast, generic);
+
+        let mut p_nonfinite: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.01 + 1.0).collect();
+        p_nonfinite[cols + 1] = f64::NAN;
+        let p_nf = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                p_nonfinite,
+            )
+            .expect("nonfinite p"),
+        );
+        let through_eval = eval_jaxpr(&jaxpr, std::slice::from_ref(&p_nf))
+            .expect("nonfinite entropy falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[p_nf]).expect("generic nonfinite entropy");
         assert_eq!(through_eval, through_generic);
     }
 

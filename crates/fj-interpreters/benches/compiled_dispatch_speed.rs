@@ -731,6 +731,54 @@ fn build_manhattan_distance_2d_jaxpr() -> Jaxpr {
     )
 }
 
+fn build_entropy_2d_jaxpr() -> Jaxpr {
+    let p = VarId(1);
+    let log_p = VarId(2);
+    let weighted = VarId(3);
+    let summed = VarId(4);
+    let out = VarId(5);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    Jaxpr::new(
+        vec![p],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Log,
+                inputs: smallvec::smallvec![Atom::Var(p)],
+                outputs: smallvec::smallvec![log_p],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(p), Atom::Var(log_p)],
+                outputs: smallvec::smallvec![weighted],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(weighted)],
+                outputs: smallvec::smallvec![summed],
+                params: reduce_axis1,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec::smallvec![Atom::Var(summed)],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_kl_divergence_2d_jaxpr() -> Jaxpr {
     let p = VarId(1);
     let q = VarId(2);
@@ -1581,6 +1629,16 @@ fn eval_manhattan_distance_2d_decomposed(a: &Value, b: &Value) -> Value {
     .expect("sum abs")
 }
 
+fn eval_entropy_2d_decomposed(p: &Value) -> Value {
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let empty = BTreeMap::new();
+    let log_p = eval_primitive(Primitive::Log, std::slice::from_ref(p), &empty).expect("log p");
+    let weighted = eval_primitive(Primitive::Mul, &[p.clone(), log_p], &empty).expect("p*log");
+    let summed = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&weighted), &reduce_axis1)
+        .expect("sum");
+    eval_primitive(Primitive::Neg, std::slice::from_ref(&summed), &empty).expect("neg")
+}
+
 fn eval_kl_divergence_2d_decomposed(p: &Value, q: &Value) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let empty = BTreeMap::new();
@@ -2266,6 +2324,17 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     group.bench_function("manhattan_distance_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| {
             black_box(eval_jaxpr(black_box(&manhattan_jaxpr), black_box(&manhattan_args)).unwrap())
+        })
+    });
+    let entropy_jaxpr = build_entropy_2d_jaxpr();
+    group.bench_function("entropy_2d/orig_decomposed_4096x1024", |b| {
+        b.iter(|| black_box(eval_entropy_2d_decomposed(black_box(&softmax_input))))
+    });
+    group.bench_function("entropy_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(black_box(&entropy_jaxpr), std::slice::from_ref(&softmax_input)).unwrap(),
+            )
         })
     });
     let kl_jaxpr = build_kl_divergence_2d_jaxpr();

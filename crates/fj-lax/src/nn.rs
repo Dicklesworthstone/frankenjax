@@ -785,6 +785,60 @@ pub fn kl_divergence_2d(p: &[f64], q: &[f64], rows: usize, cols: usize) -> Vec<f
     result
 }
 
+/// Shannon entropy of a single row, `-Σ p·log(p)`, bit-identical to the decomposed
+/// `Log → Mul(p,·) → ReduceSum → Neg` graph: an index-order sum of `p[i]·ln(p[i])`, negated.
+/// `Log` = the same `.ln()` the `Log` primitive dispatches (scalar-bit-identical). Matches the NAIVE
+/// graph (NOT the `xlogy` special case), so `p=0` propagates `0·(-inf)=NaN` exactly as the graph does.
+fn entropy_row(p: &[f64]) -> f64 {
+    let mut sum = 0.0;
+    for &pv in p {
+        sum += pv * pv.ln();
+    }
+    -sum
+}
+
+/// Shannon entropy `-Σ p·log(p)` along the last axis of a 2D array, one scalar per row (the
+/// information-theoretic entropy / negentropy regularizer). ROW-PARALLEL and BIT-IDENTICAL to the
+/// decomposed `Log → Mul → ReduceSum → Neg` graph (index-order reduction via [`entropy_row`]); rows
+/// are independent so only the outer loop is threaded, above the `softmax_2d_thread_count` work gate.
+/// Used by the interpreter entropy superinstruction.
+#[must_use]
+pub fn entropy_2d(p: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let _ = checked_2d_row_major_len("2D entropy", p, rows, cols);
+    let mut result = vec![0.0; rows];
+    if cols == 0 || rows == 0 {
+        return result;
+    }
+    let threads = softmax_2d_thread_count(rows, rows * cols);
+    if threads <= 1 {
+        for (i, slot) in result.iter_mut().enumerate() {
+            let start = i * cols;
+            *slot = entropy_row(&p[start..start + cols]);
+        }
+        return result;
+    }
+
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut out_rest: &mut [f64] = &mut result;
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let row_count = rows_per.min(rows - row0);
+            let (out_block, out_tail) = out_rest.split_at_mut(row_count);
+            out_rest = out_tail;
+            let p_block = &p[row0 * cols..(row0 + row_count) * cols];
+            row0 += row_count;
+            scope.spawn(move || {
+                for (k, out_slot) in out_block.iter_mut().enumerate() {
+                    let start = k * cols;
+                    *out_slot = entropy_row(&p_block[start..start + cols]);
+                }
+            });
+        }
+    });
+    result
+}
+
 /// Manhattan (L1) distance of a single pair of rows, `Σ|a-b|`, bit-identical to the decomposed
 /// `Sub -> Abs -> ReduceSum` graph: an index-order sum of `(a[i]-b[i]).abs()`.
 fn manhattan_distance_row(a: &[f64], b: &[f64]) -> f64 {

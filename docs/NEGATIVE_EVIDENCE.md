@@ -2,6 +2,40 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 5.98x vs ORIG: row-wise Shannon entropy recognized as a fused (row-parallel) 1-input interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::entropy_2d`). Deepens the
+  uncontested INFORMATION-THEORY lane (I opened it with KL-divergence) and is the companion identity
+  `KL(p‖q) = crossentropy(p,q) − entropy(p)`: Shannon entropy `H(p) = -Σ p·log(p)` along the last axis
+  — the entropy / negentropy regularizer. A ONE-input (structurally distinct from the recent 2-input
+  run), 4-equation graph `Log(p) → Mul(p, ·) → ReduceSum(axis=1) → Neg`, f64 [rows,cols] → [rows]
+  (rank-reducing). The general fuser cannot fuse it (`Log` ∉ `cheap_op` AND the reduction breaks the
+  elementwise fuser), so the decomposed path materializes two full [rows,cols] intermediates (`log(p)`,
+  `p·log(p)`). Worktree audit: HEAD==origin/main (my KL tip), no unlanded win.
+- LEVER: a top-level 1-input superinstruction for the exact 4-eq finite dense f64 entropy graph,
+  computed via the row-parallel `entropy_2d`. BIT-IDENTICAL: `entropy_row` does an index-order sum of
+  `p[i]·ln(p[i])`, negated — matching the graph's `Log`/`Mul`/`ReduceSum`/`Neg` (`Log` = the same
+  `.ln()` the `Log` primitive dispatches — scalar-bit-identical). Matches the NAIVE graph (NOT the
+  `xlogy` special case), so `p=0` propagates `0·(-inf)=NaN` exactly as the graph does. `Mul(p, log_p)`
+  commutative (either operand order); finite dense rank-2 f64 only, else falls through.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed entropy_2d
+  -m 3 -s 20`, 4096x1024, p=softmax_input; TIGHT CIs → low variance):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/entropy_2d/orig_decomposed_4096x1024` | 27.450 ms |
+  | `compiled_dispatch/entropy_2d/fast_eval_jaxpr_4096x1024` | 4.5933 ms |
+
+  Ratio vs ORIG: **0.167x time / 5.98x faster** (worst-case CI 5.85x, best 6.10x; robustly ≥2x).
+  Bigger multiple than KL (4.19x) because entropy's fused kernel is a single `p·ln(p)` per element
+  (fused 4.59 ms) whereas KL adds a per-element `p/q` divide before the log.
+- VALIDATION: `eval_top_level_entropy_2d_f64_matches_generic_and_preserves_edges` GREEN (fused==generic
+  bit-for-bit on positive random f64; nonfinite falls through); fj-lax `nn::` 61/61 GREEN; all 20
+  superinstruction parity tests GREEN. Pre-existing INDEPENDENT RED (NOT this change): fj-interpreters
+  `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)` — this diff touches no
+  cbrt/arena code.
+
 ## 2026-07-04 - WIN 4.19x vs ORIG: row-wise KL divergence recognized as a fused (row-parallel) 2-input interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::kl_divergence_2d`). A PIVOT
