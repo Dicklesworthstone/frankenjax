@@ -9364,10 +9364,15 @@ fn extremum_along_axis(
         if axis_stride == 1 {
             // Contiguous i64 argmax (innermost axis): thread over the independent
             // output rows, each scanning a contiguous i64 block. Bit-identical.
-            let idx = parallel_argmax_fill(outer_count, total, |outer| {
-                let base = outer * axis_dim;
-                arg_extreme_i64_contiguous(&values[base..base + axis_dim], find_max) as i64
-            });
+            // outer_count == 1 (full reduction) threads WITHIN the single row instead.
+            let idx = if outer_count == 1 {
+                vec![threaded_arg_extreme_i64_contiguous(values, find_max) as i64]
+            } else {
+                parallel_argmax_fill(outer_count, total, |outer| {
+                    let base = outer * axis_dim;
+                    arg_extreme_i64_contiguous(&values[base..base + axis_dim], find_max) as i64
+                })
+            };
             if result_shape.dims.is_empty() {
                 return Ok(Value::Scalar(Literal::I64(idx[0])));
             }
@@ -9418,10 +9423,15 @@ fn extremum_along_axis(
         if axis_stride == 1 {
             // Contiguous f32 argmax-over-logits (JAX's default float): thread over the
             // independent output rows. Bit-identical to the serial loop.
-            let idx = parallel_argmax_fill(outer_count, total, |outer| {
-                let base = outer * axis_dim;
-                arg_extreme_f32_contiguous_simd(&values[base..base + axis_dim], find_max) as i64
-            });
+            // outer_count == 1 (full reduction) threads WITHIN the single row instead.
+            let idx = if outer_count == 1 {
+                vec![threaded_arg_extreme_f32_contiguous(values, find_max) as i64]
+            } else {
+                parallel_argmax_fill(outer_count, total, |outer| {
+                    let base = outer * axis_dim;
+                    arg_extreme_f32_contiguous_simd(&values[base..base + axis_dim], find_max) as i64
+                })
+            };
             // Rank-0 result (1D input -> scalar) must return Value::Scalar to match
             // the finalization contract below; a rank-0 tensor breaks as_i64_scalar.
             if result_shape.dims.is_empty() {
@@ -13059,6 +13069,104 @@ fn threaded_arg_extreme_f64_contiguous(values: &[f64], find_max: bool) -> usize 
             best_idx = gi;
             seen_nan = true;
         } else if first {
+            best_idx = gi;
+            best_val = v;
+            first = false;
+        } else if (find_max && v > best_val) || (!find_max && v < best_val) {
+            best_idx = gi;
+            best_val = v;
+        }
+    }
+    best_idx
+}
+
+/// f32 sibling of [`threaded_arg_extreme_f64_contiguous`] — the argmax-over-logits
+/// full-reduction (JAX's default float). Same partition/combine (sticky first-NaN |
+/// strictly-better value | lower global index); f32 compare is order-preserving with
+/// the scalar `arg_extreme_float(|i| f64::from(v))` path, so BIT-IDENTICAL. Proven by
+/// `threaded_arg_extreme_f32_matches_serial`.
+fn threaded_arg_extreme_f32_contiguous(values: &[f32], find_max: bool) -> usize {
+    let n = values.len();
+    let threads = crate::arithmetic::work_scaled_threads(n);
+    if n < crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN || threads <= 1 {
+        return arg_extreme_f32_contiguous_simd(values, find_max);
+    }
+    let chunk = n.div_ceil(threads);
+    let partials: Vec<(usize, usize)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = values
+            .chunks(chunk)
+            .enumerate()
+            .map(|(ci, cv)| {
+                scope.spawn(move || (ci * chunk, arg_extreme_f32_contiguous_simd(cv, find_max)))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| match handle.join() {
+                Ok(partial) => partial,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
+    });
+    let mut best_idx = 0usize;
+    let mut best_val = 0.0f32;
+    let mut seen_nan = false;
+    let mut first = true;
+    for (start, local) in partials {
+        if seen_nan {
+            break;
+        }
+        let gi = start + local;
+        let v = values[gi];
+        if v.is_nan() {
+            best_idx = gi;
+            seen_nan = true;
+        } else if first {
+            best_idx = gi;
+            best_val = v;
+            first = false;
+        } else if (find_max && v > best_val) || (!find_max && v < best_val) {
+            best_idx = gi;
+            best_val = v;
+        }
+    }
+    best_idx
+}
+
+/// i64 sibling of [`threaded_arg_extreme_f64_contiguous`]. No NaN, so the combine is
+/// just (strictly-better value | lower global index) with EXACT i64 compare (no lossy
+/// f64 widen). BIT-IDENTICAL to `arg_extreme_i64_contiguous` for any partition — proven
+/// by `threaded_arg_extreme_i64_matches_serial`.
+fn threaded_arg_extreme_i64_contiguous(values: &[i64], find_max: bool) -> usize {
+    let n = values.len();
+    let threads = crate::arithmetic::work_scaled_threads(n);
+    if n < crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN || threads <= 1 {
+        return arg_extreme_i64_contiguous(values, find_max);
+    }
+    let chunk = n.div_ceil(threads);
+    let partials: Vec<(usize, usize)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = values
+            .chunks(chunk)
+            .enumerate()
+            .map(|(ci, cv)| {
+                scope.spawn(move || (ci * chunk, arg_extreme_i64_contiguous(cv, find_max)))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| match handle.join() {
+                Ok(partial) => partial,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
+    });
+    let mut best_idx = 0usize;
+    let mut best_val = values[0];
+    let mut first = true;
+    for (start, local) in partials {
+        let gi = start + local;
+        let v = values[gi];
+        if first {
             best_idx = gi;
             best_val = v;
             first = false;
@@ -29047,6 +29155,72 @@ mod tests {
     }
 
     #[test]
+    fn threaded_arg_extreme_f32_matches_serial() {
+        let min_par = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN;
+        for &n in &[min_par + 1, min_par + 9_999, min_par * 2 + 333] {
+            let mut data: Vec<f32> = (0..n)
+                .map(|i| match i % 4000 {
+                    0 => 6.25f32,
+                    1 => -6.25f32,
+                    2 => f32::INFINITY,
+                    3 => f32::NEG_INFINITY,
+                    _ => ((i as f32) * 1.000_53).sin() * 8.0 - (i as f32) * 1e-6,
+                })
+                .collect();
+            for &find_max in &[true, false] {
+                assert_eq!(
+                    threaded_arg_extreme_f32_contiguous(&data, find_max),
+                    arg_extreme_f32_contiguous_simd(&data, find_max),
+                    "f32 no-nan mismatch n={n} find_max={find_max}"
+                );
+            }
+            for &nan_at in &[0usize, 5, n / 3, n - 7, n - 1] {
+                let mut d2 = data.clone();
+                d2[nan_at] = f32::NAN;
+                for &find_max in &[true, false] {
+                    assert_eq!(
+                        threaded_arg_extreme_f32_contiguous(&d2, find_max),
+                        arg_extreme_f32_contiguous_simd(&d2, find_max),
+                        "f32 nan@{nan_at} mismatch n={n} find_max={find_max}"
+                    );
+                }
+            }
+            data[n / 4] = f32::NAN;
+            data[n / 2] = f32::NAN;
+            for &find_max in &[true, false] {
+                assert_eq!(
+                    threaded_arg_extreme_f32_contiguous(&data, find_max),
+                    arg_extreme_f32_contiguous_simd(&data, find_max),
+                    "f32 two-nan mismatch n={n} find_max={find_max}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn threaded_arg_extreme_i64_matches_serial() {
+        let min_par = crate::arithmetic::CHEAP_BINARY_PARALLEL_MIN;
+        for &n in &[min_par + 1, min_par + 7_777, min_par * 2 + 91] {
+            // Include duplicated extrema (first-occurrence ties) and full i64 range.
+            let data: Vec<i64> = (0..n)
+                .map(|i| match i % 3000 {
+                    0 => i64::MAX,
+                    1 => i64::MIN,
+                    2 => 1_000_000,
+                    _ => ((i as i64) * 2_654_435_761).wrapping_rem(1_000_003) - 500_000,
+                })
+                .collect();
+            for &find_max in &[true, false] {
+                assert_eq!(
+                    threaded_arg_extreme_i64_contiguous(&data, find_max),
+                    arg_extreme_i64_contiguous(&data, find_max),
+                    "i64 mismatch n={n} find_max={find_max}"
+                );
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "perf benchmark; run explicitly"]
     fn bench_argmax_full_reduce_threaded_vs_serial() {
         use std::time::Instant;
@@ -29068,6 +29242,20 @@ mod tests {
         });
         time_it("f64_16M_threaded", &|| {
             threaded_arg_extreme_f64_contiguous(&data, true)
+        });
+        let dataf32: Vec<f32> = (0..n).map(|i| 0.5 + (i % 9973) as f32 * 1e-4).collect();
+        time_it("f32_16M_serial", &|| {
+            arg_extreme_f32_contiguous_simd(&dataf32, true)
+        });
+        time_it("f32_16M_threaded", &|| {
+            threaded_arg_extreme_f32_contiguous(&dataf32, true)
+        });
+        let datai64: Vec<i64> = (0..n).map(|i| (i % 9973) as i64).collect();
+        time_it("i64_16M_serial", &|| {
+            arg_extreme_i64_contiguous(&datai64, true)
+        });
+        time_it("i64_16M_threaded", &|| {
+            threaded_arg_extreme_i64_contiguous(&datai64, true)
         });
     }
 

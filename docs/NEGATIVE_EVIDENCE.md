@@ -2,6 +2,30 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN: argmax/argmin full-reduction THREADED extended to f32 (3.62x) + i64 (1.93x), bit-identical (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. File: `tensor_ops.rs`. Follow-up to the same-day
+  f64 argmax full-reduction win (`threaded_arg_extreme_f64_contiguous`, 1.96x): extends
+  the identical single-long-row threading lever to the two remaining common dtypes.
+- `threaded_arg_extreme_f32_contiguous` (f32 logits — JAX's default float, the hot
+  argmax-over-logits case) and `threaded_arg_extreme_i64_contiguous` (exact i64 compare,
+  no NaN). Both split the single row (`outer_count == 1`) into `work_scaled_threads`
+  disjoint chunks, run the existing per-dtype scan per chunk, and combine winners in
+  ascending global-index order (f32: sticky first-NaN | strictly-better | lower index;
+  i64: strictly-better | lower index). BIT-IDENTICAL for any partition.
+- MEASURED (rch, same-invocation min-of-8 A/B, `--test-threads=1` contention-free,
+  `bench_argmax_full_reduce_threaded_vs_serial`, 16M):
+  - **f32: serial 5.186ms -> threaded 1.431ms = 3.62x** (f32 is 64MB traffic, threads
+    scale better than the 128MB f64/i64).
+  - **i64: serial 5.679ms -> threaded 2.947ms = 1.93x.**
+  - f64 (already committed): threaded 3.077ms on this worker (earlier isolated 1.96x).
+- Correctness: `threaded_arg_extreme_f32_matches_serial` + `threaded_arg_extreme_i64_matches_serial`
+  (ties, +-inf, +-0, NaN at first/mid/tail/two-NaN for f32; i64::MAX/MIN + dup extrema
+  for i64) + the f64 test + 22 existing argmax/argmin/extremum tests all GREEN
+  (`4 passed; 0 failed` isolated). EV: KEEP. Single-row full-reduce argmax family now
+  fully threaded for f64/f32/i64; bf16/f16 single-row full-reduce remains serial (niche —
+  half-float logits are almost always multi-row [batch, vocab], already threaded).
+
 ## 2026-07-04 - WIN 1.96x: argmax/argmin full-reduction (single long axis) THREADED — 16M f64 10.13ms -> 5.18ms, bit-identical (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. File: `tensor_ops.rs`. Remote via rch
