@@ -1000,10 +1000,59 @@ pub fn random_gamma(key: PRNGKey, count: usize, shape_param: f64) -> Vec<f64> {
     // `_gamma_one` over `split(key, count)`). This replaces the previous non-JAX
     // shared-pool heuristic (10x-oversample + global reject loop) that diverged
     // element-wise. Draws use fj's JAX-f32-matching uniform/normal + `random_split_n`.
-    random_split_n(key, count)
-        .into_iter()
-        .map(|k| gamma_one(k, shape_param, false))
-        .collect()
+    gamma_one_map_parallel(random_split_n(key, count), shape_param, false)
+}
+
+/// Minimum element count before the per-element gamma/beta rejection sampler fans out
+/// across threads. `gamma_one` runs a Marsaglia-Tsang accept/reject loop (each iteration
+/// draws a fresh normal — itself a threefry block + `erf_inv` — plus a uniform), so it is
+/// ~1-2 orders of magnitude costlier than the inverse-transform maps gated at `1<<18`; a
+/// much lower threshold still keeps every worker busy. Below this the serial map wins.
+const GAMMA_PARALLEL_MIN_ELEMS: usize = 1 << 13;
+
+/// Thread the independent-per-element `gamma_one` draw over its already-split subkeys.
+/// Output `i` depends ONLY on `keys[i]` (JAX splits one subkey per element, no shared
+/// state), so any partition is BIT-IDENTICAL to
+/// `keys.into_iter().map(|k| gamma_one(k, alpha, log_space)).collect()`
+/// (guarded by `gamma_map_parallel_matches_serial_bits`). `FJ_GAMMA_SERIAL` forces the
+/// serial reference for a same-invocation A/B.
+fn gamma_one_map_parallel(keys: Vec<PRNGKey>, alpha: f64, log_space: bool) -> Vec<f64> {
+    let count = keys.len();
+    let threads =
+        if count >= GAMMA_PARALLEL_MIN_ELEMS && std::env::var_os("FJ_GAMMA_SERIAL").is_none() {
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1)
+                .min(count)
+        } else {
+            1
+        };
+    if threads <= 1 {
+        return keys
+            .into_iter()
+            .map(|k| gamma_one(k, alpha, log_space))
+            .collect();
+    }
+    let mut out = vec![0.0_f64; count];
+    let chunk = count.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let keys_ref = &keys;
+        let mut rest: &mut [f64] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < count {
+            let len = chunk.min(count - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                for (j, slot) in blk.iter_mut().enumerate() {
+                    *slot = gamma_one(keys_ref[s + j], alpha, log_space);
+                }
+            });
+            start += len;
+        }
+    });
+    out
 }
 
 /// Faithful port of JAX's `_gamma_one` (jax/_src/random.py): Marsaglia-Tsang with
@@ -1070,14 +1119,8 @@ pub fn random_beta(key: PRNGKey, count: usize, a: f64, b: f64) -> Vec<f64> {
     // (exp(log_g - log_max)). Using loggamma (not plain gamma) + log-max is what makes
     // this match JAX element-for-element, incl. small a/b where plain gamma underflows.
     let (k1, k2) = random_split(key);
-    let log_ga: Vec<f64> = random_split_n(k1, count)
-        .into_iter()
-        .map(|k| gamma_one(k, a, true))
-        .collect();
-    let log_gb: Vec<f64> = random_split_n(k2, count)
-        .into_iter()
-        .map(|k| gamma_one(k, b, true))
-        .collect();
+    let log_ga: Vec<f64> = gamma_one_map_parallel(random_split_n(k1, count), a, true);
+    let log_gb: Vec<f64> = gamma_one_map_parallel(random_split_n(k2, count), b, true);
     (0..count)
         .map(|i| {
             let log_max = log_ga[i].max(log_gb[i]);
@@ -1444,6 +1487,81 @@ mod tests {
         println!(
             "fj-lax random_uniform f64 16M: {:.3}ms | JAX(f32)=112.0ms",
             b * 1e3
+        );
+    }
+
+    // Threaded gamma/beta rejection sampler must be BIT-for-bit identical to the serial map.
+    // Each element draws from its own split subkey, so any thread partition preserves per-element
+    // results; RNG parity with JAX is absolute, so any divergence is a hard failure.
+    #[test]
+    fn gamma_map_parallel_matches_serial_bits() {
+        let count = GAMMA_PARALLEL_MIN_ELEMS + 777; // above threshold, not a multiple of thread count
+        for &alpha in &[0.4_f64, 1.0, 2.5, 7.3] {
+            for &log_space in &[false, true] {
+                let keys = random_split_n(random_key((alpha * 10.0) as u64 + 1), count);
+                let serial: Vec<f64> = keys
+                    .iter()
+                    .map(|&k| gamma_one(k, alpha, log_space))
+                    .collect();
+                let parallel = gamma_one_map_parallel(keys, alpha, log_space);
+                assert_eq!(parallel.len(), count);
+                for (i, (p, s)) in parallel.iter().zip(&serial).enumerate() {
+                    assert_eq!(
+                        p.to_bits(),
+                        s.to_bits(),
+                        "gamma_one mismatch at {i} alpha={alpha} log_space={log_space}"
+                    );
+                }
+            }
+        }
+    }
+
+    // Rejection samplers vs JAX 0.10.2 CPU (jaxvenv, jit'd, min-of-7, 1M): gamma(2.5)=924ms,
+    // gamma(0.4)=1226ms, beta(2,3)=1341ms — XLA-CPU cannot vectorize NOR thread the per-element
+    // Marsaglia-Tsang accept/reject loop. fj threads it (bit-identical). Same-invocation serial A/B.
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_random_gamma_beta_vs_jax() {
+        use std::time::Instant;
+        let n = 1_usize << 20;
+        let key = random_key(7);
+        let best = |f: &dyn Fn()| -> f64 {
+            f();
+            let mut b = f64::MAX;
+            for _ in 0..7 {
+                let s = Instant::now();
+                f();
+                b = b.min(s.elapsed().as_secs_f64());
+            }
+            b
+        };
+        // Serial reference: identical work to random_gamma minus the thread fan-out.
+        let g25_ser = best(&|| {
+            let out: Vec<f64> = random_split_n(key, n)
+                .into_iter()
+                .map(|k| gamma_one(k, 2.5, false))
+                .collect();
+            std::hint::black_box(out);
+        });
+        let g25_thr = best(&|| {
+            std::hint::black_box(random_gamma(key, n, 2.5));
+        });
+        let g04_thr = best(&|| {
+            std::hint::black_box(random_gamma(key, n, 0.4));
+        });
+        let beta_thr = best(&|| {
+            std::hint::black_box(random_beta(key, n, 2.0, 3.0));
+        });
+        println!(
+            "[rejection samplers 1M vs JAX] gamma(2.5): serial={:.1}ms threaded={:.1}ms ({:.2}x self | JAX 924, {:.1}x) | gamma(0.4) threaded={:.1}ms (JAX 1226, {:.1}x) | beta(2,3) threaded={:.1}ms (JAX 1341, {:.1}x)",
+            g25_ser * 1e3,
+            g25_thr * 1e3,
+            g25_ser / g25_thr,
+            924.0 / (g25_thr * 1e3),
+            g04_thr * 1e3,
+            1226.0 / (g04_thr * 1e3),
+            beta_thr * 1e3,
+            1341.0 / (beta_thr * 1e3),
         );
     }
 
