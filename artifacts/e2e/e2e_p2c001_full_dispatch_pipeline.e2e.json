@@ -3,21 +3,21 @@
   "scenario_id": "e2e_p2c001_full_dispatch_pipeline",
   "test_id": "e2e::e2e_p2c001_full_dispatch_pipeline",
   "packet_id": "P2C-001",
-  "fixture_id": "2e57fb0b2c791d7076717759bd4eb0eb9caf13f788ab5afd9c0d1f3fae2d57f8",
+  "fixture_id": "bb96cf41a0b59ec521c1ce00eab5a8f1db7c3f4f297d5e5652a8e91be9fc8fb7",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1781687598817,
+  "ts_utc_unix_ms": 1783184578697,
   "env": {
     "arch": "x86_64",
     "os": "linux",
     "rust_toolchain": "nightly-x86_64-unknown-linux-gnu"
   },
   "artifact_refs": [
-    "/data/projects/frankenjax/crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json"
+    "/data/projects/.scratch/frankenjax-cod-cosine-20260704Tdig/crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json"
   ],
   "replay_command": "cargo test -p fj-conformance --test e2e -- e2e_p2c001_full_dispatch_pipeline --exact --nocapture",
   "input_capture": {
-    "fixture_path": "/data/projects/frankenjax/crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json",
+    "fixture_path": "/data/projects/.scratch/frankenjax-cod-cosine-20260704Tdig/crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json",
     "strict_mode": true
   },
   "intermediate_states": [
@@ -42,6 +42,6 @@
     "total_cases": 613
   },
   "result": "pass",
-  "duration_ms": 12,
+  "duration_ms": 15,
   "details": null
 }
