@@ -2,6 +2,41 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 5.59x vs ORIG: SiLU / swish activation graph recognized as a fused (threaded) interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (reuses `fj-lax::nn::silu`). Genuinely different
+  primitive from the shipped log-sigmoid/GELU/normalization/loss macro-ops: `jax.nn.silu(x)` =
+  `jax.nn.swish(x)` = `x·sigmoid(x)` = `x / (1 + exp(-x))`, THE ubiquitous modern gated-MLP activation
+  (SwiGLU in LLaMA/PaLM/Mixtral). A PURE-ELEMENTWISE 4-equation chain `Neg(x) → Exp → Add(1, ·) →
+  Div(x, ·)`. Exp-ONLY (safe bits — `eval_exp` is proven scalar-bit-identical; deliberately avoids the
+  unverified SIMD `tanh_f64x8`). The general elementwise fuser cannot fuse it because `Exp` is not a
+  `CheapOp` (`cheap_op` = Add/Sub/Mul/Div/Neg/Max/Min/Abs only), so the decomposed path breaks at Exp
+  and materializes 4 intermediate Vecs. Worktree audit: HEAD==origin/main, no unlanded win.
+- LEVER: a top-level superinstruction for the exact 4-equation finite dense f64 SiLU graph, computed in
+  one threaded `nn::silu` pass. BIT-IDENTICAL to the generic path with NO new kernel: the pre-existing
+  `nn::silu` already computes `v / (1.0 + (-v).exp())`, matching the graph's exact `Div(x, Add(1,
+  Exp(Neg(x))))` grouping. `Div` order ENFORCED in the recognizer (non-commutative — numerator must be
+  the input `x`); `Add(1, e)` commutative → order-agnostic bits; constant `1.0` matched by `to_bits`.
+  Shape-agnostic (elementwise); finite dense f64 only, else falls through.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed silu`, 4096x1024).
+  The jax-cc worker is contended so absolute ms carry run-to-run variance; two runs bracket the ratio:
+
+  | run | orig_decomposed median | fast_eval_jaxpr median | ratio |
+  | --- | ---: | ---: | ---: |
+  | contended (`-m 2 -s 10`) | 96.922 ms | 29.970 ms | 3.23x |
+  | clean (`-m 3 -s 20`, tight CIs 10.4-10.7 ms fast) | 58.785 ms | 10.523 ms | **5.59x** |
+
+  Fused vs ORIG: **~0.18x time / 5.59x faster** (conservative contended floor 3.23x; robustly ≥2x
+  either way). The fast-side ~10.5 ms tight-CI reading is the trustworthy anchor. Fewer transcendentals
+  than log_sigmoid (one Exp vs Exp+Log) so a smaller multiple than log_sigmoid's 8.70x, but still a
+  clean 4-op dispatch+materialization saving.
+- VALIDATION: `eval_top_level_silu_f64_matches_generic_and_preserves_edges` GREEN (fused==generic
+  bit-for-bit on random f64; nonfinite falls through); all 9 superinstruction parity tests GREEN. Pre-
+  existing INDEPENDENT RED (NOT this additive change): fj-interpreters
+  `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)` f64 — this diff touches no
+  cbrt/arena code.
+
 ## 2026-07-04 - WIN 8.70x vs ORIG: log-sigmoid activation graph recognized as a fused (threaded) interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ `fj-lax::nn::log_sigmoid_direct`). Genuinely different

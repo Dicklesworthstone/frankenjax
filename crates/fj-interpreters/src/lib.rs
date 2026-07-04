@@ -1129,6 +1129,10 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) = try_eval_top_level_silu_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_scalar_half_arith(jaxpr, const_values, args) {
         return result;
     }
@@ -2100,6 +2104,79 @@ fn try_eval_top_level_log_sigmoid_f64(
     }
 
     let output = fj_lax::nn::log_sigmoid_direct(values);
+    Some(
+        TensorValue::new_f64_values(input.shape.clone(), output)
+            .map(Value::Tensor)
+            .map(|value| vec![value])
+            .map_err(EvalError::InvalidTensor)
+            .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for the SiLU / swish activation graph `x * sigmoid(x)` =
+/// `x / (1 + exp(-x))` (`jax.nn.silu` / `jax.nn.swish`): the 4-equation elementwise chain
+/// `Neg(x) → Exp → Add(1, ·) → Div(x, ·)`. Pure elementwise (shape-agnostic); the general fuser
+/// cannot fuse it because `Exp` is not a `CheapOp`. Finite dense f64 only, else falls through.
+/// Bit-identical: `fj_lax::nn::silu` computes `v / (1.0 + (-v).exp())`, matching the graph's exact
+/// `Div(x, Add(1, Exp(Neg(x))))` grouping (`Div` order enforced — non-commutative; `Add` order-
+/// agnostic; `exp` bit-identical to the `Exp` primitive per the softmax superinstructions).
+fn try_eval_top_level_silu_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 1
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 4
+        || args.len() != 1
+    {
+        return None;
+    }
+
+    let x = jaxpr.invars[0];
+    let out = jaxpr.outvars[0];
+    let [neg_eq, exp_eq, add_eq, div_eq] = jaxpr.equations.as_slice() else {
+        return None;
+    };
+
+    let nx = single_output_for_primitive(neg_eq, Primitive::Neg)?;
+    if neg_eq.inputs.as_slice() != [Atom::Var(x)] {
+        return None;
+    }
+    let e = single_output_for_primitive(exp_eq, Primitive::Exp)?;
+    if exp_eq.inputs.as_slice() != [Atom::Var(nx)] {
+        return None;
+    }
+    let one_plus = single_output_for_primitive(add_eq, Primitive::Add)?;
+    let add_const = match add_eq.inputs.as_slice() {
+        [Atom::Var(v), atom] if *v == e => f64_literal(atom),
+        [atom, Atom::Var(v)] if *v == e => f64_literal(atom),
+        _ => None,
+    };
+    if add_const?.to_bits() != 1.0_f64.to_bits() {
+        return None;
+    }
+    // `Div` is non-commutative — the numerator must be the input `x`, denominator `1 + exp(-x)`.
+    let quotient = single_output_for_primitive(div_eq, Primitive::Div)?;
+    if quotient != out || div_eq.inputs.as_slice() != [Atom::Var(x), Atom::Var(one_plus)] {
+        return None;
+    }
+
+    let Value::Tensor(input) = &args[0] else {
+        return None;
+    };
+    if input.dtype != DType::F64 {
+        return None;
+    }
+    let values = input.elements.as_f64_slice()?;
+    if !values.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::silu(values);
     Some(
         TensorValue::new_f64_values(input.shape.clone(), output)
             .map(Value::Tensor)
@@ -20269,6 +20346,93 @@ mod tests {
             .expect("nonfinite log_sigmoid falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite]).expect("generic nonfinite log_sigmoid");
+        assert_eq!(through_eval, through_generic);
+    }
+
+    fn make_silu_jaxpr() -> Jaxpr {
+        let x = VarId(1);
+        let nx = VarId(2);
+        let e = VarId(3);
+        let one_plus = VarId(4);
+        let out = VarId(5);
+        Jaxpr::new(
+            vec![x],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(x)],
+                    outputs: smallvec![nx],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Exp,
+                    inputs: smallvec![Atom::Var(nx)],
+                    outputs: smallvec![e],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Lit(Literal::from_f64(1.0)), Atom::Var(e)],
+                    outputs: smallvec![one_plus],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Div,
+                    inputs: smallvec![Atom::Var(x), Atom::Var(one_plus)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn eval_top_level_silu_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        let data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.29).sin() * 5.0 - 2.0)
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data,
+            )
+            .expect("dense f64 input"),
+        );
+        let jaxpr = make_silu_jaxpr();
+
+        let fast = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).expect("fast silu");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[input]).expect("generic silu");
+        assert_eq!(fast, generic);
+
+        let mut nonfinite_data: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.01).collect();
+        nonfinite_data[cols + 1] = f64::NAN;
+        let nonfinite = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                nonfinite_data,
+            )
+            .expect("dense nonfinite f64 input"),
+        );
+        let through_eval =
+            eval_jaxpr(&jaxpr, std::slice::from_ref(&nonfinite)).expect("nonfinite silu falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[nonfinite]).expect("generic nonfinite silu");
         assert_eq!(through_eval, through_generic);
     }
 
