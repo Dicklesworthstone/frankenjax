@@ -2,6 +2,44 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 4.19x vs ORIG: row-wise KL divergence recognized as a fused (row-parallel) 2-input interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::kl_divergence_2d`). A PIVOT
+  out of the crowded distance/moment lane (var/cosine/euclidean/Manhattan/Pearson — several now taken
+  by multiple agents: Manhattan shipped by BOTH SlateBridge 6.52x AND DustyDog 4.22x) into the
+  INFORMATION-THEORETIC lane: forward KL divergence `KL(p‖q) = Σ p·log(p/q)` along the last axis — the
+  divergence at the heart of knowledge distillation, VAEs, and RLHF/PPO objectives. A TWO-input,
+  4-equation graph `Div(p, q) → Log → Mul(p, ·) → ReduceSum(axis=1)`, f64 [rows,cols]×2 → [rows]
+  (rank-reducing). Has a transcendental (`Log`), unlike the recent transcendental-free reductions. The
+  general fuser cannot fuse it (`Log` ∉ `cheap_op` AND the reduction breaks the elementwise fuser), so
+  the decomposed path materializes three full [rows,cols] intermediates (`p/q`, `log(p/q)`,
+  `p·log(p/q)`). Worktree audit: HEAD==origin/main (my Pearson tip), no unlanded win.
+- LEVER: a top-level 2-input superinstruction for the exact 4-eq finite dense f64 KL graph, computed
+  via the row-parallel `kl_divergence_2d`. BIT-IDENTICAL: `kl_divergence_row` does an index-order sum
+  of `p[i]·(p[i]/q[i]).ln()`, matching the graph's `Div`/`Log`/`Mul`/`ReduceSum` (`Log` = the same
+  `.ln()` the `Log` primitive dispatches — scalar-bit-identical per the softmax/logsumexp
+  superinstructions). `Div` numerator enforced = p (non-commutative); `Mul(p, log_ratio)` commutative
+  (either order). Degenerate `q=0`/`p=0` propagate inf/NaN exactly as the graph does; finite dense
+  rank-2 f64 only, else falls through.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed kl_divergence
+  -m 3 -s 20`, 4096x1024, p=softmax_input / q=layer_norm_input):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/kl_divergence_2d/orig_decomposed_4096x1024` | 45.461 ms |
+  | `compiled_dispatch/kl_divergence_2d/fast_eval_jaxpr_4096x1024` | 10.857 ms |
+
+  Ratio vs ORIG: **0.239x time / 4.19x faster** (worst-case CI 3.70x, best 4.80x; robustly ≥2x).
+  Smaller multiple than the transcendental-free reductions (var/cosine/Pearson) because the fused
+  kernel is `Log`-bound (~10.9 ms) rather than pure-arithmetic — consistent with the thesis that the
+  fused side's transcendental cost caps the multiple.
+- VALIDATION: `eval_top_level_kl_divergence_2d_f64_matches_generic_and_preserves_edges` GREEN
+  (fused==generic bit-for-bit on positive random f64; nonfinite falls through); fj-lax `nn::` 61/61
+  GREEN; all 19 superinstruction parity tests GREEN. Pre-existing INDEPENDENT RED (NOT this change):
+  fj-interpreters `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)` — this diff
+  touches no cbrt/arena code.
+
 ## 2026-07-04 - WIN 19.38x vs ORIG: row-wise Pearson correlation recognized as a fused (row-parallel) 2-input interpreter superinstruction — BIGGEST of the session (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::pearson_correlation_2d`).
