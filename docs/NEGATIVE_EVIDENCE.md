@@ -2,6 +2,31 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 1.16x: clamp f32 scalar-bounds threaded f32x16 SIMD — bit-identical (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. File: `arithmetic.rs` (`eval_clamp`
+  `clamp_f32_scalar_bounds`). Remote via rch (`CARGO_TARGET_DIR=.../blackthrush`),
+  `--test-threads=1` isolated. Sibling of the f64 clamp SIMD win (8a247056, 1.22x).
+- GAP: the f32 scalar-bounds clamp fast path (JAX default dtype — relu6 / gradient-clip hot
+  path) used the same autovec-blocked `threaded_index_fill_into(|i| clamp_f32(lof, xs[i], hif))`
+  closure as f64 clamp did. clamp is a ONE-input-stream op, so — unlike the 2-input select
+  blend that regressed (fff73fbc, reads both branches) — a SIMD kernel wins with no extra read
+  traffic (the rule from [[project_parallelization_compute_vs_memory_bound]]).
+- LEVER: `clamp_f32_scalar_bounds_dense_simd` — threaded slice-chunk map over `Simd<f32,16>`
+  comparison/select: `lower = x.simd_lt(lo).select(lo,x)`, `clamped = lower.simd_gt(hi)
+  .select(hi,lower)`, NaN-`x` lanes → canonical f32 NaN. NaN bounds route to the scalar map.
+  Reuses the `FJ_CLAMP_SCALAR` A/B hook.
+- BIT-IDENTICAL to scalar `clamp_f32` (min/max are exact selections; NaN-x normalizes to
+  canonical). Verified by `clamp_f32_simd_matches_scalar` (bit-for-bit over below/in/above
+  bounds, ±inf x, ±inf bounds, ±0, NaN-x, signed-NaN payload, dup extrema, 7-element scalar
+  tail across 5 bound pairs). 29 clamp tests GREEN.
+- MEASURED (rch, same-invocation min-of-8 A/B, `--test-threads=1`, 16M f32,
+  `bench_clamp_f32_simd_vs_index_fill`): **index-fill 15.950ms → simd 13.778ms = 1.16x.**
+  Slightly under f64's 1.22x because f32 (4 B/elem, 128MB traffic) is more BW-favorable so the
+  index-fill's compute overhead is a smaller fraction — same direction, confirms the rule. EV:
+  KEEP (bit-identical, never a regression). clamp f32/f64 scalar-bounds SIMD family now complete.
+
+
 ## 2026-07-04 - NO-SHIP 0.86x: select f64 branchless SIMD blend REGRESSES vs branch-select — memory-bound select reads both branches (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. File: `arithmetic.rs` (`select_f64_same_shape_fast_path`

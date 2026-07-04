@@ -11060,6 +11060,66 @@ fn clamp_f64_scalar_bounds_dense_simd(xs: &[f64], lof: f64, hif: f64) -> Vec<f64
     out
 }
 
+/// f32 sibling of [`clamp_f64_scalar_bounds_dense_simd`] (JAX's default dtype — relu6 /
+/// gradient-clip hot path). Threaded f32x16 comparison/select clamp; `lof`/`hif` non-NaN
+/// (caller guards). BIT-IDENTICAL to the scalar `clamp_f32` (exact min/max selection; NaN-`x`
+/// → canonical f32 NaN). Same 1-input-stream regime as the f64 clamp (no extra read traffic,
+/// unlike the 2-input select blend), so it wins where SIMD select regressed.
+fn clamp_f32_scalar_bounds_dense_simd(xs: &[f32], lof: f32, hif: f32) -> Vec<f32> {
+    use std::simd::Select;
+    use std::simd::Simd;
+    use std::simd::cmp::SimdPartialOrd;
+    use std::simd::num::SimdFloat;
+    type F = Simd<f32, 16>;
+    let n = xs.len();
+    let mut out = vec![0.0f32; n];
+    let block = move |xs: &[f32], out: &mut [f32]| {
+        let lo = F::splat(lof);
+        let hi = F::splat(hif);
+        let nan = F::splat(f32::NAN);
+        let m = xs.len();
+        let mut i = 0usize;
+        while i + 16 <= m {
+            let x = F::from_slice(&xs[i..i + 16]);
+            let lower = x.simd_lt(lo).select(lo, x);
+            let clamped = lower.simd_gt(hi).select(hi, lower);
+            let r = x.is_nan().select(nan, clamped);
+            r.copy_to_slice(&mut out[i..i + 16]);
+            i += 16;
+        }
+        while i < m {
+            let xv = xs[i];
+            out[i] = if xv.is_nan() {
+                f32::NAN
+            } else {
+                let lower = if xv < lof { lof } else { xv };
+                if lower > hif { hif } else { lower }
+            };
+            i += 1;
+        }
+    };
+    let threads = work_scaled_threads(n);
+    if n < CHEAP_BINARY_PARALLEL_MIN || threads <= 1 {
+        block(xs, &mut out);
+        return out;
+    }
+    let chunk = n.div_ceil(threads).next_multiple_of(16);
+    std::thread::scope(|scope| {
+        let mut o_rest = out.as_mut_slice();
+        let mut x0 = 0usize;
+        while x0 < n {
+            let cnt = chunk.min(n - x0);
+            let (oblk, otail) = o_rest.split_at_mut(cnt);
+            o_rest = otail;
+            let sblk = &xs[x0..x0 + cnt];
+            x0 += cnt;
+            let b = &block;
+            scope.spawn(move || b(sblk, oblk));
+        }
+    });
+    out
+}
+
 /// Clamp: clamp(lo, x, hi) = min(max(lo, x), hi).
 /// Supports scalar and tensor inputs with broadcasting.
 pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
@@ -11250,12 +11310,10 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
         let lof = f32::from_bits(lo_bits);
         let hif = f32::from_bits(hi_bits);
         if let Some(xs) = x.elements.as_f32_slice() {
-            let n = xs.len();
-            if n >= CHEAP_BINARY_PARALLEL_MIN && work_scaled_threads(n) > 1 {
-                let mut out = vec![0.0f32; n];
-                threaded_index_fill_into(&mut out, work_scaled_threads(n), |i| {
-                    clamp_f32(lof, xs[i], hif)
-                });
+            // Threaded f32x16 SIMD comparison/select clamp (see the f64 sibling). NaN bounds
+            // (all-NaN output) route to the scalar map. FJ_CLAMP_SCALAR forces the old path.
+            if !lof.is_nan() && !hif.is_nan() && std::env::var_os("FJ_CLAMP_SCALAR").is_none() {
+                let out = clamp_f32_scalar_bounds_dense_simd(xs, lof, hif);
                 return Ok(Some(Value::Tensor(TensorValue::new_f32_values(
                     x.shape.clone(),
                     out,
@@ -30069,6 +30127,101 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn clamp_f32_simd_matches_scalar() {
+        // f32x16 SIMD clamp bit-for-bit vs scalar over bounds edges, ±inf, ±0, NaN-x
+        // (→ canonical f32 NaN), and a scalar tail (len not a multiple of 16).
+        let clamp_ref = |lof: f32, xv: f32, hif: f32| -> f32 {
+            if xv.is_nan() {
+                f32::NAN
+            } else {
+                let lower = if xv < lof { lof } else { xv };
+                if lower > hif { hif } else { lower }
+            }
+        };
+        for (lof, hif) in [
+            (-0.5f32, 0.5f32),
+            (0.0, 6.0),
+            (f32::NEG_INFINITY, 1.0),
+            (-1.0, f32::INFINITY),
+            (2.0, 2.0),
+        ] {
+            let xs: Vec<f32> = [
+                -1e9f32,
+                -0.5,
+                -0.0,
+                0.0,
+                0.25,
+                0.5,
+                1e9,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NAN,
+                f32::from_bits(0xffc0_0001),
+                3.0,
+                2.0,
+                -2.0,
+            ]
+            .into_iter()
+            .cycle()
+            .take(16 * 3 + 7)
+            .collect();
+            let got = clamp_f32_scalar_bounds_dense_simd(&xs, lof, hif);
+            for (i, &xv) in xs.iter().enumerate() {
+                let want = clamp_ref(lof, xv, hif);
+                assert_eq!(
+                    got[i].to_bits(),
+                    want.to_bits(),
+                    "clamp f32 simd bits lo={lof} hi={hif} x={xv}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_clamp_f32_simd_vs_index_fill() {
+        use std::time::Instant;
+        let n = 16_000_000usize;
+        let xs: Vec<f32> = (0..n).map(|i| (i % 9973) as f32 * 0.001 - 5.0).collect();
+        let (lof, hif) = (-0.5f32, 0.5f32);
+        let old = || {
+            let mut out = vec![0.0f32; n];
+            threaded_index_fill_into(&mut out, work_scaled_threads(n), |i| {
+                let xv = xs[i];
+                if xv.is_nan() {
+                    f32::NAN
+                } else {
+                    let lower = if xv < lof { lof } else { xv };
+                    if lower > hif { hif } else { lower }
+                }
+            });
+            std::hint::black_box(out[123]);
+        };
+        let new = || {
+            let out = clamp_f32_scalar_bounds_dense_simd(&xs, lof, hif);
+            std::hint::black_box(out[123]);
+        };
+        old();
+        new();
+        let mut bo = f64::MAX;
+        let mut bn = f64::MAX;
+        for _ in 0..8 {
+            let s = Instant::now();
+            old();
+            bo = bo.min(s.elapsed().as_secs_f64());
+            let s = Instant::now();
+            new();
+            bn = bn.min(s.elapsed().as_secs_f64());
+        }
+        println!(
+            "clamp f32 16M: index-fill={:.3}ms simd={:.3}ms ratio={:.2}x",
+            bo * 1e3,
+            bn * 1e3,
+            bo / bn
+        );
     }
 
     #[test]
