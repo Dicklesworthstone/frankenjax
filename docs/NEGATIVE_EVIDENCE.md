@@ -2,6 +2,44 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 10.73x vs ORIG: row-wise explained variance score recognized as a fused 2-input interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::explained_variance_score_2d`).
+  Explained variance score `1 − Var(a − b) / Var(a)` (`a`=y_true, `b`=y_pred, `Var` = population variance
+  `ddof=0`; `sklearn.metrics.explained_variance_score`) along the last axis. A 17-equation, TWO-input graph:
+  the variance of the residual `a-b` (`Sub(a,b)→ReduceSum→Div(n)→Bcast→Sub→Mul→ReduceSum→Div`) over the
+  variance of `a` (`ReduceSum(a)→Div(n)→Bcast→Sub→Mul→ReduceSum→Div`), then `Div(ratio)` and `Sub(1, ratio)`.
+  Two f64 [rows,cols] inputs → one [rows] output (rank-reducing). Worktree audit: HEAD==origin/main (my R²
+  tip `c25d1a51`), no unlanded win → DIG turn (concurrent with another agent's mean_absolute_error — landed
+  cleanly around it). DISTINCT from `r2_score_2d` (`1 − Σ(a-b)²/Σ(a-mean(a))²` — the residual is NOT
+  mean-centered there); explained-variance mean-centers the residual, so the two differ whenever the residual
+  has a non-zero mean (systematic offset). TRANSCENDENTAL-FREE → the big-multiple tier. The RICHEST 2-input
+  graph shipped (17-eq, 7 materialized [rows,cols] producers).
+- LEVER: a top-level 2-input superinstruction for the exact 17-eq finite dense f64 explained-variance graph,
+  computed via the row-parallel `explained_variance_score_2d`. BIT-IDENTICAL: `explained_variance_score_row`
+  computes each mean as an index-order sum `/ n` (`ReduceSum`+`Div`) and each centered sum-of-squares by
+  recomputing the deviation with the identical scalar mean and accumulating index-order (the variance fusion,
+  applied once to the residual `a-b` and once to `a`), then `1.0 - var_r/var_a` with TRUE `Div` and the
+  scalar-broadcast `Sub(1, ratio)` (fj binary ops broadcast a scalar-literal first operand). Both inputs must
+  be dense finite rank-2 f64 of EQUAL shape; all four `Div(·,n)` divisors must equal `cols`; both broadcast
+  shapes must be `rows,cols`; the final `Sub` literal must be `1.0`; else falls through to the generic path.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed explained_variance_score_2d
+  -m 3 -s 20`, 4096x1024, a=softmax_input b=layer_norm_input):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/explained_variance_score_2d/orig_decomposed_4096x1024` | 98.026 ms |
+  | `compiled_dispatch/explained_variance_score_2d/fast_eval_jaxpr_4096x1024` | 9.135 ms |
+
+  Ratio vs ORIG: **0.0932x time / 10.73x faster** (fast-path CI widened by rch worker contention 7.71–11.14 ms; worst-case CI 8.74x, best 12.80x; robustly ≥2x. Independently CORROBORATED by agent DustyDog's convergent 12.90x measurement (their orig 146 ms local run under the same worker saturation)). The decomposed baseline is heavy (7
+  materialized [rows,cols] intermediates — residual, residual-mean-broadcast, centered-residual, its square,
+  a-mean-broadcast, centered-a, its square — plus 4 reductions); the fused path is pure arithmetic.
+- VALIDATION: `eval_top_level_explained_variance_score_2d_f64_matches_generic_and_preserves_edges` GREEN
+  (fused==generic bit-for-bit on mixed-sign random f64, incl. the scalar-first `Sub(1.0, ratio)`; nonfinite
+  input falls through to the generic path); fj-lax `nn::` 61/61 GREEN. Pre-existing INDEPENDENT RED (NOT this
+  change): fj-interpreters `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)`.
+
 ## 2026-07-04 - WIN 4.31x vs ORIG: row-wise mean absolute error recognized as a fused 2-input interpreter superinstruction (DustyDog)
 
 - Agent: DustyDog. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::mean_absolute_error_2d`).

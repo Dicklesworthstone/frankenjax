@@ -1196,6 +1196,12 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) =
+        try_eval_top_level_explained_variance_score_2d_f64(jaxpr, const_values, args)
+    {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_pearson_correlation_2d_f64(jaxpr, const_values, args) {
         return result;
     }
@@ -4136,6 +4142,206 @@ fn try_eval_top_level_r2_score_2d_f64(
     }
 
     let output = fj_lax::nn::r2_score_2d(a_v, b_v, rows, cols);
+    Some(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32],
+            },
+            output,
+        )
+        .map(Value::Tensor)
+        .map(|value| vec![value])
+        .map_err(EvalError::InvalidTensor)
+        .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for the row-wise explained variance score `1 − Var(a − b) / Var(a)`
+/// (`a`=y_true, `b`=y_pred, `Var` = population variance `ddof=0`; `sklearn.metrics.explained_variance_score`)
+/// along the last axis: a 17-equation, TWO-input graph — the variance of the residual `a-b`
+/// (`Sub(a,b)→ReduceSum→Div(n)→Bcast→Sub→Mul→ReduceSum→Div`) over the variance of `a`
+/// (`ReduceSum(a)→Div(n)→Bcast→Sub→Mul→ReduceSum→Div`), then `Div(ratio)` and `Sub(1, ratio)`. Two f64
+/// [rows,cols] inputs → one [rows] output (rank-reducing). Computed via the row-parallel
+/// [`fj_lax::nn::explained_variance_score_2d`], which fuses both mean-centered sums-of-squares into
+/// index-order passes. TRANSCENDENTAL-FREE. DISTINCT from `r2_score_2d` (`1 − Σ(a-b)²/Σ(a-mean(a))²` —
+/// the residual is NOT mean-centered there). Falls through unless both inputs are dense finite rank-2 f64
+/// of equal shape.
+fn try_eval_top_level_explained_variance_score_2d_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 2
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 17
+        || args.len() != 2
+    {
+        return None;
+    }
+
+    let a = jaxpr.invars[0];
+    let b = jaxpr.invars[1];
+    let out = jaxpr.outvars[0];
+    let [
+        resid_eq,
+        sum_r_eq,
+        mean_r_eq,
+        mean_r_bcast_eq,
+        cr_eq,
+        cr_sq_eq,
+        ss_r_eq,
+        var_r_eq,
+        sum_a_eq,
+        mean_a_eq,
+        mean_a_bcast_eq,
+        ca_eq,
+        ca_sq_eq,
+        ss_a_eq,
+        var_a_eq,
+        ratio_eq,
+        final_eq,
+    ] = jaxpr.equations.as_slice()
+    else {
+        return None;
+    };
+
+    // residual r = a - b, then Var(r) = ReduceSum((r - mean(r))²) / n
+    let resid = single_output_for_primitive(resid_eq, Primitive::Sub)?;
+    if resid_eq.inputs.as_slice() != [Atom::Var(a), Atom::Var(b)] {
+        return None;
+    }
+    let sum_r = single_output_for_param_primitive(sum_r_eq, Primitive::ReduceSum)?;
+    if sum_r_eq.inputs.as_slice() != [Atom::Var(resid)] || !axis1_reduce_params(&sum_r_eq.params) {
+        return None;
+    }
+    let mean_r = single_output_for_primitive(mean_r_eq, Primitive::Div)?;
+    let [Atom::Var(mean_r_num), mean_r_div] = mean_r_eq.inputs.as_slice() else {
+        return None;
+    };
+    if *mean_r_num != sum_r {
+        return None;
+    }
+    let mean_r_b = single_output_for_param_primitive(mean_r_bcast_eq, Primitive::BroadcastInDim)?;
+    if mean_r_bcast_eq.inputs.as_slice() != [Atom::Var(mean_r)]
+        || !rank2_axis0_broadcast_params(&mean_r_bcast_eq.params)
+    {
+        return None;
+    }
+    let cr = single_output_for_primitive(cr_eq, Primitive::Sub)?;
+    if cr_eq.inputs.as_slice() != [Atom::Var(resid), Atom::Var(mean_r_b)] {
+        return None;
+    }
+    let cr_sq = single_output_for_primitive(cr_sq_eq, Primitive::Mul)?;
+    if cr_sq_eq.inputs.as_slice() != [Atom::Var(cr), Atom::Var(cr)] {
+        return None;
+    }
+    let ss_r = single_output_for_param_primitive(ss_r_eq, Primitive::ReduceSum)?;
+    if ss_r_eq.inputs.as_slice() != [Atom::Var(cr_sq)] || !axis1_reduce_params(&ss_r_eq.params) {
+        return None;
+    }
+    let var_r = single_output_for_primitive(var_r_eq, Primitive::Div)?;
+    let [Atom::Var(var_r_num), var_r_div] = var_r_eq.inputs.as_slice() else {
+        return None;
+    };
+    if *var_r_num != ss_r {
+        return None;
+    }
+    // Var(a) = ReduceSum((a - mean(a))²) / n
+    let sum_a = single_output_for_param_primitive(sum_a_eq, Primitive::ReduceSum)?;
+    if sum_a_eq.inputs.as_slice() != [Atom::Var(a)] || !axis1_reduce_params(&sum_a_eq.params) {
+        return None;
+    }
+    let mean_a = single_output_for_primitive(mean_a_eq, Primitive::Div)?;
+    let [Atom::Var(mean_a_num), mean_a_div] = mean_a_eq.inputs.as_slice() else {
+        return None;
+    };
+    if *mean_a_num != sum_a {
+        return None;
+    }
+    let mean_a_b = single_output_for_param_primitive(mean_a_bcast_eq, Primitive::BroadcastInDim)?;
+    if mean_a_bcast_eq.inputs.as_slice() != [Atom::Var(mean_a)]
+        || !rank2_axis0_broadcast_params(&mean_a_bcast_eq.params)
+    {
+        return None;
+    }
+    let ca = single_output_for_primitive(ca_eq, Primitive::Sub)?;
+    if ca_eq.inputs.as_slice() != [Atom::Var(a), Atom::Var(mean_a_b)] {
+        return None;
+    }
+    let ca_sq = single_output_for_primitive(ca_sq_eq, Primitive::Mul)?;
+    if ca_sq_eq.inputs.as_slice() != [Atom::Var(ca), Atom::Var(ca)] {
+        return None;
+    }
+    let ss_a = single_output_for_param_primitive(ss_a_eq, Primitive::ReduceSum)?;
+    if ss_a_eq.inputs.as_slice() != [Atom::Var(ca_sq)] || !axis1_reduce_params(&ss_a_eq.params) {
+        return None;
+    }
+    let var_a = single_output_for_primitive(var_a_eq, Primitive::Div)?;
+    let [Atom::Var(var_a_num), var_a_div] = var_a_eq.inputs.as_slice() else {
+        return None;
+    };
+    if *var_a_num != ss_a {
+        return None;
+    }
+    // ratio = Var(r) / Var(a); out = 1 - ratio
+    let ratio = single_output_for_primitive(ratio_eq, Primitive::Div)?;
+    if ratio_eq.inputs.as_slice() != [Atom::Var(var_r), Atom::Var(var_a)] {
+        return None;
+    }
+    let result_var = single_output_for_primitive(final_eq, Primitive::Sub)?;
+    let [one_lit, Atom::Var(ratio_operand)] = final_eq.inputs.as_slice() else {
+        return None;
+    };
+    if result_var != out
+        || *ratio_operand != ratio
+        || f64_literal(one_lit)?.to_bits() != 1.0f64.to_bits()
+    {
+        return None;
+    }
+
+    let Value::Tensor(a_t) = &args[0] else {
+        return None;
+    };
+    let Value::Tensor(b_t) = &args[1] else {
+        return None;
+    };
+    if a_t.dtype != DType::F64
+        || b_t.dtype != DType::F64
+        || a_t.shape.dims.len() != 2
+        || b_t.shape.dims != a_t.shape.dims
+    {
+        return None;
+    }
+    let rows = a_t.shape.dims[0] as usize;
+    let cols = a_t.shape.dims[1] as usize;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+    let n_bits = (cols as f64).to_bits();
+    if f64_literal(mean_r_div)?.to_bits() != n_bits
+        || f64_literal(var_r_div)?.to_bits() != n_bits
+        || f64_literal(mean_a_div)?.to_bits() != n_bits
+        || f64_literal(var_a_div)?.to_bits() != n_bits
+    {
+        return None;
+    }
+    let expected_shape = format!("{rows},{cols}");
+    if mean_r_bcast_eq.params.get("shape").map(String::as_str) != Some(expected_shape.as_str())
+        || mean_a_bcast_eq.params.get("shape").map(String::as_str) != Some(expected_shape.as_str())
+    {
+        return None;
+    }
+
+    let a_v = a_t.elements.as_f64_slice()?;
+    let b_v = b_t.elements.as_f64_slice()?;
+    if !a_v.iter().all(|value| value.is_finite()) || !b_v.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::explained_variance_score_2d(a_v, b_v, rows, cols);
     Some(
         TensorValue::new_f64_values(
             Shape {
@@ -23496,6 +23702,150 @@ mod tests {
             eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()]).expect("nonfinite r2 falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite r2");
+        assert_eq!(through_eval, through_generic);
+    }
+
+    fn make_explained_variance_score_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
+        let a = VarId(1);
+        let b = VarId(2);
+        let resid = VarId(3);
+        let sum_r = VarId(4);
+        let mean_r = VarId(5);
+        let mean_r_b = VarId(6);
+        let cr = VarId(7);
+        let cr_sq = VarId(8);
+        let ss_r = VarId(9);
+        let var_r = VarId(10);
+        let sum_a = VarId(11);
+        let mean_a = VarId(12);
+        let mean_a_b = VarId(13);
+        let ca = VarId(14);
+        let ca_sq = VarId(15);
+        let ss_a = VarId(16);
+        let var_a = VarId(17);
+        let ratio = VarId(18);
+        let out = VarId(19);
+        let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+        let bcast = BTreeMap::from([
+            ("shape".to_owned(), format!("{rows},{cols}")),
+            ("broadcast_dimensions".to_owned(), "0".to_owned()),
+        ]);
+        let n = Literal::from_f64(cols as f64);
+        let mul = |lhs: VarId, rhs: VarId, o: VarId| Equation {
+            primitive: Primitive::Mul,
+            inputs: smallvec![Atom::Var(lhs), Atom::Var(rhs)],
+            outputs: smallvec![o],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        let sub = |lhs: Atom, rhs: Atom, o: VarId| Equation {
+            primitive: Primitive::Sub,
+            inputs: smallvec![lhs, rhs],
+            outputs: smallvec![o],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        let reduce = |input: VarId, o: VarId| Equation {
+            primitive: Primitive::ReduceSum,
+            inputs: smallvec![Atom::Var(input)],
+            outputs: smallvec![o],
+            params: reduce_axis1.clone(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        let div_n = |input: VarId, o: VarId| Equation {
+            primitive: Primitive::Div,
+            inputs: smallvec![Atom::Var(input), Atom::Lit(n)],
+            outputs: smallvec![o],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        let bcast_eq = |input: VarId, o: VarId| Equation {
+            primitive: Primitive::BroadcastInDim,
+            inputs: smallvec![Atom::Var(input)],
+            outputs: smallvec![o],
+            params: bcast.clone(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        Jaxpr::new(
+            vec![a, b],
+            vec![],
+            vec![out],
+            vec![
+                sub(Atom::Var(a), Atom::Var(b), resid),
+                reduce(resid, sum_r),
+                div_n(sum_r, mean_r),
+                bcast_eq(mean_r, mean_r_b),
+                sub(Atom::Var(resid), Atom::Var(mean_r_b), cr),
+                mul(cr, cr, cr_sq),
+                reduce(cr_sq, ss_r),
+                div_n(ss_r, var_r),
+                reduce(a, sum_a),
+                div_n(sum_a, mean_a),
+                bcast_eq(mean_a, mean_a_b),
+                sub(Atom::Var(a), Atom::Var(mean_a_b), ca),
+                mul(ca, ca, ca_sq),
+                reduce(ca_sq, ss_a),
+                div_n(ss_a, var_a),
+                Equation {
+                    primitive: Primitive::Div,
+                    inputs: smallvec![Atom::Var(var_r), Atom::Var(var_a)],
+                    outputs: smallvec![ratio],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                sub(Atom::Lit(Literal::from_f64(1.0)), Atom::Var(ratio), out),
+            ],
+        )
+    }
+
+    #[test]
+    fn eval_top_level_explained_variance_score_2d_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        let a_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.39).sin() * 3.2 - 0.5)
+            .collect();
+        let b_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.23).cos() * 2.4 + 0.3)
+            .collect();
+        let dims = vec![rows as u32, cols as u32];
+        let a = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_data).expect("a input"),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, b_data).expect("b input"),
+        );
+        let jaxpr = make_explained_variance_score_2d_jaxpr(rows, cols);
+
+        let fast = eval_jaxpr(&jaxpr, &[a.clone(), b.clone()]).expect("fast evs");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[a, b]).expect("generic evs");
+        assert_eq!(fast, generic);
+
+        let mut a_nonfinite: Vec<f64> = (0..rows * cols)
+            .map(|idx| idx as f64 * 0.03 + 0.2)
+            .collect();
+        a_nonfinite[cols + 1] = f64::NAN;
+        let a_nf = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_nonfinite)
+                .expect("nonfinite a"),
+        );
+        let b_ok = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape { dims },
+                (0..rows * cols).map(|idx| idx as f64 * 0.02).collect(),
+            )
+            .expect("finite b"),
+        );
+        let through_eval =
+            eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()]).expect("nonfinite evs falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite evs");
         assert_eq!(through_eval, through_generic);
     }
 

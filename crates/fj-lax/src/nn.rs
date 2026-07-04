@@ -1461,6 +1461,90 @@ pub fn r2_score_2d(a: &[f64], b: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     result
 }
 
+fn explained_variance_score_row(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len() as f64;
+    // variance of the residual r = a - b
+    let mut sum_r = 0.0;
+    for (&av, &bv) in a.iter().zip(b.iter()) {
+        sum_r += av - bv;
+    }
+    let mean_r = sum_r / n;
+    let mut ss_r = 0.0;
+    for (&av, &bv) in a.iter().zip(b.iter()) {
+        let c = (av - bv) - mean_r;
+        ss_r += c * c;
+    }
+    let var_r = ss_r / n;
+    // variance of a
+    let mut sum_a = 0.0;
+    for &av in a {
+        sum_a += av;
+    }
+    let mean_a = sum_a / n;
+    let mut ss_a = 0.0;
+    for &av in a {
+        let c = av - mean_a;
+        ss_a += c * c;
+    }
+    let var_a = ss_a / n;
+    1.0 - var_r / var_a
+}
+
+/// Explained variance score `1 − Var(a − b) / Var(a)` (`a`=y_true, `b`=y_pred, `Var` = population var
+/// `ddof=0`) along the last axis of two 2D arrays, one scalar per row
+/// (`sklearn.metrics.explained_variance_score`). ROW-PARALLEL and BIT-IDENTICAL to the decomposed
+/// `Sub(a,b)→ReduceSum→Div(n)→Bcast→Sub→Mul→ReduceSum→Div(var_r)` |
+/// `ReduceSum(a)→Div(n)→Bcast→Sub→Mul→ReduceSum→Div(var_a)` | `Div(ratio)` | `Sub(1, ratio)` graph via
+/// [`explained_variance_score_row`]: each mean is an index-order sum `/ n` (`ReduceSum`+`Div`); each
+/// centered sum-of-squares recomputes the deviation with the identical scalar mean and accumulates
+/// index-order (the variance fusion, applied once to the residual `a-b` and once to `a`); both `/ n`,
+/// the ratio `Div`, and the scalar-broadcast `1.0 - ratio` `Sub` match the graph bit-for-bit. Used by
+/// the interpreter explained-variance superinstruction. NOTE: DISTINCT from `r2_score_2d`
+/// (`1 − Σ(a-b)²/Σ(a-mean(a))²` — the residual is NOT mean-centered there). A constant `a` row gives
+/// `Var(a)=0 → 1 - var_r/0` (±inf/NaN) via EITHER path; the recognizer only dispatches for all-finite
+/// input (nonfinite falls through).
+#[must_use]
+pub fn explained_variance_score_2d(a: &[f64], b: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let _ = checked_2d_row_major_len("2D explained_variance_score a", a, rows, cols);
+    let _ = checked_2d_row_major_len("2D explained_variance_score b", b, rows, cols);
+    let mut result = vec![0.0; rows];
+    if cols == 0 || rows == 0 {
+        return result;
+    }
+    let threads = softmax_2d_thread_count(rows, rows * cols);
+    if threads <= 1 {
+        for (i, slot) in result.iter_mut().enumerate() {
+            let start = i * cols;
+            *slot = explained_variance_score_row(&a[start..start + cols], &b[start..start + cols]);
+        }
+        return result;
+    }
+
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut out_rest: &mut [f64] = &mut result;
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let row_count = rows_per.min(rows - row0);
+            let (out_block, out_tail) = out_rest.split_at_mut(row_count);
+            out_rest = out_tail;
+            let a_block = &a[row0 * cols..(row0 + row_count) * cols];
+            let b_block = &b[row0 * cols..(row0 + row_count) * cols];
+            row0 += row_count;
+            scope.spawn(move || {
+                for (k, out_slot) in out_block.iter_mut().enumerate() {
+                    let start = k * cols;
+                    *out_slot = explained_variance_score_row(
+                        &a_block[start..start + cols],
+                        &b_block[start..start + cols],
+                    );
+                }
+            });
+        }
+    });
+    result
+}
+
 /// Pearson correlation of a single pair of rows,
 /// `Σ((a-ma)(b-mb)) / (√Σ(a-ma)² · √Σ(b-mb)²)` where `ma=mean(a)`, `mb=mean(b)` — i.e. the cosine
 /// similarity of the CENTERED vectors. Bit-identical to the decomposed
