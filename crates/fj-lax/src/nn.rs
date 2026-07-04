@@ -1332,6 +1332,77 @@ pub fn root_mean_squared_error_2d(a: &[f64], b: &[f64], rows: usize, cols: usize
     result
 }
 
+fn r2_score_row(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len() as f64;
+    let mut ss_res = 0.0;
+    for (&av, &bv) in a.iter().zip(b.iter()) {
+        let d = av - bv;
+        ss_res += d * d;
+    }
+    let mut sum = 0.0;
+    for &av in a {
+        sum += av;
+    }
+    let mean = sum / n;
+    let mut ss_tot = 0.0;
+    for &av in a {
+        let c = av - mean;
+        ss_tot += c * c;
+    }
+    1.0 - ss_res / ss_tot
+}
+
+/// R² / coefficient of determination `1 − Σ(a-b)² / Σ(a-mean(a))²` (`a`=y_true, `b`=y_pred) along the
+/// last axis of two 2D arrays, one scalar per row (`sklearn.metrics.r2_score` — the standard regression
+/// score). ROW-PARALLEL and BIT-IDENTICAL to the decomposed
+/// `Sub(a,b)→Mul(sq)→ReduceSum(ss_res) | ReduceSum(a)→Div(mean)→Bcast→Sub(centered)→Mul(sq)→ReduceSum(ss_tot)
+///  | Div(ratio) | Sub(1, ratio)` graph via [`r2_score_row`]: the residual accumulator is an index-order
+/// sum of `(a-b)²` matching `ReduceSum(Mul(Sub))` (the MSE fusion); the mean is an index-order sum `/ n`
+/// (`ReduceSum`+`Div`); the total accumulator recomputes `a-mean` (identical scalar mean) and sums
+/// `(a-mean)²` index-order (the variance fusion); `Div` is TRUE division and `1.0 - ratio` matches the
+/// scalar-broadcast `Sub(1, ratio)`. Used by the interpreter R² superinstruction. NOTE: a constant `a`
+/// row gives `ss_tot=0 → 1 - ss_res/0` (±inf/NaN) via EITHER path; the recognizer only dispatches here
+/// for all-finite input (nonfinite falls through).
+#[must_use]
+pub fn r2_score_2d(a: &[f64], b: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let _ = checked_2d_row_major_len("2D r2_score a", a, rows, cols);
+    let _ = checked_2d_row_major_len("2D r2_score b", b, rows, cols);
+    let mut result = vec![0.0; rows];
+    if cols == 0 || rows == 0 {
+        return result;
+    }
+    let threads = softmax_2d_thread_count(rows, rows * cols);
+    if threads <= 1 {
+        for (i, slot) in result.iter_mut().enumerate() {
+            let start = i * cols;
+            *slot = r2_score_row(&a[start..start + cols], &b[start..start + cols]);
+        }
+        return result;
+    }
+
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut out_rest: &mut [f64] = &mut result;
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let row_count = rows_per.min(rows - row0);
+            let (out_block, out_tail) = out_rest.split_at_mut(row_count);
+            out_rest = out_tail;
+            let a_block = &a[row0 * cols..(row0 + row_count) * cols];
+            let b_block = &b[row0 * cols..(row0 + row_count) * cols];
+            row0 += row_count;
+            scope.spawn(move || {
+                for (k, out_slot) in out_block.iter_mut().enumerate() {
+                    let start = k * cols;
+                    *out_slot =
+                        r2_score_row(&a_block[start..start + cols], &b_block[start..start + cols]);
+                }
+            });
+        }
+    });
+    result
+}
+
 /// Pearson correlation of a single pair of rows,
 /// `Σ((a-ma)(b-mb)) / (√Σ(a-ma)² · √Σ(b-mb)²)` where `ma=mean(a)`, `mb=mean(b)` — i.e. the cosine
 /// similarity of the CENTERED vectors. Bit-identical to the decomposed

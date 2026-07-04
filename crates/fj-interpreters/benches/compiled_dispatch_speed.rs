@@ -752,6 +752,123 @@ fn build_root_mean_squared_error_2d_jaxpr(cols: usize) -> Jaxpr {
     )
 }
 
+fn build_r2_score_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
+    let a = VarId(1);
+    let b = VarId(2);
+    let resid = VarId(3);
+    let resid_sq = VarId(4);
+    let ss_res = VarId(5);
+    let s = VarId(6);
+    let mean = VarId(7);
+    let mean_b = VarId(8);
+    let centered = VarId(9);
+    let centered_sq = VarId(10);
+    let ss_tot = VarId(11);
+    let ratio = VarId(12);
+    let out = VarId(13);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let bcast = BTreeMap::from([
+        ("shape".to_owned(), format!("{rows},{cols}")),
+        ("broadcast_dimensions".to_owned(), "0".to_owned()),
+    ]);
+    let n = Literal::from_f64(cols as f64);
+    Jaxpr::new(
+        vec![a, b],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec::smallvec![Atom::Var(a), Atom::Var(b)],
+                outputs: smallvec::smallvec![resid],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(resid), Atom::Var(resid)],
+                outputs: smallvec::smallvec![resid_sq],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(resid_sq)],
+                outputs: smallvec::smallvec![ss_res],
+                params: reduce_axis1.clone(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(a)],
+                outputs: smallvec::smallvec![s],
+                params: reduce_axis1.clone(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Div,
+                inputs: smallvec::smallvec![Atom::Var(s), Atom::Lit(n)],
+                outputs: smallvec::smallvec![mean],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::BroadcastInDim,
+                inputs: smallvec::smallvec![Atom::Var(mean)],
+                outputs: smallvec::smallvec![mean_b],
+                params: bcast,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec::smallvec![Atom::Var(a), Atom::Var(mean_b)],
+                outputs: smallvec::smallvec![centered],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(centered), Atom::Var(centered)],
+                outputs: smallvec::smallvec![centered_sq],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec::smallvec![Atom::Var(centered_sq)],
+                outputs: smallvec::smallvec![ss_tot],
+                params: reduce_axis1,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Div,
+                inputs: smallvec::smallvec![Atom::Var(ss_res), Atom::Var(ss_tot)],
+                outputs: smallvec::smallvec![ratio],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec::smallvec![Atom::Lit(Literal::from_f64(1.0)), Atom::Var(ratio)],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_manhattan_distance_2d_jaxpr() -> Jaxpr {
     let a = VarId(1);
     let b = VarId(2);
@@ -2524,6 +2641,42 @@ fn eval_root_mean_squared_error_2d_decomposed(a: &Value, b: &Value, cols: usize)
     eval_primitive(Primitive::Sqrt, std::slice::from_ref(&ms), &empty).expect("rmse")
 }
 
+fn eval_r2_score_2d_decomposed(a: &Value, b: &Value, rows: usize, cols: usize) -> Value {
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let bcast = BTreeMap::from([
+        ("shape".to_owned(), format!("{rows},{cols}")),
+        ("broadcast_dimensions".to_owned(), "0".to_owned()),
+    ]);
+    let empty = BTreeMap::new();
+    let resid = eval_primitive(Primitive::Sub, &[a.clone(), b.clone()], &empty).expect("a-b");
+    let resid_sq =
+        eval_primitive(Primitive::Mul, &[resid.clone(), resid], &empty).expect("resid²");
+    let ss_res = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&resid_sq),
+        &reduce_axis1,
+    )
+    .expect("ss_res");
+    let s = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(a), &reduce_axis1)
+        .expect("sum a");
+    let mean = eval_primitive(Primitive::Div, &[s, Value::scalar_f64(cols as f64)], &empty)
+        .expect("mean");
+    let mean_b =
+        eval_primitive(Primitive::BroadcastInDim, &[mean], &bcast).expect("broadcast mean");
+    let centered =
+        eval_primitive(Primitive::Sub, &[a.clone(), mean_b], &empty).expect("centered");
+    let centered_sq =
+        eval_primitive(Primitive::Mul, &[centered.clone(), centered], &empty).expect("centered²");
+    let ss_tot = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&centered_sq),
+        &reduce_axis1,
+    )
+    .expect("ss_tot");
+    let ratio = eval_primitive(Primitive::Div, &[ss_res, ss_tot], &empty).expect("ratio");
+    eval_primitive(Primitive::Sub, &[Value::scalar_f64(1.0), ratio], &empty).expect("1 - ratio")
+}
+
 fn eval_manhattan_distance_2d_decomposed(a: &Value, b: &Value) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let empty = BTreeMap::new();
@@ -3438,6 +3591,21 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     });
     group.bench_function("root_mean_squared_error_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| black_box(eval_jaxpr(black_box(&rmse_jaxpr), black_box(&rmse_args)).unwrap()))
+    });
+    let r2_jaxpr = build_r2_score_2d_jaxpr(rows, cols);
+    let r2_args = [softmax_input.clone(), layer_norm_input.clone()];
+    group.bench_function("r2_score_2d/orig_decomposed_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_r2_score_2d_decomposed(
+                black_box(&r2_args[0]),
+                black_box(&r2_args[1]),
+                rows,
+                cols,
+            ))
+        })
+    });
+    group.bench_function("r2_score_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| black_box(eval_jaxpr(black_box(&r2_jaxpr), black_box(&r2_args)).unwrap()))
     });
     let manhattan_jaxpr = build_manhattan_distance_2d_jaxpr();
     let manhattan_args = [softmax_input.clone(), layer_norm_input.clone()];

@@ -1188,6 +1188,10 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) = try_eval_top_level_r2_score_2d_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_pearson_correlation_2d_f64(jaxpr, const_values, args) {
         return result;
     }
@@ -3872,6 +3876,162 @@ fn try_eval_top_level_root_mean_squared_error_2d_f64(
     }
 
     let output = fj_lax::nn::root_mean_squared_error_2d(a_v, b_v, rows, cols);
+    Some(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32],
+            },
+            output,
+        )
+        .map(Value::Tensor)
+        .map(|value| vec![value])
+        .map_err(EvalError::InvalidTensor)
+        .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for the row-wise R² / coefficient of determination
+/// `1 − Σ(a-b)² / Σ(a-mean(a))²` (`a`=y_true, `b`=y_pred) along the last axis (`sklearn.metrics.r2_score`
+/// — the standard regression score): an 11-equation, TWO-input graph
+/// `Sub(a,b)→Mul(sq)→ReduceSum(ss_res) | ReduceSum(a)→Div(n)→Bcast→Sub(centered)→Mul(sq)→ReduceSum(ss_tot)
+///  | Div(ratio) | Sub(1, ratio)`, two f64 [rows,cols] inputs → one [rows] output (rank-reducing).
+/// Computed via the row-parallel [`fj_lax::nn::r2_score_2d`], which fuses the residual sum-of-squares
+/// (the MSE fusion) and the mean-centered total sum-of-squares (the variance fusion) into index-order
+/// passes, divides (TRUE division), and subtracts from the scalar-broadcast `1.0`. Transcendental-free.
+/// DISTINCT from `mean_squared_error_2d` (just the ss_res half) and from `var_2d` (just the ss_tot half,
+/// divided by n). Falls through unless both inputs are dense finite rank-2 f64 of equal shape.
+fn try_eval_top_level_r2_score_2d_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 2
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 11
+        || args.len() != 2
+    {
+        return None;
+    }
+
+    let a = jaxpr.invars[0];
+    let b = jaxpr.invars[1];
+    let out = jaxpr.outvars[0];
+    let [
+        resid_eq,
+        resid_sq_eq,
+        ss_res_eq,
+        sum_eq,
+        mean_eq,
+        mean_bcast_eq,
+        centered_eq,
+        centered_sq_eq,
+        ss_tot_eq,
+        ratio_eq,
+        final_eq,
+    ] = jaxpr.equations.as_slice()
+    else {
+        return None;
+    };
+
+    // ss_res = ReduceSum((a - b)²)
+    let resid = single_output_for_primitive(resid_eq, Primitive::Sub)?;
+    if resid_eq.inputs.as_slice() != [Atom::Var(a), Atom::Var(b)] {
+        return None;
+    }
+    let resid_sq = single_output_for_primitive(resid_sq_eq, Primitive::Mul)?;
+    if resid_sq_eq.inputs.as_slice() != [Atom::Var(resid), Atom::Var(resid)] {
+        return None;
+    }
+    let ss_res = single_output_for_param_primitive(ss_res_eq, Primitive::ReduceSum)?;
+    if ss_res_eq.inputs.as_slice() != [Atom::Var(resid_sq)] || !axis1_reduce_params(&ss_res_eq.params)
+    {
+        return None;
+    }
+    // mean = ReduceSum(a) / n, broadcast to [rows,cols]
+    let s = single_output_for_param_primitive(sum_eq, Primitive::ReduceSum)?;
+    if sum_eq.inputs.as_slice() != [Atom::Var(a)] || !axis1_reduce_params(&sum_eq.params) {
+        return None;
+    }
+    let mean = single_output_for_primitive(mean_eq, Primitive::Div)?;
+    let [Atom::Var(mean_num), mean_div] = mean_eq.inputs.as_slice() else {
+        return None;
+    };
+    if *mean_num != s {
+        return None;
+    }
+    let mean_b = single_output_for_param_primitive(mean_bcast_eq, Primitive::BroadcastInDim)?;
+    if mean_bcast_eq.inputs.as_slice() != [Atom::Var(mean)]
+        || !rank2_axis0_broadcast_params(&mean_bcast_eq.params)
+    {
+        return None;
+    }
+    // ss_tot = ReduceSum((a - mean_b)²)
+    let centered = single_output_for_primitive(centered_eq, Primitive::Sub)?;
+    if centered_eq.inputs.as_slice() != [Atom::Var(a), Atom::Var(mean_b)] {
+        return None;
+    }
+    let centered_sq = single_output_for_primitive(centered_sq_eq, Primitive::Mul)?;
+    if centered_sq_eq.inputs.as_slice() != [Atom::Var(centered), Atom::Var(centered)] {
+        return None;
+    }
+    let ss_tot = single_output_for_param_primitive(ss_tot_eq, Primitive::ReduceSum)?;
+    if ss_tot_eq.inputs.as_slice() != [Atom::Var(centered_sq)]
+        || !axis1_reduce_params(&ss_tot_eq.params)
+    {
+        return None;
+    }
+    // ratio = ss_res / ss_tot; out = 1 - ratio
+    let ratio = single_output_for_primitive(ratio_eq, Primitive::Div)?;
+    if ratio_eq.inputs.as_slice() != [Atom::Var(ss_res), Atom::Var(ss_tot)] {
+        return None;
+    }
+    let result_var = single_output_for_primitive(final_eq, Primitive::Sub)?;
+    let [one_lit, Atom::Var(ratio_operand)] = final_eq.inputs.as_slice() else {
+        return None;
+    };
+    if result_var != out
+        || *ratio_operand != ratio
+        || f64_literal(one_lit)?.to_bits() != 1.0f64.to_bits()
+    {
+        return None;
+    }
+
+    let Value::Tensor(a_t) = &args[0] else {
+        return None;
+    };
+    let Value::Tensor(b_t) = &args[1] else {
+        return None;
+    };
+    if a_t.dtype != DType::F64
+        || b_t.dtype != DType::F64
+        || a_t.shape.dims.len() != 2
+        || b_t.shape.dims != a_t.shape.dims
+    {
+        return None;
+    }
+    let rows = a_t.shape.dims[0] as usize;
+    let cols = a_t.shape.dims[1] as usize;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+    if f64_literal(mean_div)?.to_bits() != (cols as f64).to_bits() {
+        return None;
+    }
+    let expected_shape = format!("{rows},{cols}");
+    if mean_bcast_eq.params.get("shape").map(String::as_str) != Some(expected_shape.as_str()) {
+        return None;
+    }
+
+    let a_v = a_t.elements.as_f64_slice()?;
+    let b_v = b_t.elements.as_f64_slice()?;
+    if !a_v.iter().all(|value| value.is_finite()) || !b_v.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::r2_score_2d(a_v, b_v, rows, cols);
     Some(
         TensorValue::new_f64_values(
             Shape {
@@ -22977,6 +23137,167 @@ mod tests {
             .expect("nonfinite rmse falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite rmse");
+        assert_eq!(through_eval, through_generic);
+    }
+
+    fn make_r2_score_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
+        let a = VarId(1);
+        let b = VarId(2);
+        let resid = VarId(3);
+        let resid_sq = VarId(4);
+        let ss_res = VarId(5);
+        let s = VarId(6);
+        let mean = VarId(7);
+        let mean_b = VarId(8);
+        let centered = VarId(9);
+        let centered_sq = VarId(10);
+        let ss_tot = VarId(11);
+        let ratio = VarId(12);
+        let out = VarId(13);
+        let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+        let bcast = BTreeMap::from([
+            ("shape".to_owned(), format!("{rows},{cols}")),
+            ("broadcast_dimensions".to_owned(), "0".to_owned()),
+        ]);
+        let n = Literal::from_f64(cols as f64);
+        Jaxpr::new(
+            vec![a, b],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Sub,
+                    inputs: smallvec![Atom::Var(a), Atom::Var(b)],
+                    outputs: smallvec![resid],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(resid), Atom::Var(resid)],
+                    outputs: smallvec![resid_sq],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(resid_sq)],
+                    outputs: smallvec![ss_res],
+                    params: reduce_axis1.clone(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(a)],
+                    outputs: smallvec![s],
+                    params: reduce_axis1.clone(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Div,
+                    inputs: smallvec![Atom::Var(s), Atom::Lit(n)],
+                    outputs: smallvec![mean],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::BroadcastInDim,
+                    inputs: smallvec![Atom::Var(mean)],
+                    outputs: smallvec![mean_b],
+                    params: bcast,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sub,
+                    inputs: smallvec![Atom::Var(a), Atom::Var(mean_b)],
+                    outputs: smallvec![centered],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(centered), Atom::Var(centered)],
+                    outputs: smallvec![centered_sq],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(centered_sq)],
+                    outputs: smallvec![ss_tot],
+                    params: reduce_axis1,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Div,
+                    inputs: smallvec![Atom::Var(ss_res), Atom::Var(ss_tot)],
+                    outputs: smallvec![ratio],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sub,
+                    inputs: smallvec![Atom::Lit(Literal::from_f64(1.0)), Atom::Var(ratio)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn eval_top_level_r2_score_2d_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        // Per-row-varying y_true (no constant row → ss_tot ≠ 0) and an independent y_pred.
+        let a_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.41).sin() * 3.0 - 0.6)
+            .collect();
+        let b_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.19).cos() * 2.2 + 0.35)
+            .collect();
+        let dims = vec![rows as u32, cols as u32];
+        let a = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_data).expect("a input"),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, b_data).expect("b input"),
+        );
+        let jaxpr = make_r2_score_2d_jaxpr(rows, cols);
+
+        let fast = eval_jaxpr(&jaxpr, &[a.clone(), b.clone()]).expect("fast r2");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[a, b]).expect("generic r2");
+        assert_eq!(fast, generic);
+
+        let mut a_nonfinite: Vec<f64> = (0..rows * cols).map(|idx| idx as f64 * 0.03 + 0.1).collect();
+        a_nonfinite[cols + 1] = f64::NAN;
+        let a_nf = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_nonfinite)
+                .expect("nonfinite a"),
+        );
+        let b_ok = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape { dims },
+                (0..rows * cols).map(|idx| idx as f64 * 0.02).collect(),
+            )
+            .expect("finite b"),
+        );
+        let through_eval =
+            eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()]).expect("nonfinite r2 falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite r2");
         assert_eq!(through_eval, through_generic);
     }
 

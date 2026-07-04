@@ -2,6 +2,44 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-04 - WIN 12.29x vs ORIG: row-wise R² / coefficient of determination recognized as a fused 2-input interpreter superinstruction (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::r2_score_2d`). R² / coefficient of
+  determination `1 − Σ(a−b)² / Σ(a−mean(a))²` (`a`=y_true, `b`=y_pred, `sklearn.metrics.r2_score` — the
+  standard regression score) along the last axis. An 11-equation, TWO-input graph:
+  `Sub(a,b)→Mul(sq)→ReduceSum(ss_res)` (the residual sum-of-squares — MSE fusion) fused with
+  `ReduceSum(a)→Div(n)→Bcast→Sub(centered)→Mul(sq)→ReduceSum(ss_tot)` (the mean-centered total sum-of-squares
+  — variance fusion), then `Div(ratio) | Sub(1, ratio)`. Two f64 [rows,cols] inputs → one [rows] output
+  (rank-reducing). Worktree audit: HEAD==origin/main (my RMSE tip `df61b9dc`), no unlanded win → DIG turn.
+  DISTINCT from `mean_squared_error_2d` (just the ss_res half) and `var_2d` (just the ss_tot half, ÷n).
+  TRANSCENDENTAL-FREE → the big-multiple tier (like var 13.38x / std 13.79x / kurtosis 15.43x).
+- LEVER: a top-level 2-input superinstruction for the exact 11-eq finite dense f64 R² graph, computed via the
+  row-parallel `r2_score_2d`. BIT-IDENTICAL: `r2_score_row` accumulates `(a[i]-b[i])²` index-order (== the
+  materialized `ReduceSum(Mul(Sub))` residual, the shipped MSE fusion), the mean via an index-order sum `/ n`
+  (`ReduceSum`+`Div`), and `(a[i]-mean)²` index-order (== the variance fusion, recomputing `a[i]-mean` with
+  the identical scalar mean), then `1.0 - ss_res/ss_tot` — TRUE `Div` and a SCALAR-broadcast `Sub(1, ratio)`
+  (fj binary ops broadcast a scalar-literal first operand via `eval_f64_scalar_broadcast_binop(...,true)`,
+  same pattern as softplus's `1+exp`). Both inputs must be dense finite rank-2 f64 of EQUAL shape, the mean
+  `Div` divisor must equal `cols` (as f64), and the final `Sub` literal must be exactly `1.0`, else falls
+  through to the generic path.
+- MEASURED per-crate (`rch exec`, `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cc`,
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed r2_score_2d
+  -m 3 -s 20`, 4096x1024, a=softmax_input b=layer_norm_input):
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/r2_score_2d/orig_decomposed_4096x1024` | 72.799 ms |
+  | `compiled_dispatch/r2_score_2d/fast_eval_jaxpr_4096x1024` | 5.925 ms |
+
+  Ratio vs ORIG: **0.0814x time / 12.29x faster** (tight CIs; worst-case 11.88x, best 12.82x; robustly ≥2x).
+  The 73 ms decomposed baseline is heavy (5 materialized [rows,cols] intermediates — residual, residual²,
+  mean-broadcast, centered, centered² — plus 3 reductions); the fused path is pure arithmetic at 5.9 ms.
+- VALIDATION: `eval_top_level_r2_score_2d_f64_matches_generic_and_preserves_edges` GREEN (fused==generic
+  bit-for-bit on mixed-sign random f64, INCLUDING the scalar-first `Sub(1.0, ratio)`; nonfinite input falls
+  through to the generic path); fj-lax `nn::` 61/61 GREEN. Pre-existing INDEPENDENT RED (NOT this change):
+  fj-interpreters `scalar_arena_transcendentals_bit_identical_to_generic` on `Cbrt(-5)` — no cbrt/arena code
+  touched here.
+
 ## 2026-07-04 - WIN 4.19x vs ORIG: row-wise root mean squared error (RMSE) recognized as a fused 2-input interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ row-parallel `fj-lax::nn::root_mean_squared_error_2d`).
