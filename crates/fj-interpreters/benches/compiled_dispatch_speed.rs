@@ -1513,6 +1513,69 @@ fn build_cosine_similarity_2d_jaxpr() -> Jaxpr {
     )
 }
 
+fn build_dice_coefficient_2d_jaxpr() -> Jaxpr {
+    let a = VarId(1);
+    let b = VarId(2);
+    let ab = VarId(3);
+    let dot = VarId(4);
+    let sum_a = VarId(5);
+    let sum_b = VarId(6);
+    let denom = VarId(7);
+    let numerator = VarId(8);
+    let out = VarId(9);
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let reduce = |input: VarId, o: VarId| Equation {
+        primitive: Primitive::ReduceSum,
+        inputs: smallvec::smallvec![Atom::Var(input)],
+        outputs: smallvec::smallvec![o],
+        params: reduce_axis1.clone(),
+        effects: vec![],
+        sub_jaxprs: vec![],
+    };
+    Jaxpr::new(
+        vec![a, b],
+        vec![],
+        vec![out],
+        vec![
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(a), Atom::Var(b)],
+                outputs: smallvec::smallvec![ab],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            reduce(ab, dot),
+            reduce(a, sum_a),
+            reduce(b, sum_b),
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![Atom::Var(sum_a), Atom::Var(sum_b)],
+                outputs: smallvec::smallvec![denom],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec::smallvec![Atom::Var(dot), Atom::Lit(Literal::from_f64(2.0))],
+                outputs: smallvec::smallvec![numerator],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Div,
+                inputs: smallvec::smallvec![Atom::Var(numerator), Atom::Var(denom)],
+                outputs: smallvec::smallvec![out],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 fn build_var_2d_jaxpr(rows: usize, cols: usize) -> Jaxpr {
     let x = VarId(1);
     let s1 = VarId(2);
@@ -3362,6 +3425,26 @@ fn eval_cosine_similarity_2d_decomposed(a: &Value, b: &Value) -> Value {
     eval_primitive(Primitive::Div, &[dot, denom], &empty).expect("cosine")
 }
 
+fn eval_dice_coefficient_2d_decomposed(a: &Value, b: &Value) -> Value {
+    let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+    let empty = BTreeMap::new();
+    let ab = eval_primitive(Primitive::Mul, &[a.clone(), b.clone()], &empty).expect("a*b");
+    let dot = eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(&ab),
+        &reduce_axis1,
+    )
+    .expect("dot");
+    let sum_a = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(a), &reduce_axis1)
+        .expect("sum a");
+    let sum_b = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(b), &reduce_axis1)
+        .expect("sum b");
+    let denom = eval_primitive(Primitive::Add, &[sum_a, sum_b], &empty).expect("denom");
+    let numerator =
+        eval_primitive(Primitive::Mul, &[dot, Value::scalar_f64(2.0)], &empty).expect("2 * dot");
+    eval_primitive(Primitive::Div, &[numerator, denom], &empty).expect("dice")
+}
+
 fn eval_var_2d_decomposed(input: &Value, rows: usize, cols: usize) -> Value {
     let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
     let bcast = BTreeMap::from([
@@ -4418,6 +4501,19 @@ fn bench_compiled_dispatch(c: &mut Criterion) {
     });
     group.bench_function("cosine_similarity_2d/fast_eval_jaxpr_4096x1024", |b| {
         b.iter(|| black_box(eval_jaxpr(black_box(&cosine_jaxpr), black_box(&cosine_args)).unwrap()))
+    });
+    let dice_jaxpr = build_dice_coefficient_2d_jaxpr();
+    let dice_args = [softmax_input.clone(), ce_labels_input.clone()];
+    group.bench_function("dice_coefficient_2d/orig_decomposed_4096x1024", |b| {
+        b.iter(|| {
+            black_box(eval_dice_coefficient_2d_decomposed(
+                black_box(&dice_args[0]),
+                black_box(&dice_args[1]),
+            ))
+        })
+    });
+    group.bench_function("dice_coefficient_2d/fast_eval_jaxpr_4096x1024", |b| {
+        b.iter(|| black_box(eval_jaxpr(black_box(&dice_jaxpr), black_box(&dice_args)).unwrap()))
     });
     let var_jaxpr = build_var_2d_jaxpr(rows, cols);
     group.bench_function("var_2d/orig_decomposed_4096x1024", |b| {

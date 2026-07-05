@@ -35,6 +35,38 @@ Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
   The runs still report pre-existing `fj-lax` warnings in arithmetic/reduction/linalg; they are
   unrelated to this change.
 
+## 2026-07-05 - WIN 1.82x vs ORIG: row-wise Dice coefficient fused interpreter superinstruction (DustyDog)
+
+- Agent: DustyDog. Crate: `fj-interpreters` (+ `fj-lax::nn::dice_coefficient_2d` row kernel).
+  Worktree audit found no measured unlanded scratch/worktree win missing from `main`, so this turn
+  dug a new primitive from the ledger gap: row-wise Dice/Sorensen similarity
+  `2 * reduce_sum(a*b, axis=1) / (reduce_sum(a, axis=1) + reduce_sum(b, axis=1))`.
+- LEVER: top-level recognizer dispatches the exact dense finite f64 rank-2 two-input graph
+  `Mul(a,b) -> ReduceSum(axis=1) | ReduceSum(a, axis=1) | ReduceSum(b, axis=1) -> Add -> Mul(2)
+  -> Div` directly to a row-parallel fused kernel. This avoids materializing the full product and
+  three row-vector temporaries while preserving each independent index-order reduction. Shape, dtype,
+  graph, or nonfinite input mismatches fall through to the generic interpreter path.
+- MEASURED per-crate (`rch exec`, worker `vmi1167313`,
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod`, `AGENT_NAME=DustyDog`):
+  Cargo on this toolchain exposes `--profile release` rather than `cargo bench --release`.
+  `cargo bench -p fj-interpreters --profile release --bench compiled_dispatch_speed
+  dice_coefficient_2d -- --warm-up-time 1 --measurement-time 2 --sample-size 10 --noplot`.
+
+  | row | median |
+  | --- | ---: |
+  | `compiled_dispatch/dice_coefficient_2d/orig_decomposed_4096x1024` | 66.541 ms |
+  | `compiled_dispatch/dice_coefficient_2d/fast_eval_jaxpr_4096x1024` | 36.625 ms |
+
+  Ratio vs ORIG: **0.5504x time / 1.82x faster**.
+- VALIDATION: `cargo test -p fj-interpreters dice_coefficient -- --nocapture` GREEN on RCH
+  `ovh-a`; `cargo check -p fj-interpreters --all-targets` GREEN on RCH `hz2`. `cargo fmt -p
+  fj-lax -p fj-interpreters` GREEN before the bench; `git diff --check` GREEN before the ledger
+  update. `cargo test -p fj-conformance --profile release -- --nocapture` GREEN locally with
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod`; the RCH conformance attempt reached tests
+  but failed `artifact_schemas` because `.rchignore` excludes the tracked `artifacts/` directory from
+  worker transfer. The runs still report the pre-existing `fj-lax` warnings in
+  arithmetic/reduction/linalg; they are unrelated to this change.
+
 ## 2026-07-04 - WIN 3.92x vs ORIG: row-wise probability cross-entropy fused interpreter superinstruction (DustyDog)
 
 - Agent: DustyDog. Crate: `fj-interpreters` (+ `fj-lax::nn::cross_entropy_2d` row kernel).

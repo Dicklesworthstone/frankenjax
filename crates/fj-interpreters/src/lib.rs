@@ -1178,6 +1178,10 @@ pub fn eval_jaxpr_with_consts(
         return result;
     }
 
+    if let Some(result) = try_eval_top_level_dice_coefficient_2d_f64(jaxpr, const_values, args) {
+        return result;
+    }
+
     if let Some(result) = try_eval_top_level_euclidean_distance_2d_f64(jaxpr, const_values, args) {
         return result;
     }
@@ -3752,6 +3756,124 @@ fn try_eval_top_level_cosine_similarity_2d_f64(
     }
 
     let output = fj_lax::nn::cosine_similarity_2d(a_v, b_v, rows, cols);
+    Some(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![rows as u32],
+            },
+            output,
+        )
+        .map(Value::Tensor)
+        .map(|value| vec![value])
+        .map_err(EvalError::InvalidTensor)
+        .map_err(InterpreterError::Primitive),
+    )
+}
+
+/// Interpreter superinstruction for the row-wise Dice/Sorensen coefficient
+/// `2Σ(a·b) / (Σa + Σb)` along the last axis: the 7-equation, two-input graph
+/// `Mul(a,b) → ReduceSum(dot) | ReduceSum(a) | ReduceSum(b) | Add(denom) | Mul(dot,2) → Div`.
+/// This is a common set-overlap similarity for dense feature/probability rows. The general fuser
+/// cannot fuse across the three reductions, so the decomposed path materializes the full product and
+/// three row-vector temporaries. Fused via the row-parallel `dice_coefficient_2d`, whose independent
+/// index-order dot/sum/sum reductions match the graph bit-for-bit; finite dense rank-2 f64 only,
+/// else falls through.
+fn try_eval_top_level_dice_coefficient_2d_f64(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !jaxpr.constvars.is_empty()
+        || !const_values.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 2
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 7
+        || args.len() != 2
+    {
+        return None;
+    }
+
+    let a = jaxpr.invars[0];
+    let b = jaxpr.invars[1];
+    let out = jaxpr.outvars[0];
+    let [ab_eq, dot_eq, sum_a_eq, sum_b_eq, denom_eq, num_eq, div_eq] = jaxpr.equations.as_slice()
+    else {
+        return None;
+    };
+
+    let ab = single_output_for_primitive(ab_eq, Primitive::Mul)?;
+    let ab_ok = matches!(
+        ab_eq.inputs.as_slice(),
+        [Atom::Var(x), Atom::Var(y)] if (*x == a && *y == b) || (*x == b && *y == a)
+    );
+    if !ab_ok {
+        return None;
+    }
+    let dot = single_output_for_param_primitive(dot_eq, Primitive::ReduceSum)?;
+    if dot_eq.inputs.as_slice() != [Atom::Var(ab)] || !axis1_reduce_params(&dot_eq.params) {
+        return None;
+    }
+
+    let sum_a = single_output_for_param_primitive(sum_a_eq, Primitive::ReduceSum)?;
+    if sum_a_eq.inputs.as_slice() != [Atom::Var(a)] || !axis1_reduce_params(&sum_a_eq.params) {
+        return None;
+    }
+    let sum_b = single_output_for_param_primitive(sum_b_eq, Primitive::ReduceSum)?;
+    if sum_b_eq.inputs.as_slice() != [Atom::Var(b)] || !axis1_reduce_params(&sum_b_eq.params) {
+        return None;
+    }
+
+    let denom = single_output_for_primitive(denom_eq, Primitive::Add)?;
+    let denom_ok = matches!(
+        denom_eq.inputs.as_slice(),
+        [Atom::Var(x), Atom::Var(y)] if (*x == sum_a && *y == sum_b) || (*x == sum_b && *y == sum_a)
+    );
+    if !denom_ok {
+        return None;
+    }
+
+    let numerator = single_output_for_primitive(num_eq, Primitive::Mul)?;
+    let num_ok = match num_eq.inputs.as_slice() {
+        [Atom::Var(x), literal] if *x == dot => f64_literal(literal)?.to_bits() == 2.0f64.to_bits(),
+        [literal, Atom::Var(x)] if *x == dot => f64_literal(literal)?.to_bits() == 2.0f64.to_bits(),
+        _ => false,
+    };
+    if !num_ok {
+        return None;
+    }
+
+    let quotient = single_output_for_primitive(div_eq, Primitive::Div)?;
+    if quotient != out || div_eq.inputs.as_slice() != [Atom::Var(numerator), Atom::Var(denom)] {
+        return None;
+    }
+
+    let Value::Tensor(a_t) = &args[0] else {
+        return None;
+    };
+    let Value::Tensor(b_t) = &args[1] else {
+        return None;
+    };
+    if a_t.dtype != DType::F64
+        || b_t.dtype != DType::F64
+        || a_t.shape.dims.len() != 2
+        || b_t.shape.dims != a_t.shape.dims
+    {
+        return None;
+    }
+    let rows = a_t.shape.dims[0] as usize;
+    let cols = a_t.shape.dims[1] as usize;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+
+    let a_v = a_t.elements.as_f64_slice()?;
+    let b_v = b_t.elements.as_f64_slice()?;
+    if !a_v.iter().all(|value| value.is_finite()) || !b_v.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let output = fj_lax::nn::dice_coefficient_2d(a_v, b_v, rows, cols);
     Some(
         TensorValue::new_f64_values(
             Shape {
@@ -25143,6 +25265,117 @@ mod tests {
             .expect("nonfinite cosine falls through");
         let through_generic =
             eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite cosine");
+        assert_eq!(through_eval, through_generic);
+    }
+
+    fn make_dice_coefficient_2d_jaxpr() -> Jaxpr {
+        let a = VarId(1);
+        let b = VarId(2);
+        let ab = VarId(3);
+        let dot = VarId(4);
+        let sum_a = VarId(5);
+        let sum_b = VarId(6);
+        let denom = VarId(7);
+        let numerator = VarId(8);
+        let out = VarId(9);
+        let reduce_axis1 = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+        let mul = |lhs: VarId, rhs: VarId, o: VarId| Equation {
+            primitive: Primitive::Mul,
+            inputs: smallvec![Atom::Var(lhs), Atom::Var(rhs)],
+            outputs: smallvec![o],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        let reduce = |input: VarId, o: VarId| Equation {
+            primitive: Primitive::ReduceSum,
+            inputs: smallvec![Atom::Var(input)],
+            outputs: smallvec![o],
+            params: reduce_axis1.clone(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        };
+        Jaxpr::new(
+            vec![a, b],
+            vec![],
+            vec![out],
+            vec![
+                mul(a, b, ab),
+                reduce(ab, dot),
+                reduce(a, sum_a),
+                reduce(b, sum_b),
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(sum_a), Atom::Var(sum_b)],
+                    outputs: smallvec![denom],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(dot), Atom::Lit(Literal::from_f64(2.0))],
+                    outputs: smallvec![numerator],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Div,
+                    inputs: smallvec![Atom::Var(numerator), Atom::Var(denom)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn eval_top_level_dice_coefficient_2d_f64_matches_generic_and_preserves_edges() {
+        let rows = 9usize;
+        let cols = 7usize;
+        let a_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.37).sin().abs() * 0.75 + 0.1)
+            .collect();
+        let b_data: Vec<f64> = (0..rows * cols)
+            .map(|idx| ((idx as f64) * 0.21).cos().abs() * 0.5 + 0.2)
+            .collect();
+        let dims = vec![rows as u32, cols as u32];
+        let a = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_data).expect("a input"),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, b_data).expect("b input"),
+        );
+        let jaxpr = make_dice_coefficient_2d_jaxpr();
+
+        let fast = eval_jaxpr(&jaxpr, &[a.clone(), b.clone()]).expect("fast dice");
+        let generic = eval_jaxpr_hashed_env(&jaxpr, &[], &[a, b]).expect("generic dice");
+        assert_eq!(fast, generic);
+
+        let mut a_nonfinite: Vec<f64> = (0..rows * cols)
+            .map(|idx| idx as f64 * 0.01 + 0.1)
+            .collect();
+        a_nonfinite[cols + 1] = f64::NAN;
+        let a_nf = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, a_nonfinite)
+                .expect("nonfinite a"),
+        );
+        let b_ok = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape { dims },
+                (0..rows * cols)
+                    .map(|idx| idx as f64 * 0.02 + 0.3)
+                    .collect(),
+            )
+            .expect("finite b"),
+        );
+        let through_eval = eval_jaxpr(&jaxpr, &[a_nf.clone(), b_ok.clone()])
+            .expect("nonfinite dice falls through");
+        let through_generic =
+            eval_jaxpr_hashed_env(&jaxpr, &[], &[a_nf, b_ok]).expect("generic nonfinite dice");
         assert_eq!(through_eval, through_generic);
     }
 

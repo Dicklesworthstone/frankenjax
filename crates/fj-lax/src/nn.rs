@@ -1222,6 +1222,67 @@ pub fn cosine_similarity_2d(a: &[f64], b: &[f64], rows: usize, cols: usize) -> V
     result
 }
 
+/// Dice/Sorensen coefficient of a single pair of rows, `2Σ(a·b) / (Σa + Σb)`, bit-identical to
+/// the decomposed `Mul(a,b) → ReduceSum(dot) | ReduceSum(a) | ReduceSum(b) | Add → Mul(2) → Div`
+/// graph. The dot/sum-a/sum-b accumulators are independent index-order sums, so fusing the row pass
+/// preserves each reduction exactly; zero denominators propagate inf/NaN as the graph does.
+fn dice_coefficient_row(a: &[f64], b: &[f64]) -> f64 {
+    let mut dot = 0.0;
+    let mut sum_a = 0.0;
+    let mut sum_b = 0.0;
+    for (&av, &bv) in a.iter().zip(b.iter()) {
+        dot += av * bv;
+        sum_a += av;
+        sum_b += bv;
+    }
+    (dot * 2.0) / (sum_a + sum_b)
+}
+
+/// Row-wise Dice/Sorensen coefficient for two 2D arrays. ROW-PARALLEL and bit-identical to the
+/// decomposed dot/sum/sum graph via [`dice_coefficient_row`]. Callers guarantee `a` and `b` share
+/// the same `rows,cols` row-major layout.
+#[must_use]
+pub fn dice_coefficient_2d(a: &[f64], b: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let _ = checked_2d_row_major_len("2D dice_coefficient a", a, rows, cols);
+    let _ = checked_2d_row_major_len("2D dice_coefficient b", b, rows, cols);
+    let mut result = vec![0.0; rows];
+    if cols == 0 || rows == 0 {
+        return result;
+    }
+    let threads = softmax_2d_thread_count(rows, rows * cols);
+    if threads <= 1 {
+        for (i, slot) in result.iter_mut().enumerate() {
+            let start = i * cols;
+            *slot = dice_coefficient_row(&a[start..start + cols], &b[start..start + cols]);
+        }
+        return result;
+    }
+
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut out_rest: &mut [f64] = &mut result;
+        let mut row0 = 0usize;
+        while row0 < rows {
+            let row_count = rows_per.min(rows - row0);
+            let (out_block, out_tail) = out_rest.split_at_mut(row_count);
+            out_rest = out_tail;
+            let a_block = &a[row0 * cols..(row0 + row_count) * cols];
+            let b_block = &b[row0 * cols..(row0 + row_count) * cols];
+            row0 += row_count;
+            scope.spawn(move || {
+                for (k, out_slot) in out_block.iter_mut().enumerate() {
+                    let start = k * cols;
+                    *out_slot = dice_coefficient_row(
+                        &a_block[start..start + cols],
+                        &b_block[start..start + cols],
+                    );
+                }
+            });
+        }
+    });
+    result
+}
+
 /// Euclidean (L2) distance of a single pair of rows, `√Σ(a - b)²`, bit-identical to the decomposed
 /// `Sub → Mul(square) → ReduceSum → Sqrt` graph: an index-order sum of `(a[i]-b[i])²`, then
 /// `f64::sqrt` (IEEE-exact, same as the `Sqrt` primitive). Callers guarantee equal-length rows.
