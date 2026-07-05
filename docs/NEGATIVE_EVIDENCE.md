@@ -2,6 +2,45 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-05 - NO-SHIP 1.158x time vs ORIG: Poisson PTRS bounded log-factorial table regressed/no-significance (DustyDog)
+
+- Agent: DustyDog. Crate: `fj-lax`. Dug a non-interpreter primitive after the Mish win,
+  avoiding the ledger-rejected producerless reducer and already-covered activation/fusion lanes.
+  Graveyard/artifact mapping: a succinct finite table/compiled artifact for the repeated
+  Hörmann PTRS `lgamma(k+1)` accept-test term in `random_poisson(lam>=10)`.
+- LEVER PROTOTYPED THEN DROPPED: built a bounded per-`lam` `log_factorials[k] =
+  lgamma_approx(k+1)` table, shared read-only across the threaded PTRS sweep, with exact fallback
+  to the original `lgamma_approx(k+1)` outside the table. A private equality test showed
+  table-backed PTRS output matched the no-table path bit-for-bit for `lam=15/30`; no semantic
+  issue was found.
+- MEASURED per-crate (`rch exec`, worker `vmi1293453`,
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod`, `AGENT_NAME=DustyDog`,
+  `cargo bench -p fj-lax --profile release --bench lax_baseline
+  random/poisson_1m_lam15_vsjax -- --warm-up-time 1 --measurement-time 2 --sample-size 10`).
+  ORIG used `FJ_POISSON_LOG_FACTORIAL_TABLE=0`; FAST used the default table path.
+
+  | row | midpoint | CI |
+  | --- | ---: | ---: |
+  | ORIG no-table PTRS | 209.19 ms | 178.75-241.74 ms |
+  | FAST bounded table | 242.14 ms | 164.94-330.42 ms |
+
+  Ratio vs ORIG: **1.1575x time / 0.864x speed** (regression by midpoint; Criterion also
+  reported `p = 0.50 > 0.05`, no significant performance improvement). A provisional local
+  fail-open ORIG run reported 140.62 ms and is ignored for the landed/rejected ratio because it was
+  not same-worker remote evidence.
+- DECISION: NO-SHIP. Prototype fully reverted; do **not** retry the bounded log-factorial lookup
+  table as a Poisson PTRS lever. The expected `lgamma` savings are erased by table construction,
+  cache/branch overhead, and the already-dominant uniform-block/reduction/overwrite sweep costs.
+  Any future Poisson attempt must be a different primitive, e.g. a proof-backed accepted-mask
+  semantic rewrite or a block-generation/reduction-cost attack, not this lookup-table route.
+- VALIDATION BEFORE REVERT: `cargo fmt -p fj-lax --check` GREEN; `rch exec -- cargo test -p fj-lax
+  poisson --lib` GREEN on worker `vmi1293453` (5 passed, 1 ignored); `rch exec -- cargo check
+  -p fj-lax --all-targets` GREEN on worker `vmi1293453` with pre-existing unrelated warnings in
+  `arithmetic.rs`, `reduction.rs`, and `linalg.rs`. An earlier check on worker `ovh-b` failed before
+  crate checking due to dependency build-script `SIGILL`, so it was discarded as infrastructure
+  noise. After revert, conformance stayed GREEN: `rch exec -- cargo test -p fj-conformance
+  --profile release -- --nocapture` on worker `ovh-a` (all tests and doctests passed).
+
 ## 2026-07-05 - WIN 1.72x vs ORIG: direct Mish graph recognized as a fused interpreter superinstruction (DustyDog)
 
 - Agent: DustyDog. Crate: `fj-interpreters` (+ `fj-lax::nn::mish_direct`).
