@@ -34,16 +34,20 @@ Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 - VALIDATION: `cargo fmt -p fj-interpreters -p fj-lax --check` GREEN.
   `rch exec -- cargo test -p fj-interpreters
   eval_top_level_binary_cross_entropy_2d_f64_matches_generic_and_preserves_edges --lib` GREEN
-  after RCH fail-open local execution (no admissible workers; target dir still
-  `/data/projects/.rch-targets/jax-cod`). Conformance stayed GREEN:
+  on `vmi1152480` in closeout revalidation. `rch exec -- cargo check -p fj-lax
+  -p fj-interpreters --all-targets` GREEN on `vmi1152480`; it still reports
+  pre-existing unrelated `fj-lax` warnings. Conformance stayed GREEN:
   `rch exec -- cargo test -p fj-conformance --profile release -- --nocapture` after the same RCH
   fail-open local path. `rch exec -- cargo check --workspace --all-targets` GREEN on
   `vmi1293453`; it still reports pre-existing unrelated `fj-lax` warnings. `rch exec -- cargo
   clippy --workspace --all-targets -- -D warnings` was discarded once on `ovh-b` due to
   build-script `SIGILL`, then failed on `vmi1293453` only on existing `fj-lax` lint debt outside
   this lever (`arithmetic.rs`, `reduction.rs`, `linalg.rs`, `einsum.rs`, `simd_exp.rs`,
-  `tensor_ops.rs`, `lib.rs`). `ubs` on touched files likewise exits non-zero on broad existing
-  panic/indexing/test-surface heuristics; its internal fmt/clippy/check/test subchecks were clean.
+  `tensor_ops.rs`, `lib.rs`). Closeout also confirmed `rch exec -- cargo clippy
+  -p fj-interpreters --all-targets --no-deps -- -D warnings` GREEN on `hz2`; the strict
+  `-p fj-lax -p fj-interpreters` form still fails on the same pre-existing `fj-lax` lint debt.
+  `ubs` on touched files likewise exits non-zero on broad existing panic/indexing/test-surface
+  heuristics; its internal fmt/clippy/check/test subchecks were clean.
 
 ## 2026-07-05 - NO-SHIP 1.158x time vs ORIG: Poisson PTRS bounded log-factorial table regressed/no-significance (DustyDog)
 
