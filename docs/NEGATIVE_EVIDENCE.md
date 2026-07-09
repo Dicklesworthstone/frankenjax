@@ -109,6 +109,57 @@ Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
   embedded formatting, clippy, cargo-check, test-build, audit, and deny
   subchecks were clean.
 
+## 2026-07-09 - WIN 60.2x vs ORIG: exact-affine f64 tensor-add DAG transducer (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-backend-cpu`. Consulted this ledger first and
+  avoided the just-rejected large-vector direct f64 tensor-add DAG evaluator, as
+  well as the closed maxpool, softmax/log-softmax, cumsum/AD chain-cumsum, dense
+  f64 serde, Scan SIMD, Slice copy, Poisson, special-function, BF16, one-hot,
+  FFT, sort, SVD, row-wise interpreter, gather/scatter, branchless select, and
+  related lanes. The short profile again selected
+  `backend_scheduler_tensor_shapes/tensor_branched_fanin/16x4x4096` as the
+  hottest eligible backend row: `2.4347 ms` midpoint on `vmi1264463`
+  (`2.0078-2.6999 ms`).
+- LEVER: an exact-only symbolic affine transducer for terminal f64 tensor-add
+  DAGs. Instead of interpreting every add over every element, it compiles the
+  single-output DAG to `a*x + b` and emits one dense pass only when the source
+  tensor and all constants are finite integer f64 values, no negative zero is
+  present, all tracked intermediate affine forms stay within the exact integer
+  range (`<= 2^53`), and the DAG has one f64 tensor source. Fractional,
+  non-finite, multi-source, visible-intermediate, or range-risk cases fall back
+  to the legacy scheduler. A hidden legacy backend constructor preserves the old
+  scheduler for same-binary ORIG measurement.
+- MEASURED per-crate with the requested wrapper (`AGENT_NAME=BlackThrush`,
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod`, `rch exec -- cargo
+  bench -p fj-backend-cpu --profile release --bench backend_baseline
+  'backend_scheduler_tensor_shapes/tensor_branched_fanin' -- --warm-up-time 1
+  --measurement-time 2 --sample-size 10 --noplot`). RCH fell open to local
+  because the worker fleet was full; ORIG and candidate are still same-process,
+  same-binary rows from that local run.
+
+  | row | worker | midpoint | CI |
+  | --- | --- | ---: | ---: |
+  | ORIG legacy scheduler `backend_scheduler_tensor_shapes/tensor_branched_fanin_legacy_orig/16x4x4096` | local fail-open | 1.5516 ms | 1.5118-1.5939 ms |
+  | candidate exact-affine transducer `backend_scheduler_tensor_shapes/tensor_branched_fanin/16x4x4096` | local fail-open | 25.791 us | 25.188-26.667 us |
+
+  Ratio vs ORIG: **0.0166x time / 60.2x faster** by midpoint. Conservative CI
+  floor: `1.5118 ms / 26.667 us = 56.7x`.
+- VALIDATION: focused byte-exact parity and fallback tests GREEN with the
+  requested wrapper on `vmi1227854`: `cargo test -p fj-backend-cpu --profile
+  release dependency_scheduler_exact_affine_f64_tensor_add -- --nocapture` (2
+  passed). `rustfmt --edition 2024 --check
+  crates/fj-backend-cpu/src/executor.rs
+  crates/fj-backend-cpu/benches/backend_baseline.rs` GREEN. `cargo check -p
+  fj-backend-cpu --all-targets --profile release` GREEN on `hz1`; an earlier
+  `ovh-b` check attempt died in the `zerocopy` build script with SIGILL before
+  crate code and was rerun successfully. `cargo clippy -p fj-backend-cpu
+  --all-targets --profile release --no-deps -- -D warnings` GREEN on `hz1`;
+  the full dependency clippy command remains blocked by pre-existing `fj-lax`
+  lint debt. Byte-exact conformance GREEN with `AGENT_NAME=BlackThrush
+  CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod rch exec -- cargo test
+  -p fj-conformance --profile release -- --nocapture` (RCH fail-open local; all
+  tests and doc-tests passed).
+
 ## 2026-07-09 - WIN 1.27x vs ORIG: phase-reused log-softmax exp-buffer transducer (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. Consulted this ledger first and

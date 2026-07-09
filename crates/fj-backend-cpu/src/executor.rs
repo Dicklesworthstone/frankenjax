@@ -23,6 +23,8 @@ const TENSOR_PARALLEL_READY_WAVE_MIN_ELEMENTS: usize = 4_096;
 const TENSOR_PARALLEL_INPUT_MIN_ELEMENTS: usize = 1_024;
 const F64_TENSOR_DAG_MIN_SEGMENT_LEN: usize = 128;
 const F64_TENSOR_DAG_MAX_DIRECT_ELEMENTS: usize = 128;
+const EXACT_AFFINE_F64_SAFE_ABS: f64 = 9_007_199_254_740_992.0;
+const NEGATIVE_ZERO_BITS: u64 = (-0.0_f64).to_bits();
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ReadyWaveCost {
@@ -577,6 +579,133 @@ fn f64_tensor_atom_source(
     }
 }
 
+#[derive(Clone, Copy)]
+struct ExactAffineF64 {
+    coefficient: f64,
+    constant: f64,
+}
+
+impl ExactAffineF64 {
+    fn add(self, rhs: Self) -> Option<Self> {
+        let coefficient = self.coefficient + rhs.coefficient;
+        let constant = self.constant + rhs.constant;
+        exact_integer_f64(coefficient)?;
+        exact_integer_f64(constant)?;
+        Some(Self {
+            coefficient,
+            constant,
+        })
+    }
+}
+
+struct ExactAffineCompileState<'a> {
+    forms: Vec<Option<ExactAffineF64>>,
+    levels: Vec<usize>,
+    source_var: Option<VarId>,
+    source_shape: Option<Shape>,
+    source_values: Option<F64TensorSource<'a>>,
+    max_coeff_abs: f64,
+    max_const_abs: f64,
+}
+
+impl<'a> ExactAffineCompileState<'a> {
+    fn new(slot_count: usize) -> Self {
+        Self {
+            forms: vec![None; slot_count],
+            levels: vec![0; slot_count],
+            source_var: None,
+            source_shape: None,
+            source_values: None,
+            max_coeff_abs: 0.0,
+            max_const_abs: 0.0,
+        }
+    }
+
+    fn record_form(&mut self, form: ExactAffineF64) {
+        self.max_coeff_abs = self.max_coeff_abs.max(form.coefficient.abs());
+        self.max_const_abs = self.max_const_abs.max(form.constant.abs());
+    }
+
+    fn atom_form(
+        &mut self,
+        atom: &Atom,
+        env: &'a HashMap<VarId, Value>,
+    ) -> Option<(ExactAffineF64, usize)> {
+        match atom {
+            Atom::Lit(literal) => {
+                let constant = exact_integer_f64(literal.as_f64()?)?;
+                let form = ExactAffineF64 {
+                    coefficient: 0.0,
+                    constant,
+                };
+                self.record_form(form);
+                Some((form, 0))
+            }
+            Atom::Var(var) => {
+                let idx = var_slot_index(*var, self.forms.len())?;
+                if let Some(form) = self.forms[idx] {
+                    return Some((form, self.levels[idx]));
+                }
+
+                match env.get(var)? {
+                    Value::Scalar(literal) => {
+                        let constant = exact_integer_f64(literal.as_f64()?)?;
+                        let form = ExactAffineF64 {
+                            coefficient: 0.0,
+                            constant,
+                        };
+                        self.forms[idx] = Some(form);
+                        self.record_form(form);
+                        Some((form, 0))
+                    }
+                    Value::Tensor(tensor) => {
+                        let source = f64_tensor_source(tensor)?;
+                        match self.source_var {
+                            Some(existing) if existing != *var => return None,
+                            Some(_) => {}
+                            None => self.source_var = Some(*var),
+                        }
+                        match &self.source_shape {
+                            Some(existing) if existing != &tensor.shape => return None,
+                            Some(_) => {}
+                            None => self.source_shape = Some(tensor.shape.clone()),
+                        }
+                        match self.source_values {
+                            Some(existing) if existing.len() != source.len() => return None,
+                            Some(_) => {}
+                            None => self.source_values = Some(source),
+                        }
+
+                        let form = ExactAffineF64 {
+                            coefficient: 1.0,
+                            constant: 0.0,
+                        };
+                        self.forms[idx] = Some(form);
+                        self.record_form(form);
+                        Some((form, 0))
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn exact_integer_f64(value: f64) -> Option<f64> {
+    (value.is_finite()
+        && value.fract() == 0.0
+        && value.abs() <= EXACT_AFFINE_F64_SAFE_ABS
+        && value.to_bits() != NEGATIVE_ZERO_BITS)
+        .then_some(value)
+}
+
+fn source_value_is_exact_for_affine(value: f64, max_coeff_abs: f64, max_const_abs: f64) -> bool {
+    if exact_integer_f64(value).is_none() {
+        return false;
+    }
+    let bound = value.abs().mul_add(max_coeff_abs, max_const_abs);
+    bound.is_finite() && bound <= EXACT_AFFINE_F64_SAFE_ABS
+}
+
 fn max_slot_index_for_add_dag(
     jaxpr: &Jaxpr,
     segment_start: usize,
@@ -700,6 +829,120 @@ fn execute_terminal_i64_add_dag_segment(
     }
 
     env.insert(jaxpr.outvars[0], Value::scalar_i64(values[out_idx]));
+    *remaining -= segment_len;
+    *max_ready_wave = (*max_ready_wave).max(observed_max_ready_wave);
+    Ok(true)
+}
+
+fn execute_terminal_exact_affine_f64_tensor_add_segment(
+    jaxpr: &Jaxpr,
+    segment_start: usize,
+    segment_end: usize,
+    env: &mut HashMap<VarId, Value>,
+    remaining: &mut usize,
+    max_ready_wave: &mut usize,
+) -> Result<bool, InterpreterError> {
+    let segment_len = segment_end - segment_start;
+    if segment_len == 0 || segment_end != jaxpr.equations.len() || jaxpr.outvars.len() != 1 {
+        return Ok(false);
+    }
+
+    let Some(max_slot) = max_slot_index_for_add_dag(jaxpr, segment_start, segment_end) else {
+        return Ok(false);
+    };
+    let Some(slot_count) = max_slot.checked_add(1) else {
+        return Ok(false);
+    };
+    let dense_slot_limit = (jaxpr.invars.len() + segment_len + jaxpr.outvars.len() + 8) * 4;
+    if slot_count > dense_slot_limit {
+        return Ok(false);
+    }
+
+    let compiled = {
+        let mut state = ExactAffineCompileState::new(slot_count);
+        let mut level_counts = vec![0_usize; segment_len + 1];
+        let mut observed_max_ready_wave = 0_usize;
+
+        for equation in &jaxpr.equations[segment_start..segment_end] {
+            if equation.primitive != Primitive::Add
+                || !equation.params.is_empty()
+                || !equation.effects.is_empty()
+                || !equation.sub_jaxprs.is_empty()
+                || equation.inputs.len() != 2
+                || equation.outputs.len() != 1
+            {
+                return Ok(false);
+            }
+
+            let Some((left, left_level)) = state.atom_form(&equation.inputs[0], env) else {
+                return Ok(false);
+            };
+            let Some((right, right_level)) = state.atom_form(&equation.inputs[1], env) else {
+                return Ok(false);
+            };
+            let Some(out_idx) = var_slot_index(equation.outputs[0], slot_count) else {
+                return Ok(false);
+            };
+            let Some(form) = left.add(right) else {
+                return Ok(false);
+            };
+
+            let level = left_level.max(right_level) + 1;
+            state.forms[out_idx] = Some(form);
+            state.levels[out_idx] = level;
+            state.record_form(form);
+            level_counts[level] += 1;
+            observed_max_ready_wave = observed_max_ready_wave.max(level_counts[level]);
+        }
+
+        let Some(out_idx) = var_slot_index(jaxpr.outvars[0], slot_count) else {
+            return Ok(false);
+        };
+        let Some(out_form) = state.forms[out_idx] else {
+            return Ok(false);
+        };
+        let Some(out_shape) = state.source_shape else {
+            return Ok(false);
+        };
+        let Some(source) = state.source_values else {
+            return Ok(false);
+        };
+
+        let mut output_values = Vec::with_capacity(source.len());
+        for elem_idx in 0..source.len() {
+            let Some(input) = source.value_at(elem_idx) else {
+                return Ok(false);
+            };
+            if !source_value_is_exact_for_affine(input, state.max_coeff_abs, state.max_const_abs) {
+                return Ok(false);
+            }
+            output_values.push(input * out_form.coefficient + out_form.constant);
+        }
+
+        Some((
+            out_shape,
+            output_values,
+            observed_max_ready_wave,
+            source.is_dense(),
+        ))
+    };
+
+    let Some((out_shape, output_values, observed_max_ready_wave, output_dense)) = compiled else {
+        return Ok(false);
+    };
+    let output = if output_dense {
+        TensorValue::new_f64_values(out_shape, output_values)
+            .map_err(|err| InterpreterError::Primitive(fj_lax::EvalError::InvalidTensor(err)))?
+    } else {
+        let elements = output_values
+            .into_iter()
+            .map(Literal::from_f64)
+            .collect::<Vec<_>>();
+        TensorValue::new(DType::F64, out_shape, elements)
+            .map_err(|err| InterpreterError::Primitive(fj_lax::EvalError::InvalidTensor(err)))?
+    };
+
+    env.insert(jaxpr.outvars[0], Value::Tensor(output));
     *remaining -= segment_len;
     *max_ready_wave = (*max_ready_wave).max(observed_max_ready_wave);
     Ok(true)
@@ -958,10 +1201,20 @@ fn execute_terminal_i64_add_chain_segment(
     Ok(true)
 }
 
+#[cfg(test)]
 fn evaluate_jaxpr_parallel_inner(
     jaxpr: &Jaxpr,
     args: &[Value],
     max_ready_wave: &mut usize,
+) -> Result<Vec<Value>, InterpreterError> {
+    evaluate_jaxpr_parallel_inner_with_options(jaxpr, args, max_ready_wave, true)
+}
+
+fn evaluate_jaxpr_parallel_inner_with_options(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    max_ready_wave: &mut usize,
+    enable_exact_affine_f64_tensor_add: bool,
 ) -> Result<Vec<Value>, InterpreterError> {
     if !jaxpr.constvars.is_empty() {
         return Err(InterpreterError::ConstArity {
@@ -1018,6 +1271,20 @@ fn evaluate_jaxpr_parallel_inner(
             .find(|idx| !executed[*idx] && is_scheduler_barrier(&jaxpr.equations[*idx]))
             .unwrap_or(jaxpr.equations.len());
         let segment_len = segment_end - first_pending;
+        if enable_exact_affine_f64_tensor_add
+            && execute_terminal_exact_affine_f64_tensor_add_segment(
+                jaxpr,
+                first_pending,
+                segment_end,
+                &mut env,
+                &mut remaining,
+                max_ready_wave,
+            )?
+        {
+            next_pending = segment_end;
+            continue;
+        }
+
         if segment_len < DEPENDENCY_COUNT_MIN_SEGMENT_LEN {
             execute_scan_segment(
                 jaxpr,
@@ -1053,13 +1320,27 @@ fn evaluate_jaxpr_parallel_inner(
         .collect()
 }
 
+#[cfg(test)]
 fn evaluate_jaxpr_parallel(jaxpr: &Jaxpr, args: &[Value]) -> Result<Vec<Value>, InterpreterError> {
+    evaluate_jaxpr_parallel_with_options(jaxpr, args, true)
+}
+
+fn evaluate_jaxpr_parallel_with_options(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    enable_exact_affine_f64_tensor_add: bool,
+) -> Result<Vec<Value>, InterpreterError> {
     if let Some(result) = try_execute_single_equation_scalar_jaxpr(jaxpr, args) {
         return result;
     }
 
     let mut ignored_max_ready_wave = 0_usize;
-    evaluate_jaxpr_parallel_inner(jaxpr, args, &mut ignored_max_ready_wave)
+    evaluate_jaxpr_parallel_inner_with_options(
+        jaxpr,
+        args,
+        &mut ignored_max_ready_wave,
+        enable_exact_affine_f64_tensor_add,
+    )
 }
 
 fn try_execute_single_equation_scalar_jaxpr(
@@ -1115,6 +1396,7 @@ pub struct CpuBackend {
     device_count: u32,
     /// Version string for cache key inclusion.
     version_string: String,
+    enable_exact_affine_f64_tensor_add: bool,
 }
 
 impl CpuBackend {
@@ -1124,6 +1406,7 @@ impl CpuBackend {
         Self {
             device_count: 1,
             version_string: format!("fj-backend-cpu/{}", env!("CARGO_PKG_VERSION")),
+            enable_exact_affine_f64_tensor_add: true,
         }
     }
 
@@ -1141,6 +1424,7 @@ impl CpuBackend {
         Ok(Self {
             device_count: count,
             version_string: format!("fj-backend-cpu/{}", env!("CARGO_PKG_VERSION")),
+            enable_exact_affine_f64_tensor_add: true,
         })
     }
 
@@ -1152,6 +1436,15 @@ impl CpuBackend {
     #[must_use]
     pub fn with_device_count(count: u32) -> Self {
         Self::try_with_device_count(count).unwrap_or_default()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __fj_legacy_without_exact_affine_f64_tensor_add_for_bench() -> Self {
+        Self {
+            enable_exact_affine_f64_tensor_add: false,
+            ..Self::new()
+        }
     }
 }
 
@@ -1195,9 +1488,10 @@ impl Backend for CpuBackend {
                 ),
             });
         }
-        evaluate_jaxpr_parallel(jaxpr, args).map_err(|e| BackendError::ExecutionFailed {
-            detail: e.to_string(),
-        })
+        evaluate_jaxpr_parallel_with_options(jaxpr, args, self.enable_exact_affine_f64_tensor_add)
+            .map_err(|e| BackendError::ExecutionFailed {
+                detail: e.to_string(),
+            })
     }
 
     fn allocate(&self, size_bytes: usize, device: DeviceId) -> Result<Buffer, BackendError> {
@@ -1926,6 +2220,44 @@ mod tests {
                 .is_none()
         );
         assert_eq!(max_ready_wave, 32);
+    }
+
+    #[test]
+    fn dependency_scheduler_exact_affine_f64_tensor_add_dag_matches_interpreter_bits() {
+        let jaxpr = make_f64_tensor_branched_fanin_jaxpr(16, 4);
+        let input = vector_f64_arg(4096);
+        let expected =
+            fj_interpreters::eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).expect("interpreter");
+        let mut max_ready_wave = 0_usize;
+        let result = evaluate_jaxpr_parallel_inner(&jaxpr, &[input], &mut max_ready_wave)
+            .expect("backend scheduler");
+
+        assert_eq!(tensor_f64_bits(&result[0]), tensor_f64_bits(&expected[0]));
+        assert_eq!(max_ready_wave, 16);
+    }
+
+    #[test]
+    fn dependency_scheduler_exact_affine_f64_tensor_add_refuses_fractional_inputs() {
+        let jaxpr = make_f64_tensor_branched_fanin_jaxpr(16, 4);
+        let input = Value::vector_f64(&[0.25, 1.5]).expect("valid vector");
+        let mut env = HashMap::with_capacity_and_hasher(1, Default::default());
+        env.insert(VarId(1), input);
+        let mut remaining = jaxpr.equations.len();
+        let mut max_ready_wave = 0_usize;
+
+        let optimized = execute_terminal_exact_affine_f64_tensor_add_segment(
+            &jaxpr,
+            0,
+            jaxpr.equations.len(),
+            &mut env,
+            &mut remaining,
+            &mut max_ready_wave,
+        )
+        .expect("gate should not error");
+
+        assert!(!optimized);
+        assert_eq!(remaining, jaxpr.equations.len());
+        assert_eq!(max_ready_wave, 0);
     }
 
     #[test]

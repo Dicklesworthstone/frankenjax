@@ -271,6 +271,7 @@ fn bench_scheduler_branched_shapes(c: &mut Criterion) {
 
 fn bench_scheduler_tensor_shapes(c: &mut Criterion) {
     let backend = CpuBackend::new();
+    let legacy_backend = CpuBackend::__fj_legacy_without_exact_affine_f64_tensor_add_for_bench();
     let mut group = c.benchmark_group("backend_scheduler_tensor_shapes");
 
     for (branches, depth, len) in [
@@ -287,6 +288,16 @@ fn bench_scheduler_tensor_shapes(c: &mut Criterion) {
             &jaxpr,
             |b, jaxpr| b.iter(|| backend.execute(jaxpr, &args, DeviceId(0))),
         );
+        if (branches, depth, len) == (16, 4, 4096) {
+            group.bench_with_input(
+                BenchmarkId::new(
+                    "tensor_branched_fanin_legacy_orig",
+                    format!("{branches}x{depth}x{len}"),
+                ),
+                &jaxpr,
+                |b, jaxpr| b.iter(|| legacy_backend.execute(jaxpr, &args, DeviceId(0))),
+            );
+        }
     }
 
     group.finish();
