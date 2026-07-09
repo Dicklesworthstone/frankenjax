@@ -2,6 +2,56 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-09 - WIN 1.059x vs ORIG: BF16 convert bit-rounding transducer (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. Consulted this ledger first and avoided the
+  rejected Poisson convergence/table, producerless reducer, branchless select, gather/scatter
+  SIMD, row-wise interpreter superinstruction, FFT/radix, Cholesky/GEMM, and already-landed
+  conv/pooling/sort lanes. Profile slice targeted dense `ConvertElementType -> BF16` after a
+  pre-edit `rch exec` bench on worker `vmi1227854` showed the 16M-element conversion primitive
+  at `eval/convert_16m_f64_to_bf16 = 6.4116 ms` and `eval/convert_16m_f32_to_bf16 = 4.1876 ms`.
+  Graveyard/artifact mapping: word-level bit manipulation plus precision-aware numeric kernels,
+  compiled as a finite rounding transducer for BF16 rather than routing through per-element
+  half-constructor machinery.
+- LEVER: replace dense BF16 conversion's constructor path with exact bit-level rounding.
+  `convert_bf16_bits_from_f32` rounds finite f32 values to BF16 with the standard
+  round-to-nearest-even bias (`0x7fff + lsb`) and preserves nonfinite/payload behavior through
+  the legacy constructor fallback. `convert_bf16_bits` keeps the Boldo-Melquiond-style f64
+  round-to-odd staging, then feeds the same f32->BF16 transducer. A private
+  `__fj_convert_bf16_legacy` benchmark parameter keeps the byte-identical original route in the
+  same binary for ratio-vs-ORIG measurement; normal execution uses the new path.
+- MEASURED per-crate with the requested wrapper (`AGENT_NAME=BlackThrush`,
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod`,
+  `rch exec -- cargo bench -p fj-lax --profile release --bench lax_baseline
+  'eval/convert_16m_(f32|f64)_to_bf16(_legacy)?$' -- --warm-up-time 1 --measurement-time 3
+  --sample-size 10 --noplot`). RCH had no admissible workers and failed open locally; ORIG and
+  candidate are same-binary rows from that run, so the ratio is directly comparable.
+
+  | row | midpoint | CI |
+  | --- | ---: | ---: |
+  | `eval/convert_16m_f64_to_bf16_legacy` | 10.803 ms | 10.658-10.994 ms |
+  | `eval/convert_16m_f64_to_bf16` | 10.201 ms | 10.062-10.435 ms |
+  | `eval/convert_16m_f32_to_bf16_legacy` | 32.301 ms | 31.465-33.003 ms |
+  | `eval/convert_16m_f32_to_bf16` | 31.698 ms | 31.148-32.351 ms |
+
+  Primary ratio vs ORIG (`f64->bf16`): **0.944x time / 1.059x faster** by midpoint, with
+  separated confidence intervals. The f32 sibling is directional only at **0.981x time /
+  1.019x faster** because intervals overlap.
+- VALIDATION: exact parity guards GREEN:
+  `rch exec -- cargo test -p fj-lax --profile release convert_bf16_bits --lib -- --nocapture`
+  on `ovh-a` (2 passed), and `rch exec -- cargo test -p fj-lax --profile release
+  convert_element_type_dense_matches_generic_all_targets --lib -- --nocapture` on `vmi1167313`
+  (1 passed). Byte-exact conformance GREEN:
+  `rch exec -- cargo test -p fj-conformance --profile release -- --nocapture` on the RCH
+  fail-open local path (all tests and doctests passed). `cargo fmt --check -p fj-lax` GREEN.
+  `rch exec -- cargo check -p fj-lax --profile release --all-targets` GREEN on `hz1`, with
+  pre-existing unrelated `fj-lax` warnings. `rch exec -- cargo clippy -p fj-lax --profile
+  release --all-targets -- -D warnings` still fails before this BF16 path on existing lint debt
+  in `reduction.rs`, `linalg.rs`, `arithmetic.rs`, `simd_exp.rs`, and old test-case type
+  complexity; those unrelated files were not changed for this perf lever. `ubs` on the touched
+  files exits non-zero on broad existing panic/JWT/indexing/cast heuristics in the large
+  benchmark and tensor-ops files; its embedded fmt/clippy/check/test subchecks were clean.
+
 ## 2026-07-09 - WIN 14.29x vs ORIG: row-wise Huber/smooth-L1 robust-loss superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ `fj-lax::nn::huber_loss_2d`).

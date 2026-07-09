@@ -6169,6 +6169,7 @@ pub(crate) fn eval_convert_element_type(
     }
 
     let target_dtype = parse_dtype_param(primitive, "new_dtype", params)?;
+    let legacy_bf16_convert = use_legacy_bf16_convert(params);
 
     match &inputs[0] {
         Value::Scalar(literal) => {
@@ -6212,7 +6213,12 @@ pub(crate) fn eval_convert_element_type(
                     if threads > 1 {
                         let mut out = vec![0u16; n];
                         if target_dtype == DType::BF16 {
-                            threaded_convert_into(&mut out, values, threads, convert_bf16_bits);
+                            let convert: fn(f64) -> u16 = if legacy_bf16_convert {
+                                convert_bf16_bits_legacy
+                            } else {
+                                convert_bf16_bits
+                            };
+                            threaded_convert_into(&mut out, values, threads, convert);
                         } else {
                             threaded_convert_into(&mut out, values, threads, convert_f16_bits);
                         }
@@ -6250,11 +6256,18 @@ pub(crate) fn eval_convert_element_type(
                         shape.clone(),
                         values.iter().map(|&v| convert_f16_bits(v)).collect(),
                     )),
-                    DType::BF16 => Some(TensorValue::new_half_float_values(
-                        DType::BF16,
-                        shape.clone(),
-                        values.iter().map(|&v| convert_bf16_bits(v)).collect(),
-                    )),
+                    DType::BF16 => {
+                        let convert: fn(f64) -> u16 = if legacy_bf16_convert {
+                            convert_bf16_bits_legacy
+                        } else {
+                            convert_bf16_bits
+                        };
+                        Some(TensorValue::new_half_float_values(
+                            DType::BF16,
+                            shape.clone(),
+                            values.iter().map(|&v| convert(v)).collect(),
+                        ))
+                    }
                     // f64->complex (FFT input prep): re = v, im = 0. new_complex_values
                     // rounds Complex64's re to f32, matching convert_literal's
                     // from_complex64(v as f32, 0) / from_complex128(v, 0). Was per-Literal.
@@ -6324,14 +6337,18 @@ pub(crate) fn eval_convert_element_type(
                             .map(|&v| convert_f16_bits(f64::from(v)))
                             .collect(),
                     )),
-                    DType::BF16 => Some(TensorValue::new_half_float_values(
-                        DType::BF16,
-                        shape.clone(),
-                        values
-                            .iter()
-                            .map(|&v| convert_bf16_bits(f64::from(v)))
-                            .collect(),
-                    )),
+                    DType::BF16 => {
+                        let convert: fn(f32) -> u16 = if legacy_bf16_convert {
+                            convert_bf16_bits_from_f32_legacy
+                        } else {
+                            convert_bf16_bits_from_f32
+                        };
+                        Some(TensorValue::new_half_float_values(
+                            DType::BF16,
+                            shape.clone(),
+                            values.iter().map(|&v| convert(v)).collect(),
+                        ))
+                    }
                     // f32->complex: re = f64::from(v), im = 0 (new_complex_values rounds
                     // Complex64's re to f32 == convert_literal's from_complex64(v, 0)).
                     DType::Complex128 | DType::Complex64 => Some(TensorValue::new_complex_values(
@@ -6693,10 +6710,53 @@ fn convert_f16_bits(v: f64) -> u16 {
 /// f64 -> bf16 raw bits, matching `Literal::from_bf16_f64` exactly.
 #[inline]
 fn convert_bf16_bits(v: f64) -> u16 {
+    convert_bf16_bits_from_f32(f64_to_f32_round_to_odd_for_bf16(v))
+}
+
+#[inline]
+fn convert_bf16_bits_legacy(v: f64) -> u16 {
     match Literal::from_bf16_f64(v) {
         Literal::BF16Bits(b) => b,
         _ => unreachable!("from_bf16_f64 always yields BF16Bits"),
     }
+}
+
+#[inline]
+fn convert_bf16_bits_from_f32(v: f32) -> u16 {
+    let bits = v.to_bits();
+    if bits & 0x7f80_0000 == 0x7f80_0000 {
+        return convert_bf16_bits_from_f32_legacy(v);
+    }
+
+    let round_to_even_bias = 0x7fff + ((bits >> 16) & 1);
+    ((bits.wrapping_add(round_to_even_bias)) >> 16) as u16
+}
+
+#[inline]
+fn convert_bf16_bits_from_f32_legacy(v: f32) -> u16 {
+    convert_bf16_bits_legacy(f64::from(v))
+}
+
+#[inline]
+fn f64_to_f32_round_to_odd_for_bf16(x: f64) -> f32 {
+    let nearest = x as f32;
+    if !nearest.is_finite() || f64::from(nearest) == x || (nearest.to_bits() & 1) == 1 {
+        return nearest;
+    }
+    let bits = nearest.to_bits();
+    let toward_larger = x > f64::from(nearest);
+    let negative = (bits >> 31) == 1;
+    let neighbor = if toward_larger != negative {
+        bits + 1
+    } else {
+        bits - 1
+    };
+    f32::from_bits(neighbor)
+}
+
+#[inline]
+fn use_legacy_bf16_convert(params: &BTreeMap<String, String>) -> bool {
+    params.contains_key("__fj_convert_bf16_legacy")
 }
 
 fn convert_literal(lit: Literal, target: DType) -> Result<Literal, EvalError> {
@@ -30212,6 +30272,62 @@ mod tests {
             bits, 0x3C01,
             "f64->f16 must round up once (single rounding), got {bits:#06x}"
         );
+    }
+
+    #[test]
+    fn convert_bf16_bits_from_f32_matches_legacy_rounding() {
+        let low_patterns = [
+            0x0000_u32, 0x0001, 0x7ffe, 0x7fff, 0x8000, 0x8001, 0xfffe, 0xffff,
+        ];
+        for high in 0_u32..=u32::from(u16::MAX) {
+            for low in low_patterns {
+                let bits = (high << 16) | low;
+                let value = f32::from_bits(bits);
+                assert_eq!(
+                    convert_bf16_bits_from_f32(value),
+                    convert_bf16_bits_from_f32_legacy(value),
+                    "f32 bits {bits:#010x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn convert_bf16_bits_matches_legacy_f64_rounding() {
+        let cases = [
+            0.0_f64,
+            -0.0,
+            1.0,
+            -1.0,
+            1.00390625,
+            1.00390625 + 2f64.powi(-40),
+            1.00390625 - 2f64.powi(-40),
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        for value in cases {
+            assert_eq!(
+                convert_bf16_bits(value),
+                convert_bf16_bits_legacy(value),
+                "f64 value {value:?}"
+            );
+        }
+
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        for _ in 0..100_000 {
+            state ^= state << 7;
+            state ^= state >> 9;
+            state ^= state << 8;
+            let value = f64::from_bits(state);
+            assert_eq!(
+                convert_bf16_bits(value),
+                convert_bf16_bits_legacy(value),
+                "f64 bits {state:#018x}"
+            );
+        }
     }
 
     #[test]

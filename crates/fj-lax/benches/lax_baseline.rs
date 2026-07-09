@@ -4054,9 +4054,8 @@ fn bench_convert_64k_f64_to_i64(c: &mut Criterion) {
 }
 
 // ConvertElementType downcast f32->bf16 over a 16M dense tensor (DRAM-bound):
-// THE mixed-precision ML cast. Above CHEAP_BINARY_PARALLEL_MIN the dense path
-// threads the per-element single-round convert into a calloc'd u16 output
-// (parallel page-fault + read-bandwidth aggregation); bit-identical to serial.
+// THE mixed-precision ML cast. The legacy row keeps the old f32->f64->bf16
+// constructor path; the default row uses the finite f32 bit-rounding transducer.
 const CONVERT_DRAM_LEN: usize = 16_777_216; // 1<<24, > CHEAP_BINARY_PARALLEL_MIN (1<<23)
 
 fn bench_convert_16m_f32_to_bf16(c: &mut Criterion) {
@@ -4074,6 +4073,17 @@ fn bench_convert_16m_f32_to_bf16(c: &mut Criterion) {
     );
     let mut p = BTreeMap::new();
     p.insert("new_dtype".to_owned(), "bf16".to_owned());
+    let mut p_legacy = p.clone();
+    p_legacy.insert("__fj_convert_bf16_legacy".to_owned(), "1".to_owned());
+    c.bench_function("eval/convert_16m_f32_to_bf16_legacy", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::ConvertElementType,
+                std::slice::from_ref(&dense),
+                &p_legacy,
+            )
+        })
+    });
     c.bench_function("eval/convert_16m_f32_to_bf16", |bencher| {
         bencher.iter(|| {
             eval_primitive(
@@ -4094,6 +4104,17 @@ fn bench_convert_16m_f64_to_bf16(c: &mut Criterion) {
     let dense = Value::vector_f64(&data).unwrap();
     let mut p = BTreeMap::new();
     p.insert("new_dtype".to_owned(), "bf16".to_owned());
+    let mut p_legacy = p.clone();
+    p_legacy.insert("__fj_convert_bf16_legacy".to_owned(), "1".to_owned());
+    c.bench_function("eval/convert_16m_f64_to_bf16_legacy", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::ConvertElementType,
+                std::slice::from_ref(&dense),
+                &p_legacy,
+            )
+        })
+    });
     c.bench_function("eval/convert_16m_f64_to_bf16", |bencher| {
         bencher.iter(|| {
             eval_primitive(
