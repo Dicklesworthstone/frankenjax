@@ -387,6 +387,37 @@ fn bench_eval(c: &mut Criterion) {
             );
         });
     });
+    group.bench_function("scan_sub_jaxpr_f32_vector_add_emit_128x64_legacy", |b| {
+        let mut jaxpr = make_scan_sub_jaxpr_eval_f32_vector_jaxpr(false);
+        jaxpr.equations[0]
+            .params
+            .insert("__fj_scan_f32_add_emit_legacy".to_owned(), "1".to_owned());
+        let carry_values: Vec<f32> = (0..64).map(|i| (i as f32) * 0.01 - 0.25).collect();
+        let xs_values: Vec<f32> = (0..(128 * 64))
+            .map(|i| ((i % 31) as f32 - 15.0) * 0.125)
+            .collect();
+        let inputs = vec![
+            Value::Tensor(
+                TensorValue::new_f32_values(Shape { dims: vec![64_u32] }, carry_values)
+                    .expect("carry vector should build"),
+            ),
+            Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: vec![128_u32, 64_u32],
+                    },
+                    xs_values,
+                )
+                .expect("xs tensor should build"),
+            ),
+        ];
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(black_box(&jaxpr), black_box(&inputs))
+                    .expect("legacy f32 vector scan eval should succeed"),
+            );
+        });
+    });
 
     group.bench_function("scalar_bf16_half_arith_body", |b| {
         let jaxpr = make_scalar_half_arith_jaxpr(Literal::from_bf16_f64(0.25));

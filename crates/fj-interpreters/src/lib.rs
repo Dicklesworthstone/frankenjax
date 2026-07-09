@@ -730,7 +730,11 @@ fn try_eval_scan_f32_add_emit(
     reverse: bool,
 ) -> Option<Result<Vec<Value>, InterpreterError>> {
     let y_bias = f32_add_emit_scan_body_bias(body_jaxpr)?;
-    if !scan_equation_params_are_i64_add_emit_safe(equation, reverse)
+    let force_scalar_rows = equation
+        .params
+        .get("__fj_scan_f32_add_emit_legacy")
+        .is_some_and(|value| value == "1");
+    if !scan_equation_params_are_f32_add_emit_safe(equation, reverse, force_scalar_rows)
         || !equation.effects.is_empty()
         || carry_inputs.len() != 1
     {
@@ -763,11 +767,23 @@ fn try_eval_scan_f32_add_emit(
     let mut ys = vec![0.0_f32; xs_values.len()];
     if reverse {
         for scan_idx in (0..scan_len).rev() {
-            scan_f32_add_emit_row(&mut carry, xs_values, &mut ys, scan_idx, row_len, y_bias);
+            if force_scalar_rows {
+                scan_f32_add_emit_row(&mut carry, xs_values, &mut ys, scan_idx, row_len, y_bias);
+            } else {
+                scan_f32_add_emit_row_simd(
+                    &mut carry, xs_values, &mut ys, scan_idx, row_len, y_bias,
+                );
+            }
         }
     } else {
         for scan_idx in 0..scan_len {
-            scan_f32_add_emit_row(&mut carry, xs_values, &mut ys, scan_idx, row_len, y_bias);
+            if force_scalar_rows {
+                scan_f32_add_emit_row(&mut carry, xs_values, &mut ys, scan_idx, row_len, y_bias);
+            } else {
+                scan_f32_add_emit_row_simd(
+                    &mut carry, xs_values, &mut ys, scan_idx, row_len, y_bias,
+                );
+            }
         }
     }
 
@@ -782,6 +798,30 @@ fn try_eval_scan_f32_add_emit(
             })
             .map_err(|error| InterpreterError::Primitive(EvalError::InvalidTensor(error))),
     )
+}
+
+fn scan_equation_params_are_f32_add_emit_safe(
+    equation: &Equation,
+    reverse: bool,
+    force_scalar_rows: bool,
+) -> bool {
+    if force_scalar_rows {
+        let expected_len = if reverse { 2 } else { 1 };
+        if equation.params.len() != expected_len
+            || !equation
+                .params
+                .get("__fj_scan_f32_add_emit_legacy")
+                .is_some_and(|value| value == "1")
+        {
+            return false;
+        }
+        return !reverse
+            || equation
+                .params
+                .get("reverse")
+                .is_some_and(|value| value == "true");
+    }
+    scan_equation_params_are_i64_add_emit_safe(equation, reverse)
 }
 
 fn scan_f32_add_emit_row(
@@ -801,6 +841,38 @@ fn scan_f32_add_emit_row(
         );
         carry[lane] = next;
         ys[row_offset + lane] = apply_scalar_f32_binary(ScalarF64BinaryOp::Add, next, y_bias);
+    }
+}
+
+fn scan_f32_add_emit_row_simd(
+    carry: &mut [f32],
+    xs_values: &[f32],
+    ys: &mut [f32],
+    scan_idx: usize,
+    row_len: usize,
+    y_bias: f32,
+) {
+    use std::simd::Simd;
+
+    const LANES: usize = 8;
+    let row_offset = scan_idx * row_len;
+    let row = &xs_values[row_offset..row_offset + row_len];
+    let out = &mut ys[row_offset..row_offset + row_len];
+    let bias = Simd::<f32, LANES>::splat(y_bias);
+
+    let mut lane = 0;
+    while lane + LANES <= row_len {
+        let next = Simd::<f32, LANES>::from_slice(&carry[lane..lane + LANES])
+            + Simd::<f32, LANES>::from_slice(&row[lane..lane + LANES]);
+        next.copy_to_slice(&mut carry[lane..lane + LANES]);
+        (next + bias).copy_to_slice(&mut out[lane..lane + LANES]);
+        lane += LANES;
+    }
+    while lane < row_len {
+        let next = carry[lane] + row[lane];
+        carry[lane] = next;
+        out[lane] = next + y_bias;
+        lane += 1;
     }
 }
 
@@ -23720,6 +23792,10 @@ mod tests {
         let mut golden_rows = Vec::new();
         for reverse in [false, true] {
             let fast = make_scan_f32_add_emit_control_flow_jaxpr(reverse);
+            let mut legacy = fast.clone();
+            legacy.equations[0]
+                .params
+                .insert("__fj_scan_f32_add_emit_legacy".to_owned(), "1".to_owned());
             let mut generic = fast.clone();
             generic.equations[0].sub_jaxprs[0].equations[1]
                 .params
@@ -23727,7 +23803,9 @@ mod tests {
             let inputs = [carry.clone(), xs.clone()];
 
             let fast_outputs = eval_jaxpr(&fast, &inputs).expect("fast f32 scan");
+            let legacy_outputs = eval_jaxpr(&legacy, &inputs).expect("legacy f32 scan");
             let generic_outputs = eval_jaxpr(&generic, &inputs).expect("generic f32 scan");
+            assert_eq!(fast_outputs, legacy_outputs, "legacy reverse={reverse}");
             assert_eq!(fast_outputs, generic_outputs, "reverse={reverse}");
             golden_rows.push(fast_outputs);
         }

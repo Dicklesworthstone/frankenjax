@@ -2,6 +2,61 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
+## 2026-07-09 - WIN 1.52x vs ORIG: SIMD lane transducer for f32 vector Scan add/emit (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-interpreters`. Consulted this ledger first and
+  avoided the rejected dense complex broadcast, Poisson convergence/table,
+  producerless reducer, branchless select, gather/scatter SIMD, FFT/radix,
+  Cholesky/GEMM, cumsum-family, row-wise interpreter metric superinstructions,
+  and special-function sibling lanes. Profile target was
+  `eval/scan_sub_jaxpr_f32_vector_add_emit_128x64`, the hottest residual in a
+  short `pe_baseline` profile after all-known partial eval and scalar scan were
+  already O(1)/fast.
+- LEVER: compile the affine f32 vector scan body `carry' = carry + xs[t];
+  y[t] = carry' + bias` into a safe `std::simd::Simd<f32, 8>` lane transducer.
+  This preserves scan order per lane and only parallelizes independent vector
+  lanes. A private `__fj_scan_f32_add_emit_legacy=1` benchmark parameter keeps
+  the exact old scalar row loop in the same binary for ORIG measurement only;
+  normal execution uses the SIMD lane path.
+- MEASURED per-crate with the requested wrapper (`AGENT_NAME=BlackThrush`,
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod`, `rch exec -- cargo
+  bench -p fj-interpreters --profile release --bench pe_baseline
+  'eval/scan_sub_jaxpr_f32_vector_add_emit_128x64(_legacy)?$' --
+  --warm-up-time 1 --measurement-time 2 --sample-size 10 --noplot`). ORIG and
+  candidate are same-worker, same-binary rows on `hz2`.
+
+  | row | worker | midpoint | CI |
+  | --- | --- | ---: | ---: |
+  | ORIG scalar `eval/scan_sub_jaxpr_f32_vector_add_emit_128x64_legacy` | `hz2` | 3.5469 us | 3.3879-3.7095 us |
+  | candidate SIMD `eval/scan_sub_jaxpr_f32_vector_add_emit_128x64` | `hz2` | 2.3304 us | 2.3176-2.3407 us |
+
+  Ratio vs ORIG: **0.657x time / 1.52x faster** by midpoint. Conservative CI
+  floor: `3.3879 / 2.3407 = 1.45x`.
+- VALIDATION: focused golden/parity test GREEN with the requested wrapper:
+  `cargo test -p fj-interpreters --profile release
+  eval_scan_f32_add_emit_fast_path_matches_generic_and_golden --lib --
+  --nocapture` on `hz2` (1 passed, digest
+  `62c35b04956901a98a2391c073a95a867e0655327dcb5f8063d1fe9a93c7887c`
+  unchanged). Byte-exact conformance GREEN with `AGENT_NAME=BlackThrush
+  CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod rch exec -- cargo test
+  -p fj-conformance --profile release -- --nocapture` (RCH fail-open local; all
+  tests and doc-tests passed). `rustfmt --edition 2024
+  crates/fj-interpreters/src/lib.rs
+  crates/fj-interpreters/benches/pe_baseline.rs`, `cargo fmt -p
+  fj-interpreters -- --check`, `git diff --check -- crates/fj-interpreters/src/lib.rs
+  crates/fj-interpreters/benches/pe_baseline.rs`, and local
+  `AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod
+  cargo check -p fj-interpreters --profile release --all-targets` were GREEN.
+  `rch exec` for the same check hit a worker-local `zerocopy` build-script
+  `SIGILL` on `ovh-b` before crate checking. Full dependency Clippy with
+  `-D warnings` is still blocked by pre-existing `fj-trace` and `fj-lax` lints;
+  `cargo clippy -p fj-interpreters --profile release --all-targets --no-deps --
+  -D warnings` was GREEN, while still displaying pre-existing `fj-lax` rustc
+  warnings. UBS over the owned files was non-zero on broad pre-existing
+  panic/indexing/cast heuristics in the large interpreter source plus a false
+  JWT-style `decode` heuristic; its embedded formatting, clippy, cargo-check,
+  test-build, audit, and deny subchecks were clean.
+
 ## 2026-07-09 - WIN 2.95x vs ORIG: dtype-complete threaded contiguous Slice copy (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. Consulted this ledger first and avoided
