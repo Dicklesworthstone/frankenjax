@@ -42,7 +42,13 @@ Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
   CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod rch exec -- cargo test
   -p fj-conformance --profile release -- --nocapture` (RCH fail-open local; all
   tests and doc-tests passed). `cargo fmt -p fj-ad`, `cargo fmt --check -p
-  fj-ad`, and `git diff --check -- crates/fj-ad/src/lib.rs` were GREEN.
+  fj-ad`, `git diff --check -- crates/fj-ad/src/lib.rs`, and `rch exec --
+  cargo clippy -p fj-ad --profile release --all-targets --no-deps -- -D
+  warnings` were GREEN; the clippy run still displayed pre-existing `fj-lax`
+  rustc warnings from dependencies. UBS over `crates/fj-ad/src/lib.rs` and this
+  ledger file was non-zero on broad pre-existing panic/indexing/cast heuristics
+  in the large AD source; its embedded formatting, clippy, cargo-check,
+  test-build, audit, and deny subchecks were clean.
   `cargo check -p fj-ad --profile release --all-targets` was GREEN locally,
   with only pre-existing `fj-lax` rustc warnings; the same RCH check hit
   worker-local `zerocopy` build-script `SIGILL` on `ovh-b` before this crate

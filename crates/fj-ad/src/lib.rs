@@ -12387,6 +12387,125 @@ fn jvp_rule_is_cached_multiply_form(p: Primitive) -> bool {
     )
 }
 
+fn is_axis0_cumsum_params(params: &BTreeMap<String, String>) -> bool {
+    params.len() == 1 && params.get("axis").is_some_and(|axis| axis == "0")
+}
+
+/// Exact jacfwd fast path for `x -> cumsum(g(x), axis=0)`, where `g` is a
+/// 1-D dense-F64 chain of cacheable elementwise primitives. The Jacobian is
+/// lower triangular: `J[row,col] = g'(x[col])` for `row >= col`.
+///
+/// This avoids replaying the same elementwise chain and cumsum once per basis
+/// column. It deliberately stays narrow: finite values only, with signed zero
+/// normalized to match the existing per-column cumsum tangent behavior.
+fn jacfwd_elementwise_chain_cumsum_1d(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    input_dim: usize,
+    custom_jvp_rule_key: Option<&str>,
+) -> Result<Option<Value>, AdError> {
+    if custom_jvp_rule_key.is_some()
+        || args.len() != 1
+        || jaxpr.invars.len() != 1
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() < 2
+        || lookup_custom_jaxpr_jvp(jaxpr).is_some()
+        || lookup_custom_jaxpr_vjp(jaxpr).is_some()
+        || lookup_custom_jvp(Primitive::Cumsum).is_some()
+        || lookup_custom_vjp(Primitive::Cumsum).is_some()
+    {
+        return Ok(None);
+    }
+
+    let Some((last, chain)) = jaxpr.equations.split_last() else {
+        return Ok(None);
+    };
+    if last.primitive != Primitive::Cumsum
+        || last.inputs.len() != 1
+        || last.outputs.as_slice() != jaxpr.outvars.as_slice()
+        || !last.sub_jaxprs.is_empty()
+        || !last.effects.is_empty()
+        || !is_axis0_cumsum_params(&last.params)
+    {
+        return Ok(None);
+    }
+
+    let Value::Tensor(input_tensor) = &args[0] else {
+        return Ok(None);
+    };
+    if input_tensor.dtype != DType::F64
+        || input_tensor.shape.rank() != 1
+        || input_tensor.len() != input_dim
+        || input_tensor
+            .elements
+            .as_f64_slice()
+            .is_none_or(|values| values.iter().any(|value| !value.is_finite()))
+    {
+        return Ok(None);
+    }
+
+    let mut current = jaxpr.invars[0];
+    let mut saw_heavy = false;
+    for eqn in chain {
+        if eqn.inputs.len() != 1
+            || eqn.inputs[0] != Atom::Var(current)
+            || eqn.outputs.len() != 1
+            || !eqn.params.is_empty()
+            || !eqn.sub_jaxprs.is_empty()
+            || !eqn.effects.is_empty()
+            || !jvp_rule_is_cached_multiply_form(eqn.primitive)
+            || lookup_custom_jvp(eqn.primitive).is_some()
+            || lookup_custom_vjp(eqn.primitive).is_some()
+        {
+            return Ok(None);
+        }
+        saw_heavy |= primitive_is_compute_heavy(eqn.primitive);
+        current = eqn.outputs[0];
+    }
+    if !saw_heavy || last.inputs[0] != Atom::Var(current) {
+        return Ok(None);
+    }
+
+    let mut primal = args[0].clone();
+    let mut tangent = ones_like(&primal);
+    for eqn in chain {
+        let ones = ones_like(&primal);
+        let deriv = jvp_rule(
+            eqn.primitive,
+            std::slice::from_ref(&primal),
+            std::slice::from_ref(&ones),
+            &eqn.params,
+        )?;
+        tangent = value_mul(&deriv, &tangent)?;
+        primal = eval_primitive(eqn.primitive, std::slice::from_ref(&primal), &eqn.params)
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    }
+
+    let diag = flatten_value_to_f64(&tangent)?;
+    if diag.len() != input_dim || diag.iter().any(|value| !value.is_finite()) {
+        return Ok(None);
+    }
+
+    let final_primal = eval_primitive(
+        Primitive::Cumsum,
+        std::slice::from_ref(&primal),
+        &last.params,
+    )
+    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    if flatten_value_to_f64(&final_primal)?.len() != input_dim {
+        return Ok(None);
+    }
+
+    let mut jacobian = vec![0.0_f64; input_dim * input_dim];
+    for (col, &derivative) in diag.iter().enumerate() {
+        let derivative = if derivative == 0.0 { 0.0 } else { derivative };
+        for row in col..input_dim {
+            jacobian[row * input_dim + col] = derivative;
+        }
+    }
+    matrix_value(input_dim, input_dim, jacobian).map(Some)
+}
+
 /// Linearize-based forward Jacobian (jacfwd). Computes the primal forward ONCE,
 /// caching `f'(primal)` for every unary-elementwise equation, then builds each
 /// column by replaying only the tangent map — a single `value_mul` per cached unary
@@ -12784,6 +12903,12 @@ fn jacobian_jaxpr_inner(
     // can be computed ONCE and every column reduced to a cheap value_mul instead of
     // recomputing the transcendental N times. Bit-identical to the per-column jvp
     // loop on finite data. Falls through when the jaxpr is not linearize-friendly.
+    if let Some(jac) =
+        jacfwd_elementwise_chain_cumsum_1d(jaxpr, args, input_dim, custom_jvp_rule_key)?
+    {
+        return Ok(jac);
+    }
+
     if let Some(jac) = jacfwd_linearize(
         jaxpr,
         args,
@@ -24134,6 +24259,65 @@ mod tests {
                     a.to_bits(),
                     b.to_bits(),
                     "{op:?} cached replay not bit-identical to direct jvp_rule"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn jacfwd_chain_cumsum_lower_triangular_matches_columns() {
+        use fj_core::{Shape, TensorValue};
+        let n = 48usize;
+        let chain: &[Primitive] = &[
+            Primitive::Sin,
+            Primitive::Cos,
+            Primitive::Tanh,
+            Primitive::Exp,
+            Primitive::Sinh,
+            Primitive::Erf,
+            Primitive::Logistic,
+            Primitive::Cosh,
+        ];
+        let jaxpr = build_forward_column_jaxpr(chain);
+        let xv: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.007).sin() * 0.5).collect();
+        let args = [Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                xv,
+            )
+            .unwrap(),
+        )];
+
+        assert!(
+            super::jacfwd_elementwise_chain_cumsum_1d(&jaxpr, &args, n, None)
+                .unwrap()
+                .is_some(),
+            "test must exercise the lower-triangular chain-cumsum fast path"
+        );
+        let jac = jacobian_jaxpr(&jaxpr, &args).expect("jacobian");
+        let got = jac.as_tensor().expect("tensor").to_f64_vec().expect("f64");
+
+        for basis in 0..n {
+            let mut tan = vec![0.0_f64; n];
+            tan[basis] = 1.0;
+            let tangents = [Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    tan,
+                )
+                .unwrap(),
+            )];
+            let jr = super::jvp_inner(&jaxpr, &args, &tangents, None).expect("jvp");
+            let col = super::flatten_values_to_f64(&jr.tangents).expect("flat");
+            for row in 0..n {
+                assert_eq!(
+                    got[row * n + basis].to_bits(),
+                    col[row].to_bits(),
+                    "lower-triangular fast path ({row},{basis}) != serial jvp reference"
                 );
             }
         }
