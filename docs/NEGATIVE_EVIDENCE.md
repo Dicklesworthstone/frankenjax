@@ -47,6 +47,51 @@ Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
   panic/JWT/indexing heuristics in these large files; its embedded fmt/clippy/check/test subchecks
   were clean.
 
+## 2026-07-09 - NO-SHIP 1.065x time vs ORIG: Poisson PTRS incremental convergence counters are no gain (BlackThrush)
+
+- Agent: BlackThrush. Crate: `fj-lax`. Consulted this ledger first and avoided the
+  rejected Poisson bounded log-factorial table, the already-landed RNG normal fusion,
+  interpreter loss/normalization superinstructions, pooling/sort wins, and FFT/FMA-policy
+  lanes. Profile pass used the existing ignored Poisson bench on `rch exec` worker `hz2`:
+  `bench_random_poisson_vs_jax` showed `lam=15` PTRS threaded at **152.3 ms** for 1M
+  samples, hotter than `lam=3` Knuth at **127.6 ms**, so the candidate targeted the PTRS
+  convergence path. Graveyard/artifact mapping: incremental aggregate / streaming
+  convergence counter replacing repeated full-array reduction scans.
+- LEVER PROTOTYPED THEN REVERTED: replaced the per-iteration
+  `accepted.iter().all()` / `log_prod.iter().any()` convergence scans with exact
+  `remaining` / `active` counters. The PTRS body still evaluated every element each
+  iteration and preserved JAX's overwrite-on-every-acceptance semantics; a skip-accepted
+  mask was explicitly rejected after checking `legacy_jax_code/jax/jax/_src/random.py`
+  because JAX's `k_out = lax.select(accept, k, k_out); accepted |= accept` can overwrite
+  already-accepted elements before global convergence.
+- MEASURED per-crate, same local host via the requested `rch exec` wrapper
+  (`CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod`, `AGENT_NAME=BlackThrush`,
+  temporary A/B env `FJ_POISSON_SCAN_CONVERGENCE=1`, both arms:
+  `cargo bench -p fj-lax --profile release --bench lax_baseline
+  random/poisson_1m_lam15_vsjax -- --warm-up-time 1 --measurement-time 2 --sample-size 10 --noplot`).
+
+  | row | midpoint | CI |
+  | --- | ---: | ---: |
+  | ORIG full-array convergence scan | 194.39 ms | 163.70-226.96 ms |
+  | candidate incremental counters | 206.99 ms | 179.43-234.58 ms |
+
+  Ratio vs ORIG: **1.0648x time / 0.939x speed**. Criterion reported no significant
+  improvement (`p = 0.58`). Earlier single-arm remote runs were discarded as cross-worker
+  confounding: ORIG on `vmi1167313` measured 531.13 ms, while FAST on `vmi1227854`
+  measured 171.85 ms.
+- DECISION: NO-SHIP. Production Poisson code was restored to the original scan-convergence
+  implementation. Do **not** retry the incremental convergence-counter lever for Poisson
+  PTRS/Knuth; the repeated convergence scan is not the isolated bottleneck at this size
+  once thread/join overhead, random-uniform block generation, `lgamma`, and full-element
+  overwrite semantics remain. A permanent Criterion guard row
+  `random/poisson_1m_lam15_vsjax` was added so future Poisson attempts can use the standard
+  per-crate bench harness instead of the ignored unit benchmark.
+- VALIDATION: `cargo test -p fj-lax --profile release poisson --lib -- --nocapture`
+  passed (4 passed, 1 ignored) after the prototype; `rustfmt --edition 2024 --check
+  crates/fj-lax/src/threefry.rs crates/fj-lax/benches/lax_baseline.rs` passed after revert.
+  Package-wide `cargo fmt -p fj-lax --check` remains blocked by an unrelated pre-existing
+  `nn.rs` formatting hunk; production `threefry.rs` has no retained diff.
+
 ## 2026-07-08 - WIN 9.86x vs ORIG: row-wise binary cross-entropy fused interpreter superinstruction (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-interpreters` (+ `fj-lax::nn::binary_cross_entropy_2d`).

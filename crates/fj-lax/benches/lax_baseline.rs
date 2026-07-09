@@ -177,6 +177,13 @@ fn bench_random_4m_vs_jax(c: &mut Criterion) {
     c.bench_function("random/randint_4m_vsjax", |b| {
         b.iter(|| black_box(fj_lax::threefry::random_randint(key, n, 0, 1000)));
     });
+
+    // Poisson PTRS, lam=15, 1M samples. JAX 0.10.2 x64 jit was 238ms on the
+    // original oracle run; kept as the residual RNG-sampler perf guard.
+    let n_poisson = 1usize << 20;
+    c.bench_function("random/poisson_1m_lam15_vsjax", |b| {
+        b.iter(|| black_box(fj_lax::threefry::random_poisson(key, n_poisson, 15.0)));
+    });
 }
 
 fn bench_add_scalar(c: &mut Criterion) {
