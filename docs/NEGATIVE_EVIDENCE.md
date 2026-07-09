@@ -2,7 +2,7 @@
 
 Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
 
-## 2026-07-09 - WIN 2.13x vs ORIG: dtype-complete threaded contiguous Slice copy (BlackThrush)
+## 2026-07-09 - WIN 2.95x vs ORIG: dtype-complete threaded contiguous Slice copy (BlackThrush)
 
 - Agent: BlackThrush. Crate: `fj-lax`. Consulted this ledger first and avoided
   the rejected dense complex replicated-broadcast fill route, Poisson
@@ -24,32 +24,33 @@ Canonical project ledger: `../evidence/perf/negative_evidence_ledger.md`.
   bench -p fj-lax --profile release --bench lax_baseline
   'eval/slice_contig_complex128_4096x4096_half(_legacy)?$' -- --warm-up-time 1
   --measurement-time 2 --sample-size 10 --noplot`). ORIG and candidate are
-  same-worker, same-binary rows on `vmi1227854`.
+  same-worker, same-binary rows on `ovh-a`.
 
   | row | worker | midpoint | CI |
   | --- | --- | ---: | ---: |
-  | ORIG serial `eval/slice_contig_complex128_4096x4096_half_legacy` | `vmi1227854` | 57.500 ms | 56.241-59.956 ms |
-  | candidate threaded `eval/slice_contig_complex128_4096x4096_half` | `vmi1227854` | 26.998 ms | 25.205-30.225 ms |
+  | ORIG serial `eval/slice_contig_complex128_4096x4096_half_legacy` | `ovh-a` | 67.270 ms | 66.561-68.292 ms |
+  | candidate threaded `eval/slice_contig_complex128_4096x4096_half` | `ovh-a` | 22.770 ms | 22.288-23.280 ms |
 
-  Ratio vs ORIG: **0.470x time / 2.13x faster** by midpoint. A pre-change
-  production serial row on `ovh-a` measured 67.149 ms, consistent with the
-  same-worker legacy comparator but not used for the ratio.
-- VALIDATION: targeted slice parity GREEN with `AGENT_NAME=BlackThrush
-  CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod rch exec -- cargo test
-  -p fj-lax --profile release slice --lib -- --nocapture` on `hz2` (53 passed,
-  8 ignored). Byte-exact conformance GREEN with `AGENT_NAME=BlackThrush
+  Ratio vs ORIG: **0.338x time / 2.95x faster** by midpoint. Conservative CI
+  floor: `66.561 / 23.280 = 2.86x`.
+- VALIDATION: targeted slice/copy parity GREEN with the requested wrapper:
+  `cargo test -p fj-lax --profile release
+  dense_contiguous_slice_matches_literal_path_and_stays_dense --lib --
+  --nocapture` (1 passed) and `cargo test -p fj-lax --profile release
+  concat_contiguous_into_bit_identical_to_serial --lib -- --nocapture` (1
+  passed). Byte-exact conformance GREEN with `AGENT_NAME=BlackThrush
   CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod rch exec -- cargo test
   -p fj-conformance --profile release -- --nocapture` (RCH fail-open local; all
-  tests and doc-tests passed). `cargo fmt -p fj-lax -- --check`,
+  tests and doc-tests passed). `rustfmt --edition 2024 --check
+  crates/fj-lax/src/tensor_ops.rs crates/fj-lax/benches/lax_baseline.rs`,
   `git diff --check -- crates/fj-lax/src/tensor_ops.rs
-  crates/fj-lax/benches/lax_baseline.rs`, and `rch exec -- cargo check -p
-  fj-lax --all-targets` were GREEN; `fj-lax` check still reports pre-existing
-  unrelated warnings in `reduction.rs` and `linalg.rs`. Broad `cargo clippy -p
-  fj-lax --all-targets -- -D warnings` remains blocked by pre-existing unrelated
-  lint debt outside this slice lever and was not broadened into this change. UBS
-  over the owned source files was non-zero on broad pre-existing
-  panic/security/indexing heuristics; its embedded formatting, clippy,
-  cargo-check, and test-build subchecks were clean.
+  crates/fj-lax/benches/lax_baseline.rs docs/NEGATIVE_EVIDENCE.md`, and
+  `AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/jax-cod
+  rch exec -- cargo check -p fj-lax --profile release --all-targets` were GREEN;
+  `fj-lax` check still reports pre-existing unrelated warnings in `reduction.rs`
+  and `linalg.rs`. UBS over the owned source files was non-zero on broad
+  pre-existing panic/security/indexing heuristics; its embedded formatting,
+  clippy, cargo-check, and test-build subchecks were clean.
 
 ## 2026-07-09 - NO-SHIP 0.998x vs ORIG: dense complex replicated-broadcast fill route (BlackThrush)
 
