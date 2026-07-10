@@ -485,9 +485,10 @@ fn complex_unary_ops_match_jax_float_vs_complex_boundary() {
         Primitive::Sinc,
         Primitive::Neg,
     ] {
-        let out = eval_primitive(prim, std::slice::from_ref(&z), &no_params()).unwrap_or_else(|e| {
-            panic!("{prim:?} is _float|_complex in JAX; must support complex, got {e:?}")
-        });
+        let out =
+            eval_primitive(prim, std::slice::from_ref(&z), &no_params()).unwrap_or_else(|e| {
+                panic!("{prim:?} is _float|_complex in JAX; must support complex, got {e:?}")
+            });
         let t = out.as_tensor().expect("complex tensor output");
         assert_eq!(t.dtype, DType::Complex128, "{prim:?} must return complex");
         assert_eq!(t.shape.dims, vec![2], "{prim:?} shape preserved");

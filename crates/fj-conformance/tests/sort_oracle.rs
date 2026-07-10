@@ -82,9 +82,8 @@ fn sort_extremes_equal_reduce_min_max() {
     // Oracle-free — catches a disagreement between the ordering and reduction paths.
     let data = vec![3_i64, 1, 4, 1, 5, 9, 2];
     let input = make_i64_tensor(&[data.len() as u32], data.clone());
-    let sorted = extract_i64_vec(
-        &eval_primitive(Primitive::Sort, &[input.clone()], &no_params()).unwrap(),
-    );
+    let sorted =
+        extract_i64_vec(&eval_primitive(Primitive::Sort, &[input.clone()], &no_params()).unwrap());
     let axes = BTreeMap::from([("axes".to_string(), "0".to_string())]);
     let scalar = |v: &Value| -> i64 {
         match v {
@@ -94,8 +93,16 @@ fn sort_extremes_equal_reduce_min_max() {
     };
     let rmin = scalar(&eval_primitive(Primitive::ReduceMin, &[input.clone()], &axes).unwrap());
     let rmax = scalar(&eval_primitive(Primitive::ReduceMax, &[input], &axes).unwrap());
-    assert_eq!(*sorted.first().unwrap(), rmin, "sort[0] must equal reduce_min");
-    assert_eq!(*sorted.last().unwrap(), rmax, "sort[-1] must equal reduce_max");
+    assert_eq!(
+        *sorted.first().unwrap(),
+        rmin,
+        "sort[0] must equal reduce_min"
+    );
+    assert_eq!(
+        *sorted.last().unwrap(),
+        rmax,
+        "sort[-1] must equal reduce_max"
+    );
 }
 
 #[test]
@@ -557,9 +564,12 @@ fn oracle_sort_multi_operand_2d_axis1_applies_per_row_permutation() {
     // row is sorted independently by its key, and the SAME permutation reorders values.
     let keys = make_i64_tensor(&[2, 3], vec![3, 1, 2, 6, 4, 5]);
     let values = make_i64_tensor(&[2, 3], vec![30, 10, 20, 60, 40, 50]);
-    let out =
-        eval_primitive_multi(Primitive::Sort, &[keys, values], &axis_params(1)).unwrap();
-    assert_eq!(out.len(), 2, "multi-operand sort returns one output per operand");
+    let out = eval_primitive_multi(Primitive::Sort, &[keys, values], &axis_params(1)).unwrap();
+    assert_eq!(
+        out.len(),
+        2,
+        "multi-operand sort returns one output per operand"
+    );
     assert_eq!(
         extract_i64_vec(&out[0]),
         vec![1, 2, 3, 4, 5, 6],

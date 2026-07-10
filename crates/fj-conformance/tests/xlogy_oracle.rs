@@ -585,7 +585,9 @@ fn extract_complex_vec(v: &Value) -> Vec<(f64, f64)> {
         .elements
         .iter()
         .map(|literal| match *literal {
-            Literal::Complex64Bits(re, im) => (f32::from_bits(re) as f64, f32::from_bits(im) as f64),
+            Literal::Complex64Bits(re, im) => {
+                (f32::from_bits(re) as f64, f32::from_bits(im) as f64)
+            }
             Literal::Complex128Bits(re, im) => (f64::from_bits(re), f64::from_bits(im)),
             other => panic!("expected complex literal, got {other:?}"),
         })

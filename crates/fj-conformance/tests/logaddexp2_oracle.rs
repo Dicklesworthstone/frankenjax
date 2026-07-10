@@ -89,7 +89,9 @@ fn extract_complex_vec(v: &Value) -> Vec<(f64, f64)> {
         .elements
         .iter()
         .map(|literal| match *literal {
-            Literal::Complex64Bits(re, im) => (f32::from_bits(re) as f64, f32::from_bits(im) as f64),
+            Literal::Complex64Bits(re, im) => {
+                (f32::from_bits(re) as f64, f32::from_bits(im) as f64)
+            }
             Literal::Complex128Bits(re, im) => (f64::from_bits(re), f64::from_bits(im)),
             other => panic!("expected complex literal, got {other:?}"),
         })
@@ -525,12 +527,7 @@ fn oracle_logaddexp2_complex64_equal_values() {
     assert_eq!(result.dtype(), DType::Complex64);
     let actual = extract_complex_vec(&result);
     assert_complex_close(actual[0], (1.0, 0.0), 1e-6, "complex64 logaddexp2(0,0)");
-    assert_complex_close(
-        actual[1],
-        (2.0, 0.25),
-        1e-6,
-        "complex64 logaddexp2(z,z)",
-    );
+    assert_complex_close(actual[1], (2.0, 0.25), 1e-6, "complex64 logaddexp2(z,z)");
 }
 
 #[test]
@@ -542,10 +539,5 @@ fn oracle_logaddexp2_complex128_equal_values() {
     assert_eq!(result.dtype(), DType::Complex128);
     let actual = extract_complex_vec(&result);
     assert_complex_close(actual[0], (1.0, 0.0), 1e-14, "complex128 logaddexp2(0,0)");
-    assert_complex_close(
-        actual[1],
-        (3.0, -0.25),
-        1e-14,
-        "complex128 logaddexp2(z,z)",
-    );
+    assert_complex_close(actual[1], (3.0, -0.25), 1e-14, "complex128 logaddexp2(z,z)");
 }

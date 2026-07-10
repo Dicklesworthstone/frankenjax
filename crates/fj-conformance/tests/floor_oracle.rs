@@ -130,19 +130,11 @@ fn oracle_floor_f32_signed_zero_and_nan_bits() {
     let bits = extract_f32_bits_vec(&result);
 
     assert_eq!(bits[0], 0.0_f32.to_bits(), "floor(+0.0_f32) = +0");
-    assert_eq!(
-        bits[1],
-        (-0.0_f32).to_bits(),
-        "floor(-0.0_f32) = -0"
-    );
+    assert_eq!(bits[1], (-0.0_f32).to_bits(), "floor(-0.0_f32) = -0");
     assert_eq!(bits[2], 1.0_f32.to_bits(), "floor(1.9_f32) = 1");
     assert_eq!(bits[3], (-2.0_f32).to_bits(), "floor(-1.1_f32) = -2");
     assert_eq!(bits[4], f32::INFINITY.to_bits(), "floor(+inf_f32)");
-    assert_eq!(
-        bits[5],
-        f32::NEG_INFINITY.to_bits(),
-        "floor(-inf_f32)"
-    );
+    assert_eq!(bits[5], f32::NEG_INFINITY.to_bits(), "floor(-inf_f32)");
     assert!(f32::from_bits(bits[6]).is_nan(), "floor(+nan_f32) = NaN");
     assert!(f32::from_bits(bits[7]).is_nan(), "floor(-nan_f32) = NaN");
 }

@@ -1229,8 +1229,12 @@ fn oracle_rounding_float_only_unary_rejects_complex_operands() {
     .expect("complex(1.5, 2.5) should construct a complex value");
 
     for primitive in [Primitive::Floor, Primitive::Ceil, Primitive::Round] {
-        let err = eval_primitive(primitive, std::slice::from_ref(&complex_input), &no_params())
-            .expect_err("JAX rounding primitive accepted complex input");
+        let err = eval_primitive(
+            primitive,
+            std::slice::from_ref(&complex_input),
+            &no_params(),
+        )
+        .expect_err("JAX rounding primitive accepted complex input");
         assert!(
             matches!(
                 &err,

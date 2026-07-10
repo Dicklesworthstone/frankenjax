@@ -1036,5 +1036,9 @@ fn oracle_add_u32_overflow_wraps_mod_2_pow_32() {
             .collect(),
         _ => unreachable!("expected tensor"),
     };
-    assert_eq!(got, vec![0, 0x10], "u32 add must wrap mod 2^32 (XLA unsigned)");
+    assert_eq!(
+        got,
+        vec![0, 0x10],
+        "u32 add must wrap mod 2^32 (XLA unsigned)"
+    );
 }

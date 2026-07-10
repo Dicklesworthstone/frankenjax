@@ -449,9 +449,7 @@ fn abs_equals_max_of_x_and_neg_x() {
     let x = make_f64_tensor(&[data.len() as u32], data.clone());
     let abs = extract_f64_vec(&eval_primitive(Primitive::Abs, &[x.clone()], &no_params()).unwrap());
     let neg_x = eval_primitive(Primitive::Neg, &[x.clone()], &no_params()).unwrap();
-    let max = extract_f64_vec(
-        &eval_primitive(Primitive::Max, &[x, neg_x], &no_params()).unwrap(),
-    );
+    let max = extract_f64_vec(&eval_primitive(Primitive::Max, &[x, neg_x], &no_params()).unwrap());
     for (a, m) in abs.iter().zip(&max) {
         assert!(
             (a - m).abs() < 1e-12,

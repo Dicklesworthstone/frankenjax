@@ -302,8 +302,7 @@ fn oracle_isnan_isinf_f32_truth_table() {
         ],
     );
 
-    let isnan_result =
-        eval_primitive(Primitive::IsNan, &[input.clone()], &no_params()).unwrap();
+    let isnan_result = eval_primitive(Primitive::IsNan, &[input.clone()], &no_params()).unwrap();
     assert_eq!(extract_shape(&isnan_result), vec![8]);
     assert_eq!(
         extract_bool_vec(&isnan_result),

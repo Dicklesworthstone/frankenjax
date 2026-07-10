@@ -109,17 +109,29 @@ fn oracle_argmax_argmin_first_nan_wins_sign_agnostic() {
     // argmax picks the first NaN even when it is -NaN (total_cmp would give 2).
     let inp = make_f64_tensor(&[3], vec![1.0, neg_nan, 2.0]);
     let r = eval_primitive(Primitive::Argmax, &[inp], &axis_params(0)).unwrap();
-    assert_eq!(extract_i64_scalar(&r), 1, "argmax: first NaN wins, sign-agnostic");
+    assert_eq!(
+        extract_i64_scalar(&r),
+        1,
+        "argmax: first NaN wins, sign-agnostic"
+    );
 
     // argmin also picks the first NaN, even when it is +NaN (total_cmp would give 0).
     let inp = make_f64_tensor(&[3], vec![1.0, pos_nan, 2.0]);
     let r = eval_primitive(Primitive::Argmin, &[inp], &axis_params(0)).unwrap();
-    assert_eq!(extract_i64_scalar(&r), 1, "argmin: first NaN wins, sign-agnostic");
+    assert_eq!(
+        extract_i64_scalar(&r),
+        1,
+        "argmin: first NaN wins, sign-agnostic"
+    );
 
     // First NaN is sticky: an earlier NaN beats a later NaN and all finite values.
     let inp = make_f64_tensor(&[4], vec![5.0, pos_nan, neg_nan, 9.0]);
     let r = eval_primitive(Primitive::Argmax, &[inp], &axis_params(0)).unwrap();
-    assert_eq!(extract_i64_scalar(&r), 1, "first NaN is sticky over later NaN");
+    assert_eq!(
+        extract_i64_scalar(&r),
+        1,
+        "first NaN is sticky over later NaN"
+    );
 }
 
 #[test]

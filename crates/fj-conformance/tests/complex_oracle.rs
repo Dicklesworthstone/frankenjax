@@ -657,10 +657,7 @@ fn complex_sqrt_log_return_principal_branch() {
 
     let sqrt = extract_complex_vec(&unary(Primitive::Sqrt, &z));
     for (i, (re, _)) in sqrt.iter().enumerate() {
-        assert!(
-            *re >= -eps,
-            "principal sqrt must have Re >= 0 at {i}: {re}"
-        );
+        assert!(*re >= -eps, "principal sqrt must have Re >= 0 at {i}: {re}");
     }
     let log = extract_complex_vec(&unary(Primitive::Log, &z));
     for (i, (_, im)) in log.iter().enumerate() {
@@ -692,7 +689,10 @@ fn complex_inverse_hyperbolic_returns_principal_branch() {
 
     let acosh = extract_complex_vec(&unary(Primitive::Acosh, &z));
     for (i, (re, _)) in acosh.iter().enumerate() {
-        assert!(*re >= -eps, "principal acosh must have Re >= 0 at {i}: {re}");
+        assert!(
+            *re >= -eps,
+            "principal acosh must have Re >= 0 at {i}: {re}"
+        );
     }
     let asinh = extract_complex_vec(&unary(Primitive::Asinh, &z));
     for (i, (_, im)) in asinh.iter().enumerate() {
@@ -724,9 +724,8 @@ fn metamorphic_complex_pow_matches_sqrt_recip_square() {
     let pts = [(1.5, 0.7), (-0.8, 0.6), (1.2, -0.4), (-2.0, 0.5)];
     let z = complex_from_pairs(&pts);
     let mk_exp = |v: f64| complex_from_pairs(&pts.iter().map(|_| (v, 0.0)).collect::<Vec<_>>());
-    let powp = |e: f64| {
-        eval_primitive(Primitive::Pow, &[z.clone(), mk_exp(e)], &no_params()).unwrap()
-    };
+    let powp =
+        |e: f64| eval_primitive(Primitive::Pow, &[z.clone(), mk_exp(e)], &no_params()).unwrap();
 
     let sqrt = extract_complex_vec(&unary(Primitive::Sqrt, &z));
     assert_complex_close(&powp(0.5), &sqrt, 1e-9, "pow(z, 0.5) == sqrt(z)");
@@ -734,8 +733,9 @@ fn metamorphic_complex_pow_matches_sqrt_recip_square() {
     let recip = extract_complex_vec(&unary(Primitive::Reciprocal, &z));
     assert_complex_close(&powp(-1.0), &recip, 1e-9, "pow(z, -1) == 1/z");
 
-    let square =
-        extract_complex_vec(&eval_primitive(Primitive::Mul, &[z.clone(), z.clone()], &no_params()).unwrap());
+    let square = extract_complex_vec(
+        &eval_primitive(Primitive::Mul, &[z.clone(), z.clone()], &no_params()).unwrap(),
+    );
     assert_complex_close(&powp(2.0), &square, 1e-9, "pow(z, 2) == z*z");
 }
 
@@ -767,8 +767,9 @@ fn complex_unary_matches_real_on_real_axis() {
     ];
     for &(prim, xs) in cases {
         let real_in = make_f64_tensor(&[xs.len() as u32], xs.to_vec());
-        let real_out =
-            extract_real(&eval_primitive(prim, std::slice::from_ref(&real_in), &no_params()).unwrap());
+        let real_out = extract_real(
+            &eval_primitive(prim, std::slice::from_ref(&real_in), &no_params()).unwrap(),
+        );
         let cplx_in = complex_from_pairs(&xs.iter().map(|&x| (x, 0.0)).collect::<Vec<_>>());
         let cplx_out = extract_complex_vec(
             &eval_primitive(prim, std::slice::from_ref(&cplx_in), &no_params()).unwrap(),
@@ -815,8 +816,9 @@ fn complex_inverse_unary_matches_real_on_real_axis() {
     ];
     for &(prim, xs) in cases {
         let real_in = make_f64_tensor(&[xs.len() as u32], xs.to_vec());
-        let real_out =
-            extract_real(&eval_primitive(prim, std::slice::from_ref(&real_in), &no_params()).unwrap());
+        let real_out = extract_real(
+            &eval_primitive(prim, std::slice::from_ref(&real_in), &no_params()).unwrap(),
+        );
         let cplx_in = complex_from_pairs(&xs.iter().map(|&x| (x, 0.0)).collect::<Vec<_>>());
         let cplx_out = extract_complex_vec(
             &eval_primitive(prim, std::slice::from_ref(&cplx_in), &no_params()).unwrap(),
@@ -864,8 +866,9 @@ fn complex_remaining_unary_matches_real_on_real_axis() {
     ];
     for &(prim, xs) in cases {
         let real_in = make_f64_tensor(&[xs.len() as u32], xs.to_vec());
-        let real_out =
-            extract_real(&eval_primitive(prim, std::slice::from_ref(&real_in), &no_params()).unwrap());
+        let real_out = extract_real(
+            &eval_primitive(prim, std::slice::from_ref(&real_in), &no_params()).unwrap(),
+        );
         let cplx_in = complex_from_pairs(&xs.iter().map(|&x| (x, 0.0)).collect::<Vec<_>>());
         let cplx_out = extract_complex_vec(
             &eval_primitive(prim, std::slice::from_ref(&cplx_in), &no_params()).unwrap(),

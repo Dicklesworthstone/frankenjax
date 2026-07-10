@@ -251,14 +251,23 @@ fn oracle_det_value_and_multiplicativity() {
         }
     };
     let det = |m: &Value| -> f64 {
-        scalar(&eval_primitive_multi(Primitive::Det, std::slice::from_ref(m), &no_params()).unwrap()[0])
+        scalar(
+            &eval_primitive_multi(Primitive::Det, std::slice::from_ref(m), &no_params()).unwrap()
+                [0],
+        )
     };
     let a = make_f64_matrix(2, 2, &[1.0, 2.0, 3.0, 4.0]);
     let b = make_f64_matrix(2, 2, &[2.0, 1.0, 0.0, 3.0]);
     let det_a = det(&a);
     let det_b = det(&b);
-    assert!((det_a + 2.0).abs() < 1e-10, "det([[1,2],[3,4]]) = -2, got {det_a}");
-    assert!((det_b - 6.0).abs() < 1e-10, "det([[2,1],[0,3]]) = 6, got {det_b}");
+    assert!(
+        (det_a + 2.0).abs() < 1e-10,
+        "det([[1,2],[3,4]]) = -2, got {det_a}"
+    );
+    assert!(
+        (det_b - 6.0).abs() < 1e-10,
+        "det([[2,1],[0,3]]) = 6, got {det_b}"
+    );
     let ab = eval_primitive_multi(Primitive::Dot, &[a, b], &no_params()).unwrap();
     let det_ab = det(&ab[0]);
     assert!(
@@ -280,7 +289,8 @@ fn oracle_slogdet_reconstructs_det() {
         }
     };
     let a = make_f64_matrix(2, 2, &[1.0, 2.0, 3.0, 4.0]); // det = -2
-    let sl = eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&a), &no_params()).unwrap();
+    let sl =
+        eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&a), &no_params()).unwrap();
     assert_eq!(sl.len(), 2, "slogdet returns (sign, logabsdet)");
     let sign = scalar(&sl[0]);
     let logabsdet = scalar(&sl[1]);
@@ -325,15 +335,24 @@ fn oracle_det_identity_and_triangular() {
         }
     };
     let det = |m: &Value| -> f64 {
-        scalar(&eval_primitive_multi(Primitive::Det, std::slice::from_ref(m), &no_params()).unwrap()[0])
+        scalar(
+            &eval_primitive_multi(Primitive::Det, std::slice::from_ref(m), &no_params()).unwrap()
+                [0],
+        )
     };
     let i3 = make_f64_matrix(3, 3, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
     assert!((det(&i3) - 1.0).abs() < 1e-12, "det(I3) = 1");
     let upper = make_f64_matrix(2, 2, &[2.0, 5.0, 0.0, 3.0]); // upper-triangular
-    assert!((det(&upper) - 6.0).abs() < 1e-12, "det upper-triangular = 2*3 = 6");
+    assert!(
+        (det(&upper) - 6.0).abs() < 1e-12,
+        "det upper-triangular = 2*3 = 6"
+    );
     // lower-triangular, diagonal 2,3,4
     let lower = make_f64_matrix(3, 3, &[2.0, 0.0, 0.0, 1.0, 3.0, 0.0, 4.0, 5.0, 4.0]);
-    assert!((det(&lower) - 24.0).abs() < 1e-12, "det lower-triangular = 2*3*4 = 24");
+    assert!(
+        (det(&lower) - 24.0).abs() < 1e-12,
+        "det lower-triangular = 2*3*4 = 24"
+    );
 }
 
 #[test]
@@ -348,16 +367,24 @@ fn oracle_slogdet_positive_sign_and_identity() {
     };
     // diagonal, det = 6 > 0
     let a = make_f64_matrix(2, 2, &[2.0, 0.0, 0.0, 3.0]);
-    let sl = eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&a), &no_params()).unwrap();
-    assert!((scalar(&sl[0]) - 1.0).abs() < 1e-12, "positive det -> sign = +1");
+    let sl =
+        eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&a), &no_params()).unwrap();
+    assert!(
+        (scalar(&sl[0]) - 1.0).abs() < 1e-12,
+        "positive det -> sign = +1"
+    );
     assert!(
         (scalar(&sl[1]) - 6.0_f64.ln()).abs() < 1e-10,
         "logabsdet = ln(6)"
     );
     // identity: sign = +1, logabsdet = ln(1) = 0
     let i2 = make_f64_matrix(2, 2, &[1.0, 0.0, 0.0, 1.0]);
-    let sli = eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&i2), &no_params()).unwrap();
-    assert!((scalar(&sli[0]) - 1.0).abs() < 1e-12, "slogdet(I) sign = +1");
+    let sli =
+        eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&i2), &no_params()).unwrap();
+    assert!(
+        (scalar(&sli[0]) - 1.0).abs() < 1e-12,
+        "slogdet(I) sign = +1"
+    );
     assert!(scalar(&sli[1]).abs() < 1e-12, "slogdet(I) logabsdet = 0");
 }
 

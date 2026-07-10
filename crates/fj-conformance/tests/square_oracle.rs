@@ -283,16 +283,8 @@ fn oracle_square_f32_signed_zero_and_nan_bits() {
     assert_eq!(bits[1], 0.0_f32.to_bits(), "square(-0.0_f32) = +0.0");
     assert_eq!(bits[2], 12.25_f32.to_bits(), "square(3.5_f32)");
     assert_eq!(bits[3], 12.25_f32.to_bits(), "square(-3.5_f32)");
-    assert_eq!(
-        bits[4],
-        f32::INFINITY.to_bits(),
-        "square(+inf_f32) = +inf"
-    );
-    assert_eq!(
-        bits[5],
-        f32::INFINITY.to_bits(),
-        "square(-inf_f32) = +inf"
-    );
+    assert_eq!(bits[4], f32::INFINITY.to_bits(), "square(+inf_f32) = +inf");
+    assert_eq!(bits[5], f32::INFINITY.to_bits(), "square(-inf_f32) = +inf");
     assert!(f32::from_bits(bits[6]).is_nan(), "square(+nan_f32) = NaN");
     assert!(f32::from_bits(bits[7]).is_nan(), "square(-nan_f32) = NaN");
 }

@@ -113,7 +113,11 @@ fn oracle_ctz_zero_i32() {
         TensorValue::new(DType::I32, Shape { dims: vec![] }, vec![Literal::I64(0)]).unwrap(),
     );
     let result = eval_primitive(Primitive::CountTrailingZeros, &[input], &no_params()).unwrap();
-    assert_eq!(extract_i64_scalar(&result), 32, "ctz(0i32) = 32, not the i64 width 64");
+    assert_eq!(
+        extract_i64_scalar(&result),
+        32,
+        "ctz(0i32) = 32, not the i64 width 64"
+    );
 }
 
 // ====================== SCALAR ONE ======================

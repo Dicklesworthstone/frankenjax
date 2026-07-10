@@ -139,17 +139,10 @@ fn oracle_sqrt_f32_signed_zero_and_nan_bits() {
     let bits = extract_f32_bits_vec(&result);
 
     assert_eq!(bits[0], 0.0_f32.to_bits(), "sqrt(+0.0_f32) = +0");
-    assert_eq!(
-        bits[1],
-        (-0.0_f32).to_bits(),
-        "sqrt(-0.0_f32) = -0"
-    );
+    assert_eq!(bits[1], (-0.0_f32).to_bits(), "sqrt(-0.0_f32) = -0");
     assert_eq!(bits[2], 2.0_f32.to_bits(), "sqrt(4.0_f32)");
     assert_eq!(bits[3], f32::INFINITY.to_bits(), "sqrt(+inf_f32)");
-    assert!(
-        f32::from_bits(bits[4]).is_nan(),
-        "sqrt(-1.0_f32) = NaN"
-    );
+    assert!(f32::from_bits(bits[4]).is_nan(), "sqrt(-1.0_f32) = NaN");
     assert!(f32::from_bits(bits[5]).is_nan(), "sqrt(+nan_f32) = NaN");
     assert!(f32::from_bits(bits[6]).is_nan(), "sqrt(-nan_f32) = NaN");
     assert_eq!(bits[7], 0.5_f32.to_bits(), "sqrt(0.25_f32)");

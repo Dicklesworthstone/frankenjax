@@ -447,10 +447,8 @@ mod tests {
 
     #[test]
     fn file_cache_round_trip() {
-        let dir = std::env::temp_dir().join(format!(
-            "fj-cache-test-file-backend-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("fj-cache-test-file-backend-{}", std::process::id()));
 
         let mut cache = FileCache::new(dir.clone());
         let key = test_key("deadbeef");
@@ -468,10 +466,8 @@ mod tests {
 
     #[test]
     fn file_cache_stats_counts_bin_files() {
-        let dir = std::env::temp_dir().join(format!(
-            "fj-cache-test-file-stats-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("fj-cache-test-file-stats-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
 
         let mut cache = FileCache::new(dir.clone());
@@ -523,10 +519,8 @@ mod tests {
         // Point the cache under a regular file. FileCache::new now creates
         // normal missing directories, but this path still cannot become a
         // directory, so std::fs::write exercises the put() failure branch.
-        let parent_file = std::env::temp_dir().join(format!(
-            "fj-cache-test-file-parent-{}",
-            std::process::id()
-        ));
+        let parent_file =
+            std::env::temp_dir().join(format!("fj-cache-test-file-parent-{}", std::process::id()));
         std::fs::write(&parent_file, b"not a directory").expect("parent marker should write");
         let dir = parent_file.join("never_created");
 

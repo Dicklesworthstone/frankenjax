@@ -49,31 +49,26 @@ fn vector_for_dtype(dtype: DType, values: &[u32]) -> Value {
     let len = u32::try_from(values.len()).expect("test vector length fits u32");
     let shape = Shape::vector(len);
     let tensor = match dtype {
-        DType::F64 => TensorValue::new_f64_values(
-            shape,
-            values.iter().copied().map(f64::from).collect(),
-        )
-        .unwrap(),
-        DType::F32 => TensorValue::new_f32_values(
-            shape,
-            values.iter().copied().map(|v| v as f32).collect(),
-        )
-        .unwrap(),
-        DType::I64 => TensorValue::new_i64_values(
-            shape,
-            values.iter().copied().map(i64::from).collect(),
-        )
-        .unwrap(),
-        DType::I32 => TensorValue::new_i32_values(
-            shape,
-            values.iter().copied().map(i64::from).collect(),
-        )
-        .unwrap(),
-        DType::U64 => TensorValue::new_u64_values(
-            shape,
-            values.iter().copied().map(u64::from).collect(),
-        )
-        .unwrap(),
+        DType::F64 => {
+            TensorValue::new_f64_values(shape, values.iter().copied().map(f64::from).collect())
+                .unwrap()
+        }
+        DType::F32 => {
+            TensorValue::new_f32_values(shape, values.iter().copied().map(|v| v as f32).collect())
+                .unwrap()
+        }
+        DType::I64 => {
+            TensorValue::new_i64_values(shape, values.iter().copied().map(i64::from).collect())
+                .unwrap()
+        }
+        DType::I32 => {
+            TensorValue::new_i32_values(shape, values.iter().copied().map(i64::from).collect())
+                .unwrap()
+        }
+        DType::U64 => {
+            TensorValue::new_u64_values(shape, values.iter().copied().map(u64::from).collect())
+                .unwrap()
+        }
         DType::U32 => TensorValue::new_u32_values(shape, values.to_vec()).unwrap(),
         DType::Bool => TensorValue::new_bool_values(
             shape,

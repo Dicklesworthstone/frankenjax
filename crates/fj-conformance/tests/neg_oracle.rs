@@ -307,11 +307,7 @@ fn oracle_neg_f32_bit_patterns() {
     assert_eq!(bits[1], 0.0_f32.to_bits(), "neg(-0.0f32)");
     assert_eq!(bits[2], (-2.5_f32).to_bits(), "neg(+finite f32)");
     assert_eq!(bits[3], 2.5_f32.to_bits(), "neg(-finite f32)");
-    assert_eq!(
-        bits[4],
-        f32::NEG_INFINITY.to_bits(),
-        "neg(+inf f32)"
-    );
+    assert_eq!(bits[4], f32::NEG_INFINITY.to_bits(), "neg(+inf f32)");
     assert_eq!(bits[5], f32::INFINITY.to_bits(), "neg(-inf f32)");
     assert!(f32::from_bits(bits[6]).is_nan(), "neg(+NaN f32)");
     assert!(f32::from_bits(bits[7]).is_nan(), "neg(-NaN f32)");

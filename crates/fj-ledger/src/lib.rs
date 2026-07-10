@@ -270,9 +270,8 @@ impl LogDomainPosterior {
 
     pub fn update(&mut self, log_likelihood_delta: f64) {
         if log_likelihood_delta.is_finite() {
-            self.accumulated_log_likelihood = (self.accumulated_log_likelihood
-                + log_likelihood_delta)
-                .clamp(-f64::MAX, f64::MAX);
+            self.accumulated_log_likelihood =
+                (self.accumulated_log_likelihood + log_likelihood_delta).clamp(-f64::MAX, f64::MAX);
         }
     }
 
@@ -751,7 +750,10 @@ mod tests {
         report.observe(0.75, true);
         let ece = report.compute_ece();
         assert!(ece.is_finite());
-        assert!(ece < 0.3, "finite prediction should drive finite ECE: {ece}");
+        assert!(
+            ece < 0.3,
+            "finite prediction should drive finite ECE: {ece}"
+        );
     }
 
     #[test]
@@ -981,11 +983,8 @@ mod tests {
     fn decision_record_non_finite_posterior_reprofiles_without_nan_losses() {
         let matrix = LossMatrix::default();
         for posterior in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let record = DecisionRecord::from_posterior(
-                CompatibilityMode::Strict,
-                posterior,
-                &matrix,
-            );
+            let record =
+                DecisionRecord::from_posterior(CompatibilityMode::Strict, posterior, &matrix);
             assert_eq!(record.posterior_abandoned.to_bits(), 0.5_f64.to_bits());
             assert_eq!(record.expected_loss_keep, f64::INFINITY);
             assert_eq!(record.expected_loss_kill, f64::INFINITY);

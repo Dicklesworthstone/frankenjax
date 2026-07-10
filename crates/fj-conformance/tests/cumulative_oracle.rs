@@ -97,16 +97,19 @@ fn cumsum_last_element_equals_reduce_sum() {
         &eval_primitive(Primitive::Cumsum, &[input.clone()], &axis_params(0)).unwrap(),
     );
     let reduce_axes = BTreeMap::from([("axes".to_string(), "0".to_string())]);
-    let total = extract_i64_scalar(
-        &eval_primitive(Primitive::ReduceSum, &[input], &reduce_axes).unwrap(),
-    )
-    .expect("reduce_sum should produce an i64 scalar");
+    let total =
+        extract_i64_scalar(&eval_primitive(Primitive::ReduceSum, &[input], &reduce_axes).unwrap())
+            .expect("reduce_sum should produce an i64 scalar");
     assert_eq!(
         *cum.last().unwrap(),
         total,
         "cumsum's last element must equal reduce_sum"
     );
-    assert_eq!(total, data.iter().sum::<i64>(), "and both equal the host sum");
+    assert_eq!(
+        total,
+        data.iter().sum::<i64>(),
+        "and both equal the host sum"
+    );
 }
 
 #[test]
@@ -188,10 +191,9 @@ fn cumprod_last_element_equals_reduce_prod() {
         &eval_primitive(Primitive::Cumprod, &[input.clone()], &axis_params(0)).unwrap(),
     );
     let reduce_axes = BTreeMap::from([("axes".to_string(), "0".to_string())]);
-    let total = extract_i64_scalar(
-        &eval_primitive(Primitive::ReduceProd, &[input], &reduce_axes).unwrap(),
-    )
-    .expect("reduce_prod should produce an i64 scalar");
+    let total =
+        extract_i64_scalar(&eval_primitive(Primitive::ReduceProd, &[input], &reduce_axes).unwrap())
+            .expect("reduce_prod should produce an i64 scalar");
     assert_eq!(
         *cum.last().unwrap(),
         total,
@@ -729,12 +731,40 @@ fn oracle_associative_scan_body_ops() {
         .unwrap_or_else(|e| panic!("associative_scan body_op={op} failed: {e:?}"));
         extract_i64_vec(&r)
     };
-    assert_eq!(scan(vec![1, 2, 3, 4], "add"), vec![1, 3, 6, 10], "add = cumulative sum");
-    assert_eq!(scan(vec![1, 2, 3, 4], "mul"), vec![1, 2, 6, 24], "mul = cumulative product");
-    assert_eq!(scan(vec![1, 3, 2, 4], "max"), vec![1, 3, 3, 4], "max = cumulative max");
-    assert_eq!(scan(vec![4, 2, 3, 1], "min"), vec![4, 2, 2, 1], "min = cumulative min");
+    assert_eq!(
+        scan(vec![1, 2, 3, 4], "add"),
+        vec![1, 3, 6, 10],
+        "add = cumulative sum"
+    );
+    assert_eq!(
+        scan(vec![1, 2, 3, 4], "mul"),
+        vec![1, 2, 6, 24],
+        "mul = cumulative product"
+    );
+    assert_eq!(
+        scan(vec![1, 3, 2, 4], "max"),
+        vec![1, 3, 3, 4],
+        "max = cumulative max"
+    );
+    assert_eq!(
+        scan(vec![4, 2, 3, 1], "min"),
+        vec![4, 2, 2, 1],
+        "min = cumulative min"
+    );
     // bitwise reducers (i64): accumulate left-to-right.
-    assert_eq!(scan(vec![7, 3, 6], "and"), vec![7, 3, 2], "and: 7, 7&3=3, 3&6=2");
-    assert_eq!(scan(vec![1, 2, 4], "or"), vec![1, 3, 7], "or: 1, 1|2=3, 3|4=7");
-    assert_eq!(scan(vec![1, 3, 5], "xor"), vec![1, 2, 7], "xor: 1, 1^3=2, 2^5=7");
+    assert_eq!(
+        scan(vec![7, 3, 6], "and"),
+        vec![7, 3, 2],
+        "and: 7, 7&3=3, 3&6=2"
+    );
+    assert_eq!(
+        scan(vec![1, 2, 4], "or"),
+        vec![1, 3, 7],
+        "or: 1, 1|2=3, 3|4=7"
+    );
+    assert_eq!(
+        scan(vec![1, 3, 5], "xor"),
+        vec![1, 2, 7],
+        "xor: 1, 1^3=2, 2^5=7"
+    );
 }

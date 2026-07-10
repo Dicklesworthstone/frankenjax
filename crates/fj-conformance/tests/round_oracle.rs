@@ -131,21 +131,13 @@ fn oracle_round_f32_default_signed_zero_and_nan_bits() {
     let bits = extract_f32_bits_vec(&result);
 
     assert_eq!(bits[0], 0.0_f32.to_bits(), "round(+0.0_f32) = +0");
-    assert_eq!(
-        bits[1],
-        (-0.0_f32).to_bits(),
-        "round(-0.0_f32) = -0"
-    );
+    assert_eq!(bits[1], (-0.0_f32).to_bits(), "round(-0.0_f32) = -0");
     assert_eq!(bits[2], 1.0_f32.to_bits(), "round(0.5_f32) = 1");
     assert_eq!(bits[3], (-1.0_f32).to_bits(), "round(-0.5_f32) = -1");
     assert_eq!(bits[4], 1.0_f32.to_bits(), "round(1.4_f32) = 1");
     assert_eq!(bits[5], (-2.0_f32).to_bits(), "round(-1.6_f32) = -2");
     assert_eq!(bits[6], f32::INFINITY.to_bits(), "round(+inf_f32)");
-    assert_eq!(
-        bits[7],
-        f32::NEG_INFINITY.to_bits(),
-        "round(-inf_f32)"
-    );
+    assert_eq!(bits[7], f32::NEG_INFINITY.to_bits(), "round(-inf_f32)");
     assert!(f32::from_bits(bits[8]).is_nan(), "round(+nan_f32) = NaN");
     assert!(f32::from_bits(bits[9]).is_nan(), "round(-nan_f32) = NaN");
 }
@@ -350,11 +342,7 @@ fn oracle_round_f32_to_nearest_even_half_bits() {
 
     assert_eq!(bits[0], (-2.0_f32).to_bits(), "round_even(-1.5_f32)");
     assert_eq!(bits[1], (-1.0_f32).to_bits(), "round_even(-1.0_f32)");
-    assert_eq!(
-        bits[2],
-        (-0.0_f32).to_bits(),
-        "round_even(-0.5_f32) = -0"
-    );
+    assert_eq!(bits[2], (-0.0_f32).to_bits(), "round_even(-0.5_f32) = -0");
     assert_eq!(bits[3], 0.0_f32.to_bits(), "round_even(+0.0_f32)");
     assert_eq!(bits[4], 0.0_f32.to_bits(), "round_even(+0.5_f32) = +0");
     assert_eq!(bits[5], 1.0_f32.to_bits(), "round_even(1.0_f32)");

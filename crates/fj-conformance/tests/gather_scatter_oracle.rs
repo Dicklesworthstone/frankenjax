@@ -377,7 +377,11 @@ fn oracle_scatter_combiner_modes_via_dispatch() {
         &mode_params("add"),
     )
     .unwrap();
-    assert_eq!(extract_i64_vec(&r), vec![40, 0, 20, 0], "scatter-add sums duplicate-index updates");
+    assert_eq!(
+        extract_i64_vec(&r),
+        vec![40, 0, 20, 0],
+        "scatter-add sums duplicate-index updates"
+    );
     // mul: operand[0] = 1 * 10 * 30 = 300; operand[2] = 1 * 20 = 20
     let r = eval_primitive(
         Primitive::Scatter,
@@ -389,7 +393,11 @@ fn oracle_scatter_combiner_modes_via_dispatch() {
         &mode_params("mul"),
     )
     .unwrap();
-    assert_eq!(extract_i64_vec(&r), vec![300, 1, 20, 1], "scatter-mul multiplies updates");
+    assert_eq!(
+        extract_i64_vec(&r),
+        vec![300, 1, 20, 1],
+        "scatter-mul multiplies updates"
+    );
     // max: operand[0] = max(5,10,7) = 10; operand[2] = max(5,3) = 5
     let r = eval_primitive(
         Primitive::Scatter,
@@ -401,7 +409,11 @@ fn oracle_scatter_combiner_modes_via_dispatch() {
         &mode_params("max"),
     )
     .unwrap();
-    assert_eq!(extract_i64_vec(&r), vec![10, 5, 5, 5], "scatter-max keeps the largest");
+    assert_eq!(
+        extract_i64_vec(&r),
+        vec![10, 5, 5, 5],
+        "scatter-max keeps the largest"
+    );
     // min: operand[0] = min(5,10,7) = 5; operand[2] = min(5,3) = 3
     let r = eval_primitive(
         Primitive::Scatter,
@@ -413,7 +425,11 @@ fn oracle_scatter_combiner_modes_via_dispatch() {
         &mode_params("min"),
     )
     .unwrap();
-    assert_eq!(extract_i64_vec(&r), vec![5, 5, 3, 5], "scatter-min keeps the smallest");
+    assert_eq!(
+        extract_i64_vec(&r),
+        vec![5, 5, 3, 5],
+        "scatter-min keeps the smallest"
+    );
 }
 
 #[test]

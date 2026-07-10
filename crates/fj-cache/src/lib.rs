@@ -1138,8 +1138,10 @@ mod tests {
     fn cache_manager_file_backed_failed_write_stays_miss() {
         use super::{CacheLookup, CacheManager};
 
-        let parent_file =
-            std::env::temp_dir().join(format!("fj-cache-missing-write-file-{}", std::process::id()));
+        let parent_file = std::env::temp_dir().join(format!(
+            "fj-cache-missing-write-file-{}",
+            std::process::id()
+        ));
         std::fs::write(&parent_file, b"not a directory").expect("parent marker should write");
         let missing_dir = parent_file.join("cache");
         let key = build_cache_key(&baseline_input()).unwrap();
@@ -1255,9 +1257,9 @@ mod tests {
 
     #[test]
     fn cache_manager_lru_file_backed_clear_failure_counter_surfaces_backend_failure() {
+        use super::CacheManager;
         use super::backend::FileCache;
         use super::eviction::{LruCache, LruConfig};
-        use super::CacheManager;
 
         let parent_file =
             std::env::temp_dir().join(format!("fj-cache-lru-clear-file-{}", std::process::id()));
@@ -1284,9 +1286,9 @@ mod tests {
 
     #[test]
     fn cache_manager_lru_file_backed_evict_failure_counter_surfaces_backend_failure() {
+        use super::CacheManager;
         use super::backend::FileCache;
         use super::eviction::{LruCache, LruConfig};
-        use super::CacheManager;
 
         let parent_file =
             std::env::temp_dir().join(format!("fj-cache-lru-evict-file-{}", std::process::id()));
@@ -1352,9 +1354,9 @@ mod tests {
 
     #[test]
     fn cache_manager_ttl_file_backed_clear_failure_counter_surfaces_backend_failure() {
+        use super::CacheManager;
         use super::backend::FileCache;
         use super::eviction::{TtlLruCache, TtlLruConfig};
-        use super::CacheManager;
 
         let parent_file =
             std::env::temp_dir().join(format!("fj-cache-ttl-clear-file-{}", std::process::id()));
@@ -1381,9 +1383,9 @@ mod tests {
 
     #[test]
     fn cache_manager_ttl_file_backed_evict_failure_counter_surfaces_backend_failure() {
+        use super::CacheManager;
         use super::backend::FileCache;
         use super::eviction::{TtlLruCache, TtlLruConfig};
-        use super::CacheManager;
 
         let parent_file =
             std::env::temp_dir().join(format!("fj-cache-ttl-evict-file-{}", std::process::id()));

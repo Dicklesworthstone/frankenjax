@@ -511,8 +511,13 @@ fn oracle_dense_same_width_bitcast_matches_literal_backing_exact_bits() {
     ];
     let f32_shape = [f32_values.len() as u32];
     let dense_f32 = Value::Tensor(
-        TensorValue::new_f32_values(Shape { dims: f32_shape.to_vec() }, f32_values.to_vec())
-            .unwrap(),
+        TensorValue::new_f32_values(
+            Shape {
+                dims: f32_shape.to_vec(),
+            },
+            f32_values.to_vec(),
+        )
+        .unwrap(),
     );
     let literal_f32 = make_literal_backed_tensor(
         DType::F32,
@@ -590,8 +595,13 @@ fn oracle_dense_same_width_bitcast_matches_literal_backing_exact_bits() {
     ];
     let f64_shape = [f64_values.len() as u32];
     let dense_f64 = Value::Tensor(
-        TensorValue::new_f64_values(Shape { dims: f64_shape.to_vec() }, f64_values.to_vec())
-            .unwrap(),
+        TensorValue::new_f64_values(
+            Shape {
+                dims: f64_shape.to_vec(),
+            },
+            f64_values.to_vec(),
+        )
+        .unwrap(),
     );
     let literal_f64 = make_literal_backed_tensor(
         DType::F64,
@@ -672,8 +682,13 @@ fn oracle_dense_signed_unsigned_same_width_bitcast_matches_literal_backing_exact
     ];
     let f32_shape = [f32_values.len() as u32];
     let dense_f32 = Value::Tensor(
-        TensorValue::new_f32_values(Shape { dims: f32_shape.to_vec() }, f32_values.to_vec())
-            .unwrap(),
+        TensorValue::new_f32_values(
+            Shape {
+                dims: f32_shape.to_vec(),
+            },
+            f32_values.to_vec(),
+        )
+        .unwrap(),
     );
     let literal_f32 = make_literal_backed_tensor(
         DType::F32,
@@ -757,8 +772,13 @@ fn oracle_dense_signed_unsigned_same_width_bitcast_matches_literal_backing_exact
     ];
     let f64_shape = [f64_values.len() as u32];
     let dense_f64 = Value::Tensor(
-        TensorValue::new_f64_values(Shape { dims: f64_shape.to_vec() }, f64_values.to_vec())
-            .unwrap(),
+        TensorValue::new_f64_values(
+            Shape {
+                dims: f64_shape.to_vec(),
+            },
+            f64_values.to_vec(),
+        )
+        .unwrap(),
     );
     let literal_f64 = make_literal_backed_tensor(
         DType::F64,
@@ -842,8 +862,13 @@ fn oracle_dense_width_changing_bitcast_matches_literal_backing_exact_bits() {
     ];
     let f64_shape = [f64_values.len() as u32];
     let dense_f64 = Value::Tensor(
-        TensorValue::new_f64_values(Shape { dims: f64_shape.to_vec() }, f64_values.to_vec())
-            .unwrap(),
+        TensorValue::new_f64_values(
+            Shape {
+                dims: f64_shape.to_vec(),
+            },
+            f64_values.to_vec(),
+        )
+        .unwrap(),
     );
     let literal_f64 = make_literal_backed_tensor(
         DType::F64,
@@ -936,8 +961,13 @@ fn oracle_dense_half_width_bitcast_matches_literal_backing_exact_bits() {
     ];
     let f32_shape = [f32_values.len() as u32];
     let dense_f32 = Value::Tensor(
-        TensorValue::new_f32_values(Shape { dims: f32_shape.to_vec() }, f32_values.to_vec())
-            .unwrap(),
+        TensorValue::new_f32_values(
+            Shape {
+                dims: f32_shape.to_vec(),
+            },
+            f32_values.to_vec(),
+        )
+        .unwrap(),
     );
     let literal_f32 = make_literal_backed_tensor(
         DType::F32,

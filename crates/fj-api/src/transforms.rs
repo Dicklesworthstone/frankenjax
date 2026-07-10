@@ -692,12 +692,11 @@ fn infer_reshape_shape(
         let dim_u32 = u32::try_from(dim).map_err(|_| ApiError::EvalError {
             detail: format!("reshape dimension out of range: {dim}"),
         })?;
-        known_product =
-            known_product
-                .checked_mul(u64::from(dim_u32))
-                .ok_or_else(|| ApiError::EvalError {
-                    detail: "reshape target element count overflow".to_owned(),
-                })?;
+        known_product = known_product
+            .checked_mul(u64::from(dim_u32))
+            .ok_or_else(|| ApiError::EvalError {
+                detail: "reshape target element count overflow".to_owned(),
+            })?;
         dims.push(dim_u32);
     }
 
@@ -1607,7 +1606,10 @@ mod tests {
 
         let err = eval_shape(&jaxpr, &[]).expect_err("inputless reshape should fail");
         let msg = err.to_string();
-        assert!(msg.contains("one input"), "error should reject arity: {msg}");
+        assert!(
+            msg.contains("one input"),
+            "error should reject arity: {msg}"
+        );
     }
 
     #[test]
@@ -1617,8 +1619,14 @@ mod tests {
         let err = eval_shape(&jaxpr, &[input]).expect_err("mismatched reshape should fail");
         let msg = err.to_string();
 
-        assert!(msg.contains("mismatch"), "error should mention mismatch: {msg}");
-        assert!(msg.contains("input=3"), "error should include input size: {msg}");
+        assert!(
+            msg.contains("mismatch"),
+            "error should mention mismatch: {msg}"
+        );
+        assert!(
+            msg.contains("input=3"),
+            "error should include input size: {msg}"
+        );
         assert!(
             msg.contains("target=4"),
             "error should include target size: {msg}"

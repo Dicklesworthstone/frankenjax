@@ -186,7 +186,10 @@ fn oracle_tile_left_pads_reps_when_shorter_than_input() {
     let input = make_f64_tensor(&[2, 2], vec![1.0, 2.0, 3.0, 4.0]);
     let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[2])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 4]);
-    assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0]
+    );
 }
 
 #[test]

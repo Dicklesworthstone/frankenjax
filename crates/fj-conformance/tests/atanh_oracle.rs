@@ -504,7 +504,11 @@ fn oracle_atanh_complex128_large_no_overflow() {
         "atanh(1e200) must be finite, got {:?}",
         vec[0]
     );
-    assert!(vec[0].0.abs() < 1e-9, "atanh(1e200) real part ~ 0, got {}", vec[0].0);
+    assert!(
+        vec[0].0.abs() < 1e-9,
+        "atanh(1e200) real part ~ 0, got {}",
+        vec[0].0
+    );
     assert!(
         (vec[0].1.abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
         "|imag(atanh(1e200))| ~ pi/2, got {}",

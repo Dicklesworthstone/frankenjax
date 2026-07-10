@@ -86,8 +86,12 @@ fn oracle_conv_1d_explicit_padding() {
     // conv with explicit padding is not yet supported end-to-end.
     let lhs = make_f64_tensor(&[1, 3, 1], vec![1.0, 2.0, 3.0]);
     let rhs = make_f64_tensor(&[2, 1, 1], vec![1.0, 1.0]);
-    let result =
-        eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("EXPLICIT:1,1", "1")).unwrap();
+    let result = eval_primitive(
+        Primitive::Conv,
+        &[lhs, rhs],
+        &conv_params("EXPLICIT:1,1", "1"),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![1, 4, 1]);
     let vals = extract_f64_vec(&result);
     let expected = [1.0, 3.0, 5.0, 3.0];

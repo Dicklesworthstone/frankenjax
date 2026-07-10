@@ -4199,7 +4199,11 @@ fn integer_pow_vjp_zero_exponent_and_general() {
         extract_f64_scalar(&vjp[0])
     };
     // n == 0: grad is 0 even at x = 0 (the guard avoids NaN).
-    assert_eq!(vjp_ipow(0.0, 0, 1.0), 0.0, "d/dx x^0 = 0 at x=0 (n==0 guard)");
+    assert_eq!(
+        vjp_ipow(0.0, 0, 1.0),
+        0.0,
+        "d/dx x^0 = 0 at x=0 (n==0 guard)"
+    );
     assert_eq!(vjp_ipow(5.0, 0, 1.0), 0.0, "d/dx x^0 = 0");
     // n == 3: grad = 3*x^2; at x=2 -> 12.
     assert!(
@@ -4252,7 +4256,10 @@ fn binary_elementwise_vjps_hypot_logaddexp() {
         (lx - s).abs() < 1e-9 && (ly - (1.0 - s)).abs() < 1e-9,
         "logaddexp grad = (sigmoid(1), sigmoid(-1)), got ({lx}, {ly})"
     );
-    assert!((lx + ly - 1.0).abs() < 1e-9, "logaddexp grads must sum to 1");
+    assert!(
+        (lx + ly - 1.0).abs() < 1e-9,
+        "logaddexp grads must sum to 1"
+    );
     // logaddexp2(1,0): 2^x/(2^x+2^y) = 2/3, 1/3
     let (l2x, l2y) = vjp2(Primitive::LogAddExp2, 1.0, 0.0);
     assert!(
@@ -4361,7 +4368,12 @@ fn broadcast_in_dim_vjp_sums_over_broadcast_axes() {
     let mut params = BTreeMap::new();
     params.insert("shape".to_string(), "2,3".to_string());
     params.insert("broadcast_dimensions".to_string(), "1".to_string());
-    let out = eval_primitive(Primitive::BroadcastInDim, std::slice::from_ref(&input), &params).unwrap();
+    let out = eval_primitive(
+        Primitive::BroadcastInDim,
+        std::slice::from_ref(&input),
+        &params,
+    )
+    .unwrap();
     // g = [[1,2,3],[4,5,6]]
     let g = make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let vjp = fj_ad::vjp(

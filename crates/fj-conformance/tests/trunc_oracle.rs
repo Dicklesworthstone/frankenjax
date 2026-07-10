@@ -131,24 +131,12 @@ fn oracle_trunc_f32_signed_zero_and_nan_bits() {
     let bits = extract_f32_bits_vec(&result);
 
     assert_eq!(bits[0], 0.0_f32.to_bits(), "trunc(+0.0_f32) = +0");
-    assert_eq!(
-        bits[1],
-        (-0.0_f32).to_bits(),
-        "trunc(-0.0_f32) = -0"
-    );
-    assert_eq!(
-        bits[2],
-        (-0.0_f32).to_bits(),
-        "trunc(-0.5_f32) = -0"
-    );
+    assert_eq!(bits[1], (-0.0_f32).to_bits(), "trunc(-0.0_f32) = -0");
+    assert_eq!(bits[2], (-0.0_f32).to_bits(), "trunc(-0.5_f32) = -0");
     assert_eq!(bits[3], 1.0_f32.to_bits(), "trunc(1.9_f32) = 1");
     assert_eq!(bits[4], (-1.0_f32).to_bits(), "trunc(-1.9_f32) = -1");
     assert_eq!(bits[5], f32::INFINITY.to_bits(), "trunc(+inf_f32)");
-    assert_eq!(
-        bits[6],
-        f32::NEG_INFINITY.to_bits(),
-        "trunc(-inf_f32)"
-    );
+    assert_eq!(bits[6], f32::NEG_INFINITY.to_bits(), "trunc(-inf_f32)");
     assert!(f32::from_bits(bits[7]).is_nan(), "trunc(+nan_f32) = NaN");
     assert!(f32::from_bits(bits[8]).is_nan(), "trunc(-nan_f32) = NaN");
 }

@@ -1,18 +1,17 @@
 #![forbid(unsafe_code)]
 
 use fj_cache::{
-    build_cache_key,
+    CACHE_KEY_NAMESPACE, CacheKey, CacheKeyInput, CacheLookup, CacheManager, build_cache_key,
     legacy_parity::{
-        cache_legacy_parity_ledger, cache_legacy_parity_markdown,
-        validate_cache_legacy_parity_ledger, CacheLegacyParityLedger, CacheParityIssue,
+        CacheLegacyParityLedger, CacheParityIssue, cache_legacy_parity_ledger,
+        cache_legacy_parity_markdown, validate_cache_legacy_parity_ledger,
     },
-    CacheKey, CacheKeyInput, CacheLookup, CacheManager, CACHE_KEY_NAMESPACE,
 };
 #[cfg(test)]
 use fj_core::Jaxpr;
-use fj_core::{build_program, CompatibilityMode, ProgramSpec, Transform};
+use fj_core::{CompatibilityMode, ProgramSpec, Transform, build_program};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

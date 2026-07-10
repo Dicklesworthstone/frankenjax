@@ -4,12 +4,12 @@ use fj_core::{
     Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, ValueError, VarId,
 };
 use fj_dispatch::{
-    batching::{batch_eval_jaxpr, BatchTracer},
     TransformExecutionError,
+    batching::{BatchTracer, batch_eval_jaxpr},
 };
-use fj_egraph::{jaxpr_to_egraph, EGraphLoweringError, ExclusionReason};
+use fj_egraph::{EGraphLoweringError, ExclusionReason, jaxpr_to_egraph};
 use fj_interpreters::eval_jaxpr;
-use fj_lax::{eval_primitive, EvalError};
+use fj_lax::{EvalError, eval_primitive};
 use smallvec::smallvec;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

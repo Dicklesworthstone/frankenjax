@@ -236,11 +236,7 @@ fn oracle_reciprocal_f32_signed_zero_and_infinity_bits() {
         "reciprocal(-0.0_f32) = -inf"
     );
     assert_eq!(bits[2], 0.0_f32.to_bits(), "reciprocal(+inf_f32) = +0");
-    assert_eq!(
-        bits[3],
-        (-0.0_f32).to_bits(),
-        "reciprocal(-inf_f32) = -0"
-    );
+    assert_eq!(bits[3], (-0.0_f32).to_bits(), "reciprocal(-inf_f32) = -0");
     assert_eq!(bits[4], 0.5_f32.to_bits(), "reciprocal(2.0_f32)");
     assert_eq!(bits[5], (-0.25_f32).to_bits(), "reciprocal(-4.0_f32)");
     assert!(

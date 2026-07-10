@@ -264,35 +264,19 @@ fn oracle_rsqrt_f32_signed_zero_and_nan_bits() {
     let result = eval_primitive(Primitive::Rsqrt, &[input], &no_params()).unwrap();
     let bits = extract_f32_bits_vec(&result);
 
-    assert_eq!(
-        bits[0],
-        f32::INFINITY.to_bits(),
-        "rsqrt(+0.0_f32) = +inf"
-    );
+    assert_eq!(bits[0], f32::INFINITY.to_bits(), "rsqrt(+0.0_f32) = +inf");
     assert_eq!(
         bits[1],
         f32::NEG_INFINITY.to_bits(),
         "rsqrt(-0.0_f32) = -inf"
     );
     assert_eq!(bits[2], 0.0_f32.to_bits(), "rsqrt(+inf_f32) = +0");
-    assert!(
-        f32::from_bits(bits[3]).is_nan(),
-        "rsqrt(-inf_f32) = NaN"
-    );
+    assert!(f32::from_bits(bits[3]).is_nan(), "rsqrt(-inf_f32) = NaN");
     assert_eq!(bits[4], 0.5_f32.to_bits(), "rsqrt(4.0_f32)");
     assert_eq!(bits[5], 2.0_f32.to_bits(), "rsqrt(0.25_f32)");
-    assert!(
-        f32::from_bits(bits[6]).is_nan(),
-        "rsqrt(-1.0_f32) = NaN"
-    );
-    assert!(
-        f32::from_bits(bits[7]).is_nan(),
-        "rsqrt(+nan_f32) = NaN"
-    );
-    assert!(
-        f32::from_bits(bits[8]).is_nan(),
-        "rsqrt(-nan_f32) = NaN"
-    );
+    assert!(f32::from_bits(bits[6]).is_nan(), "rsqrt(-1.0_f32) = NaN");
+    assert!(f32::from_bits(bits[7]).is_nan(), "rsqrt(+nan_f32) = NaN");
+    assert!(f32::from_bits(bits[8]).is_nan(), "rsqrt(-nan_f32) = NaN");
 }
 
 // ======================== Negative Values (NaN) ========================

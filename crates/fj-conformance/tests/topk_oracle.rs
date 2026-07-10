@@ -202,7 +202,10 @@ fn oracle_topk_multi_output_negative_nan_sorts_below_finite_values() {
 
     let values = extract_f64_vec(&result[0]);
     assert_eq!(values[..2], [5.0, 4.0], "finite values rank above -NaN");
-    assert!(values[2].is_nan(), "-NaN is the minimum -> sorts last in top_k");
+    assert!(
+        values[2].is_nan(),
+        "-NaN is the minimum -> sorts last in top_k"
+    );
     assert_eq!(extract_i64_vec(&result[1]), vec![0, 2, 1]);
 }
 
