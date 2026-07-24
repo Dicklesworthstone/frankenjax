@@ -1,0 +1,75 @@
+{
+  "bead": "frankenjax-n75xr",
+  "agent": "cod-a / WildForge",
+  "generated_at": "2026-06-20T11:55:00Z",
+  "target": "fj-interpreters compiled_dispatch f64 large-chain JAX gap",
+  "lever": "seed f64 fusion output from the first operand below FUSION_THREAD_MIN_ELEMS, avoiding zero-fill followed by overwrite",
+  "rust_target_dir": "/data/projects/.rch-targets/frankenjax-cod-a",
+  "rust_worker": "vmi1149989",
+  "jax_artifact": "artifacts/performance/evidence/frankenjax-n75xr-jax-comparator-20260620T1150Z.json",
+  "commands": {
+    "baseline_1m": "AGENT_NAME=WildForge CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo bench -p fj-interpreters --bench compiled_dispatch_speed -- bigchain1048576 --warm-up-time 1 --measurement-time 5",
+    "baseline_16m": "AGENT_NAME=WildForge CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo bench -p fj-interpreters --bench compiled_dispatch_speed -- bigchain16777216 --warm-up-time 1 --measurement-time 5",
+    "candidate_1m": "AGENT_NAME=WildForge CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo bench -p fj-interpreters --bench compiled_dispatch_speed -- bigchain1048576 --warm-up-time 1 --measurement-time 5",
+    "candidate_16m": "AGENT_NAME=WildForge CARGO_TARGET_DIR=/data/projects/.rch-targets/frankenjax-cod-a rch exec -- cargo bench -p fj-interpreters --bench compiled_dispatch_speed -- bigchain16777216 --warm-up-time 1 --measurement-time 5",
+    "jax_comparator": "uv run --with 'jax[cpu]==0.10.1' --with numpy python benchmarks/jax_comparison/interpreter_compiled_dispatch_gauntlet.py --runs 20 --warmup 5 --inner-loops 200 --output artifacts/performance/evidence/frankenjax-n75xr-jax-comparator-20260620T1150Z.json"
+  },
+  "results": [
+    {
+      "workload": "compiled_runner/bigchain1048576",
+      "baseline_ns": 1864600.0,
+      "candidate_ns": 1647400.0,
+      "internal_speedup": 1.131844118003,
+      "jax_ns": 230228.275,
+      "rust_jax_ratio": 7.15550690695,
+      "verdict": "internal keep, external JAX loss"
+    },
+    {
+      "workload": "compiled_runner/bigchain16777216",
+      "baseline_ns": 98125000.0,
+      "candidate_ns": 88439000.0,
+      "internal_speedup": 1.109516503,
+      "jax_ns": 28052381.75,
+      "rust_jax_ratio": 3.152637822018,
+      "verdict": "internal keep, external JAX loss"
+    },
+    {
+      "workload": "compiled/bigchain1048576",
+      "baseline_ns": 9959600.0,
+      "candidate_ns": 7808100.0,
+      "internal_speedup": 1.275546229555,
+      "jax_ns": 230228.275,
+      "rust_jax_ratio": 33.914651623284,
+      "verdict": "internal win, external JAX loss"
+    },
+    {
+      "workload": "compiled/bigchain16777216",
+      "baseline_ns": 82246000.0,
+      "candidate_ns": 78579000.0,
+      "internal_speedup": 1.04666424414,
+      "jax_ns": 28052381.75,
+      "rust_jax_ratio": 2.801153924145,
+      "verdict": "internal win, external JAX loss"
+    }
+  ],
+  "negative_evidence_score": {
+    "production_rows_vs_jax": {
+      "wins": 0,
+      "losses": 2,
+      "neutral": 0
+    },
+    "production_rows_internal_same_worker": {
+      "wins": 2,
+      "losses": 0,
+      "neutral": 0
+    }
+  },
+  "validation": {
+    "fusion_tests": "pass: rch exec -- cargo test -p fj-interpreters fusion --lib",
+    "release_build": "pass: rch exec -- cargo build --release -p fj-interpreters",
+    "conformance": "pass: rch exec -- cargo test -p fj-conformance",
+    "clippy_changed_targets": "pass: rch exec -- cargo clippy -p fj-interpreters --all-targets --no-deps -- -D warnings; pass: rch exec -- cargo clippy -p fj-conformance --test polygamma_oracle --no-deps -- -D warnings",
+    "workspace_clippy_blocker": "cargo clippy with deps is blocked by pre-existing fj-trace/fj-lax lints outside this perf lever",
+    "format_blocker": "cargo fmt -p fj-interpreters -- --check and cargo fmt -p fj-conformance -- --check are blocked by broad pre-existing rustfmt drift"
+  }
+}

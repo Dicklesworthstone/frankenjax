@@ -1,0 +1,122 @@
+{
+  "generated_at": "2026-06-20T11:50:34.388704+00:00",
+  "engine": "jax_jit_cpu",
+  "jax_version": "0.10.1",
+  "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.42",
+  "workloads": {
+    "scalar": "x -> x + 1 repeated n times, dtype=int64",
+    "tensor64": "x[64] -> x + 1.0 repeated n times, dtype=float64",
+    "bigchain": "x[N] -> x + 1.0 repeated 8 times, dtype=float64",
+    "f32big": "x[N] -> x + 1.0 repeated 8 times, dtype=float32"
+  },
+  "results": [
+    {
+      "name": "compiled_dispatch_jax_scalar_n=8",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 4932.547500000001,
+      "p95_ns": 5972.989750000001,
+      "p99_ns": 6753.049949999999,
+      "mean_ns": 5148.1905,
+      "cv_pct": 10.823158890016
+    },
+    {
+      "name": "compiled_dispatch_jax_scalar_n=32",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 4730.99,
+      "p95_ns": 4826.9775,
+      "p99_ns": 4828.1555,
+      "mean_ns": 4733.73275,
+      "cv_pct": 1.2482635074988877
+    },
+    {
+      "name": "compiled_dispatch_jax_scalar_n=128",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 4828.6275000000005,
+      "p95_ns": 6995.96725,
+      "p99_ns": 7114.10545,
+      "mean_ns": 5293.416749999999,
+      "cv_pct": 13.823591015564581
+    },
+    {
+      "name": "compiled_dispatch_jax_tensor64_n=8",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 4893.0975,
+      "p95_ns": 6329.6230000000005,
+      "p99_ns": 7136.408599999998,
+      "mean_ns": 5210.0957499999995,
+      "cv_pct": 13.781613757840036
+    },
+    {
+      "name": "compiled_dispatch_jax_tensor64_n=32",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 5879.7425,
+      "p95_ns": 6274.41075,
+      "p99_ns": 6320.40215,
+      "mean_ns": 5522.84825,
+      "cv_pct": 10.700741609483913
+    },
+    {
+      "name": "compiled_dispatch_jax_bigchain4096_n=8",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 12102.685000000001,
+      "p95_ns": 20143.5735,
+      "p99_ns": 21553.806699999997,
+      "mean_ns": 12282.48,
+      "cv_pct": 42.0170317152494
+    },
+    {
+      "name": "compiled_dispatch_jax_bigchain65536_n=8",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 26813.61,
+      "p95_ns": 30967.417000000005,
+      "p99_ns": 35909.80339999999,
+      "mean_ns": 27737.792999999998,
+      "cv_pct": 9.40514090377111
+    },
+    {
+      "name": "compiled_dispatch_jax_bigchain262144_n=8",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 84293.975,
+      "p95_ns": 105432.155,
+      "p99_ns": 107676.511,
+      "mean_ns": 86885.795,
+      "cv_pct": 15.019675248944289
+    },
+    {
+      "name": "compiled_dispatch_jax_bigchain1048576_n=8",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 214967.375,
+      "p95_ns": 299515.6875000001,
+      "p99_ns": 440392.1374999997,
+      "mean_ns": 230228.275,
+      "cv_pct": 27.239196257518174
+    },
+    {
+      "name": "compiled_dispatch_jax_bigchain16777216_n=8",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 27786790.5,
+      "p95_ns": 31410289.55,
+      "p99_ns": 31847784.31,
+      "mean_ns": 28052381.75,
+      "cv_pct": 7.004334945101453
+    },
+    {
+      "name": "compiled_dispatch_jax_f32big4096_n=8",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 5320.885,
+      "p95_ns": 17639.169500000004,
+      "p99_ns": 19959.213899999995,
+      "mean_ns": 7908.8375,
+      "cv_pct": 58.66331630904013
+    },
+    {
+      "name": "compiled_dispatch_jax_f32big65536_n=8",
+      "engine": "jax_jit_cpu",
+      "p50_ns": 19106.309999999998,
+      "p95_ns": 20862.110999999997,
+      "p99_ns": 21032.214200000002,
+      "mean_ns": 19283.542999999998,
+      "cv_pct": 3.172666412138629
+    }
+  ]
+}

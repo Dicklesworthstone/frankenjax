@@ -1,0 +1,114 @@
+{
+  "artifact": "fj_dispatch_dot_i64_typed_output_2026-06-05",
+  "agent": "BlackThrush",
+  "project": "/data/projects/frankenjax",
+  "worktree": "/data/projects/.scratch/frankenjax-blackthrush-perf-20260605055543",
+  "baseline_commit": "3adb832814dd3ad45b2896bcecfde46b4b642670",
+  "rebased_parent_commit": "819d1d8e8575ac71387d0a4ec9cc996a4ca722c9",
+  "target": {
+    "crate": "fj-dispatch",
+    "benchmark": "vmap_dot_i64/paired_vectors",
+    "profile_source": "Fresh post-Eigh RCH profile left vmap_dot_i64/paired_vectors as a top fj-dispatch residual hotspot after vmap_eigh.",
+    "selected_lever": "Use the typed i64 tensor backing slice when available, compute row chunks directly, and build the output through TensorValue::new_i64_values to avoid per-element Literal materialization on the hot path."
+  },
+  "coordination": {
+    "br_ready_json": [],
+    "bead_status": "No ready perf bead was available; .beads/issues.jsonl was reserved by IcyGlacier, so this pass did not mutate bead state.",
+    "reservations": [
+      {
+        "id": 28648,
+        "pattern": "crates/fj-dispatch/src/batching.rs",
+        "agent": "BlackThrush",
+        "reason": "profile-dispatch-dot-i64-pass2"
+      },
+      {
+        "id": 28649,
+        "pattern": "artifacts/performance/evidence/fj_dispatch_dot_i64_*",
+        "agent": "BlackThrush",
+        "reason": "profile-dispatch-dot-i64-pass2"
+      }
+    ]
+  },
+  "benchmark": {
+    "baseline": {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dot-i64-baseline-rch-target-178064 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_dot_i64/paired_vectors --sample-size 30 --measurement-time 3 --warm-up-time 1 --noplot",
+      "worker": "ts2",
+      "time_us_low": 83.282,
+      "time_us_mean": 83.878,
+      "time_us_high": 84.442
+    },
+    "candidate": {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dot-i64-candidate-rch-target-178064 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_dot_i64/paired_vectors --sample-size 30 --measurement-time 3 --warm-up-time 1 --noplot",
+      "worker": "ts2",
+      "time_us_low": 14.443,
+      "time_us_mean": 14.617,
+      "time_us_high": 14.807
+    },
+    "post_rebase_candidate": {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dot-i64-postrebase-rch-target-178064 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_dot_i64/paired_vectors --sample-size 30 --measurement-time 3 --warm-up-time 1 --noplot",
+      "worker": "ts2",
+      "time_us_low": 14.849,
+      "time_us_mean": 14.89,
+      "time_us_high": 14.931
+    },
+    "mean_speedup": 5.738,
+    "conservative_speedup": 5.624,
+    "score": {
+      "impact": 5.0,
+      "confidence": 4.0,
+      "effort": 2.0,
+      "impact_x_confidence_over_effort": 10.0,
+      "keep_threshold": 2.0,
+      "decision": "keep"
+    }
+  },
+  "isomorphism_proof": {
+    "ordering": "Both paths consume row-major rows in batch order and push one dot result per row. chunks_exact(width) preserves the original batch_idx * width row partition.",
+    "tie_breaking": "No comparisons or tie-breaking are introduced.",
+    "floating_point": "The lever is limited to DType::I64 paired vector dot. F32/F64 dot paths are unchanged.",
+    "rng": "No RNG state or stochastic ordering is present.",
+    "overflow": "The implementation keeps the original wrapping_mul then wrapping_add arithmetic.",
+    "fallbacks": "If either typed slice is unavailable, the fallback still checks each Literal::I64 in row order and returns Ok(None) on non-i64 elements, matching the prior fail-closed behavior.",
+    "shape_dtype": "Output remains DType::I64 with Shape::vector(batch). The constructor changes from TensorValue::new(DType::I64, ...) to TensorValue::new_i64_values(...).",
+    "golden_sha256": {
+      "test": "batching::tests::test_batch_trace_dot_paired_batched_i64_vectors_golden_sha256",
+      "payload": "shape dims plus i64 output values for the 128x64 benchmark-shaped paired-vector dot input",
+      "digest": "7a89908811f9984cb00d4178ac4100b82466437309ae1fc4c11e9ee9010bb26e"
+    }
+  },
+  "validation": [
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dispatch-check-dot-rch-target-178064 rch exec -- cargo check -p fj-dispatch --all-targets",
+      "worker": "ts2",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dispatch-dot-test-rch-target-178064 rch exec -- cargo test -p fj-dispatch dot_paired_batched_i64 -- --nocapture",
+      "worker": "ts2",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dispatch-test-dot-final-178064 rch exec -- cargo test -p fj-dispatch -- --nocapture",
+      "worker": "ts2",
+      "result": "pass: 261 unit tests, 55 integration tests, 0 doc tests"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dispatch-clippy-dot-final-178064 rch exec -- cargo clippy -p fj-dispatch --all-targets --no-deps -- -D warnings",
+      "worker": "ts2",
+      "result": "pass"
+    },
+    {
+      "command": "cargo fmt -p fj-dispatch --check",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-dispatch/src/batching.rs",
+      "result": "pass"
+    },
+    {
+      "command": "ubs crates/fj-dispatch/src/batching.rs",
+      "result": "pass: exit 0, critical 0; existing broad warnings remain in this large file"
+    }
+  ],
+  "scope_note": "Per campaign instruction, validation stayed crate-scoped and used RCH for compilation-heavy commands; no full-workspace build was run."
+}
