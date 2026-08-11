@@ -21,4 +21,8 @@
 # into one and is the separately-gated bit-exactness decision (see cz0g0 evidence).
 # `+avx2` decouples the SIMD-width win from that.
 [target.'cfg(target_arch = "x86_64")']
-rustflags = ["-C", "target-feature=+avx2"]
+rustflags = ["-Z", "threads=4", "-C", "target-feature=+avx2"]
+
+[build]
+# Parallel rustc front-end (nightly). Added by build-settings sweep.
+rustflags = ["-Z", "threads=4"]
