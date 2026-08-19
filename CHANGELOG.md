@@ -2,6 +2,15 @@
 
 All notable changes to [FrankenJAX](https://github.com/Dicklesworthstone/frankenjax) are documented in this file.
 
+Scope window: project inception through HEAD on 2026-08-19.
+
+## Version Timeline
+
+| Version | Kind | Date | Summary |
+|---------|------|------|---------|
+| Unreleased | commits on `main` | 2026-03-18 → 2026-08-19 | vs-JAX kernels, `fj-py` / `fj-backend-gpu`, janitor docs-reorg |
+| workspace `0.1.0` | unreleased HEAD | 2026-08-19 | No git tags and no GitHub Releases exist |
+
 FrankenJAX is a clean-room Rust reimplementation of JAX's transform semantics. There are **no formal releases, tags, or GitHub Releases**; the project is at `0.1.0` (workspace-wide) with continuous development on `main`. Phases 0–7 below are the original reconstruction through 2026-03-17 (the "220-commit" snapshot). A current-window update on 2026-08-19 covers **2026-03-18 through HEAD**: **4,200 non-merge commits**, bringing `main` to **4,420** commits / ~460k lines under `crates/`. Phases remain the historical spine; new work is synthesized as dated waves, not a 4,000-commit dump.
 
 Repository: <https://github.com/Dicklesworthstone/frankenjax>
@@ -20,6 +29,10 @@ HEAD orientation (README, 2026-08-19): 162 canonical primitive variants
 V1 local primitives, 861 JAX 0.9.2 oracle fixtures, 17 workspace crates
 (`fj-py` and `fj-backend-gpu` added in this window; `fj-ffi` predated
 it), ~460k Rust lines under `crates/`.
+
+### Closed workstreams
+
+- Tracker: [`.beads/issues.jsonl`](https://github.com/Dicklesworthstone/frankenjax/blob/main/.beads/issues.jsonl).
 
 ### 2026-08-19 — Repo-janitor docs-reorg
 
