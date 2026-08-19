@@ -2,15 +2,109 @@
 
 All notable changes to [FrankenJAX](https://github.com/Dicklesworthstone/frankenjax) are documented in this file.
 
-FrankenJAX is a clean-room Rust reimplementation of JAX's transform semantics. There are no formal releases, tags, or semver versions; the project is at `0.1.0` (workspace-wide) with continuous development on `main`. This changelog is organized by capability area within each development phase, derived from the complete 220-commit history.
+FrankenJAX is a clean-room Rust reimplementation of JAX's transform semantics. There are **no formal releases, tags, or GitHub Releases**; the project is at `0.1.0` (workspace-wide) with continuous development on `main`. Phases 0–7 below are the original reconstruction through 2026-03-17 (the "220-commit" snapshot). A current-window update on 2026-08-19 covers **2026-03-18 through HEAD**: **4,200 non-merge commits**, bringing `main` to **4,420** commits / ~460k lines under `crates/`. Phases remain the historical spine; new work is synthesized as dated waves, not a 4,000-commit dump.
+
+Repository: <https://github.com/Dicklesworthstone/frankenjax>
 
 ---
 
 ## [Unreleased] — HEAD
 
-Latest audited commit before this update: [`4f87b84`](https://github.com/Dicklesworthstone/frankenjax/commit/4f87b84) (2026-05-01)
+Latest commit: [`658740e0e6`](https://github.com/Dicklesworthstone/frankenjax/commit/658740e0e6926104c29270ff27e542b47518630e)
+(2026-08-19). Previous changelog cut: [`4f87b84`](https://github.com/Dicklesworthstone/frankenjax/commit/4f87b84)
+(2026-05-01). August 2026 is janitor-only (3 commits); the capability
+waves are March–July.
 
-Current state: 115 primitive operations, VJP + JVP coverage for the declared V1 primitive set, 848 JAX oracle fixture cases, 87 e-graph rewrite rules, 15 workspace crates, 162,733 Rust source lines under `crates/`, 4,416 static Rust test/proptest markers, 115 conformance test files, and a passing `cargo test --workspace` run via RCH on 2026-05-01.
+HEAD orientation (README, 2026-08-19): 162 canonical primitive variants
+(157 V1 local + 5 fail-closed pmap collectives), VJP + JVP for all 157
+V1 local primitives, 861 JAX 0.9.2 oracle fixtures, 17 workspace crates
+(`fj-py` and `fj-backend-gpu` added in this window; `fj-ffi` predated
+it), ~460k Rust lines under `crates/`.
+
+### 2026-08-19 — Repo-janitor docs-reorg
+
+Root planning and parity documents moved into [`docs/planning/`](docs/planning/).
+Live janitor commits (the only August commits):
+
+- [`fa50a6b92e`](https://github.com/Dicklesworthstone/frankenjax/commit/fa50a6b92ede51bbb67f84dbdb36ec59e5826fa9)
+  untrack skill-loop scratch; move `COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`,
+  `PLAN_TO_PORT_JAX_TO_RUST.md`, and `PROPOSED_ARCHITECTURE.md` into
+  `docs/planning/`.
+- [`658740e0e6`](https://github.com/Dicklesworthstone/frankenjax/commit/658740e0e6926104c29270ff27e542b47518630e)
+  move remaining root planning/parity docs:
+  `FEATURE_PARITY.md`, `EXHAUSTIVE_LEGACY_ANALYSIS.md`,
+  `EXISTING_JAX_STRUCTURE.md`, `PARITY-COVERAGE.md`,
+  `PHASE2C_EXTRACTION_PACKET.md`, `TODO_SUPER_DETAILED_PORT_AND_PARITY.md`,
+  and `UPGRADE_LOG.md` → `docs/planning/`.
+
+Canonical paths: [`docs/planning/FEATURE_PARITY.md`](docs/planning/FEATURE_PARITY.md),
+[`docs/planning/EXHAUSTIVE_LEGACY_ANALYSIS.md`](docs/planning/EXHAUSTIVE_LEGACY_ANALYSIS.md),
+[`docs/planning/EXISTING_JAX_STRUCTURE.md`](docs/planning/EXISTING_JAX_STRUCTURE.md).
+
+### 2026-06 — 2026-07 — vs-JAX kernel campaign (2,782 commits)
+
+June is the densest month in the project (2,482 commits: 1,068 `perf`).
+July continues the same vein (300) then the tree goes quiet. This is a
+vs-live-JAX campaign on already-typed primitives: batched GEMM through
+vmap(Dot), integer/f32 cumulative scans, while/scan allocation-free
+plans, and special-function SIMD.
+
+**Delivered capability**
+
+- vmap(Dot) routed through `fj-lax` batched GEMM (**38–66×**).
+- i64 matmul fast path in the Dot primitive (**808×** vs the previous
+  path, ~230× vs JAX); f32 + u64/u32 Dot fast paths (u64 14.1× vs JAX;
+  an f32 14s→16ms fix).
+- Integer cumulative parallel scan 1.9–2.4× vs JAX; leading/middle-axis
+  `cumprod` 3.9× vs JAX.
+- Giles `erfinv` on the f32 path: 33× faster, flips a 95× JAX loss to a
+  3× win.
+- Allocation-free while-loop iteration via a prepared dense plan;
+  hoist scan literal slices (4.23× vmap scan); SIMD Cephes f64 `log`
+  for lgamma/digamma.
+- July fused superinstructions: row-wise R² 12.29× vs ORIG; dice
+  coefficient; vectorized f32 scan add-emit.
+
+**Representative commits**
+
+- [`14c914d1a6`](https://github.com/Dicklesworthstone/frankenjax/commit/14c914d1a6) vmap(Dot) batched GEMM 38–66×
+- [`0bc8d2afa2`](https://github.com/Dicklesworthstone/frankenjax/commit/0bc8d2afa2) i64 Dot matmul fast path
+- [`8b5dfc5806`](https://github.com/Dicklesworthstone/frankenjax/commit/8b5dfc5806) f32 + u64/u32 Dot fast paths
+- [`66724f151f`](https://github.com/Dicklesworthstone/frankenjax/commit/66724f151f) Giles f32 `erfinv`
+- [`a88f6cea87`](https://github.com/Dicklesworthstone/frankenjax/commit/a88f6cea87) integer cumulative parallel scan
+- [`c25d1a5178`](https://github.com/Dicklesworthstone/frankenjax/commit/c25d1a5178) fused row-wise R²
+- [`98b1555615`](https://github.com/Dicklesworthstone/frankenjax/commit/98b1555615) allocation-free while-loop plan
+
+### 2026-04 — 2026-05 — Primitives, scan/while, PyO3, GPU scaffold (1,391 commits)
+
+April (389) is scan/while/vmap batching. May (1,002) is a primitive
+explosion plus the Python and GPU scaffolds, then the 2026-05-01
+reality-check (kept below).
+
+**Delivered capability**
+
+- Functional `scan` sub-jaxprs executed and batched in vmap; reverse
+  cumulative scans; while_loop multi-carry vmap; native F32 fast path
+  for scalar scan/while batching.
+- May primitive wave: Gcd/Lcm, Signbit, XLog1PY, CopySign, LogAddExp,
+  Sinc, Log2, Betainc, BesselI0e/I1e, StopGradient, Tile, plus 39
+  e-graph lowering cases for the new primitives.
+- **New crate:** `fj-py` PyO3 bindings scaffold
+  ([`05d862e1`](https://github.com/Dicklesworthstone/frankenjax/commit/05d862e1),
+  2026-05-02). Array shard lists exposed later in May.
+- **New crate:** `fj-backend-gpu` Backend-trait scaffold
+  ([`f2406ca5`](https://github.com/Dicklesworthstone/frankenjax/commit/f2406ca5),
+  2026-05-02). Fail-closed without a multi-device context.
+
+**Representative commits**
+
+- [`738364b9d6`](https://github.com/Dicklesworthstone/frankenjax/commit/738364b9d6) functional scan sub-jaxprs
+- [`5d2942453d`](https://github.com/Dicklesworthstone/frankenjax/commit/5d2942453d) vmap batch of functional scan
+- [`6cbbe74d93`](https://github.com/Dicklesworthstone/frankenjax/commit/6cbbe74d93) reverse cumulative scans
+- [`c224a15285`](https://github.com/Dicklesworthstone/frankenjax/commit/c224a15285) 39 e-graph lowering cases
+- [`05d862e1`](https://github.com/Dicklesworthstone/frankenjax/commit/05d862e1) `fj-py` PyO3 scaffold
+- [`f2406ca5`](https://github.com/Dicklesworthstone/frankenjax/commit/f2406ca5) `fj-backend-gpu` scaffold
+- [`fae7984ee6`](https://github.com/Dicklesworthstone/frankenjax/commit/fae7984ee6) segment-aware e-graph optimizer
 
 ### 2026-05-01 Reality-Check Recalibration
 
@@ -355,7 +449,7 @@ Module boundary skeleton for fj-lax with initial primitive set, comprehensive te
 ### Documentation
 
 - Complexity, performance, and memory characterization (DOC-PASS-05) ([`0978673`](https://github.com/Dicklesworthstone/frankenjax/commit/097867331a9b9f74e106905a4b48a748eac78270))
-- EXHAUSTIVE_LEGACY_ANALYSIS.md Pass B expansion (DOC-PASS-11) ([`99eb6fb`](https://github.com/Dicklesworthstone/frankenjax/commit/99eb6fb0a9bfe8cdf0fd878ebd732afb1270848a))
+- `EXHAUSTIVE_LEGACY_ANALYSIS.md` Pass B expansion (DOC-PASS-11); file later moved to [`docs/planning/EXHAUSTIVE_LEGACY_ANALYSIS.md`](docs/planning/EXHAUSTIVE_LEGACY_ANALYSIS.md) ([`99eb6fb`](https://github.com/Dicklesworthstone/frankenjax/commit/99eb6fb0a9bfe8cdf0fd878ebd732afb1270848a))
 - Red-team review fixes for analysis documents (DOC-PASS-12) ([`0da29b4`](https://github.com/Dicklesworthstone/frankenjax/commit/0da29b49ef5fd3f31efecc5c06942ff8cfd0f906))
 - Final consistency sweep and sign-off (DOC-PASS-13) ([`c4fb516`](https://github.com/Dicklesworthstone/frankenjax/commit/c4fb516a3bbd925fa8b77d1231aa31469d5594d1))
 
@@ -456,7 +550,10 @@ Initial commit establishing the FrankenJAX workspace. Canonical Jaxpr IR with co
 | 5 | 2026-03-02 to 03-04 | 22 | Type expansion, Jacobian/Hessian, parallel backend |
 | 6 | 2026-03-04 to 03-12 | 8 | E-graph dispatch, ScalarBool, durability proofs |
 | 7 | 2026-03-12 to 03-17 | 49 | 834 oracle fixtures, linalg/FFT AD, README rewrite |
-| 8 | 2026-03-18 to 05-01 | ongoing | 848 oracle fixtures, performance slices, reality-check gap tracking |
+| 8 | 2026-03-18 to 05-01 | ~410 | scan/while vmap, reality-check, 848 oracle fixtures |
+| 9 | 2026-05-02 to 05-25 | ~930 | primitive wave, `fj-py` + `fj-backend-gpu` scaffolds |
+| 10 | 2026-06-01 to 07-25 | 2,782 | vs-JAX kernel campaign (batched GEMM, Dot, scans, erfinv) |
+| 11 | 2026-08-11 to 08-19 | 3 | repo-janitor docs-reorg into `docs/planning/` |
 
 ---
 
