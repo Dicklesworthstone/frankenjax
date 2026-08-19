@@ -998,7 +998,7 @@ fn hotspot_definitions() -> Vec<HotspotDefinition> {
             profile_case_ids: vec!["multi_equation_tensor_shape_adjacent_saturation"],
             source_evidence_refs: vec![
                 "crates/fj-conformance/tests/egraph_preserves_semantics.rs",
-                "FEATURE_PARITY.md",
+                "docs/planning/FEATURE_PARITY.md",
             ],
             follow_up_bead_id: Some("frankenjax-cstq.11.2"),
             replay_command: "CARGO_TARGET_DIR=/data/tmp/frankenjax-hotspot-egraph rch exec -- cargo test -p fj-conformance --test egraph_preserves_semantics -- --nocapture",

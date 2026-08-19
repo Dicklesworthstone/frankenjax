@@ -186,13 +186,13 @@ extract_feature_parity_claims() {
         claim_idx=$((claim_idx + 1))
       fi
     fi
-  done < "$ROOT/FEATURE_PARITY.md"
+  done < "$ROOT/docs/planning/FEATURE_PARITY.md"
 
   echo "$claims_json"
 }
 
 # Generate source docs metadata
-FP_SHA=$(sha256_file "$ROOT/FEATURE_PARITY.md")
+FP_SHA=$(sha256_file "$ROOT/docs/planning/FEATURE_PARITY.md")
 README_SHA=$(sha256_file "$ROOT/README.md")
 
 SOURCE_DOCS=$(cat <<EOF

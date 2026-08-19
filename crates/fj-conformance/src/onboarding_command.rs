@@ -120,7 +120,7 @@ pub fn build_onboarding_command_inventory(root: &Path) -> OnboardingCommandInven
         source_docs: vec![
             "README.md".to_owned(),
             "AGENTS.md".to_owned(),
-            "FEATURE_PARITY.md".to_owned(),
+            "docs/planning/FEATURE_PARITY.md".to_owned(),
         ],
         commands,
         summary,

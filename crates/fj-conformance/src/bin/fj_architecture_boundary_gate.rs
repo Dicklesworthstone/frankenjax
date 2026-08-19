@@ -129,8 +129,8 @@ fn write_forensic_log(
         .map(|decision| decision.boundary_id.clone())
         .collect();
     log.oracle_ids = vec![
-        "EXISTING_JAX_STRUCTURE.md".to_owned(),
-        "PROPOSED_ARCHITECTURE.md".to_owned(),
+        "docs/planning/EXISTING_JAX_STRUCTURE.md".to_owned(),
+        "docs/planning/PROPOSED_ARCHITECTURE.md".to_owned(),
         "cargo metadata --no-deps".to_owned(),
     ];
     log.transform_stack = vec![

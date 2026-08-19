@@ -60,8 +60,8 @@ const PRODUCTION_SRC_DIRS: &[&str] = &[
 
 const STATUS_CLAIM_AUDIT_ROOT_FILES: &[&str] = &[
     "README.md",
-    "FEATURE_PARITY.md",
-    "EXHAUSTIVE_LEGACY_ANALYSIS.md",
+    "docs/planning/FEATURE_PARITY.md",
+    "docs/planning/EXHAUSTIVE_LEGACY_ANALYSIS.md",
 ];
 
 const STATUS_CLAIM_AUDIT_DIRS: &[&str] = &[
@@ -369,7 +369,7 @@ fn public_docs_scope_primitive_coverage_claims() {
     let pmap_count = Primitive::PMAP_COLLECTIVES.len();
     let local_count = canonical_count - pmap_count;
 
-    for path in ["README.md", "FEATURE_PARITY.md"] {
+    for path in ["README.md", "docs/planning/FEATURE_PARITY.md"] {
         let source =
             std::fs::read_to_string(workspace_root().join(path)).expect("doc should be readable");
         assert!(

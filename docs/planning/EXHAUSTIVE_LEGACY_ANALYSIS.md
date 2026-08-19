@@ -21,10 +21,10 @@ Legacy corpus:
 
 Project contracts:
 - `/data/projects/frankenjax/docs/planning/COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`
-- `/data/projects/frankenjax/EXISTING_JAX_STRUCTURE.md`
+- `/data/projects/frankenjax/docs/planning/EXISTING_JAX_STRUCTURE.md`
 - `/data/projects/frankenjax/docs/planning/PLAN_TO_PORT_JAX_TO_RUST.md`
 - `/data/projects/frankenjax/docs/planning/PROPOSED_ARCHITECTURE.md`
-- `/data/projects/frankenjax/FEATURE_PARITY.md`
+- `/data/projects/frankenjax/docs/planning/FEATURE_PARITY.md`
 
 Important specification gap:
 - the comprehensive spec currently defines sections `0-16` (Milestones, Acceptance Gates, Residual Risks); performance budgets and gate topology require empirical calibration and are not yet expressed as numeric thresholds in the spec. Backfill of explicit budget sections is required before release governance is trustworthy.

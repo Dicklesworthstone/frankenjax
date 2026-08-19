@@ -1200,10 +1200,10 @@ A: FrankenJAX implements the exact same ThreeFry2x32 cipher with the same rotati
 | Document | Purpose |
 |----------|---------|
 | `AGENTS.md` | AI agent development guidelines |
-| `FEATURE_PARITY.md` | Feature-by-feature JAX parity status and explicit residual gaps |
+| `docs/planning/FEATURE_PARITY.md` | Feature-by-feature JAX parity status and explicit residual gaps |
 | `docs/planning/COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md` | Full V1 specification |
 | `docs/planning/PLAN_TO_PORT_JAX_TO_RUST.md` | Original porting strategy |
-| `EXISTING_JAX_STRUCTURE.md` | JAX architecture analysis |
+| `docs/planning/EXISTING_JAX_STRUCTURE.md` | JAX architecture analysis |
 | `docs/planning/PROPOSED_ARCHITECTURE.md` | FrankenJAX design decisions |
 
 ## About Contributions

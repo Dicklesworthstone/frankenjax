@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-feature_file="${repo_root}/FEATURE_PARITY.md"
+feature_file="${repo_root}/docs/planning/FEATURE_PARITY.md"
 core_file="${repo_root}/crates/fj-core/src/lib.rs"
 
 ci_out="${repo_root}/artifacts/ci/runs/feature-parity-validation/result.json"
