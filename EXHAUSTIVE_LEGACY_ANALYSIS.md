@@ -20,10 +20,10 @@ Legacy corpus:
 - Upstream oracle: `jax-ml/jax`
 
 Project contracts:
-- `/data/projects/frankenjax/COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`
+- `/data/projects/frankenjax/docs/planning/COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`
 - `/data/projects/frankenjax/EXISTING_JAX_STRUCTURE.md`
-- `/data/projects/frankenjax/PLAN_TO_PORT_JAX_TO_RUST.md`
-- `/data/projects/frankenjax/PROPOSED_ARCHITECTURE.md`
+- `/data/projects/frankenjax/docs/planning/PLAN_TO_PORT_JAX_TO_RUST.md`
+- `/data/projects/frankenjax/docs/planning/PROPOSED_ARCHITECTURE.md`
 - `/data/projects/frankenjax/FEATURE_PARITY.md`
 
 Important specification gap:
@@ -183,7 +183,7 @@ Definition of done for Phase-2:
 ## 11. Residual Gaps and Risks
 
 - comprehensive spec sections 14-16 exist (milestones, gates, risks); top non-code risk is uncalibrated budget thresholds until first benchmark cycle lands.
-- `PROPOSED_ARCHITECTURE.md` crate map formatting has literal `\n`; normalize before automation.
+- `docs/planning/PROPOSED_ARCHITECTURE.md` crate map formatting has literal `\n`; normalize before automation.
 - backend and FFI boundaries remain highest regression risk until corpus breadth increases.
 
 ## 12. Deep-Pass Hotspot Inventory (Measured)

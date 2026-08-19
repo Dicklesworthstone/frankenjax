@@ -20,9 +20,9 @@ Tracker parent: `frankenjax-cstq`
 - [x] Read global `/dp/AGENTS.md`.
 - [x] Read repo-local `AGENTS.md`.
 - [x] Read `README.md` fully, including current limitations and verification sections.
-- [x] Read `COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`.
-- [x] Read `PLAN_TO_PORT_JAX_TO_RUST.md`.
-- [x] Read `PROPOSED_ARCHITECTURE.md`.
+- [x] Read `docs/planning/COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`.
+- [x] Read `docs/planning/PLAN_TO_PORT_JAX_TO_RUST.md`.
+- [x] Read `docs/planning/PROPOSED_ARCHITECTURE.md`.
 - [x] Read `FEATURE_PARITY.md`.
 - [x] Read `PHASE2C_EXTRACTION_PACKET.md`.
 - [x] Read `EXISTING_JAX_STRUCTURE.md`.
@@ -400,8 +400,8 @@ Tracker parent: `frankenjax-fcxy`
 
 ### D0. Spec and parity docs
 - [x] Update `FEATURE_PARITY.md` statuses with newly completed items.
-- [x] Update `PROPOSED_ARCHITECTURE.md` with durability implementation details.
-- [x] Update `COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md` implementation progress section.
+- [x] Update `docs/planning/PROPOSED_ARCHITECTURE.md` with durability implementation details.
+- [x] Update `docs/planning/COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md` implementation progress section.
 
 ### D1. Operational docs
 - [x] Document fixture regeneration command.
