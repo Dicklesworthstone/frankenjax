@@ -1200,11 +1200,12 @@ A: FrankenJAX implements the exact same ThreeFry2x32 cipher with the same rotati
 | Document | Purpose |
 |----------|---------|
 | `AGENTS.md` | AI agent development guidelines |
-| `docs/planning/FEATURE_PARITY.md` | Feature-by-feature JAX parity status and explicit residual gaps |
-| `docs/planning/COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md` | Full V1 specification |
-| `docs/planning/PLAN_TO_PORT_JAX_TO_RUST.md` | Original porting strategy |
-| `docs/planning/EXISTING_JAX_STRUCTURE.md` | JAX architecture analysis |
-| `docs/planning/PROPOSED_ARCHITECTURE.md` | FrankenJAX design decisions |
+| [`docs/planning/FEATURE_PARITY.md`](docs/planning/FEATURE_PARITY.md) | Feature-by-feature JAX parity status and explicit residual gaps |
+| [`docs/planning/COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`](docs/planning/COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md) | Full V1 specification |
+| [`docs/planning/PLAN_TO_PORT_JAX_TO_RUST.md`](docs/planning/PLAN_TO_PORT_JAX_TO_RUST.md) | Original porting strategy |
+| [`docs/planning/EXISTING_JAX_STRUCTURE.md`](docs/planning/EXISTING_JAX_STRUCTURE.md) | JAX architecture analysis |
+| [`docs/planning/EXHAUSTIVE_LEGACY_ANALYSIS.md`](docs/planning/EXHAUSTIVE_LEGACY_ANALYSIS.md) | Legacy JAX path audit the conformance harness targets |
+| [`docs/planning/PROPOSED_ARCHITECTURE.md`](docs/planning/PROPOSED_ARCHITECTURE.md) | FrankenJAX design decisions |
 
 ## About Contributions
 
