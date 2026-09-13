@@ -139,11 +139,44 @@ mod tests {
     #[cfg(feature = "asupersync-integration")]
     #[test]
     fn asupersync_bridge_checkpoint_and_cancellation_roundtrip() {
-        let cx = asupersync::Cx::for_testing();
+        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime should build");
+        let budget = asupersync::Budget::INFINITE.with_poll_quota(8);
+        let request = runtime.request_cx_with_budget(budget);
+        assert!(asupersync::Cx::current().is_none());
+        let cx = {
+            let _restriction = request
+                .restrict::<asupersync::cx::cap::None>()
+                .set_current_restricted();
+            asupersync::Cx::current().expect("restricted request is installed")
+        };
+        assert!(asupersync::Cx::current().is_none());
+        let capabilities = cx.capabilities();
+        assert_eq!(
+            [
+                capabilities.spawn,
+                capabilities.time,
+                capabilities.entropy,
+                capabilities.io,
+                capabilities.remote,
+            ],
+            [false; 5]
+        );
+        assert_eq!(cx.budget(), budget);
 
         assert!(!super::asupersync_bridge::cancellation_requested(&cx));
         super::asupersync_bridge::emit_checkpoint(&cx, "frankenjax runtime checkpoint")
-            .expect("test context should accept checkpoints");
+            .expect("live caller context should accept checkpoints");
+
+        request.cancel_with(asupersync::CancelKind::User, Some("caller cancelled"));
+        assert!(super::asupersync_bridge::cancellation_requested(&cx));
+        let error = super::asupersync_bridge::emit_checkpoint(&cx, "cancelled checkpoint")
+            .expect_err("bridge must observe caller cancellation");
+        assert_eq!(error.kind(), asupersync::error::ErrorKind::Cancelled);
+        assert_eq!(cx.capabilities(), capabilities);
+        assert_eq!(cx.budget(), budget);
+        assert!(asupersync::Cx::current().is_none());
     }
 
     // ── Admission model boundary tests ────────────────────────

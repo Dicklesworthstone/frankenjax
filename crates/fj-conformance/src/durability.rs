@@ -617,7 +617,8 @@ mod tests {
 
     #[test]
     fn sidecar_round_trip_and_scrub_pass() {
-        let tmp = tempdir().expect("tempdir should build");
+        let mut tmp = tempdir().expect("tempdir should build");
+        tmp.disable_cleanup(true);
         let artifact_path = tmp.path().join("artifact.bin");
         let sidecar_path = tmp.path().join("artifact.sidecar.json");
         let scrub_path = tmp.path().join("artifact.scrub.json");
@@ -643,7 +644,8 @@ mod tests {
 
     #[test]
     fn scrub_rejects_sidecar_not_bound_to_artifact_hash() -> Result<(), String> {
-        let tmp = tempdir().map_err(|err| format!("tempdir should build: {err}"))?;
+        let mut tmp = tempdir().map_err(|err| format!("tempdir should build: {err}"))?;
+        tmp.disable_cleanup(true);
         let artifact_path = tmp.path().join("artifact.bin");
         let sidecar_path = tmp.path().join("artifact.sidecar.json");
         let scrub_path = tmp.path().join("artifact.scrub.json");
@@ -682,7 +684,8 @@ mod tests {
 
     #[test]
     fn scrub_rejects_manifest_object_id_hash_mismatch() -> Result<(), String> {
-        let tmp = tempdir().map_err(|err| format!("tempdir should build: {err}"))?;
+        let mut tmp = tempdir().map_err(|err| format!("tempdir should build: {err}"))?;
+        tmp.disable_cleanup(true);
         let artifact_path = tmp.path().join("artifact.bin");
         let sidecar_path = tmp.path().join("artifact.sidecar.json");
         let scrub_path = tmp.path().join("artifact.scrub.json");
@@ -716,7 +719,8 @@ mod tests {
 
     #[test]
     fn sidecar_generation_rejects_nonfinite_repair_overhead() -> Result<(), String> {
-        let tmp = tempdir().map_err(|err| format!("tempdir should build: {err}"))?;
+        let mut tmp = tempdir().map_err(|err| format!("tempdir should build: {err}"))?;
+        tmp.disable_cleanup(true);
         let artifact_path = tmp.path().join("artifact.bin");
         let sidecar_path = tmp.path().join("artifact.sidecar.json");
 
