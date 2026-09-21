@@ -10,10 +10,8 @@
       "program": "lax_reshape6_to2x3",
       "transforms": ["jit"],
       "comparator": "exact",
-      "args": [{"kind": "vector_i64", "values": [1, 2, 3, 4, 5, 6]}],
-      "expected": [
-        {"kind": "tensor_i64", "shape": [2, 3], "values": [1, 2, 3, 4, 5, 6]}
-      ],
+      "args": [{ "kind": "vector_i64", "values": [1, 2, 3, 4, 5, 6] }],
+      "expected": [{ "kind": "tensor_i64", "shape": [2, 3], "values": [1, 2, 3, 4, 5, 6] }],
       "atol": 0.0,
       "rtol": 0.0
     }

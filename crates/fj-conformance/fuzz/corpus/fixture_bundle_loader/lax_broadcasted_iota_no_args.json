@@ -11,9 +11,7 @@
       "transforms": ["jit"],
       "comparator": "exact",
       "args": [],
-      "expected": [
-        {"kind": "tensor_i64", "shape": [2, 3], "values": [0, 1, 2, 0, 1, 2]}
-      ],
+      "expected": [{ "kind": "tensor_i64", "shape": [2, 3], "values": [0, 1, 2, 0, 1, 2] }],
       "atol": 0.0,
       "rtol": 0.0
     }

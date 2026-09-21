@@ -19,13 +19,13 @@
       "delta_pct": -19.2
     },
     "dispatch_latency/grad/scalar_square": {
-      "before_us": 2.10,
+      "before_us": 2.1,
       "after_us": 1.76,
       "delta_pct": -16.2
     },
     "dispatch_latency/vmap/vector_add_one": {
       "before_us": 2.53,
-      "after_us": 2.10,
+      "after_us": 2.1,
       "delta_pct": -17.0
     },
     "dispatch_latency/vmap/rank2_add_one": {
@@ -35,7 +35,7 @@
     },
     "dispatch_latency/jit_grad/scalar_square": {
       "before_us": 2.21,
-      "after_us": 1.60,
+      "after_us": 1.6,
       "delta_pct": -27.6
     },
     "dispatch_latency/vmap_grad/vector_square": {

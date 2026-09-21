@@ -10,8 +10,8 @@
       "program": "add_one",
       "transforms": ["vmap"],
       "comparator": "exact",
-      "args": [{"kind": "vector_i64", "values": [1, 2, 3]}],
-      "expected": [{"kind": "vector_i64", "values": [2, 3, 4]}],
+      "args": [{ "kind": "vector_i64", "values": [1, 2, 3] }],
+      "expected": [{ "kind": "vector_i64", "values": [2, 3, 4] }],
       "atol": 0.0,
       "rtol": 0.0
     }

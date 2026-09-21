@@ -10,11 +10,8 @@
       "program": "add2",
       "transforms": ["jit"],
       "comparator": "exact",
-      "args": [
-        {"kind": "scalar_i64", "value": 42},
-        {"kind": "scalar_i64", "value": -7}
-      ],
-      "expected": [{"kind": "scalar_i64", "value": 35}],
+      "args": [{ "kind": "scalar_i64", "value": 42 }, { "kind": "scalar_i64", "value": -7 }],
+      "expected": [{ "kind": "scalar_i64", "value": 35 }],
       "atol": 0.0,
       "rtol": 0.0
     }

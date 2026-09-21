@@ -5,10 +5,7 @@
       "atol": 0.0,
       "case_id": "rng_key_seed_0",
       "comparator": "exact",
-      "expected_key_bits": [
-        0,
-        0
-      ],
+      "expected_key_bits": [0, 0],
       "expected_split_keys": [],
       "expected_values": [],
       "family": "random",
@@ -25,16 +22,7 @@
       "case_id": "rng_split_seed_0",
       "comparator": "exact",
       "expected_key_bits": [],
-      "expected_split_keys": [
-        [
-          1797259609,
-          2579123966
-        ],
-        [
-          928981903,
-          3453687069
-        ]
-      ],
+      "expected_split_keys": [[1797259609, 2579123966], [928981903, 3453687069]],
       "expected_values": [],
       "family": "random",
       "fold_in_data": null,
@@ -49,10 +37,7 @@
       "atol": 0.0,
       "case_id": "rng_fold_in_seed_0",
       "comparator": "exact",
-      "expected_key_bits": [
-        2763999920,
-        494843597
-      ],
+      "expected_key_bits": [2763999920, 494843597],
       "expected_split_keys": [],
       "expected_values": [],
       "family": "random",
@@ -65,71 +50,50 @@
       "shape": []
     },
     {
-      "atol": 1e-06,
+      "atol": 1e-6,
       "case_id": "rng_uniform_seed_0",
       "comparator": "approx_atol_rtol",
       "expected_key_bits": [],
       "expected_split_keys": [],
       "expected_values": [
-        0.9476670026779175,
-        0.9785798788070679,
-        0.33229148387908936,
-        0.46866846084594727,
-        0.569888710975647,
-        0.16550302505493164,
-        0.31019461154937744,
-        0.6894805431365967,
-        0.7467665672302246,
-        0.17101454734802246
+        0.9476670026779175, 0.9785798788070679, 0.33229148387908936, 0.46866846084594727,
+        0.569888710975647, 0.16550302505493164, 0.31019461154937744, 0.6894805431365967,
+        0.7467665672302246, 0.17101454734802246
       ],
       "family": "random",
       "fold_in_data": null,
       "maxval": 1.0,
       "minval": 0.0,
       "operation": "uniform",
-      "rtol": 1e-06,
+      "rtol": 1e-6,
       "seed": 0,
-      "shape": [
-        10
-      ]
+      "shape": [10]
     },
     {
-      "atol": 1e-06,
+      "atol": 1e-6,
       "case_id": "rng_normal_seed_0",
       "comparator": "approx_atol_rtol",
       "expected_key_bits": [],
       "expected_split_keys": [],
       "expected_values": [
-        1.622642159461975,
-        2.0252647399902344,
-        -0.4335944354534149,
-        -0.07861734926700592,
-        0.17609089612960815,
-        -0.9720892310142517,
-        -0.49529874324798584,
-        0.49437859654426575,
-        0.6643493175506592,
-        -0.9501634836196899
+        1.622642159461975, 2.0252647399902344, -0.4335944354534149, -0.07861734926700592,
+        0.17609089612960815, -0.9720892310142517, -0.49529874324798584, 0.49437859654426575,
+        0.6643493175506592, -0.9501634836196899
       ],
       "family": "random",
       "fold_in_data": null,
       "maxval": null,
       "minval": null,
       "operation": "normal",
-      "rtol": 1e-06,
+      "rtol": 1e-6,
       "seed": 0,
-      "shape": [
-        10
-      ]
+      "shape": [10]
     },
     {
       "atol": 0.0,
       "case_id": "rng_key_seed_1",
       "comparator": "exact",
-      "expected_key_bits": [
-        0,
-        1
-      ],
+      "expected_key_bits": [0, 1],
       "expected_split_keys": [],
       "expected_values": [],
       "family": "random",
@@ -146,16 +110,7 @@
       "case_id": "rng_split_seed_1",
       "comparator": "exact",
       "expected_key_bits": [],
-      "expected_split_keys": [
-        [
-          507451445,
-          1853169794
-        ],
-        [
-          1948878966,
-          4237131848
-        ]
-      ],
+      "expected_split_keys": [[507451445, 1853169794], [1948878966, 4237131848]],
       "expected_values": [],
       "family": "random",
       "fold_in_data": null,
@@ -170,10 +125,7 @@
       "atol": 0.0,
       "case_id": "rng_fold_in_seed_1",
       "comparator": "exact",
-      "expected_key_bits": [
-        1351646356,
-        1506879927
-      ],
+      "expected_key_bits": [1351646356, 1506879927],
       "expected_split_keys": [],
       "expected_values": [],
       "family": "random",
@@ -186,71 +138,50 @@
       "shape": []
     },
     {
-      "atol": 1e-06,
+      "atol": 1e-6,
       "case_id": "rng_uniform_seed_1",
       "comparator": "approx_atol_rtol",
       "expected_key_bits": [],
       "expected_split_keys": [],
       "expected_values": [
-        0.4386324882507324,
-        0.5337529182434082,
-        0.44591832160949707,
-        0.4383963346481323,
-        0.8973628282546997,
-        0.5589460134506226,
-        0.9838855266571045,
-        0.8419909477233887,
-        0.38577961921691895,
-        0.6399573087692261
+        0.4386324882507324, 0.5337529182434082, 0.44591832160949707, 0.4383963346481323,
+        0.8973628282546997, 0.5589460134506226, 0.9838855266571045, 0.8419909477233887,
+        0.38577961921691895, 0.6399573087692261
       ],
       "family": "random",
       "fold_in_data": null,
       "maxval": 1.0,
       "minval": 0.0,
       "operation": "uniform",
-      "rtol": 1e-06,
+      "rtol": 1e-6,
       "seed": 1,
-      "shape": [
-        10
-      ]
+      "shape": [10]
     },
     {
-      "atol": 1e-06,
+      "atol": 1e-6,
       "case_id": "rng_normal_seed_1",
       "comparator": "approx_atol_rtol",
       "expected_key_bits": [],
       "expected_split_keys": [],
       "expected_values": [
-        -0.15443718433380127,
-        0.08470727503299713,
-        -0.135980486869812,
-        -0.15503625571727753,
-        1.266667366027832,
-        0.14829757809638977,
-        2.1415603160858154,
-        1.0026742219924927,
-        -0.29033586382865906,
-        0.35834479331970215
+        -0.15443718433380127, 0.08470727503299713, -0.135980486869812, -0.15503625571727753,
+        1.266667366027832, 0.14829757809638977, 2.1415603160858154, 1.0026742219924927,
+        -0.29033586382865906, 0.35834479331970215
       ],
       "family": "random",
       "fold_in_data": null,
       "maxval": null,
       "minval": null,
       "operation": "normal",
-      "rtol": 1e-06,
+      "rtol": 1e-6,
       "seed": 1,
-      "shape": [
-        10
-      ]
+      "shape": [10]
     },
     {
       "atol": 0.0,
       "case_id": "rng_key_seed_42",
       "comparator": "exact",
-      "expected_key_bits": [
-        0,
-        42
-      ],
+      "expected_key_bits": [0, 42],
       "expected_split_keys": [],
       "expected_values": [],
       "family": "random",
@@ -267,16 +198,7 @@
       "case_id": "rng_split_seed_42",
       "comparator": "exact",
       "expected_key_bits": [],
-      "expected_split_keys": [
-        [
-          1832780943,
-          270669613
-        ],
-        [
-          64467757,
-          2916123636
-        ]
-      ],
+      "expected_split_keys": [[1832780943, 270669613], [64467757, 2916123636]],
       "expected_values": [],
       "family": "random",
       "fold_in_data": null,
@@ -291,10 +213,7 @@
       "atol": 0.0,
       "case_id": "rng_fold_in_seed_42",
       "comparator": "exact",
-      "expected_key_bits": [
-        2702347784,
-        925058353
-      ],
+      "expected_key_bits": [2702347784, 925058353],
       "expected_split_keys": [],
       "expected_values": [],
       "family": "random",
@@ -307,71 +226,50 @@
       "shape": []
     },
     {
-      "atol": 1e-06,
+      "atol": 1e-6,
       "case_id": "rng_uniform_seed_42",
       "comparator": "approx_atol_rtol",
       "expected_key_bits": [],
       "expected_split_keys": [],
       "expected_values": [
-        0.48870956897735596,
-        0.6797971725463867,
-        0.6162714958190918,
-        0.5610160827636719,
-        0.4506446123123169,
-        0.58586585521698,
-        0.07480943202972412,
-        0.7751333713531494,
-        0.698959231376648,
-        0.8186336755752563
+        0.48870956897735596, 0.6797971725463867, 0.6162714958190918, 0.5610160827636719,
+        0.4506446123123169, 0.58586585521698, 0.07480943202972412, 0.7751333713531494,
+        0.698959231376648, 0.8186336755752563
       ],
       "family": "random",
       "fold_in_data": null,
       "maxval": 1.0,
       "minval": 0.0,
       "operation": "uniform",
-      "rtol": 1e-06,
+      "rtol": 1e-6,
       "seed": 42,
-      "shape": [
-        10
-      ]
+      "shape": [10]
     },
     {
-      "atol": 1e-06,
+      "atol": 1e-6,
       "case_id": "rng_normal_seed_42",
       "comparator": "approx_atol_rtol",
       "expected_key_bits": [],
       "expected_split_keys": [],
       "expected_values": [
-        -0.02830461598932743,
-        0.4671318531036377,
-        0.2957029640674591,
-        0.15354591608047485,
-        -0.12403281778097153,
-        0.21692314743995667,
-        -1.440878987312317,
-        0.755859911441803,
-        0.5214096307754517,
-        0.9101703763008118
+        -0.02830461598932743, 0.4671318531036377, 0.2957029640674591, 0.15354591608047485,
+        -0.12403281778097153, 0.21692314743995667, -1.440878987312317, 0.755859911441803,
+        0.5214096307754517, 0.9101703763008118
       ],
       "family": "random",
       "fold_in_data": null,
       "maxval": null,
       "minval": null,
       "operation": "normal",
-      "rtol": 1e-06,
+      "rtol": 1e-6,
       "seed": 42,
-      "shape": [
-        10
-      ]
+      "shape": [10]
     },
     {
       "atol": 0.0,
       "case_id": "rng_key_seed_2147483647",
       "comparator": "exact",
-      "expected_key_bits": [
-        0,
-        2147483647
-      ],
+      "expected_key_bits": [0, 2147483647],
       "expected_split_keys": [],
       "expected_values": [],
       "family": "random",
@@ -388,16 +286,7 @@
       "case_id": "rng_split_seed_2147483647",
       "comparator": "exact",
       "expected_key_bits": [],
-      "expected_split_keys": [
-        [
-          3894554595,
-          3657610310
-        ],
-        [
-          2391852627,
-          3342111533
-        ]
-      ],
+      "expected_split_keys": [[3894554595, 3657610310], [2391852627, 3342111533]],
       "expected_values": [],
       "family": "random",
       "fold_in_data": null,
@@ -412,10 +301,7 @@
       "atol": 0.0,
       "case_id": "rng_fold_in_seed_2147483647",
       "comparator": "exact",
-      "expected_key_bits": [
-        2145647974,
-        720118821
-      ],
+      "expected_key_bits": [2145647974, 720118821],
       "expected_split_keys": [],
       "expected_values": [],
       "family": "random",
@@ -428,71 +314,50 @@
       "shape": []
     },
     {
-      "atol": 1e-06,
+      "atol": 1e-6,
       "case_id": "rng_uniform_seed_2147483647",
       "comparator": "approx_atol_rtol",
       "expected_key_bits": [],
       "expected_split_keys": [],
       "expected_values": [
-        0.1958099603652954,
-        0.28766369819641113,
-        0.3303951025009155,
-        0.38440191745758057,
-        0.7109782695770264,
-        0.7730667591094971,
-        0.009016156196594238,
-        0.11052465438842773,
-        0.8720788955688477,
-        0.8894221782684326
+        0.1958099603652954, 0.28766369819641113, 0.3303951025009155, 0.38440191745758057,
+        0.7109782695770264, 0.7730667591094971, 0.009016156196594238, 0.11052465438842773,
+        0.8720788955688477, 0.8894221782684326
       ],
       "family": "random",
       "fold_in_data": null,
       "maxval": 1.0,
       "minval": 0.0,
       "operation": "uniform",
-      "rtol": 1e-06,
+      "rtol": 1e-6,
       "seed": 2147483647,
-      "shape": [
-        10
-      ]
+      "shape": [10]
     },
     {
-      "atol": 1e-06,
+      "atol": 1e-6,
       "case_id": "rng_normal_seed_2147483647",
       "comparator": "approx_atol_rtol",
       "expected_key_bits": [],
       "expected_split_keys": [],
       "expected_values": [
-        -0.8566831350326538,
-        -0.5602229237556458,
-        -0.4388223886489868,
-        -0.29393982887268066,
-        0.5562450289726257,
-        0.748984694480896,
-        -2.364952564239502,
-        -1.2237426042556763,
-        1.1362735033035278,
-        1.2234611511230469
+        -0.8566831350326538, -0.5602229237556458, -0.4388223886489868, -0.29393982887268066,
+        0.5562450289726257, 0.748984694480896, -2.364952564239502, -1.2237426042556763,
+        1.1362735033035278, 1.2234611511230469
       ],
       "family": "random",
       "fold_in_data": null,
       "maxval": null,
       "minval": null,
       "operation": "normal",
-      "rtol": 1e-06,
+      "rtol": 1e-6,
       "seed": 2147483647,
-      "shape": [
-        10
-      ]
+      "shape": [10]
     },
     {
       "atol": 0.0,
       "case_id": "rng_key_seed_4294967295",
       "comparator": "exact",
-      "expected_key_bits": [
-        0,
-        4294967295
-      ],
+      "expected_key_bits": [0, 4294967295],
       "expected_split_keys": [],
       "expected_values": [],
       "family": "random",
@@ -509,16 +374,7 @@
       "case_id": "rng_split_seed_4294967295",
       "comparator": "exact",
       "expected_key_bits": [],
-      "expected_split_keys": [
-        [
-          2973345818,
-          897673333
-        ],
-        [
-          3461607691,
-          1112781462
-        ]
-      ],
+      "expected_split_keys": [[2973345818, 897673333], [3461607691, 1112781462]],
       "expected_values": [],
       "family": "random",
       "fold_in_data": null,
@@ -533,10 +389,7 @@
       "atol": 0.0,
       "case_id": "rng_fold_in_seed_4294967295",
       "comparator": "exact",
-      "expected_key_bits": [
-        3786897156,
-        3275513256
-      ],
+      "expected_key_bits": [3786897156, 3275513256],
       "expected_split_keys": [],
       "expected_values": [],
       "family": "random",
@@ -549,62 +402,44 @@
       "shape": []
     },
     {
-      "atol": 1e-06,
+      "atol": 1e-6,
       "case_id": "rng_uniform_seed_4294967295",
       "comparator": "approx_atol_rtol",
       "expected_key_bits": [],
       "expected_split_keys": [],
       "expected_values": [
-        0.5184440612792969,
-        0.5468789339065552,
-        0.4662216901779175,
-        0.9251456260681152,
-        0.31377744674682617,
-        0.3704648017883301,
-        0.02786397933959961,
-        0.12120568752288818,
-        0.19261813163757324,
-        0.3887261152267456
+        0.5184440612792969, 0.5468789339065552, 0.4662216901779175, 0.9251456260681152,
+        0.31377744674682617, 0.3704648017883301, 0.02786397933959961, 0.12120568752288818,
+        0.19261813163757324, 0.3887261152267456
       ],
       "family": "random",
       "fold_in_data": null,
       "maxval": 1.0,
       "minval": 0.0,
       "operation": "uniform",
-      "rtol": 1e-06,
+      "rtol": 1e-6,
       "seed": 4294967295,
-      "shape": [
-        10
-      ]
+      "shape": [10]
     },
     {
-      "atol": 1e-06,
+      "atol": 1e-6,
       "case_id": "rng_normal_seed_4294967295",
       "comparator": "approx_atol_rtol",
       "expected_key_bits": [],
       "expected_split_keys": [],
       "expected_values": [
-        0.04624895751476288,
-        0.11777987331151962,
-        -0.08477100729942322,
-        1.4405614137649536,
-        -0.48517119884490967,
-        -0.33062249422073364,
-        -1.913156509399414,
-        -1.1689807176589966,
-        -0.8682886362075806,
-        -0.2826406955718994
+        0.04624895751476288, 0.11777987331151962, -0.08477100729942322, 1.4405614137649536,
+        -0.48517119884490967, -0.33062249422073364, -1.913156509399414, -1.1689807176589966,
+        -0.8682886362075806, -0.2826406955718994
       ],
       "family": "random",
       "fold_in_data": null,
       "maxval": null,
       "minval": null,
       "operation": "normal",
-      "rtol": 1e-06,
+      "rtol": 1e-6,
       "seed": 4294967295,
-      "shape": [
-        10
-      ]
+      "shape": [10]
     }
   ],
   "generated_at_unix_ms": 1773679705146,

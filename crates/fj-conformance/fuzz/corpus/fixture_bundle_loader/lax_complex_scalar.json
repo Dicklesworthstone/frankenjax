@@ -10,11 +10,8 @@
       "program": "lax_complex",
       "transforms": ["jit"],
       "comparator": "exact",
-      "args": [
-        {"kind": "scalar_f64", "value": 3.0},
-        {"kind": "scalar_f64", "value": 4.0}
-      ],
-      "expected": [{"kind": "scalar_complex128", "real": 3.0, "imag": 4.0}],
+      "args": [{ "kind": "scalar_f64", "value": 3.0 }, { "kind": "scalar_f64", "value": 4.0 }],
+      "expected": [{ "kind": "scalar_complex128", "real": 3.0, "imag": 4.0 }],
       "atol": 0.0,
       "rtol": 0.0
     }

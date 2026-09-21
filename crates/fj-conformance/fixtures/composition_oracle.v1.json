@@ -123,15 +123,8 @@
       "args": [
         {
           "kind": "vector_f64",
-          "shape": [
-            4
-          ],
-          "values": [
-            0.0,
-            1.0,
-            2.0,
-            3.0
-          ]
+          "shape": [4],
+          "values": [0.0, 1.0, 2.0, 3.0]
         }
       ],
       "case_id": "vmap_grad_sin",
@@ -139,15 +132,8 @@
       "expected": [
         {
           "kind": "vector_f64",
-          "shape": [
-            4
-          ],
-          "values": [
-            1.0,
-            0.5403023058681398,
-            -0.4161468365471424,
-            -0.9899924966004454
-          ]
+          "shape": [4],
+          "values": [1.0, 0.5403023058681398, -0.4161468365471424, -0.9899924966004454]
         }
       ],
       "program": "sin(x)"
@@ -156,15 +142,8 @@
       "args": [
         {
           "kind": "vector_f64",
-          "shape": [
-            4
-          ],
-          "values": [
-            1.0,
-            2.0,
-            3.0,
-            4.0
-          ]
+          "shape": [4],
+          "values": [1.0, 2.0, 3.0, 4.0]
         }
       ],
       "case_id": "vmap_square",
@@ -172,15 +151,8 @@
       "expected": [
         {
           "kind": "vector_f64",
-          "shape": [
-            4
-          ],
-          "values": [
-            1.0,
-            4.0,
-            9.0,
-            16.0
-          ]
+          "shape": [4],
+          "values": [1.0, 4.0, 9.0, 16.0]
         }
       ],
       "program": "x^2"
@@ -189,15 +161,8 @@
       "args": [
         {
           "kind": "vector_f64",
-          "shape": [
-            4
-          ],
-          "values": [
-            1.0,
-            2.0,
-            3.0,
-            4.0
-          ]
+          "shape": [4],
+          "values": [1.0, 2.0, 3.0, 4.0]
         }
       ],
       "case_id": "jit_vmap_square",
@@ -205,15 +170,8 @@
       "expected": [
         {
           "kind": "vector_f64",
-          "shape": [
-            4
-          ],
-          "values": [
-            1.0,
-            4.0,
-            9.0,
-            16.0
-          ]
+          "shape": [4],
+          "values": [1.0, 4.0, 9.0, 16.0]
         }
       ],
       "program": "x^2"
@@ -222,14 +180,8 @@
       "args": [
         {
           "kind": "vector_f64",
-          "shape": [
-            3
-          ],
-          "values": [
-            4.0,
-            5.0,
-            6.0
-          ]
+          "shape": [3],
+          "values": [4.0, 5.0, 6.0]
         }
       ],
       "case_id": "grad_dot_product",
@@ -237,14 +189,8 @@
       "expected": [
         {
           "kind": "vector_f64",
-          "shape": [
-            3
-          ],
-          "values": [
-            1.0,
-            2.0,
-            3.0
-          ]
+          "shape": [3],
+          "values": [1.0, 2.0, 3.0]
         }
       ],
       "program": "dot(x, [1,2,3])"
@@ -253,14 +199,8 @@
       "args": [
         {
           "kind": "vector_f64",
-          "shape": [
-            3
-          ],
-          "values": [
-            1.0,
-            2.0,
-            3.0
-          ]
+          "shape": [3],
+          "values": [1.0, 2.0, 3.0]
         }
       ],
       "case_id": "grad_sum_squares",
@@ -268,14 +208,8 @@
       "expected": [
         {
           "kind": "vector_f64",
-          "shape": [
-            3
-          ],
-          "values": [
-            2.0,
-            4.0,
-            6.0
-          ]
+          "shape": [3],
+          "values": [2.0, 4.0, 6.0]
         }
       ],
       "program": "sum(x^2)"
@@ -305,13 +239,8 @@
       "args": [
         {
           "kind": "vector_f64",
-          "shape": [
-            2
-          ],
-          "values": [
-            2.0,
-            3.0
-          ]
+          "shape": [2],
+          "values": [2.0, 3.0]
         }
       ],
       "case_id": "jacobian_quadratic",
@@ -319,18 +248,8 @@
       "expected": [
         {
           "kind": "matrix_f64",
-          "shape": [
-            3,
-            2
-          ],
-          "values": [
-            4.0,
-            0.0,
-            3.0,
-            2.0,
-            0.0,
-            6.0
-          ]
+          "shape": [3, 2],
+          "values": [4.0, 0.0, 3.0, 2.0, 0.0, 6.0]
         }
       ],
       "program": "[x0^2, x0*x1, x1^2]"
@@ -339,13 +258,8 @@
       "args": [
         {
           "kind": "vector_f64",
-          "shape": [
-            2
-          ],
-          "values": [
-            1.0,
-            1.0
-          ]
+          "shape": [2],
+          "values": [1.0, 1.0]
         }
       ],
       "case_id": "hessian_quadratic",
@@ -353,16 +267,8 @@
       "expected": [
         {
           "kind": "matrix_f64",
-          "shape": [
-            2,
-            2
-          ],
-          "values": [
-            2.0,
-            1.0,
-            1.0,
-            2.0
-          ]
+          "shape": [2, 2],
+          "values": [2.0, 1.0, 1.0, 2.0]
         }
       ],
       "program": "x0^2+x0*x1+x1^2"

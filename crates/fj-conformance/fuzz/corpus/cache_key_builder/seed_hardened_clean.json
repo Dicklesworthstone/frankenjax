@@ -1,1 +1,1 @@
-{"mode":"Hardened","backend":"cpu","compile_options":{"xla_cpu_fast_math":"false"}}
+{ "mode": "Hardened", "backend": "cpu", "compile_options": { "xla_cpu_fast_math": "false" } }

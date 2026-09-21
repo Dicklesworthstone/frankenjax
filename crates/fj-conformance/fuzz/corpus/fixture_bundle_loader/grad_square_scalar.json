@@ -10,8 +10,8 @@
       "program": "square",
       "transforms": ["grad"],
       "comparator": "approx_atol_rtol",
-      "args": [{"kind": "scalar_f64", "value": 2.0}],
-      "expected": [{"kind": "scalar_f64", "value": 4.0}],
+      "args": [{ "kind": "scalar_f64", "value": 2.0 }],
+      "expected": [{ "kind": "scalar_f64", "value": 4.0 }],
       "atol": 0.0,
       "rtol": 0.0
     }

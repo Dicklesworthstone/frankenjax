@@ -9,8 +9,8 @@
       "mode": "strict",
       "program": "add2",
       "transforms": ["jit"],
-      "args": [{"kind": "scalar_i64", "value": 1}, {"kind": "scalar_i64", "value": 2}],
-      "expected": [{"kind": "scalar_i64", "value": 3}],
+      "args": [{ "kind": "scalar_i64", "value": 1 }, { "kind": "scalar_i64", "value": 2 }],
+      "expected": [{ "kind": "scalar_i64", "value": 3 }],
       "atol": 0.0,
       "rtol": 0.0
     }

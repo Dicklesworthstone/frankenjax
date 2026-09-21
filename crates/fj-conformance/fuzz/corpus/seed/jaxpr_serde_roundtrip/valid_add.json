@@ -1,1 +1,13 @@
-{"invars":[{"0":1},{"0":2}],"constvars":[],"outvars":[{"0":3}],"equations":[{"primitive":"Add","inputs":[{"Var":{"0":1}},{"Var":{"0":2}}],"outputs":[{"0":3}],"params":{}}]}
+{
+  "invars": [{ "0": 1 }, { "0": 2 }],
+  "constvars": [],
+  "outvars": [{ "0": 3 }],
+  "equations": [
+    {
+      "primitive": "Add",
+      "inputs": [{ "Var": { "0": 1 } }, { "Var": { "0": 2 } }],
+      "outputs": [{ "0": 3 }],
+      "params": {}
+    }
+  ]
+}
