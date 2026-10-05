@@ -2512,20 +2512,32 @@ fn jacobi_eigendecomposition_cyclic(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f
                 let c = 1.0 / (1.0 + t * t).sqrt();
                 let s = t * c;
 
-                // A ← Jᵀ A J. Update columns p,q (left mult by J on rows handled
-                // by the symmetric column pass below).
+                // A <- J^T A J. The matrix is symmetric before every rotation,
+                // so update each p/q cross entry once and mirror it instead of
+                // doing separate full column and row passes.
                 for i in 0..n {
+                    if i == p || i == q {
+                        continue;
+                    }
                     let aip = a[i * n + p];
                     let aiq = a[i * n + q];
-                    a[i * n + p] = c * aip - s * aiq;
-                    a[i * n + q] = s * aip + c * aiq;
+                    let new_ip = c * aip - s * aiq;
+                    let new_iq = s * aip + c * aiq;
+                    a[i * n + p] = new_ip;
+                    a[p * n + i] = new_ip;
+                    a[i * n + q] = new_iq;
+                    a[q * n + i] = new_iq;
                 }
-                for i in 0..n {
-                    let api = a[p * n + i];
-                    let aqi = a[q * n + i];
-                    a[p * n + i] = c * api - s * aqi;
-                    a[q * n + i] = s * api + c * aqi;
-                }
+
+                // Keep the diagonal operation order equivalent to the old
+                // two-pass update, while avoiding writes to all p/q rows twice.
+                let app_col = c * app - s * apq;
+                let aqp_col = c * apq - s * aqq;
+                let apq_col = s * app + c * apq;
+                let aqq_col = s * apq + c * aqq;
+                a[p * n + p] = c * app_col - s * aqp_col;
+                a[q * n + q] = s * apq_col + c * aqq_col;
+
                 // Off-diagonal (p,q) is annihilated; pin it to exact zero.
                 a[p * n + q] = 0.0;
                 a[q * n + p] = 0.0;
@@ -8727,6 +8739,80 @@ mod tests {
         }
     }
 
+    fn jacobi_eigendecomposition_cyclic_two_pass_reference(
+        a: &mut [f64],
+        n: usize,
+    ) -> (Vec<f64>, Vec<f64>) {
+        let mut v = vec![0.0_f64; n * n];
+        for i in 0..n {
+            v[i * n + i] = 1.0;
+        }
+        if n <= 1 {
+            let eigenvalues: Vec<f64> = (0..n).map(|i| a[i * n + i]).collect();
+            return (eigenvalues, v);
+        }
+
+        let tol = f64::EPSILON * 1e2;
+        let max_sweeps = 100;
+
+        for _ in 0..max_sweeps {
+            let mut off = 0.0_f64;
+            for p in 0..n {
+                for q in (p + 1)..n {
+                    off = off.max(a[p * n + q].abs());
+                }
+            }
+            if off < tol {
+                break;
+            }
+
+            for p in 0..(n - 1) {
+                for q in (p + 1)..n {
+                    let apq = a[p * n + q];
+                    if apq == 0.0 {
+                        continue;
+                    }
+                    let app = a[p * n + p];
+                    let aqq = a[q * n + q];
+
+                    let tau = (aqq - app) / (2.0 * apq);
+                    let t = if tau >= 0.0 {
+                        1.0 / (tau + (1.0 + tau * tau).sqrt())
+                    } else {
+                        -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                    };
+                    let c = 1.0 / (1.0 + t * t).sqrt();
+                    let s = t * c;
+
+                    for i in 0..n {
+                        let aip = a[i * n + p];
+                        let aiq = a[i * n + q];
+                        a[i * n + p] = c * aip - s * aiq;
+                        a[i * n + q] = s * aip + c * aiq;
+                    }
+                    for i in 0..n {
+                        let api = a[p * n + i];
+                        let aqi = a[q * n + i];
+                        a[p * n + i] = c * api - s * aqi;
+                        a[q * n + i] = s * api + c * aqi;
+                    }
+                    a[p * n + q] = 0.0;
+                    a[q * n + p] = 0.0;
+
+                    for i in 0..n {
+                        let vip = v[i * n + p];
+                        let viq = v[i * n + q];
+                        v[i * n + p] = c * vip - s * viq;
+                        v[i * n + q] = s * vip + c * viq;
+                    }
+                }
+            }
+        }
+
+        let eigenvalues: Vec<f64> = (0..n).map(|i| a[i * n + i]).collect();
+        (eigenvalues, v)
+    }
+
     fn assert_real_qr_matches_complex_zero_imag(n: usize, a: &[f64]) {
         let real_input = make_matrix(n, n, a);
         let complex_input = Value::Tensor(
@@ -11489,6 +11575,45 @@ mod tests {
     }
 
     // ── Pseudoinverse tests ─────────────────────────────────────────
+
+    #[test]
+    fn cyclic_jacobi_symmetric_update_matches_two_pass_reference() {
+        for n in [2usize, 3, 5, 8] {
+            let mut a = vec![0.0_f64; n * n];
+            for i in 0..n {
+                for j in 0..=i {
+                    let value = if i == j {
+                        (n as f64) + 2.0 + (i as f64) * 0.625
+                    } else {
+                        (((i * 31 + j * 17 + 5) % 29) as f64 - 14.0) * 0.03125
+                    };
+                    a[i * n + j] = value;
+                    a[j * n + i] = value;
+                }
+            }
+
+            let mut expected_a = a.clone();
+            let mut actual_a = a;
+            let (expected_w, expected_v) =
+                jacobi_eigendecomposition_cyclic_two_pass_reference(&mut expected_a, n);
+            let (actual_w, actual_v) = jacobi_eigendecomposition_cyclic(&mut actual_a, n);
+
+            for (idx, (expected, actual)) in expected_w.iter().zip(actual_w.iter()).enumerate() {
+                assert_eq!(
+                    expected.to_bits(),
+                    actual.to_bits(),
+                    "eigenvalue bits changed for n={n}, idx={idx}"
+                );
+            }
+            for (idx, (expected, actual)) in expected_v.iter().zip(actual_v.iter()).enumerate() {
+                assert_eq!(
+                    expected.to_bits(),
+                    actual.to_bits(),
+                    "eigenvector bits changed for n={n}, idx={idx}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn pinv_svd_column_major_reconstruction_matches_row_major_bits() {
