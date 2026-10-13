@@ -5,12 +5,12 @@ edition = "2024"
 
 [dependencies]
 egg = { workspace = true }
-fj-core = { path = "../fj-core" }
+fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
 smallvec = { workspace = true }
 
 [dev-dependencies]
 fj-interpreters = { path = "../fj-interpreters" }
-fj-test-utils = { path = "../fj-test-utils" }
+fj-test-utils = { package = "frankenjax-test-utils", version = "=0.1.0", path = "../fj-test-utils" }
 criterion = "0.5"
 proptest = { workspace = true }
 

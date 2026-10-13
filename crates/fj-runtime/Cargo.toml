@@ -9,12 +9,12 @@ asupersync-integration = ["dep:asupersync"]
 frankentui-integration = ["dep:ftui"]
 
 [dependencies]
-fj-core = { path = "../fj-core" }
+fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
 fj-ledger = { path = "../fj-ledger" }
 asupersync = { version = "0.5.0", default-features = false, optional = true }
 ftui = { version = "0.2.1", default-features = false, optional = true }
 
 [dev-dependencies]
-fj-test-utils = { path = "../fj-test-utils" }
+fj-test-utils = { package = "frankenjax-test-utils", version = "=0.1.0", path = "../fj-test-utils" }
 insta = "1.47.2"
 proptest = { workspace = true }

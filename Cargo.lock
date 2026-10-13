@@ -901,10 +901,10 @@ name = "fj-ad"
 version = "0.1.0"
 dependencies = [
  "criterion 0.5.1",
- "fj-core",
+ "frankenjax-core",
  "fj-interpreters",
- "fj-lax",
- "fj-test-utils",
+ "frankenjax-lax",
+ "frankenjax-test-utils",
  "proptest",
  "smallvec",
 ]
@@ -915,10 +915,10 @@ version = "0.1.0"
 dependencies = [
  "criterion 0.8.2",
  "fj-ad",
- "fj-core",
+ "frankenjax-core",
  "fj-dispatch",
  "fj-interpreters",
- "fj-test-utils",
+ "frankenjax-test-utils",
  "fj-trace",
  "proptest",
  "serde",
@@ -932,11 +932,11 @@ name = "fj-backend-cpu"
 version = "0.1.0"
 dependencies = [
  "criterion 0.8.2",
- "fj-core",
+ "frankenjax-core",
  "fj-interpreters",
- "fj-lax",
+ "frankenjax-lax",
  "fj-runtime",
- "fj-test-utils",
+ "frankenjax-test-utils",
  "proptest",
  "rayon",
  "rustc-hash",
@@ -946,7 +946,7 @@ dependencies = [
 name = "fj-backend-gpu"
 version = "0.1.0"
 dependencies = [
- "fj-core",
+ "frankenjax-core",
  "fj-interpreters",
  "fj-runtime",
 ]
@@ -956,8 +956,8 @@ name = "fj-cache"
 version = "0.1.0"
 dependencies = [
  "criterion 0.8.2",
- "fj-core",
- "fj-test-utils",
+ "frankenjax-core",
+ "frankenjax-test-utils",
  "proptest",
  "serde",
  "sha2 0.10.9",
@@ -973,15 +973,15 @@ dependencies = [
  "fj-api",
  "fj-backend-cpu",
  "fj-cache",
- "fj-core",
+ "frankenjax-core",
  "fj-dispatch",
  "fj-egraph",
  "fj-ffi",
  "fj-interpreters",
- "fj-lax",
+ "frankenjax-lax",
  "fj-ledger",
  "fj-runtime",
- "fj-test-utils",
+ "frankenjax-test-utils",
  "insta",
  "jsonschema",
  "proptest",
@@ -993,11 +993,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fj-core"
+name = "frankenjax-core"
 version = "0.1.0"
 dependencies = [
  "criterion 0.5.1",
- "fj-test-utils",
+ "frankenjax-test-utils",
  "half",
  "proptest",
  "rustc-hash",
@@ -1014,13 +1014,13 @@ dependencies = [
  "fj-ad",
  "fj-backend-cpu",
  "fj-cache",
- "fj-core",
+ "frankenjax-core",
  "fj-egraph",
  "fj-interpreters",
- "fj-lax",
+ "frankenjax-lax",
  "fj-ledger",
  "fj-runtime",
- "fj-test-utils",
+ "frankenjax-test-utils",
  "fj-trace",
  "proptest",
  "rustc-hash",
@@ -1034,9 +1034,9 @@ version = "0.1.0"
 dependencies = [
  "criterion 0.5.1",
  "egg",
- "fj-core",
+ "frankenjax-core",
  "fj-interpreters",
- "fj-test-utils",
+ "frankenjax-test-utils",
  "proptest",
  "smallvec",
 ]
@@ -1046,8 +1046,8 @@ name = "fj-ffi"
 version = "0.1.0"
 dependencies = [
  "criterion 0.8.2",
- "fj-core",
- "fj-test-utils",
+ "frankenjax-core",
+ "frankenjax-test-utils",
  "proptest",
  "smallvec",
 ]
@@ -1057,9 +1057,9 @@ name = "fj-interpreters"
 version = "0.1.0"
 dependencies = [
  "criterion 0.8.2",
- "fj-core",
- "fj-lax",
- "fj-test-utils",
+ "frankenjax-core",
+ "frankenjax-lax",
+ "frankenjax-test-utils",
  "fj-trace",
  "proptest",
  "rustc-hash",
@@ -1069,12 +1069,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "fj-lax"
+name = "frankenjax-lax"
 version = "0.1.0"
 dependencies = [
  "criterion 0.8.2",
- "fj-core",
- "fj-test-utils",
+ "frankenjax-core",
+ "frankenjax-test-utils",
  "mimalloc",
  "proptest",
 ]
@@ -1083,8 +1083,8 @@ dependencies = [
 name = "fj-ledger"
 version = "0.1.0"
 dependencies = [
- "fj-core",
- "fj-test-utils",
+ "frankenjax-core",
+ "frankenjax-test-utils",
  "proptest",
  "serde",
  "serde_json",
@@ -1096,7 +1096,7 @@ version = "0.1.0"
 dependencies = [
  "fj-ad",
  "fj-api",
- "fj-core",
+ "frankenjax-core",
  "fj-trace",
  "pyo3",
 ]
@@ -1106,16 +1106,16 @@ name = "fj-runtime"
 version = "0.1.0"
 dependencies = [
  "asupersync",
- "fj-core",
+ "frankenjax-core",
  "fj-ledger",
- "fj-test-utils",
+ "frankenjax-test-utils",
  "ftui",
  "insta",
  "proptest",
 ]
 
 [[package]]
-name = "fj-test-utils"
+name = "frankenjax-test-utils"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -1128,9 +1128,9 @@ name = "fj-trace"
 version = "0.1.0"
 dependencies = [
  "criterion 0.5.1",
- "fj-core",
+ "frankenjax-core",
  "fj-interpreters",
- "fj-test-utils",
+ "frankenjax-test-utils",
  "proptest",
  "serde_json",
  "smallvec",

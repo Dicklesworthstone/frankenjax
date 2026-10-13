@@ -7,10 +7,10 @@ edition = "2024"
 fj-ad = { path = "../fj-ad" }
 fj-backend-cpu = { path = "../fj-backend-cpu" }
 fj-cache = { path = "../fj-cache" }
-fj-core = { path = "../fj-core" }
+fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
 fj-egraph = { path = "../fj-egraph" }
 fj-interpreters = { path = "../fj-interpreters" }
-fj-lax = { path = "../fj-lax" }
+fj-lax = { package = "frankenjax-lax", version = "=0.1.0", path = "../fj-lax" }
 fj-ledger = { path = "../fj-ledger" }
 fj-runtime = { path = "../fj-runtime" }
 fj-trace = { path = "../fj-trace" }
@@ -18,7 +18,7 @@ rustc-hash = { workspace = true }
 
 [dev-dependencies]
 criterion = "0.8"
-fj-test-utils = { path = "../fj-test-utils" }
+fj-test-utils = { package = "frankenjax-test-utils", version = "=0.1.0", path = "../fj-test-utils" }
 proptest = { workspace = true }
 serde_json = "1.0.149"
 smallvec = { workspace = true }

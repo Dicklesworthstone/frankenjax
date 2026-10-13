@@ -1,10 +1,16 @@
 [package]
-name = "fj-lax"
+name = "frankenjax-lax"
 version = "0.1.0"
 edition = "2024"
+license-file = "../../LICENSE"
+repository = "https://github.com/Dicklesworthstone/frankenjax"
+description = "Primitive numerical operations and independent evaluation oracle for FrankenJAX"
+
+[lib]
+name = "fj_lax"
 
 [dependencies]
-fj-core = { path = "../fj-core" }
+fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
 mimalloc = { version = "0.1", optional = true, default-features = false }
 
 [features]
@@ -12,7 +18,7 @@ mimalloc = { version = "0.1", optional = true, default-features = false }
 mimalloc-alloc = ["dep:mimalloc"]
 
 [dev-dependencies]
-fj-test-utils = { path = "../fj-test-utils" }
+fj-test-utils = { package = "frankenjax-test-utils", version = "=0.1.0", path = "../fj-test-utils" }
 proptest = { workspace = true }
 criterion = "0.8"
 

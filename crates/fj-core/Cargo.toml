@@ -1,7 +1,14 @@
 [package]
-name = "fj-core"
+name = "frankenjax-core"
 version = "0.1.0"
 edition = "2024"
+license-file = "../../LICENSE"
+repository = "https://github.com/Dicklesworthstone/frankenjax"
+description = "Typed values and intermediate representation for FrankenJAX"
+
+# Keep the Rust import name while avoiding the unrelated crates.io fj-core.
+[lib]
+name = "fj_core"
 
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
@@ -10,7 +17,7 @@ half = { workspace = true }
 rustc-hash = { workspace = true }
 
 [dev-dependencies]
-fj-test-utils = { path = "../fj-test-utils" }
+fj-test-utils = { package = "frankenjax-test-utils", version = "=0.1.0", path = "../fj-test-utils" }
 proptest = { workspace = true }
 serde_json = "1.0.149"
 criterion = "0.5"

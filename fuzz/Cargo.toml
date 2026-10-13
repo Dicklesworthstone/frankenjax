@@ -12,12 +12,16 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.fj-core]
+package = "frankenjax-core"
+version = "=0.1.0"
 path = "../crates/fj-core"
 
 [dependencies.fj-cache]
 path = "../crates/fj-cache"
 
 [dependencies.fj-lax]
+package = "frankenjax-lax"
+version = "=0.1.0"
 path = "../crates/fj-lax"
 
 [[bin]]

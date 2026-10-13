@@ -13,7 +13,7 @@ cuda = []
 wgpu = []
 
 [dependencies]
-fj-core = { path = "../fj-core" }
+fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
 fj-runtime = { path = "../fj-runtime" }
 fj-interpreters = { path = "../fj-interpreters" }
 

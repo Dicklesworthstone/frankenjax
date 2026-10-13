@@ -1,7 +1,13 @@
 [package]
-name = "fj-test-utils"
+name = "frankenjax-test-utils"
 version = "0.1.0"
 edition = "2024"
+license-file = "../../LICENSE"
+repository = "https://github.com/Dicklesworthstone/frankenjax"
+description = "Deterministic conformance test utilities for FrankenJAX"
+
+[lib]
+name = "fj_test_utils"
 
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }

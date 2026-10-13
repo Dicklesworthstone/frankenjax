@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-fj-core = { path = "../fj-core" }
+fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10.9"
 
 [dev-dependencies]
 criterion = "0.8"
-fj-test-utils = { path = "../fj-test-utils" }
+fj-test-utils = { package = "frankenjax-test-utils", version = "=0.1.0", path = "../fj-test-utils" }
 proptest = { workspace = true }
 
 [[bench]]

@@ -6,11 +6,11 @@ license.workspace = true
 description = "FFI call interface for FrankenJAX — the ONLY crate permitted to use unsafe code"
 
 [dependencies]
-fj-core = { path = "../fj-core" }
+fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
 smallvec = { workspace = true }
 
 [dev-dependencies]
-fj-test-utils = { path = "../fj-test-utils" }
+fj-test-utils = { package = "frankenjax-test-utils", version = "=0.1.0", path = "../fj-test-utils" }
 proptest = { workspace = true }
 criterion = "0.8"
 

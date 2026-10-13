@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-fj-core = { path = "../fj-core" }
-fj-lax = { path = "../fj-lax" }
+fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
+fj-lax = { package = "frankenjax-lax", version = "=0.1.0", path = "../fj-lax" }
 smallvec = { workspace = true }
 
 [dev-dependencies]
 fj-interpreters = { path = "../fj-interpreters" }
-fj-test-utils = { path = "../fj-test-utils" }
+fj-test-utils = { package = "frankenjax-test-utils", version = "=0.1.0", path = "../fj-test-utils" }
 proptest = { workspace = true }
 criterion = "0.5"
 
