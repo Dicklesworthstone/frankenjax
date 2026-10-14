@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Dicklesworthstone/franken_whisper
-          ref: cc39057a7487a3c5f015472d8fe70d4188379bee
+          ref: c6ac6f5bc217a7bebdf1e1d2b73722914eafb9b6
           path: tools
           persist-credentials: false
           sparse-checkout-cone-mode: false
