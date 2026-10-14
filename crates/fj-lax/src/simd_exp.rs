@@ -140,11 +140,11 @@ fn exp_scalar(x: f64) -> f64 {
 /// 8 lanes per step; the remainder runs the identical scalar algorithm.
 pub fn simd_poly_exp_into(src: &[f64], out: &mut [f64]) {
     assert_eq!(src.len(), out.len());
-    let mut chunks = src.chunks_exact(LANES);
-    let mut out_chunks = out.chunks_exact_mut(LANES);
-    for (c, o) in chunks.by_ref().zip(out_chunks.by_ref()) {
+    let (chunks, src_rem) = src.as_chunks::<LANES>();
+    let (out_chunks, out_rem) = out.as_chunks_mut::<LANES>();
+    for (c, o) in chunks.iter().zip(out_chunks.iter_mut()) {
         // Clean vector store of the SIMD poly (lets exp_block stay fully vectorized).
-        o.copy_from_slice(&exp_block(F64s::from_slice(c)).to_array());
+        *o = exp_block(F64s::from_array(*c)).to_array();
         // Cheap branchless scan for any out-of-range / NaN / ±inf lane (autovectorizes);
         // only the rare chunk that has one re-does just those lanes via the scalar ref.
         let mut has_edge = false;
@@ -152,14 +152,14 @@ pub fn simd_poly_exp_into(src: &[f64], out: &mut [f64]) {
             has_edge |= !(x > UNDERFLOW_X && x < OVERFLOW_X);
         }
         if has_edge {
-            for (oi, &x) in o.iter_mut().zip(c) {
+            for (oi, &x) in o.iter_mut().zip(c.iter()) {
                 if !(x > UNDERFLOW_X && x < OVERFLOW_X) {
                     *oi = exp_scalar(x);
                 }
             }
         }
     }
-    for (s, o) in chunks.remainder().iter().zip(out_chunks.into_remainder()) {
+    for (s, o) in src_rem.iter().zip(out_rem.iter_mut()) {
         *o = exp_scalar(*s);
     }
 }
@@ -185,6 +185,7 @@ pub fn simd_poly_exp(src: &[f64]) -> Vec<f64> {
 /// the `Exp` PRIMITIVE itself is its frozen golden (RNG reproducibility), a separate decision from
 /// `+fma`. Not yet wired into an eval path.
 #[inline]
+#[allow(clippy::excessive_precision)]
 pub fn exp_block_f32(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Simd;
     use std::simd::StdFloat;
@@ -221,6 +222,7 @@ pub fn exp_block_f32(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
 /// `exp(r)−1 = p·z + r` DIRECTLY (before the `+1` that [`exp_block_f32`] adds), so for `n == 0` (small
 /// x) the result is exactly that — accurate to ~f32 ulp even where `exp(x)−1` would cancel. For
 /// IN-RANGE `x` only; caller routes overflow/underflow/±inf/NaN + the ±0 sign to scalar.
+#[allow(clippy::excessive_precision)]
 pub fn expm1_block_f32(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Simd;
     use std::simd::StdFloat;
@@ -257,6 +259,7 @@ pub fn expm1_block_f32(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
 /// (`log_block_f32_accuracy`); DOMAIN x>0 finite (the zeta/pow consumers guarantee it) — x≤0 / NaN /
 /// inf lanes return implementation-defined values and must be masked by the caller.
 #[inline]
+#[allow(clippy::excessive_precision)]
 pub fn log_block_f32(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -306,6 +309,7 @@ pub fn log_block_f32(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
 /// At an exact power of two the reduced mantissa is `0` ⇒ `ln(m)=0` ⇒ result is exactly `ef` (matching
 /// libm `log2f(2^k)=k`; the oracle asserts exact powers). ~f32 tolerance for non-powers. Caller routes
 /// `x ≤ 0` / subnormal / ±inf / NaN to scalar `f32::log2`.
+#[allow(clippy::excessive_precision)]
 pub fn log2_block_f32(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -366,7 +370,7 @@ pub fn log_block_f64(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     type F = Simd<f64, 8>;
     type U = Simd<u64, 8>;
     type I = Simd<i64, 8>;
-    const SQRTH: f64 = 0.707_106_781_186_547_524_4;
+    const SQRTH: f64 = std::f64::consts::FRAC_1_SQRT_2;
     const LN2_HI: f64 = 0.693_359_375;
     #[allow(clippy::excessive_precision)]
     const LN2_LO: f64 = -2.121_944_400_546_905_827_679e-4;
@@ -760,18 +764,14 @@ mod tests {
             b
         };
         let cephes = best(&mut || {
-            let mut ch = xs.chunks_exact(8);
-            let mut oc = out.chunks_exact_mut(8);
-            for (c, o) in ch.by_ref().zip(oc.by_ref()) {
-                exp_cephes_block_f64(F64s::from_slice(c)).copy_to_slice(o);
+            for (c, o) in xs.as_chunks::<8>().0.iter().zip(out.as_chunks_mut::<8>().0) {
+                *o = exp_cephes_block_f64(F64s::from_array(*c)).to_array();
             }
             std::hint::black_box(&out);
         });
         let taylor = best(&mut || {
-            let mut ch = xs.chunks_exact(8);
-            let mut oc = out.chunks_exact_mut(8);
-            for (c, o) in ch.by_ref().zip(oc.by_ref()) {
-                exp_block(F64s::from_slice(c)).copy_to_slice(o);
+            for (c, o) in xs.as_chunks::<8>().0.iter().zip(out.as_chunks_mut::<8>().0) {
+                *o = exp_block(F64s::from_array(*c)).to_array();
             }
             std::hint::black_box(&out);
         });
@@ -808,10 +808,8 @@ mod tests {
             b
         };
         let simd = best(&mut || {
-            let mut ch = xs.chunks_exact(8);
-            let mut oc = out.chunks_exact_mut(8);
-            for (c, o) in ch.by_ref().zip(oc.by_ref()) {
-                log_block_f64(Simd::from_slice(c)).copy_to_slice(o);
+            for (c, o) in xs.as_chunks::<8>().0.iter().zip(out.as_chunks_mut::<8>().0) {
+                *o = log_block_f64(Simd::from_array(*c)).to_array();
             }
             std::hint::black_box(&out);
         });
@@ -894,10 +892,8 @@ mod tests {
             b
         };
         let simd = best(&mut || {
-            let mut ch = xs.chunks_exact(8);
-            let mut oc = out.chunks_exact_mut(8);
-            for (c, o) in ch.by_ref().zip(oc.by_ref()) {
-                exp_block_f32(Simd::from_slice(c)).copy_to_slice(o);
+            for (c, o) in xs.as_chunks::<8>().0.iter().zip(out.as_chunks_mut::<8>().0) {
+                *o = exp_block_f32(Simd::from_array(*c)).to_array();
             }
             std::hint::black_box(&out);
         });

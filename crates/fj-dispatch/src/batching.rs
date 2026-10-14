@@ -191,14 +191,9 @@ fn broadcast_unbatched(
         Value::Tensor(tensor) => {
             // Replicate the tensor along a new batch axis at position batch_dim
             let old_rank = tensor.rank();
-            let mut new_dims = Vec::with_capacity(old_rank + 1);
-            for i in 0..=old_rank {
-                if i == batch_dim {
-                    new_dims.push(batch_size as u32);
-                }
-                if i < old_rank {
-                    new_dims.push(tensor.shape.dims[i]);
-                }
+            let mut new_dims = tensor.shape.dims.clone();
+            if batch_dim <= old_rank {
+                new_dims.insert(batch_dim, batch_size as u32);
             }
 
             // Build the replicated elements

@@ -4,7 +4,9 @@
 pub mod arithmetic;
 pub mod array_creation;
 mod comparison;
+#[cfg(test)]
 pub mod cz0g0_f32accum_evidence;
+#[cfg(test)]
 pub mod cz0g0_fma_evidence;
 pub mod dense;
 pub mod einsum;
@@ -3407,12 +3409,12 @@ fn parse_reduce_window_explicit_padding(
         })
     } else {
         let mut pairs = Vec::with_capacity(numbers.len() / 2);
-        for pair in numbers.chunks_exact(2) {
-            let low = usize::try_from(pair[0]).map_err(|_| EvalError::Unsupported {
+        for &[p0, p1] in numbers.as_chunks::<2>().0 {
+            let low = usize::try_from(p0).map_err(|_| EvalError::Unsupported {
                 primitive,
                 detail: format!("reduce_window explicit padding must be non-negative: {raw:?}"),
             })?;
-            let high = usize::try_from(pair[1]).map_err(|_| EvalError::Unsupported {
+            let high = usize::try_from(p1).map_err(|_| EvalError::Unsupported {
                 primitive,
                 detail: format!("reduce_window explicit padding must be non-negative: {raw:?}"),
             })?;
@@ -5432,6 +5434,7 @@ fn eval_reduce_window_rank2_f64_sum(
 ///      blocks of `window_cols`, then `hmax[oc] = op(suf[oc], pref[oc+wc-1])`;
 ///   2. vertical: the same over rows (blocks of `window_rows`), each row op
 ///      SIMD-vectorized across `out_cols`.
+///
 /// The 4D kernel uses `j % window` per element (amortized over the channel vector);
 /// a plain matrix has no channel, so that per-element modulo dominated and the
 /// naive 4D wiring REGRESSED here. This iterates block-by-block (`step_by(window)`)
@@ -13160,7 +13163,8 @@ mod tests {
     #[test]
     fn separable_sum_nd_matches_generic() {
         // (input_dims, window, strides, pad)
-        let cases: &[(Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>)] = &[
+        type SepSumCase = (Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>);
+        let cases: &[SepSumCase] = &[
             // rank-5 3D-CNN avg-pool, VALID unit stride.
             (
                 vec![2, 16, 16, 16, 8],
@@ -13355,7 +13359,8 @@ mod tests {
     // N-D i64 separable sum is BIT-IDENTICAL to the naive wrapping fold (rank-5 + rank-4 strided).
     #[test]
     fn separable_sum_nd_i64_bit_identical() {
-        let cases: &[(Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>)] = &[
+        type SepSumCase = (Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>);
+        let cases: &[SepSumCase] = &[
             (
                 vec![2, 12, 12, 12, 4],
                 vec![1, 5, 5, 5, 1],
@@ -20549,10 +20554,10 @@ mod tests {
                     } else {
                         let mut acc = row(0);
                         rows[0] = extract(&acc);
-                        for i in 1..lead {
+                        for (i, row_slot) in rows.iter_mut().enumerate().take(lead).skip(1) {
                             acc = eval_primitive(body, &[acc.clone(), row(i)], &BTreeMap::new())
                                 .unwrap();
-                            rows[i] = extract(&acc);
+                            *row_slot = extract(&acc);
                         }
                     }
                     let want: Vec<u16> = rows.into_iter().flatten().collect();
@@ -29042,6 +29047,7 @@ mod prop_tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_digamma_positive_int() {
         let out = eval_primitive(Primitive::Digamma, &[Value::scalar_f64(1.0)], &no_params())
             .expect("digamma should succeed");
@@ -29129,6 +29135,7 @@ mod prop_tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn e2e_special_functions_oracle() {
         let cases = [
             ("lgamma", 0.5_f64, 0.572_364_942_924_700_1_f64),

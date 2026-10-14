@@ -1988,10 +1988,9 @@ pub fn f16_reduce_sum_bench(values: &[u16], simd: bool) -> f64 {
     let mut acc = 0.0f64;
     if simd {
         const L: usize = BF16_SIMD_L;
-        let chunks = values.chunks_exact(L);
-        let tail = chunks.remainder();
+        let (chunks, tail) = values.as_chunks::<L>();
         for chunk in chunks {
-            let u = Simd::<u16, L>::from_slice(chunk);
+            let u = Simd::<u16, L>::from_array(*chunk);
             if f16_input_needs_scalar(u) {
                 for &b in chunk {
                     acc += Literal::F16Bits(b).as_f64().unwrap_or(0.0);
@@ -6703,7 +6702,7 @@ fn sincos_reduce_f32x8(
     let odd = (j & I::splat(1)).simd_eq(I::splat(1));
     j = odd.select(j + I::splat(1), j);
     let y = j.cast::<f32>();
-    j = j & I::splat(7);
+    j &= I::splat(7);
     let jgt3 = j.simd_gt(I::splat(3));
     j = jgt3.select(j - I::splat(4), j);
     // Cody-Waite: z = ((ax − y·DP1) − y·DP2) − y·DP3, extended-precision |x| mod π/4.
@@ -6734,6 +6733,7 @@ fn cos_poly_f32x8(zz: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
 /// the sin/cos minimax polynomial per octant (`j∈{1,2}` uses the cos poly; sign = sign(x) XOR j>3).
 /// Accurate to ~1 f32 ulp for `|x| < 8192`; `|x| ≥ 8192` / `±inf` / `NaN` fall back to scalar
 /// `f32::sin` per lane. ~f32 tolerance (trig parity is tolerance), NOT bit-identical to widen-f64.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn sin_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -6774,6 +6774,7 @@ fn sin_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
 /// NATIVE-f32 8-wide `cos(x)` — Cephes `cosf`. cos is even, so reduce `|x|`; octant `j∈{1,2}` uses
 /// the sin poly, and the sign flips on `j>3` XOR `j>1` (post-reduction). Same range/fallback as
 /// [`sin_f32x8`]; ~1 f32 ulp for `|x| < 8192`, else scalar `f32::cos`.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn cos_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -6815,6 +6816,7 @@ fn cos_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
 /// invariant under the reduce helper's `&7`/`−4` folding). Degree-6 minimax `tan(z)` poly on
 /// [−π/4, π/4]; tan is odd so the sign is just `sign(x)`. `|x| ≥ 8192` / `±inf` / `NaN` → scalar
 /// `f32::tan` per lane. ~1-2 f32 ulp for `|x| < 8192` (tolerance; near poles tan is ill-conditioned).
+#[allow(clippy::excessive_precision, clippy::neg_cmp_op_on_partial_ord)]
 fn tan_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -7081,9 +7083,13 @@ pub(crate) fn sinc_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> 
 // Cephes `sin`/`cos` (DOUBLE) octant-reduction constants (higher-precision π/4 split + degree-5 polys
 // than the f32 versions — f64 needs ~1e-16 accuracy).
 const SINCOS64_FOPI: f64 = 1.273_239_544_735_162_8; // 4/π
+#[allow(clippy::excessive_precision)]
 const SINCOS64_DP1: f64 = 7.853_981_256_484_985_35e-1;
+#[allow(clippy::excessive_precision)]
 const SINCOS64_DP2: f64 = 3.774_894_707_930_798_18e-8;
+#[allow(clippy::excessive_precision)]
 const SINCOS64_DP3: f64 = 2.695_151_429_079_059_53e-15;
+#[allow(clippy::excessive_precision)]
 const SIN64_C: [f64; 6] = [
     1.589_623_015_765_465_68e-10,
     -2.505_074_776_285_780_73e-8,
@@ -7092,6 +7098,7 @@ const SIN64_C: [f64; 6] = [
     8.333_333_333_322_118_59e-3,
     -1.666_666_666_666_663_07e-1,
 ];
+#[allow(clippy::excessive_precision)]
 const COS64_C: [f64; 6] = [
     -1.135_853_652_138_768_17e-11,
     2.087_570_084_197_473_17e-9,
@@ -7121,7 +7128,7 @@ fn sincos_reduce_f64x8(
     let odd = (j & I::splat(1)).simd_eq(I::splat(1));
     j = odd.select(j + I::splat(1), j);
     let y = j.cast::<f64>();
-    j = j & I::splat(7);
+    j &= I::splat(7);
     let jgt3 = j.simd_gt(I::splat(3));
     j = jgt3.select(j - I::splat(4), j);
     let z = ((ax - y * F::splat(SINCOS64_DP1)) - y * F::splat(SINCOS64_DP2))
@@ -7157,6 +7164,7 @@ fn cos_poly_f64x8(zz: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
 /// NATIVE-f64 8-wide `sin(x)` — Cephes double `sin` (octant reduction + degree-5 minimax polys). SIMD
 /// for `|x| < 2^18` (where the 3-part Cody-Waite reduction stays ~1 ulp); larger `|x|` / `±inf` / `NaN`
 /// fall back to scalar `f64::sin` (full Payne-Hanek). ~1 ulp; parity is tolerance.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn sin_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -7195,6 +7203,7 @@ fn sin_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
 
 /// NATIVE-f64 8-wide `cos(x)` — Cephes double `cos` (even; octant `j∈{1,2}` uses the sin poly, sign
 /// flips on `j>3` XOR `j>1`). Same range/fallback as [`sin_f64x8`].
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn cos_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -7388,6 +7397,7 @@ fn fast_small_tan_f64(x: f64) -> f64 {
 /// difference is an accurate `≈ 2x`. SIMD for `|x| < 709` (both `expm1` finite); `|x| ≥ 709` (overflow),
 /// `±inf`, `NaN` → scalar `f64::sinh`. A `x == 0 → x` select restores `sinh(±0) = ±0` (odd fn; the raw
 /// even-symmetric `expm1` difference would give `+0` for `−0`). Tolerance parity vs libm.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn sinh_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -7449,6 +7459,7 @@ pub(crate) fn eval_sinh(primitive: Primitive, inputs: &[Value]) -> Result<Value,
 /// f32 sibling of `sinh_f64x8`. CANCELLATION-FREE (both `expm1(±x) ≈ ±x` for small x). SIMD for
 /// `|x| < 88` (expm1 finite in f32); `|x| ≥ 88`/`±inf`/`NaN` → scalar `f32::sinh`. A `x == 0 → x`
 /// select restores `sinh(±0)=±0` (odd fn; the even-symmetric expm1 difference gives `+0` for `−0`).
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn sinh_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -7487,6 +7498,7 @@ fn sinh_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
 /// nor the reconstruction misbehaves); `x ≥ 709` (→ `+inf`), `x ≤ −709` (→ `−1`), `±inf`, `NaN` route
 /// to scalar `f64::exp_m1`. The raw kernel maps `−0 → +0`, so a `x == 0 → x` select restores the sign
 /// (`expm1(±0) = ±0`, bit-exact — as the oracle requires). Tolerance parity vs libm.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn expm1_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -7540,6 +7552,7 @@ pub(crate) fn eval_expm1(primitive: Primitive, inputs: &[Value]) -> Result<Value
 /// `|x| < 88` (where f32 `exp` neither overflows nor the reconstruction misbehaves); `x ≥ 88` (→ +inf),
 /// `x ≤ −88` (→ −1), `±inf`, `NaN` → scalar `f32::exp_m1`. The kernel maps `−0 → +0`, so a `x == 0 → x`
 /// select restores the sign (`expm1(±0) = ±0`). ~f32 tolerance.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn expm1_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -7575,6 +7588,7 @@ fn expm1_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
 /// SUM (no small-x cancellation, unlike sinh/tanh), so this is accurate everywhere in the SIMD regime
 /// `|x| < 709` (where `exp(|x|)` is finite). `|x| ≥ 709` (overflow → `+inf`), `±inf`, `NaN` route to
 /// scalar `f64::cosh` for exact edges. Even function ⇒ `abs(x)` handles sign. Tolerance parity vs libm.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn cosh_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     use std::simd::Simd;
     use std::simd::cmp::SimdPartialOrd;
@@ -7633,6 +7647,7 @@ pub(crate) fn eval_cosh(primitive: Primitive, inputs: &[Value]) -> Result<Value,
 /// is a SUM (no small-x cancellation). SIMD for `|x| < 30` (inside `exp_block_f32`'s accurate range;
 /// `cosh(30)≈5e12` finite in f32); `|x| ≥ 30` (up to overflow at ~89), `±inf`, `NaN` → scalar
 /// `f32::cosh`. Even fn ⇒ `abs(x)` handles sign. ~f32 tolerance (few ulp) vs libm.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn cosh_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Simd;
     use std::simd::cmp::SimdPartialOrd;
@@ -7669,6 +7684,7 @@ fn cosh_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
 /// absolute, and `tanh(x)≈x` so that's within bar). SIMD for `|x| < 354` (so `−2|x| > −708`, `e`
 /// finite-normal); `|x| ≥ 354` (saturated to `±1`), `±inf`, `NaN` route to scalar `f64::tanh`. Sign
 /// via the sign bit (odd fn; keeps `tanh(±0)=±0`). Tolerance parity vs libm.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn tanh_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     use std::simd::Simd;
     use std::simd::cmp::SimdPartialOrd;
@@ -7707,6 +7723,7 @@ fn tanh_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
 /// default dtype. SIMD for `|x| < 15` (where `−2|x| > −30` is inside `exp_block_f32`'s accurate range
 /// and tanh has not yet saturated); `|x| ≥ 15` (⇒ `±1` in f32), `±inf`, `NaN` → scalar `f32::tanh`.
 /// Sign via the sign bit (odd fn). ~f32 tolerance (few ulp) vs libm — well within f32 parity.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn tanh_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Simd;
     use std::simd::cmp::SimdPartialOrd;
@@ -7829,6 +7846,7 @@ fn simd_poly_tanh_f64_values(src: &[f64]) -> Vec<f64> {
 /// `inf<1e150` are both false, and t²→inf) route to scalar `f64::asinh` for exact edge behaviour
 /// (`asinh(±inf)=±inf`, `asinh(NaN)=NaN`, large-x → `ln(2|x|)`). Sign is copied from x via the sign bit
 /// (odd function; preserves `asinh(±0)=±0`). Tolerance parity vs libm.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn asinh_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     use std::simd::Simd;
     use std::simd::StdFloat;
@@ -7895,6 +7913,7 @@ pub(crate) fn eval_asinh(primitive: Primitive, inputs: &[Value]) -> Result<Value
 /// [`asinh_f64x8`], reusing [`log1p_f32x8`]. Cancellation-free for small x. SIMD for `t < 1e18` (so
 /// `t²` stays finite in f32); `t ≥ 1e18` / `±inf` / `NaN` → scalar `f32::asinh`. Sign via the sign bit
 /// (odd fn; keeps `asinh(±0)=±0`). ~f32 tolerance.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn asinh_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Simd;
     use std::simd::StdFloat;
@@ -8033,6 +8052,7 @@ pub(crate) fn eval_acosh(primitive: Primitive, inputs: &[Value]) -> Result<Value
 /// low-π correction; sign restored by copysign (odd fn ⇒ `atan(±0)=±0`). Short rational ⇒ wins no-FMA
 /// (the old "atan SIMD needs FMA" verdict was pre-AVX2 stale, same as exp/log). SIMD for finite x;
 /// `±inf`/`NaN` route to scalar `f64::atan`. ~1 ulp, tolerance parity.
+#[allow(clippy::excessive_precision)]
 fn atan_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -8131,6 +8151,7 @@ pub(crate) fn eval_atan(primitive: Primitive, inputs: &[Value]) -> Result<Value,
 /// `tan(π/8)` into `[0, tan(π/8)]`, then a degree-4 polynomial in `z=x²` (shorter than the f64 rational;
 /// f32 needs fewer terms). Sign via copysign (odd fn ⇒ `atan(±0)=±0`). SIMD for finite x; `±inf`/`NaN`
 /// → scalar `f32::atan`. ~f32 tolerance vs libm.
+#[allow(clippy::excessive_precision)]
 fn atan_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -8256,6 +8277,7 @@ fn atan2_f64x8(y: std::simd::Simd<f64, 8>, x: std::simd::Simd<f64, 8>) -> std::s
 /// atan(a/√(1−a²))` for `a ≤ 0.625`; near-1, `asin(a) = π/2 − 2·asin(s)` with `s = √((1−a)/2)`.
 /// One `atan_f32x8` on a selected argument, combined per branch; copysign (odd fn). SIMD for `|x| ≤ 1`;
 /// `|x|>1`/`±inf`/`NaN` → scalar `f32::asin` (NaN). ~f32 tolerance.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn asin_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -8314,6 +8336,7 @@ pub(crate) fn eval_asin(primitive: Primitive, inputs: &[Value]) -> Result<Value,
 /// `x<−0.5 ⇒ π − 2·asin(√((1+x)/2))`, else `π/2 − asin(x)` (the sqrt reductions keep near-±1 accurate).
 /// One `asin_f32x8` on a selected arg, combined per branch. acos ≥ 0 ⇒ no sign. SIMD for `|x| ≤ 1`;
 /// `|x|>1`/`±inf`/`NaN` → scalar `f32::acos` (NaN). ~f32 tolerance.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn acos_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -8397,6 +8420,7 @@ fn logistic_scalar(x: f64) -> f64 {
 /// ([`crate::simd_exp::exp_cephes_block_f64`], 2.59x over libm exp no-FMA). SIMD only for `|x| < 709`
 /// (where `exp(±x)` is finite); the saturated tails (`|x| ≥ 709` ⇒ 0 or 1), `±inf`, and `NaN` route
 /// to scalar [`logistic_scalar`] (which is correct there via inf-arithmetic). ~1–2 ulp, tolerance.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn logistic_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     use std::simd::Simd;
     use std::simd::cmp::SimdPartialOrd;
@@ -8453,6 +8477,7 @@ fn logistic_f32_scalar(x: f32) -> f32 {
 /// SIMD for `|x| < 30` (where `exp(∓x)` is inside `exp_block_f32`'s accurate range and logistic has
 /// not saturated); `|x| ≥ 30` (⇒ ~0 or ~1), `±inf`, `NaN` → scalar `logistic_f32_scalar` (correct via
 /// inf-arithmetic). ~f32 tolerance (few ulp) vs libm.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn logistic_f32x8(x: std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8> {
     use std::simd::Simd;
     use std::simd::cmp::SimdPartialOrd;
@@ -13314,6 +13339,7 @@ fn polygamma_literal_to_f64(lit: Literal, primitive: Primitive) -> Result<f64, E
 /// Edge cases fall out of IEEE arithmetic and match `erf_inv_approx`: x=±1 → ±inf (ln 0 = -inf),
 /// |x|>1 → NaN (ln of negative), x=0 → 0.
 #[inline]
+#[allow(clippy::excessive_precision)]
 fn erfinv_f32_giles(x: f32) -> f32 {
     // Edge semantics match `erf_inv_approx`: the Giles poly is for the OPEN interval (-1,1); at the
     // boundary w=+inf the polynomial's leading sign is wrong, so special-case ±1 / |x|>1 / NaN.
@@ -14479,6 +14505,7 @@ fn erf_f64x8(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
 /// scalar `erf_approx` for the |x|>=1.25 tail). Used only by `bench_erf_simd_tail_vs_scalar_tail`
 /// to measure the branch-3 SIMD-exp lever in the same binary.
 #[cfg(test)]
+#[allow(clippy::excessive_precision)]
 fn erf_f64x8_scalartail(x: std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8> {
     use std::simd::Select;
     use std::simd::Simd;
@@ -19246,6 +19273,7 @@ mod tests {
     // to f64 (eval_unary_elementwise_parallel(f64::sin)); measure whether that already wins.
     #[test]
     #[ignore = "perf benchmark; run explicitly"]
+    #[allow(clippy::approx_constant)]
     fn bench_sin_cos_f32_vs_jax() {
         use std::time::Instant;
         let n = 16_000_000usize;
@@ -27013,6 +27041,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn digamma_at_one() {
         // ψ(1) = -γ ≈ -0.5772156649
         let euler_gamma = 0.5772156649;
@@ -27155,11 +27184,11 @@ mod tests {
             f64::NEG_INFINITY,
             f64::NAN,
         ]);
-        while xs.len() % 8 != 0 {
+        while !xs.len().is_multiple_of(8) {
             xs.push(1.5);
         }
-        for chunk in xs.chunks_exact(8) {
-            let v = Simd::<f64, 8>::from_slice(chunk);
+        for chunk in xs.as_chunks::<8>().0 {
+            let v = Simd::<f64, 8>::from_array(*chunk);
             let got = super::trigamma_f64x8(v).to_array();
             for (k, &x) in chunk.iter().enumerate() {
                 let expect = polygamma_approx(1, x);
@@ -27197,11 +27226,11 @@ mod tests {
             f64::NEG_INFINITY,
             f64::NAN,
         ]);
-        while xs.len() % 8 != 0 {
+        while !xs.len().is_multiple_of(8) {
             xs.push(1.5);
         }
-        for chunk in xs.chunks_exact(8) {
-            let v = Simd::<f64, 8>::from_slice(chunk);
+        for chunk in xs.as_chunks::<8>().0 {
+            let v = Simd::<f64, 8>::from_array(*chunk);
             let got = super::tetragamma_f64x8(v).to_array();
             for (k, &x) in chunk.iter().enumerate() {
                 let expect = polygamma_approx(2, x);
@@ -27464,12 +27493,18 @@ mod tests {
             t
         };
         let new = best(&|| {
-            std::hint::black_box(eval_erf_inv(Primitive::ErfInv, &[x.clone()]).unwrap());
+            std::hint::black_box(
+                eval_erf_inv(Primitive::ErfInv, std::slice::from_ref(&x)).unwrap(),
+            );
         });
         let old = best(&|| {
             std::hint::black_box(
-                eval_unary_elementwise_parallel(Primitive::ErfInv, &[x.clone()], erf_inv_approx)
-                    .unwrap(),
+                eval_unary_elementwise_parallel(
+                    Primitive::ErfInv,
+                    std::slice::from_ref(&x),
+                    erf_inv_approx,
+                )
+                .unwrap(),
             );
         });
         eprintln!(

@@ -15,8 +15,8 @@ pub use transforms::{
     TransposedLinearFunction, ValueAndGradWrapped, VmapWrapped,
 };
 pub use transforms::{
-    ShapedArray, checkpoint, compose, custom_jvp, custom_vjp, eval_shape, grad, hessian, jacobian,
-    jit, linear_transpose, linearize, pmap, value_and_grad, vmap,
+    ShapedArray, checkpoint, compose, custom_jvp, custom_vjp, eval_shape, eval_shape_avals, grad,
+    hessian, jacobian, jit, linear_transpose, linearize, pmap, value_and_grad, vmap,
 };
 
 // Re-export make_jaxpr tracing API from fj-trace
@@ -253,6 +253,345 @@ mod tests {
         assert_eq!(shapes.len(), 1);
         assert_eq!(shapes[0].shape.dims, vec![3u32]);
         assert_eq!(shapes[0].dtype, fj_core::DType::F64);
+    }
+
+    #[test]
+    fn eval_shape_comparison_returns_bool_dtype_and_broadcast_shape() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Lt,
+                inputs: vec![Atom::Var(VarId(1)), Atom::Var(VarId(2))].into(),
+                outputs: vec![VarId(3)].into(),
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let shapes = eval_shape_avals(
+            &jaxpr,
+            &[
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![2, 1] },
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![1, 3] },
+                },
+            ],
+        )
+        .expect("eval_shape comparison should succeed");
+        assert_eq!(
+            shapes,
+            vec![ShapedArray {
+                dtype: DType::Bool,
+                shape: Shape { dims: vec![2, 3] },
+            }]
+        );
+    }
+
+    #[test]
+    fn eval_shape_reduce_axis_and_permuted_transpose() {
+        let mut reduce_params = std::collections::BTreeMap::new();
+        reduce_params.insert("axes".to_owned(), "1".to_owned());
+        let mut transpose_params = std::collections::BTreeMap::new();
+        transpose_params.insert("permutation".to_owned(), "2,0,1".to_owned());
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2), VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Transpose,
+                    inputs: vec![Atom::Var(VarId(1))].into(),
+                    outputs: vec![VarId(2)].into(),
+                    params: transpose_params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: vec![Atom::Var(VarId(2))].into(),
+                    outputs: vec![VarId(3)].into(),
+                    params: reduce_params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let shapes = eval_shape_avals(
+            &jaxpr,
+            &[ShapedArray {
+                dtype: DType::F32,
+                shape: Shape {
+                    dims: vec![2, 3, 4],
+                },
+            }],
+        )
+        .expect("eval_shape transpose + axis reduction should succeed");
+        assert_eq!(
+            shapes,
+            vec![
+                ShapedArray {
+                    dtype: DType::F32,
+                    shape: Shape {
+                        dims: vec![4, 2, 3],
+                    },
+                },
+                ShapedArray {
+                    dtype: DType::F32,
+                    shape: Shape { dims: vec![4, 3] },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn eval_shape_dot_slice_concatenate_multi_output_linalg_and_rfft() {
+        // 1. Dot: [2, 3] x [3, 4] -> [2, 4]
+        let dot_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Dot,
+                inputs: vec![Atom::Var(VarId(1)), Atom::Var(VarId(2))].into(),
+                outputs: vec![VarId(3)].into(),
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let dot_shapes = eval_shape_avals(
+            &dot_jaxpr,
+            &[
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![2, 3] },
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![3, 4] },
+                },
+            ],
+        )
+        .expect("dot eval_shape");
+        assert_eq!(dot_shapes[0].shape.dims, vec![2, 4]);
+
+        // Negative Dot test: incompatible inner dimensions [2, 3] x [5, 4]
+        let dot_err = eval_shape_avals(
+            &dot_jaxpr,
+            &[
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![2, 3] },
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![5, 4] },
+                },
+            ],
+        )
+        .expect_err("incompatible dot inner dimensions must fail");
+        assert!(dot_err.to_string().contains("contraction mismatch"));
+
+        // 2. Slice + Concatenate
+        let mut slice_params = std::collections::BTreeMap::new();
+        slice_params.insert("start_indices".to_owned(), "1,0".to_owned());
+        slice_params.insert("limit_indices".to_owned(), "3,3".to_owned());
+        let mut concat_params = std::collections::BTreeMap::new();
+        concat_params.insert("dimension".to_owned(), "0".to_owned());
+        let slice_concat_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Slice,
+                    inputs: vec![Atom::Var(VarId(1))].into(),
+                    outputs: vec![VarId(3)].into(),
+                    params: slice_params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Concatenate,
+                    inputs: vec![Atom::Var(VarId(3)), Atom::Var(VarId(2))].into(),
+                    outputs: vec![VarId(4)].into(),
+                    params: concat_params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let sc_shapes = eval_shape_avals(
+            &slice_concat_jaxpr,
+            &[
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![4, 3] },
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![5, 3] },
+                },
+            ],
+        )
+        .expect("slice + concatenate eval_shape");
+        assert_eq!(sc_shapes[0].shape.dims, vec![7, 3]);
+
+        // 3. Multi-output QR & SVD + Rfft
+        let qr_svd_rfft_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3), VarId(4), VarId(5), VarId(6), VarId(7), VarId(8)],
+            vec![
+                Equation {
+                    primitive: Primitive::Qr,
+                    inputs: vec![Atom::Var(VarId(1))].into(),
+                    outputs: vec![VarId(3), VarId(4)].into(),
+                    params: std::collections::BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Svd,
+                    inputs: vec![Atom::Var(VarId(1))].into(),
+                    outputs: vec![VarId(5), VarId(6), VarId(7)].into(),
+                    params: std::collections::BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Rfft,
+                    inputs: vec![Atom::Var(VarId(2))].into(),
+                    outputs: vec![VarId(8)].into(),
+                    params: std::collections::BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let multi_shapes = eval_shape_avals(
+            &qr_svd_rfft_jaxpr,
+            &[
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![4, 3] },
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![8] },
+                },
+            ],
+        )
+        .expect("qr + svd + rfft eval_shape");
+        assert_eq!(multi_shapes[0].shape.dims, vec![4, 3]); // Q
+        assert_eq!(multi_shapes[1].shape.dims, vec![3, 3]); // R
+        assert_eq!(multi_shapes[2].shape.dims, vec![4, 3]); // U
+        assert_eq!(multi_shapes[3].shape.dims, vec![3]); // S
+        assert_eq!(multi_shapes[4].shape.dims, vec![3, 3]); // Vt
+        assert_eq!(
+            multi_shapes[5],
+            ShapedArray {
+                dtype: DType::Complex128,
+                shape: Shape { dims: vec![5] },
+            }
+        );
+    }
+
+    #[test]
+    fn eval_shape_sub_jaxpr_cond_and_scan() {
+        // Cond with 2 sub_jaxprs: both return [3] F64
+        let branch = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Sin,
+                inputs: vec![Atom::Var(VarId(1))].into(),
+                outputs: vec![VarId(2)].into(),
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let cond_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Cond,
+                inputs: vec![Atom::Var(VarId(1)), Atom::Var(VarId(2))].into(),
+                outputs: vec![VarId(3)].into(),
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![branch.clone(), branch],
+                effects: vec![],
+            }],
+        );
+        let cond_out = eval_shape_avals(
+            &cond_jaxpr,
+            &[
+                ShapedArray {
+                    dtype: DType::Bool,
+                    shape: Shape::scalar(),
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![3] },
+                },
+            ],
+        )
+        .expect("cond sub_jaxpr eval_shape");
+        assert_eq!(cond_out[0].shape.dims, vec![3]);
+
+        // Scan with 1 sub_jaxpr: carry [2] + xs [5, 2] -> carry [2], ys [5, 2]
+        let scan_body = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3), VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: vec![Atom::Var(VarId(1)), Atom::Var(VarId(2))].into(),
+                outputs: vec![VarId(3)].into(),
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let scan_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3), VarId(4)],
+            vec![Equation {
+                primitive: Primitive::Scan,
+                inputs: vec![Atom::Var(VarId(1)), Atom::Var(VarId(2))].into(),
+                outputs: vec![VarId(3), VarId(4)].into(),
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![scan_body],
+                effects: vec![],
+            }],
+        );
+        let scan_out = eval_shape_avals(
+            &scan_jaxpr,
+            &[
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![2] },
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![5, 2] },
+                },
+            ],
+        )
+        .expect("scan sub_jaxpr eval_shape");
+        assert_eq!(scan_out[0].shape.dims, vec![2]);
+        assert_eq!(scan_out[1].shape.dims, vec![5, 2]);
     }
 
     // --- Transform composition tests ---

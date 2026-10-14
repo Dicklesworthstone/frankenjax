@@ -601,7 +601,7 @@ impl SimpleTraceContext {
         dense_tracer_aval(&self.tracer_avals, tracer_id)
     }
 
-    fn infer_primitive_output_avals(
+    pub fn infer_primitive_output_avals(
         primitive: Primitive,
         inputs: &[ShapedArray],
         params: &BTreeMap<String, String>,
@@ -3626,7 +3626,10 @@ fn infer_reshape(
     if inputs.len() != 1 {
         return Err(TraceError::ShapeInferenceFailed {
             primitive,
-            detail: format!("expected 1 input, got {}", inputs.len()),
+            detail: format!(
+                "reshape requires one input (expected 1 input), got {}",
+                inputs.len()
+            ),
         });
     }
 
@@ -3647,7 +3650,7 @@ fn infer_reshape(
             if inferred_axis.is_some() {
                 return Err(TraceError::ShapeInferenceFailed {
                     primitive,
-                    detail: "only one -1 inferred axis allowed".to_owned(),
+                    detail: "reshape allows at most one -1 inferred axis (only one -1 inferred axis allowed)".to_owned(),
                 });
             }
             inferred_axis = Some(idx);

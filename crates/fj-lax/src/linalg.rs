@@ -2795,6 +2795,7 @@ fn complex_jacobi_eigendecomposition(
 /// It applies the *same* corrected per-pivot unitary `U = D·G`, so it converges to the
 /// same Hermitian spectrum to machine precision (both callers re-sort, so the iteration
 /// order is unobservable). Verified by `complex_jacobi_cyclic_matches_maxpivot`.
+#[cfg(test)]
 fn complex_jacobi_eigendecomposition_cyclic(
     a: &mut [(f64, f64)],
     n: usize,
@@ -8115,7 +8116,7 @@ mod tests {
                     .unwrap(),
             );
         };
-        let _ = f();
+        f();
         let mut bst = f64::MAX;
         for _ in 0..4 {
             let t = Instant::now();
@@ -8146,7 +8147,7 @@ mod tests {
                 crate::eval_primitive(Primitive::Qr, std::slice::from_ref(&am), &p).unwrap(),
             );
         };
-        let _ = f();
+        f();
         let mut bst = f64::MAX;
         for _ in 0..4 {
             let t = Instant::now();
@@ -8182,7 +8183,7 @@ mod tests {
                     crate::eval_primitive(prim, std::slice::from_ref(m), &p).unwrap(),
                 );
             };
-            let _ = f();
+            f();
             let mut b = f64::MAX;
             for _ in 0..3 {
                 let t = Instant::now();
@@ -8221,7 +8222,7 @@ mod tests {
                 crate::eval_primitive(Primitive::Solve, &[am.clone(), bm.clone()], &p).unwrap(),
             );
         };
-        let _ = f();
+        f();
         let mut bst = f64::MAX;
         for _ in 0..4 {
             let t = Instant::now();
@@ -8256,7 +8257,7 @@ mod tests {
                     crate::eval_primitive(prim, std::slice::from_ref(&am), &p).unwrap(),
                 );
             };
-            let _ = f();
+            f();
             let mut b = f64::MAX;
             for _ in 0..4 {
                 let t = Instant::now();
@@ -8293,7 +8294,7 @@ mod tests {
                 crate::eval_primitive(Primitive::Lu, std::slice::from_ref(&am), &p).unwrap(),
             );
         };
-        let _ = f();
+        f();
         let mut bst = f64::MAX;
         for _ in 0..4 {
             let t = Instant::now();
@@ -8321,7 +8322,7 @@ mod tests {
                 crate::eval_primitive_multi(Primitive::Eig, std::slice::from_ref(&am), &p).unwrap(),
             );
         };
-        let _ = f();
+        f();
         let mut bst = f64::MAX;
         for _ in 0..3 {
             let t = Instant::now();
@@ -8361,7 +8362,7 @@ mod tests {
                 crate::eval_primitive_multi(Primitive::Eig, std::slice::from_ref(&cm), &p).unwrap(),
             );
         };
-        let _ = f();
+        f();
         let mut bst = f64::MAX;
         for _ in 0..3 {
             let t = Instant::now();
@@ -8424,7 +8425,7 @@ mod tests {
                 crate::eval_primitive(Primitive::Solve, &[am.clone(), bm.clone()], &p).unwrap(),
             );
         };
-        let _ = f();
+        f();
         let mut bst = f64::MAX;
         for _ in 0..4 {
             let t = Instant::now();
@@ -8464,7 +8465,7 @@ mod tests {
                 crate::eval_primitive(Primitive::Qr, std::slice::from_ref(&cm), &p).unwrap(),
             );
         };
-        let _ = f();
+        f();
         let mut bst = f64::MAX;
         for _ in 0..4 {
             let t = Instant::now();

@@ -140,10 +140,9 @@ fn simd_reduce_minmax_f64(values: &[f64], is_max: bool) -> f64 {
     // bound at one accumulator (the simd_max latency hides under the load latency), so extra ILP does not
     // help. DO-NOT re-attempt multi-accumulator reduce ILP; the 2x JAX gap is multi-core aggregate BW.
     let mut nan_acc = vacc.is_nan();
-    let chunks = values.chunks_exact(LANES);
-    let tail = chunks.remainder();
+    let (chunks, tail) = values.as_chunks::<LANES>();
     for chunk in chunks {
-        let v = Simd::<f64, LANES>::from_slice(chunk);
+        let v = Simd::<f64, LANES>::from_array(*chunk);
         nan_acc |= v.is_nan();
         vacc = if is_max {
             vacc.simd_max(v)
@@ -199,10 +198,9 @@ fn simd_reduce_minmax_f32(values: &[f32], is_max: bool) -> f32 {
     // `.any()` per chunk — the per-chunk reduction was ~half the per-row cost. Bit-identical.
     // (Multi-accumulator ILP not used — see the note in simd_reduce_minmax_f64: BW-bound, no gain.)
     let mut nan_acc = vacc.is_nan(); // all-false (init is finite)
-    let chunks = values.chunks_exact(LANES);
-    let tail = chunks.remainder();
+    let (chunks, tail) = values.as_chunks::<LANES>();
     for chunk in chunks {
-        let v = Simd::<f32, LANES>::from_slice(chunk);
+        let v = Simd::<f32, LANES>::from_array(*chunk);
         nan_acc |= v.is_nan();
         vacc = if is_max {
             vacc.simd_max(v)
@@ -462,11 +460,10 @@ fn half_fold_chunk(chunk: &[u16], is_f16: bool, mul: bool) -> f64 {
     const LANES: usize = 8;
     let mut acc = if mul { 1.0 } else { 0.0 };
     let op = |a: f64, v: f64| if mul { a * v } else { a + v };
-    let chunks = chunk.chunks_exact(LANES);
-    let tail = chunks.remainder();
+    let (chunks, tail) = chunk.as_chunks::<LANES>();
     if is_f16 {
         for c in chunks {
-            let u = Simd::<u16, LANES>::from_slice(c);
+            let u = Simd::<u16, LANES>::from_array(*c);
             if crate::arithmetic::f16_input_needs_scalar(u) {
                 for &bits in c {
                     acc = op(acc, Literal::F16Bits(bits).as_f64().unwrap_or(0.0));
@@ -482,7 +479,7 @@ fn half_fold_chunk(chunk: &[u16], is_f16: bool, mul: bool) -> f64 {
         }
     } else {
         for c in chunks {
-            let u16v = Simd::<u16, LANES>::from_slice(c);
+            let u16v = Simd::<u16, LANES>::from_array(*c);
             let u32v = u16v.cast::<u32>() << Simd::splat(16u32);
             let f64v = Simd::<f32, LANES>::from_bits(u32v).cast::<f64>();
             for &v in f64v.to_array().iter() {
@@ -507,12 +504,11 @@ fn half_simd_sum_chunk(chunk: &[u16], is_f16: bool) -> f64 {
     };
     const LANES: usize = 8;
     let mut accv = Simd::<f64, LANES>::splat(0.0);
-    let chunks = chunk.chunks_exact(LANES);
-    let tail = chunks.remainder();
+    let (chunks, tail) = chunk.as_chunks::<LANES>();
     let mut scalar_acc = 0.0;
     if is_f16 {
         for c in chunks {
-            let u = Simd::<u16, LANES>::from_slice(c);
+            let u = Simd::<u16, LANES>::from_array(*c);
             if crate::arithmetic::f16_input_needs_scalar(u) {
                 for &bits in c {
                     scalar_acc += Literal::F16Bits(bits).as_f64().unwrap_or(0.0);
@@ -764,10 +760,9 @@ fn simd_reduce_minmax_bf16(values: &[u16], is_max: bool) -> f64 {
 
     let mut vacc = Simd::<f32, L>::splat(init);
     let mut any_nan = false;
-    let chunks = values.chunks_exact(L);
-    let tail = chunks.remainder();
+    let (chunks, tail) = values.as_chunks::<L>();
     for chunk in chunks {
-        let u = Simd::<u16, L>::from_slice(chunk);
+        let u = Simd::<u16, L>::from_array(*chunk);
         let f = Simd::<f32, L>::from_bits(u.cast::<u32>() << Simd::splat(16u32));
         any_nan |= f.is_nan().any();
         vacc = if is_max {
@@ -865,10 +860,9 @@ fn simd_reduce_minmax_f16(values: &[u16], is_max: bool) -> f64 {
 
     let mut vacc = Simd::<f32, L>::splat(init);
     let mut nan_acc = Mask::<i32, L>::splat(false);
-    let chunks = values.chunks_exact(L);
-    let tail = chunks.remainder();
+    let (chunks, tail) = values.as_chunks::<L>();
     for chunk in chunks {
-        let f = crate::arithmetic::f16_widen8_full_f32(Simd::<u16, L>::from_slice(chunk));
+        let f = crate::arithmetic::f16_widen8_full_f32(Simd::<u16, L>::from_array(*chunk));
         nan_acc |= f.is_nan();
         vacc = if is_max {
             vacc.simd_max(f)
@@ -914,16 +908,16 @@ fn simd_reduce_minmax_f16(values: &[u16], is_max: bool) -> f64 {
 fn simd_minmax_row_acc_f64(out: &mut [f64], inp: &[f64], is_max: bool) {
     use std::simd::{Select, Simd, num::SimdFloat};
     const L: usize = 4;
-    let mut oc = out.chunks_exact_mut(L);
-    let mut ic = inp.chunks_exact(L);
-    for (o, i) in oc.by_ref().zip(ic.by_ref()) {
-        let a = Simd::<f64, L>::from_slice(o);
-        let b = Simd::<f64, L>::from_slice(i);
+    let (oc, o_rem) = out.as_chunks_mut::<L>();
+    let (ic, i_rem) = inp.as_chunks::<L>();
+    for (o, i) in oc.iter_mut().zip(ic.iter()) {
+        let a = Simd::<f64, L>::from_array(*o);
+        let b = Simd::<f64, L>::from_array(*i);
         let m = if is_max { a.simd_max(b) } else { a.simd_min(b) };
         let nan = a.is_nan() | b.is_nan();
-        o.copy_from_slice(&nan.select(Simd::splat(f64::NAN), m).to_array());
+        *o = nan.select(Simd::splat(f64::NAN), m).to_array();
     }
-    for (o, &v) in oc.into_remainder().iter_mut().zip(ic.remainder()) {
+    for (o, &v) in o_rem.iter_mut().zip(i_rem) {
         *o = jax_minmax_scalar(*o, v, is_max);
     }
 }
@@ -936,16 +930,16 @@ fn simd_minmax_row_acc_f64(out: &mut [f64], inp: &[f64], is_max: bool) {
 fn simd_minmax_row_acc_f32_native(out: &mut [f32], inp: &[f32], is_max: bool) {
     use std::simd::{Select, Simd, num::SimdFloat};
     const L: usize = 8;
-    let mut oc = out.chunks_exact_mut(L);
-    let mut ic = inp.chunks_exact(L);
-    for (o, i) in oc.by_ref().zip(ic.by_ref()) {
-        let a = Simd::<f32, L>::from_slice(o);
-        let b = Simd::<f32, L>::from_slice(i);
+    let (oc, o_rem) = out.as_chunks_mut::<L>();
+    let (ic, i_rem) = inp.as_chunks::<L>();
+    for (o, i) in oc.iter_mut().zip(ic.iter()) {
+        let a = Simd::<f32, L>::from_array(*o);
+        let b = Simd::<f32, L>::from_array(*i);
         let m = if is_max { a.simd_max(b) } else { a.simd_min(b) };
         let nan = a.is_nan() | b.is_nan();
-        o.copy_from_slice(&nan.select(Simd::splat(f32::NAN), m).to_array());
+        *o = nan.select(Simd::splat(f32::NAN), m).to_array();
     }
-    for (o, &v) in oc.into_remainder().iter_mut().zip(ic.remainder()) {
+    for (o, &v) in o_rem.iter_mut().zip(i_rem) {
         let cur = *o;
         *o = if cur.is_nan() || v.is_nan() {
             f32::NAN
@@ -1146,17 +1140,17 @@ fn simd_minmax_inner_axis_reduce_f32(
 fn simd_minmax_row_acc_bf16_f32(out: &mut [f32], inp: &[u16], is_max: bool) {
     use std::simd::{Select, Simd, num::SimdFloat, num::SimdUint};
     const L: usize = 8;
-    let mut oc = out.chunks_exact_mut(L);
-    let mut ic = inp.chunks_exact(L);
-    for (o, i) in oc.by_ref().zip(ic.by_ref()) {
-        let u = Simd::<u16, L>::from_slice(i);
+    let (oc, o_rem) = out.as_chunks_mut::<L>();
+    let (ic, i_rem) = inp.as_chunks::<L>();
+    for (o, i) in oc.iter_mut().zip(ic.iter()) {
+        let u = Simd::<u16, L>::from_array(*i);
         let b = Simd::<f32, L>::from_bits(u.cast::<u32>() << Simd::splat(16u32));
-        let a = Simd::<f32, L>::from_slice(o);
+        let a = Simd::<f32, L>::from_array(*o);
         let m = if is_max { a.simd_max(b) } else { a.simd_min(b) };
         let nan = a.is_nan() | b.is_nan();
-        o.copy_from_slice(&nan.select(Simd::splat(f32::NAN), m).to_array());
+        *o = nan.select(Simd::splat(f32::NAN), m).to_array();
     }
-    for (o, &v) in oc.into_remainder().iter_mut().zip(ic.remainder()) {
+    for (o, &v) in o_rem.iter_mut().zip(i_rem) {
         let bv = f32::from_bits((v as u32) << 16);
         let cur = *o;
         *o = if cur.is_nan() || bv.is_nan() {
@@ -1278,16 +1272,16 @@ fn simd_minmax_inner_axis_reduce_bf16(
 fn simd_minmax_row_acc_f16_f32(out: &mut [f32], inp: &[u16], is_max: bool) {
     use std::simd::{Select, Simd, num::SimdFloat};
     const L: usize = 8; // matches f16_widen8_full_f32 lane count
-    let mut oc = out.chunks_exact_mut(L);
-    let mut ic = inp.chunks_exact(L);
-    for (o, i) in oc.by_ref().zip(ic.by_ref()) {
-        let b = crate::arithmetic::f16_widen8_full_f32(Simd::<u16, L>::from_slice(i));
-        let a = Simd::<f32, L>::from_slice(o);
+    let (oc, o_rem) = out.as_chunks_mut::<L>();
+    let (ic, i_rem) = inp.as_chunks::<L>();
+    for (o, i) in oc.iter_mut().zip(ic.iter()) {
+        let b = crate::arithmetic::f16_widen8_full_f32(Simd::<u16, L>::from_array(*i));
+        let a = Simd::<f32, L>::from_array(*o);
         let m = if is_max { a.simd_max(b) } else { a.simd_min(b) };
         let nan = a.is_nan() | b.is_nan();
-        o.copy_from_slice(&nan.select(Simd::splat(f32::NAN), m).to_array());
+        *o = nan.select(Simd::splat(f32::NAN), m).to_array();
     }
-    for (o, &v) in oc.into_remainder().iter_mut().zip(ic.remainder()) {
+    for (o, &v) in o_rem.iter_mut().zip(i_rem) {
         let bv = Literal::F16Bits(v).as_f64().unwrap_or(0.0) as f32;
         *o = if o.is_nan() || bv.is_nan() {
             f32::NAN
@@ -1410,16 +1404,16 @@ fn simd_minmax_inner_axis_reduce_f16(
 fn simd_sumprod_row_acc_bf16(out: &mut [f64], inp: &[u16], is_sum: bool) {
     use std::simd::{Simd, num::SimdFloat, num::SimdUint};
     const L: usize = 4;
-    let mut oc = out.chunks_exact_mut(L);
-    let mut ic = inp.chunks_exact(L);
-    for (o, i) in oc.by_ref().zip(ic.by_ref()) {
-        let u = Simd::<u16, L>::from_slice(i);
+    let (oc, o_rem) = out.as_chunks_mut::<L>();
+    let (ic, i_rem) = inp.as_chunks::<L>();
+    for (o, i) in oc.iter_mut().zip(ic.iter()) {
+        let u = Simd::<u16, L>::from_array(*i);
         let b: Simd<f64, L> =
             Simd::<f32, L>::from_bits(u.cast::<u32>() << Simd::splat(16u32)).cast();
-        let a = Simd::<f64, L>::from_slice(o);
-        o.copy_from_slice(&(if is_sum { a + b } else { a * b }).to_array());
+        let a = Simd::<f64, L>::from_array(*o);
+        *o = (if is_sum { a + b } else { a * b }).to_array();
     }
-    for (o, &v) in oc.into_remainder().iter_mut().zip(ic.remainder()) {
+    for (o, &v) in o_rem.iter_mut().zip(i_rem) {
         let d = Literal::BF16Bits(v).as_f64().unwrap_or(0.0);
         *o = if is_sum { *o + d } else { *o * d };
     }
@@ -1429,22 +1423,22 @@ fn simd_sumprod_row_acc_bf16(out: &mut [f64], inp: &[u16], is_sum: bool) {
 fn simd_sumprod_row_acc_f16(out: &mut [f64], inp: &[u16], is_sum: bool) {
     use std::simd::Simd;
     const L: usize = 8;
-    let mut oc = out.chunks_exact_mut(L);
-    let mut ic = inp.chunks_exact(L);
-    for (o, i) in oc.by_ref().zip(ic.by_ref()) {
-        let u = Simd::<u16, L>::from_slice(i);
+    let (oc, o_rem) = out.as_chunks_mut::<L>();
+    let (ic, i_rem) = inp.as_chunks::<L>();
+    for (o, i) in oc.iter_mut().zip(ic.iter()) {
+        let u = Simd::<u16, L>::from_array(*i);
         if crate::arithmetic::f16_input_needs_scalar(u) {
-            for (slot, &bits) in o.iter_mut().zip(i) {
+            for (slot, &bits) in o.iter_mut().zip(i.iter()) {
                 let d = Literal::F16Bits(bits).as_f64().unwrap_or(0.0);
                 *slot = if is_sum { *slot + d } else { *slot * d };
             }
         } else {
             let b = crate::arithmetic::f16_widen8(u);
-            let a = Simd::<f64, L>::from_slice(o);
-            o.copy_from_slice(&(if is_sum { a + b } else { a * b }).to_array());
+            let a = Simd::<f64, L>::from_array(*o);
+            *o = (if is_sum { a + b } else { a * b }).to_array();
         }
     }
-    for (o, &v) in oc.into_remainder().iter_mut().zip(ic.remainder()) {
+    for (o, &v) in o_rem.iter_mut().zip(i_rem) {
         let d = Literal::F16Bits(v).as_f64().unwrap_or(0.0);
         *o = if is_sum { *o + d } else { *o * d };
     }
@@ -2273,10 +2267,9 @@ fn fold_f16_axis_block(
     const LANES: usize = 8;
 
     let mut acc = float_init;
-    let chunks = values.chunks_exact(LANES);
-    let tail = chunks.remainder();
+    let (chunks, tail) = values.as_chunks::<LANES>();
     for chunk in chunks {
-        let u = Simd::<u16, LANES>::from_slice(chunk);
+        let u = Simd::<u16, LANES>::from_array(*chunk);
         if crate::arithmetic::f16_input_needs_scalar(u) {
             for &bits in chunk {
                 acc = float_op(acc, Literal::F16Bits(bits).as_f64().unwrap_or(0.0));
@@ -3980,7 +3973,7 @@ fn scan_leading_axis_i64_threaded(
             let blkrows = r1 - r0;
             scope.spawn(move || {
                 let mut acc = carry.clone();
-                let mut scan_one = |k: usize, acc: &mut [i64], oblk: &mut [i64]| {
+                let scan_one = |k: usize, acc: &mut [i64], oblk: &mut [i64]| {
                     let srow = &sblk[k * cols..(k + 1) * cols];
                     let orow = &mut oblk[k * cols..(k + 1) * cols];
                     for ((a, &s), o) in acc.iter_mut().zip(srow).zip(orow.iter_mut()) {
@@ -4018,7 +4011,7 @@ fn scan_leading_axis_i64(
 ) -> Vec<i64> {
     let mut out = vec![0i64; rows * cols];
     let mut acc = vec![init; cols];
-    let mut scan_row = |k: usize, out: &mut [i64], acc: &mut [i64]| {
+    let scan_row = |k: usize, out: &mut [i64], acc: &mut [i64]| {
         let base = k * cols;
         for ((a, &s), o) in acc
             .iter_mut()
@@ -4920,11 +4913,11 @@ fn eval_cumulative_dense(
                     outer_count,
                     reverse,
                     int_init,
-                    &int_op,
+                    int_op,
                     lead_threads,
                 )
             } else {
-                scan_leading_axis_i64(src, axis_dim, outer_count, reverse, int_init, &int_op)
+                scan_leading_axis_i64(src, axis_dim, outer_count, reverse, int_init, int_op)
             }
         } else {
             // Middle axis (0 < axis < last): `before` contiguous [axis_dim, inner] sub-blocks
@@ -4944,7 +4937,7 @@ fn eval_cumulative_dense(
                 .min(before.max(1));
             let scan_block = |dst: &mut [i64], sub: &[i64]| {
                 let scanned =
-                    scan_leading_axis_i64(sub, axis_dim, inner, reverse, int_init, &int_op);
+                    scan_leading_axis_i64(sub, axis_dim, inner, reverse, int_init, int_op);
                 dst.copy_from_slice(&scanned);
             };
             if threads <= 1 {
@@ -6451,10 +6444,9 @@ mod tests {
             let mut acc = init;
             let mut any_nan = false;
             let mut used = false;
-            let chunks = values.chunks_exact(L);
-            let tail = chunks.remainder();
+            let (chunks, tail) = values.as_chunks::<L>();
             for chunk in chunks {
-                let u = Simd::<u16, L>::from_slice(chunk);
+                let u = Simd::<u16, L>::from_array(*chunk);
                 if crate::arithmetic::f16_input_needs_scalar(u) {
                     for &b in chunk {
                         let v = decode_f16(b);
@@ -6516,10 +6508,9 @@ mod tests {
             let mut acc = init;
             let mut any_nan = false;
             let mut used = false;
-            let chunks = values.chunks_exact(L);
-            let tail = chunks.remainder();
+            let (chunks, tail) = values.as_chunks::<L>();
             for chunk in chunks {
-                let u = Simd::<u16, L>::from_slice(chunk);
+                let u = Simd::<u16, L>::from_array(*chunk);
                 if crate::arithmetic::f16_input_needs_scalar(u) {
                     for &b in chunk {
                         let v = decode_f16(b);

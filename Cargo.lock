@@ -901,8 +901,8 @@ name = "fj-ad"
 version = "0.1.0"
 dependencies = [
  "criterion 0.5.1",
- "frankenjax-core",
  "fj-interpreters",
+ "frankenjax-core",
  "frankenjax-lax",
  "frankenjax-test-utils",
  "proptest",
@@ -915,11 +915,11 @@ version = "0.1.0"
 dependencies = [
  "criterion 0.8.2",
  "fj-ad",
- "frankenjax-core",
  "fj-dispatch",
  "fj-interpreters",
- "frankenjax-test-utils",
  "fj-trace",
+ "frankenjax-core",
+ "frankenjax-test-utils",
  "proptest",
  "serde",
  "serde_json",
@@ -932,10 +932,10 @@ name = "fj-backend-cpu"
 version = "0.1.0"
 dependencies = [
  "criterion 0.8.2",
- "frankenjax-core",
  "fj-interpreters",
- "frankenjax-lax",
  "fj-runtime",
+ "frankenjax-core",
+ "frankenjax-lax",
  "frankenjax-test-utils",
  "proptest",
  "rayon",
@@ -946,9 +946,9 @@ dependencies = [
 name = "fj-backend-gpu"
 version = "0.1.0"
 dependencies = [
- "frankenjax-core",
  "fj-interpreters",
  "fj-runtime",
+ "frankenjax-core",
 ]
 
 [[package]]
@@ -973,14 +973,14 @@ dependencies = [
  "fj-api",
  "fj-backend-cpu",
  "fj-cache",
- "frankenjax-core",
  "fj-dispatch",
  "fj-egraph",
  "fj-ffi",
  "fj-interpreters",
- "frankenjax-lax",
  "fj-ledger",
  "fj-runtime",
+ "frankenjax-core",
+ "frankenjax-lax",
  "frankenjax-test-utils",
  "insta",
  "jsonschema",
@@ -993,20 +993,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "frankenjax-core"
-version = "0.1.0"
-dependencies = [
- "criterion 0.5.1",
- "frankenjax-test-utils",
- "half",
- "proptest",
- "rustc-hash",
- "serde",
- "serde_json",
- "smallvec",
-]
-
-[[package]]
 name = "fj-dispatch"
 version = "0.1.0"
 dependencies = [
@@ -1014,14 +1000,14 @@ dependencies = [
  "fj-ad",
  "fj-backend-cpu",
  "fj-cache",
- "frankenjax-core",
  "fj-egraph",
  "fj-interpreters",
- "frankenjax-lax",
  "fj-ledger",
  "fj-runtime",
- "frankenjax-test-utils",
  "fj-trace",
+ "frankenjax-core",
+ "frankenjax-lax",
+ "frankenjax-test-utils",
  "proptest",
  "rustc-hash",
  "serde_json",
@@ -1034,8 +1020,8 @@ version = "0.1.0"
 dependencies = [
  "criterion 0.5.1",
  "egg",
- "frankenjax-core",
  "fj-interpreters",
+ "frankenjax-core",
  "frankenjax-test-utils",
  "proptest",
  "smallvec",
@@ -1057,26 +1043,15 @@ name = "fj-interpreters"
 version = "0.1.0"
 dependencies = [
  "criterion 0.8.2",
+ "fj-trace",
  "frankenjax-core",
  "frankenjax-lax",
  "frankenjax-test-utils",
- "fj-trace",
  "proptest",
  "rustc-hash",
  "serde",
  "serde_json",
  "smallvec",
-]
-
-[[package]]
-name = "frankenjax-lax"
-version = "0.1.0"
-dependencies = [
- "criterion 0.8.2",
- "frankenjax-core",
- "frankenjax-test-utils",
- "mimalloc",
- "proptest",
 ]
 
 [[package]]
@@ -1096,8 +1071,8 @@ version = "0.1.0"
 dependencies = [
  "fj-ad",
  "fj-api",
- "frankenjax-core",
  "fj-trace",
+ "frankenjax-core",
  "pyo3",
 ]
 
@@ -1106,8 +1081,8 @@ name = "fj-runtime"
 version = "0.1.0"
 dependencies = [
  "asupersync",
- "frankenjax-core",
  "fj-ledger",
+ "frankenjax-core",
  "frankenjax-test-utils",
  "ftui",
  "insta",
@@ -1115,21 +1090,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "frankenjax-test-utils"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
 name = "fj-trace"
 version = "0.1.0"
 dependencies = [
  "criterion 0.5.1",
- "frankenjax-core",
  "fj-interpreters",
+ "frankenjax-core",
  "frankenjax-test-utils",
  "proptest",
  "serde_json",
@@ -1212,6 +1178,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbe470e8d7f35572ff1571ac02cb14486a77bc8a98ac6830eb8756ba4a869c0a"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "frankenjax-core"
+version = "0.1.0"
+dependencies = [
+ "criterion 0.5.1",
+ "frankenjax-test-utils",
+ "half",
+ "proptest",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "smallvec",
+]
+
+[[package]]
+name = "frankenjax-lax"
+version = "0.1.0"
+dependencies = [
+ "criterion 0.8.2",
+ "frankenjax-core",
+ "frankenjax-test-utils",
+ "mimalloc",
+ "proptest",
+]
+
+[[package]]
+name = "frankenjax-test-utils"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

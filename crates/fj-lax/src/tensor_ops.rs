@@ -565,8 +565,8 @@ fn threaded_u32_to_f64_bitcast_into(out: &mut [f64], values: &[u32], threads: us
             rest = tail;
             let src = &values[start * 2..(start + len) * 2];
             scope.spawn(move || {
-                for (i, pair) in src.chunks_exact(2).enumerate() {
-                    blk[i] = u32_pair_to_f64(pair[0], pair[1]);
+                for (i, &[p0, p1]) in src.as_chunks::<2>().0.iter().enumerate() {
+                    blk[i] = u32_pair_to_f64(p0, p1);
                 }
             });
             start += len;
@@ -663,13 +663,13 @@ fn dense_width_changing_bitcast_tensor(
                 if threads > 1 {
                     threaded_u32_to_f64_bitcast_into(&mut out, values, threads);
                 } else {
-                    for (i, chunk) in values.chunks_exact(2).enumerate() {
-                        out[i] = u32_pair_to_f64(chunk[0], chunk[1]);
+                    for (i, &[c0, c1]) in values.as_chunks::<2>().0.iter().enumerate() {
+                        out[i] = u32_pair_to_f64(c0, c1);
                     }
                 }
             } else {
-                for (i, chunk) in values.chunks_exact(2).enumerate() {
-                    out[i] = u32_pair_to_f64(chunk[0], chunk[1]);
+                for (i, &[c0, c1]) in values.as_chunks::<2>().0.iter().enumerate() {
+                    out[i] = u32_pair_to_f64(c0, c1);
                 }
             }
             Ok(Some(Value::Tensor(TensorValue::new_f64_values(
@@ -690,9 +690,9 @@ fn dense_width_changing_bitcast_tensor(
             }
             let out_len = values.len() / 2;
             let mut out = vec![0.0f32; out_len];
-            for (i, chunk) in values.chunks_exact(2).enumerate() {
-                let low = chunk[0].to_le_bytes();
-                let high = chunk[1].to_le_bytes();
+            for (i, &[c0, c1]) in values.as_chunks::<2>().0.iter().enumerate() {
+                let low = c0.to_le_bytes();
+                let high = c1.to_le_bytes();
                 out[i] = f32::from_bits(u32::from_le_bytes([low[0], low[1], high[0], high[1]]));
             }
             Ok(Some(Value::Tensor(TensorValue::new_f32_values(
@@ -11501,7 +11501,7 @@ fn radix_keys_slice_8pass(data: &mut [u64], tmp: &mut [u64]) {
 /// Parallel keys-only radix for a single LARGE slice: MSD top-byte partition into 256
 /// globally-ordered buckets (`scratch`), then LSD-sort each bucket across threads.
 /// Bit-identical (as a multiset; value sort) to the flat LSD.
-fn radix_keys_ascending_parallel(keys: &mut Vec<u64>, scratch: &mut Vec<u64>) {
+fn radix_keys_ascending_parallel(keys: &mut [u64], scratch: &mut Vec<u64>) {
     let n = keys.len();
     if n <= 1 {
         return;
@@ -11620,7 +11620,7 @@ fn radix_keys_u32_slice_4pass(data: &mut [u32], tmp: &mut [u32]) {
 /// Parallel keys-only u32 radix for a single LARGE slice (f32/u32 value sort): MSD
 /// top-byte (bits 24..31) partition into 256 globally-ordered buckets, then LSD-sort
 /// each bucket across threads. Mirrors [`radix_keys_ascending_parallel`].
-fn radix_keys_u32_ascending_parallel(keys: &mut Vec<u32>, scratch: &mut Vec<u32>) {
+fn radix_keys_u32_ascending_parallel(keys: &mut [u32], scratch: &mut Vec<u32>) {
     let n = keys.len();
     if n <= 1 {
         return;
@@ -13059,10 +13059,10 @@ fn arg_extreme_f64_contiguous_simd(values: &[f64], find_max: bool) -> usize {
     let mut best_values = first_values;
     let mut best_indices = Simd::<usize, LANES>::from_array(std::array::from_fn(|lane| lane));
     let mut offset = LANES;
-    let mut chunks = rest.chunks_exact(LANES);
+    let (chunks, rem) = rest.as_chunks::<LANES>();
 
-    for chunk in chunks.by_ref() {
-        let row_values = Simd::<f64, LANES>::from_slice(chunk);
+    for chunk in chunks {
+        let row_values = Simd::<f64, LANES>::from_array(*chunk);
         if row_values.is_nan().any() {
             return arg_extreme_float(values.len(), find_max, |i| values[i]);
         }
@@ -13092,7 +13092,7 @@ fn arg_extreme_f64_contiguous_simd(values: &[f64], find_max: bool) -> usize {
         }
     }
 
-    for (tail_offset, &value) in chunks.remainder().iter().enumerate() {
+    for (tail_offset, &value) in rem.iter().enumerate() {
         if value.is_nan() {
             return arg_extreme_float(values.len(), find_max, |i| values[i]);
         }
@@ -13353,10 +13353,10 @@ fn arg_extreme_f32_contiguous_simd(values: &[f32], find_max: bool) -> usize {
     let mut best_values = first_values;
     let mut best_indices = Simd::<usize, LANES>::from_array(std::array::from_fn(|lane| lane));
     let mut offset = LANES;
-    let mut chunks = rest.chunks_exact(LANES);
+    let (chunks, rem) = rest.as_chunks::<LANES>();
 
-    for chunk in chunks.by_ref() {
-        let row_values = Simd::<f32, LANES>::from_slice(chunk);
+    for chunk in chunks {
+        let row_values = Simd::<f32, LANES>::from_array(*chunk);
         if row_values.is_nan().any() {
             return arg_extreme_float(values.len(), find_max, |i| f64::from(values[i]));
         }
@@ -13386,7 +13386,7 @@ fn arg_extreme_f32_contiguous_simd(values: &[f32], find_max: bool) -> usize {
         }
     }
 
-    for (tail_offset, &value) in chunks.remainder().iter().enumerate() {
+    for (tail_offset, &value) in rem.iter().enumerate() {
         if value.is_nan() {
             return arg_extreme_float(values.len(), find_max, |i| f64::from(values[i]));
         }
@@ -14049,12 +14049,12 @@ fn parse_conv_explicit_padding(
     }
 
     let mut pairs = Vec::with_capacity(numbers.len() / 2);
-    for pair in numbers.chunks_exact(2) {
-        let low = usize::try_from(pair[0]).map_err(|_| EvalError::Unsupported {
+    for &[p0, p1] in numbers.as_chunks::<2>().0 {
+        let low = usize::try_from(p0).map_err(|_| EvalError::Unsupported {
             primitive,
             detail: format!("conv explicit padding must be non-negative: {raw:?}"),
         })?;
-        let high = usize::try_from(pair[1]).map_err(|_| EvalError::Unsupported {
+        let high = usize::try_from(p1).map_err(|_| EvalError::Unsupported {
             primitive,
             detail: format!("conv explicit padding must be non-negative: {raw:?}"),
         })?;
@@ -22643,7 +22643,19 @@ mod tests {
             TensorValue::new_f64_values(Shape { dims }, v).unwrap()
         };
         // (n,h,w,cin, kh,kw,cout, sy,sx, padding)
-        let cases: &[(u32, u32, u32, u32, u32, u32, u32, usize, usize, &str)] = &[
+        type ConvTransposeCase = (
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            usize,
+            usize,
+            &'static str,
+        );
+        let cases: &[ConvTransposeCase] = &[
             (1, 8, 8, 3, 3, 3, 4, 2, 2, "same"),
             (1, 8, 8, 3, 3, 3, 4, 2, 2, "valid"),
             (2, 6, 7, 4, 2, 2, 5, 2, 2, "same"),
@@ -22704,7 +22716,19 @@ mod tests {
                 .collect();
             TensorValue::new_f32_values(Shape { dims }, v).unwrap()
         };
-        let cases: &[(u32, u32, u32, u32, u32, u32, u32, usize, usize, &str)] = &[
+        type ConvTransposeCase = (
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            usize,
+            usize,
+            &'static str,
+        );
+        let cases: &[ConvTransposeCase] = &[
             (1, 8, 8, 3, 3, 3, 4, 2, 2, "same"),
             (2, 6, 7, 4, 2, 2, 5, 2, 2, "valid"),
             (1, 5, 6, 2, 3, 4, 3, 2, 3, "same_lower"),
@@ -27093,6 +27117,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn dense_f32_sort_matches_literal_radix_path() {
         // f32 sort/argsort used to fall to sort_along_axis_literal_radix, which
         // as_slice()-materializes the whole tensor into 24-byte Literals just to read

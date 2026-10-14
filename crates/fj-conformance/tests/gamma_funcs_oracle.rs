@@ -5,7 +5,7 @@
 //! - Digamma: derivative of log gamma, ψ(x) = d/dx ln(Γ(x))
 
 // Golden reference constants are transcribed at full source precision on purpose.
-#![allow(clippy::excessive_precision)]
+#![allow(clippy::excessive_precision, clippy::approx_constant)]
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;

@@ -510,6 +510,7 @@ pub fn einsum1(
 /// below that floor (no oversubscription with `matmul_2d`'s internal threading) yet the whole batch
 /// is substantial. Bit-for-bit identical to the serial loop: each slice is computed by the same
 /// kernel and written to the same disjoint output range, regardless of which thread runs it.
+#[allow(clippy::too_many_arguments)]
 fn batched_matmul_slices_into(
     a: &[f64],
     b: &[f64],

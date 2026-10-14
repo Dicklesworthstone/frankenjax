@@ -484,22 +484,53 @@ pub fn checkpoint(jaxpr: Jaxpr) -> CheckpointWrapped {
 /// assert_eq!(shapes[0].dtype, DType::F64);
 /// ```
 pub fn eval_shape(jaxpr: &Jaxpr, inputs: &[Value]) -> Result<Vec<ShapedArray>, ApiError> {
-    use fj_core::{Atom, VarId};
+    let in_avals: Vec<ShapedArray> = inputs.iter().map(ShapedArray::from_value).collect();
+    eval_shape_avals(jaxpr, &in_avals)
+}
 
-    if inputs.len() != jaxpr.invars.len() {
+/// Infer output shapes and dtypes of a [`Jaxpr`] directly from abstract input [`ShapedArray`]s
+/// without materializing dummy [`Value`] tensors.
+pub fn eval_shape_avals(
+    jaxpr: &Jaxpr,
+    in_avals: &[ShapedArray],
+) -> Result<Vec<ShapedArray>, ApiError> {
+    eval_shape_with_consts_avals(jaxpr, &[], in_avals)
+}
+
+fn eval_shape_with_consts_avals(
+    jaxpr: &Jaxpr,
+    const_avals: &[ShapedArray],
+    in_avals: &[ShapedArray],
+) -> Result<Vec<ShapedArray>, ApiError> {
+    use fj_core::{Atom, Primitive, Shape, VarId};
+
+    if const_avals.len() != jaxpr.constvars.len() {
+        return Err(ApiError::EvalError {
+            detail: format!(
+                "eval_shape: expected {} constvars, got {}",
+                jaxpr.constvars.len(),
+                const_avals.len()
+            ),
+        });
+    }
+
+    if in_avals.len() != jaxpr.invars.len() {
         return Err(ApiError::EvalError {
             detail: format!(
                 "eval_shape: expected {} inputs, got {}",
                 jaxpr.invars.len(),
-                inputs.len()
+                in_avals.len()
             ),
         });
     }
 
     let mut shape_env: BTreeMap<VarId, ShapedArray> = BTreeMap::new();
 
-    for (var, input) in jaxpr.invars.iter().zip(inputs.iter()) {
-        shape_env.insert(*var, ShapedArray::from_value(input));
+    for (var, aval) in jaxpr.constvars.iter().zip(const_avals.iter()) {
+        shape_env.insert(*var, aval.clone());
+    }
+    for (var, aval) in jaxpr.invars.iter().zip(in_avals.iter()) {
+        shape_env.insert(*var, aval.clone());
     }
 
     for eqn in &jaxpr.equations {
@@ -517,7 +548,242 @@ pub fn eval_shape(jaxpr: &Jaxpr, inputs: &[Value]) -> Result<Vec<ShapedArray>, A
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let output_shapes = infer_primitive_shapes(eqn.primitive, &input_shapes, &eqn.params)?;
+        let output_shapes = if eqn.sub_jaxprs.is_empty() {
+            infer_primitive_shapes(eqn.primitive, &input_shapes, &eqn.params)?
+        } else {
+            match eqn.primitive {
+                Primitive::Cond => {
+                    if eqn.sub_jaxprs.len() != 2 {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: cond expects 2 sub_jaxprs, got {}",
+                                eqn.sub_jaxprs.len()
+                            ),
+                        });
+                    }
+                    let Some((pred, bindings)) = input_shapes.split_first() else {
+                        return Err(ApiError::EvalError {
+                            detail: "eval_shape: cond expects predicate input".to_owned(),
+                        });
+                    };
+                    if pred.shape != Shape::scalar() {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: cond predicate must be scalar, got {:?}",
+                                pred.shape.dims
+                            ),
+                        });
+                    }
+                    let true_branch = &eqn.sub_jaxprs[0];
+                    let false_branch = &eqn.sub_jaxprs[1];
+                    let true_expected = true_branch.constvars.len() + true_branch.invars.len();
+                    if bindings.len() != true_expected {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: cond branch expects {true_expected} bindings, got {}",
+                                bindings.len()
+                            ),
+                        });
+                    }
+                    let (t_consts, t_args) = bindings.split_at(true_branch.constvars.len());
+                    let true_out = eval_shape_with_consts_avals(true_branch, t_consts, t_args)?;
+
+                    let false_expected = false_branch.constvars.len() + false_branch.invars.len();
+                    if bindings.len() != false_expected {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: cond false branch expects {false_expected} bindings, got {}",
+                                bindings.len()
+                            ),
+                        });
+                    }
+                    let (f_consts, f_args) = bindings.split_at(false_branch.constvars.len());
+                    let false_out = eval_shape_with_consts_avals(false_branch, f_consts, f_args)?;
+                    if true_out != false_out {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: cond branches have mismatched output shapes/dtypes: {true_out:?} vs {false_out:?}"
+                            ),
+                        });
+                    }
+                    true_out
+                }
+                Primitive::Switch => {
+                    let Some((index, bindings)) = input_shapes.split_first() else {
+                        return Err(ApiError::EvalError {
+                            detail: "eval_shape: switch expects index input".to_owned(),
+                        });
+                    };
+                    if index.shape != Shape::scalar() {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: switch index must be scalar, got {:?}",
+                                index.shape.dims
+                            ),
+                        });
+                    }
+                    let Some(first_branch) = eqn.sub_jaxprs.first() else {
+                        return Err(ApiError::EvalError {
+                            detail: "eval_shape: switch requires at least one branch".to_owned(),
+                        });
+                    };
+                    let expected = first_branch.constvars.len() + first_branch.invars.len();
+                    if bindings.len() != expected {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: switch branch expects {expected} bindings, got {}",
+                                bindings.len()
+                            ),
+                        });
+                    }
+                    let (consts, args) = bindings.split_at(first_branch.constvars.len());
+                    let first_out = eval_shape_with_consts_avals(first_branch, consts, args)?;
+                    for (idx, branch) in eqn.sub_jaxprs.iter().enumerate().skip(1) {
+                        let branch_expected = branch.constvars.len() + branch.invars.len();
+                        if bindings.len() != branch_expected {
+                            return Err(ApiError::EvalError {
+                                detail: format!(
+                                    "eval_shape: switch branch {idx} expects {branch_expected} bindings, got {}",
+                                    bindings.len()
+                                ),
+                            });
+                        }
+                        let (b_consts, b_args) = bindings.split_at(branch.constvars.len());
+                        let branch_out = eval_shape_with_consts_avals(branch, b_consts, b_args)?;
+                        if branch_out != first_out {
+                            return Err(ApiError::EvalError {
+                                detail: format!(
+                                    "eval_shape: switch branch {idx} output {branch_out:?} != branch 0 {first_out:?}"
+                                ),
+                            });
+                        }
+                    }
+                    first_out
+                }
+                Primitive::While => {
+                    if eqn.sub_jaxprs.len() != 2 {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: while expects 2 sub_jaxprs, got {}",
+                                eqn.sub_jaxprs.len()
+                            ),
+                        });
+                    }
+                    let cond_jaxpr = &eqn.sub_jaxprs[0];
+                    let body_jaxpr = &eqn.sub_jaxprs[1];
+                    let const_count = cond_jaxpr.constvars.len() + body_jaxpr.constvars.len();
+                    if input_shapes.len() < const_count {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: while expects at least {const_count} const inputs, got {}",
+                                input_shapes.len()
+                            ),
+                        });
+                    }
+                    let (const_bindings, carry_bindings) = input_shapes.split_at(const_count);
+                    let (cond_consts, body_consts) =
+                        const_bindings.split_at(cond_jaxpr.constvars.len());
+                    let cond_out =
+                        eval_shape_with_consts_avals(cond_jaxpr, cond_consts, carry_bindings)?;
+                    if cond_out.len() != 1 || cond_out[0].shape != Shape::scalar() {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: while cond must return 1 scalar, got {cond_out:?}"
+                            ),
+                        });
+                    }
+                    let body_out =
+                        eval_shape_with_consts_avals(body_jaxpr, body_consts, carry_bindings)?;
+                    if body_out != carry_bindings {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: while body output {body_out:?} must match carry {carry_bindings:?}"
+                            ),
+                        });
+                    }
+                    carry_bindings.to_vec()
+                }
+                Primitive::Scan => {
+                    if eqn.sub_jaxprs.len() != 1 {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: scan expects 1 body sub_jaxpr, got {}",
+                                eqn.sub_jaxprs.len()
+                            ),
+                        });
+                    }
+                    let body_jaxpr = &eqn.sub_jaxprs[0];
+                    let carry_count = body_jaxpr.invars.len().checked_sub(1).ok_or_else(|| {
+                        ApiError::EvalError {
+                            detail: "eval_shape: scan body requires carry inputs plus xs input"
+                                .to_owned(),
+                        }
+                    })?;
+                    let const_count = body_jaxpr.constvars.len();
+                    let expected_bindings = const_count + carry_count + 1;
+                    if input_shapes.len() != expected_bindings {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: scan expects {expected_bindings} inputs, got {}",
+                                input_shapes.len()
+                            ),
+                        });
+                    }
+                    let (const_avals, state_avals) = input_shapes.split_at(const_count);
+                    let (carry_avals, xs_avals) = state_avals.split_at(carry_count);
+                    let xs_aval = &xs_avals[0];
+                    let Some((&scan_len, elem_dims)) = xs_aval.shape.dims.split_first() else {
+                        return Err(ApiError::EvalError {
+                            detail: "eval_shape: scan xs input must have rank >= 1".to_owned(),
+                        });
+                    };
+                    let mut body_in_avals = carry_avals.to_vec();
+                    body_in_avals.push(ShapedArray {
+                        dtype: xs_aval.dtype,
+                        shape: Shape {
+                            dims: elem_dims.to_vec(),
+                        },
+                    });
+                    let body_out =
+                        eval_shape_with_consts_avals(body_jaxpr, const_avals, &body_in_avals)?;
+                    if body_out.len() < carry_count {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: scan body returned {} outputs, expected at least {carry_count} carries",
+                                body_out.len()
+                            ),
+                        });
+                    }
+                    let (out_carries, out_ys) = body_out.split_at(carry_count);
+                    if out_carries != carry_avals {
+                        return Err(ApiError::EvalError {
+                            detail: format!(
+                                "eval_shape: scan body carry output {out_carries:?} != input carry {carry_avals:?}"
+                            ),
+                        });
+                    }
+                    let mut final_out = out_carries.to_vec();
+                    for y_aval in out_ys {
+                        let mut dims = Vec::with_capacity(1 + y_aval.shape.dims.len());
+                        dims.push(scan_len);
+                        dims.extend_from_slice(&y_aval.shape.dims);
+                        final_out.push(ShapedArray {
+                            dtype: y_aval.dtype,
+                            shape: Shape { dims },
+                        });
+                    }
+                    final_out
+                }
+                primitive => {
+                    return Err(ApiError::EvalError {
+                        detail: format!(
+                            "eval_shape: sub_jaxprs are only valid for cond, scan, while, or switch; {} received sub_jaxprs",
+                            primitive.as_str()
+                        ),
+                    });
+                }
+            }
+        };
 
         if output_shapes.len() != eqn.outputs.len() {
             return Err(ApiError::EvalError {
@@ -556,204 +822,11 @@ fn infer_primitive_shapes(
     inputs: &[ShapedArray],
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<ShapedArray>, ApiError> {
-    use fj_core::Primitive;
-
-    match primitive {
-        Primitive::Add
-        | Primitive::Sub
-        | Primitive::Mul
-        | Primitive::Div
-        | Primitive::Pow
-        | Primitive::Max
-        | Primitive::Min
-        | Primitive::Eq
-        | Primitive::Ne
-        | Primitive::Lt
-        | Primitive::Le
-        | Primitive::Gt
-        | Primitive::Ge => {
-            if inputs.is_empty() {
-                return Err(ApiError::EvalError {
-                    detail: "binary op requires at least one input".into(),
-                });
-            }
-            Ok(vec![inputs[0].clone()])
-        }
-
-        Primitive::Neg
-        | Primitive::Abs
-        | Primitive::Exp
-        | Primitive::Log
-        | Primitive::Sqrt
-        | Primitive::Rsqrt
-        | Primitive::Sin
-        | Primitive::Cos
-        | Primitive::Tan
-        | Primitive::Tanh
-        | Primitive::Sign
-        | Primitive::Floor
-        | Primitive::Ceil
-        | Primitive::Round
-        | Primitive::Square
-        | Primitive::Reciprocal
-        | Primitive::Erf
-        | Primitive::Erfc => {
-            if inputs.is_empty() {
-                return Err(ApiError::EvalError {
-                    detail: "unary op requires one input".into(),
-                });
-            }
-            Ok(vec![inputs[0].clone()])
-        }
-
-        Primitive::ReduceSum
-        | Primitive::ReduceMax
-        | Primitive::ReduceMin
-        | Primitive::ReduceProd => {
-            if inputs.is_empty() {
-                return Err(ApiError::EvalError {
-                    detail: "reduce op requires one input".into(),
-                });
-            }
-            Ok(vec![ShapedArray {
-                dtype: inputs[0].dtype,
-                shape: fj_core::Shape::scalar(),
-            }])
-        }
-
-        Primitive::Reshape => {
-            if inputs.len() != 1 {
-                return Err(ApiError::EvalError {
-                    detail: format!("reshape requires one input, got {}", inputs.len()),
-                });
-            }
-            let shape = infer_reshape_shape(&inputs[0], params)?;
-            Ok(vec![ShapedArray {
-                dtype: inputs[0].dtype,
-                shape,
-            }])
-        }
-
-        Primitive::Transpose => {
-            if inputs.is_empty() {
-                return Err(ApiError::EvalError {
-                    detail: "transpose requires one input".into(),
-                });
-            }
-            let mut new_dims = inputs[0].shape.dims.clone();
-            new_dims.reverse();
-            Ok(vec![ShapedArray {
-                dtype: inputs[0].dtype,
-                shape: fj_core::Shape { dims: new_dims },
-            }])
-        }
-
-        _ => {
-            if inputs.is_empty() {
-                Ok(vec![ShapedArray {
-                    dtype: fj_core::DType::F64,
-                    shape: fj_core::Shape::scalar(),
-                }])
-            } else {
-                Ok(vec![inputs[0].clone()])
-            }
-        }
-    }
-}
-
-fn infer_reshape_shape(
-    input: &ShapedArray,
-    params: &BTreeMap<String, String>,
-) -> Result<fj_core::Shape, ApiError> {
-    let raw_shape = params.get("new_shape").ok_or_else(|| ApiError::EvalError {
-        detail: "reshape requires 'new_shape' param".to_owned(),
-    })?;
-    let shape_spec = parse_i64_list_param("reshape", "new_shape", raw_shape)?;
-
-    let mut inferred_axis = None;
-    let mut known_product = 1_u64;
-    let mut dims = Vec::with_capacity(shape_spec.len());
-    for (idx, dim) in shape_spec.iter().copied().enumerate() {
-        if dim == -1 {
-            if inferred_axis.is_some() {
-                return Err(ApiError::EvalError {
-                    detail: "reshape allows at most one -1 inferred dimension".to_owned(),
-                });
-            }
-            inferred_axis = Some(idx);
-            dims.push(0_u32);
-            continue;
-        }
-        if dim < 0 {
-            return Err(ApiError::EvalError {
-                detail: format!("reshape dimension must be non-negative, got {dim}"),
-            });
-        }
-        let dim_u32 = u32::try_from(dim).map_err(|_| ApiError::EvalError {
-            detail: format!("reshape dimension out of range: {dim}"),
-        })?;
-        known_product = known_product
-            .checked_mul(u64::from(dim_u32))
-            .ok_or_else(|| ApiError::EvalError {
-                detail: "reshape target element count overflow".to_owned(),
-            })?;
-        dims.push(dim_u32);
-    }
-
-    let input_elements = input
-        .shape
-        .element_count()
-        .ok_or_else(|| ApiError::EvalError {
-            detail: "reshape input shape element count overflow".to_owned(),
-        })?;
-    if let Some(infer_idx) = inferred_axis {
-        if known_product == 0 || input_elements % known_product != 0 {
-            return Err(ApiError::EvalError {
-                detail: format!(
-                    "cannot infer reshape dimension: input elements {input_elements} not divisible by {known_product}"
-                ),
-            });
-        }
-        let inferred = input_elements / known_product;
-        dims[infer_idx] = u32::try_from(inferred).map_err(|_| ApiError::EvalError {
-            detail: format!("inferred reshape dimension out of range: {inferred}"),
-        })?;
-    }
-
-    let target_elements = dims
-        .iter()
-        .try_fold(1_u64, |acc, dim| acc.checked_mul(u64::from(*dim)))
-        .ok_or_else(|| ApiError::EvalError {
-            detail: "reshape target shape overflow".to_owned(),
-        })?;
-    if target_elements != input_elements {
-        return Err(ApiError::EvalError {
-            detail: format!(
-                "reshape element count mismatch: input={input_elements} target={target_elements}"
-            ),
-        });
-    }
-
-    Ok(fj_core::Shape { dims })
-}
-
-fn parse_i64_list_param(
-    primitive: &'static str,
-    key: &'static str,
-    raw: &str,
-) -> Result<Vec<i64>, ApiError> {
-    if raw.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    raw.split(',')
-        .map(str::trim)
-        .map(|piece| {
-            piece.parse::<i64>().map_err(|_| ApiError::EvalError {
-                detail: format!("invalid {primitive} {key} parameter {raw:?}"),
-            })
-        })
-        .collect()
+    fj_trace::SimpleTraceContext::infer_primitive_output_avals(primitive, inputs, params).map_err(
+        |err| ApiError::EvalError {
+            detail: err.to_string(),
+        },
+    )
 }
 
 fn custom_derivative_rule_key(transform: &str) -> String {
@@ -2015,13 +2088,14 @@ mod tests {
 
         let digest = fj_test_utils::fixture_id_from_json(&("frankenjax-mcqr.62", &second))
             .expect("golden output should hash");
-        // Golden refreshed after the dense-i64 TensorValue storage migration: the
-        // vmap(AddOne) output value is unchanged (asserted equal to the dispatch
-        // reference above) but its serialized representation — and thus this digest —
-        // changed when i64 vectors moved from boxed Literal to dense storage.
+        // Golden refreshed after frankenjax-w4d3p (92d5bfd7) canonicalized
+        // `fixture_id_from_json` object key ordering via `serde_json::to_value`
+        // (`dtype, elements, shape` instead of struct field order `dtype, shape, elements`).
+        // The vmap(AddOne) output value `[2, 3, 4, 5, 6]` is unchanged and asserted equal
+        // to both the cold call and fresh dispatch reference above.
         assert_eq!(
             digest,
-            "e27c853509a151f4fc6ab2832c28b68e11ed12f69987306e3a6aeb00826db2bf"
+            "7fda517ba090d40fae6859b39ee20d7ac9d96e82f35f3e53b25ff7a9f7696a1d"
         );
     }
 
