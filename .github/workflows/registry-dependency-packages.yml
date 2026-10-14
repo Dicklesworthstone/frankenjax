@@ -11,6 +11,7 @@ on:
       - 'crates/fj-test-utils/**'
       - 'crates/fj-core/**'
       - 'crates/fj-lax/**'
+      - 'artifacts/performance/evidence/fj_core_literal_buffer_pass42_2026-06-03.golden'
   workflow_dispatch:
 
 # No publication credentials: verify helper/core/lax before their first upload.
@@ -38,13 +39,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Dicklesworthstone/franken_whisper
-          ref: a06e241565ac9fab83e5715ec52e6685504a18b3
+          ref: 54d090b420ca44ec147e22bd13931cb3f2806d9a
           path: tools
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /scripts/package_registry_dependencies.py
             /scripts/test_registry_dependencies.py
+            /scripts/test_registry_dependencies_inputs.py
             /scripts/verify_registry_archives.py
             /scripts/registry-source-contract.json
             /rust-toolchain.toml
@@ -52,7 +54,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Test the packaging driver independently of registry publication
-        run: python3 -m unittest discover -s tools/scripts -p 'test_registry_dependencies.py' -v
+        run: python3 -m unittest discover -s tools/scripts -p 'test_registry_dependencies*.py' -v
       - name: Install the consumer's committed Rust toolchain
         run: |
           toolchain=$(python3 -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("tools/rust-toolchain.toml").read_text())["toolchain"]["channel"])')
