@@ -919,6 +919,7 @@ dependencies = [
  "fj-interpreters",
  "fj-trace",
  "frankenjax-core",
+ "frankenjax-lax",
  "frankenjax-test-utils",
  "proptest",
  "serde",
