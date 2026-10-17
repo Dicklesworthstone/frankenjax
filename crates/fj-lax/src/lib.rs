@@ -1006,10 +1006,14 @@ fn eval_associative_scan(
 
     let xs = &inputs[0];
 
-    let body_op_name = params.get("body_op").map(|s| s.as_str()).unwrap_or("add");
+    let body_op_name = params
+        .get("body_op")
+        .or_else(|| params.get("mode"))
+        .map(|s| s.as_str())
+        .unwrap_or("add");
     let body_op = match body_op_name {
-        "add" => Primitive::Add,
-        "mul" => Primitive::Mul,
+        "add" | "sum" => Primitive::Add,
+        "mul" | "prod" => Primitive::Mul,
         "max" => Primitive::Max,
         "min" => Primitive::Min,
         "and" => Primitive::BitwiseAnd,
@@ -1022,6 +1026,21 @@ fn eval_associative_scan(
             });
         }
     };
+
+    if let Some(axis_str) = params.get("axis")
+        && axis_str.trim() != "0"
+    {
+        let cum_prim = match body_op {
+            Primitive::Add => Some(Primitive::Cumsum),
+            Primitive::Mul => Some(Primitive::Cumprod),
+            Primitive::Max => Some(Primitive::Cummax),
+            Primitive::Min => Some(Primitive::Cummin),
+            _ => None,
+        };
+        if let Some(cum_prim) = cum_prim {
+            return eval_primitive(cum_prim, inputs, params);
+        }
+    }
 
     let reverse = params.get("reverse").map(|s| s == "true").unwrap_or(false);
 
@@ -1511,7 +1530,7 @@ fn parse_while_body_op(primitive: Primitive, name: &str) -> Result<Primitive, Ev
     match name {
         "add" => Ok(Primitive::Add),
         "sub" => Ok(Primitive::Sub),
-        "mul" => Ok(Primitive::Mul),
+        "mul" | "scale" => Ok(Primitive::Mul),
         "div" => Ok(Primitive::Div),
         "pow" => Ok(Primitive::Pow),
         other => Err(EvalError::Unsupported {
@@ -3480,6 +3499,7 @@ fn reduce_window_complex_initial(reduce_op: &str) -> (f64, f64) {
     match reduce_op {
         "max" => (f64::NEG_INFINITY, f64::NEG_INFINITY),
         "min" => (f64::INFINITY, f64::INFINITY),
+        "prod" | "mul" => (1.0, 0.0),
         _ => (0.0, 0.0),
     }
 }
@@ -3513,20 +3533,25 @@ fn reduce_window_initial_accumulator(
             ReduceWindowAccumulator::I64(match reduce_op {
                 "max" => i64::MIN,
                 "min" => i64::MAX,
+                "prod" | "mul" => 1,
                 _ => 0,
             })
         }
         fj_core::DType::U32 => ReduceWindowAccumulator::U32(match reduce_op {
             "max" => u32::MIN,
             "min" => u32::MAX,
+            "prod" | "mul" => 1,
             _ => 0,
         }),
         fj_core::DType::U64 => ReduceWindowAccumulator::U64(match reduce_op {
             "max" => u64::MIN,
             "min" => u64::MAX,
+            "prod" | "mul" => 1,
             _ => 0,
         }),
-        fj_core::DType::Bool => ReduceWindowAccumulator::Bool(matches!(reduce_op, "min")),
+        fj_core::DType::Bool => {
+            ReduceWindowAccumulator::Bool(matches!(reduce_op, "min" | "prod" | "mul"))
+        }
         fj_core::DType::Complex64 | fj_core::DType::Complex128 => {
             let (re, im) = reduce_window_complex_initial(reduce_op);
             ReduceWindowAccumulator::Complex(re, im)
@@ -3534,6 +3559,7 @@ fn reduce_window_initial_accumulator(
         _ => ReduceWindowAccumulator::F64(match reduce_op {
             "max" => f64::NEG_INFINITY,
             "min" => f64::INFINITY,
+            "prod" | "mul" => 1.0,
             _ => 0.0,
         }),
     }
@@ -3556,6 +3582,7 @@ fn reduce_window_accumulate_literal(
             match reduce_op {
                 "max" => *value = (*value).max(input),
                 "min" => *value = (*value).min(input),
+                "prod" | "mul" => *value = value.wrapping_mul(input),
                 _ => *value = value.wrapping_add(input),
             }
         }
@@ -3569,6 +3596,7 @@ fn reduce_window_accumulate_literal(
             match reduce_op {
                 "max" => *value = (*value).max(input),
                 "min" => *value = (*value).min(input),
+                "prod" | "mul" => *value = value.wrapping_mul(input),
                 _ => *value = value.wrapping_add(input),
             }
         }
@@ -3582,6 +3610,7 @@ fn reduce_window_accumulate_literal(
             match reduce_op {
                 "max" => *value = (*value).max(input),
                 "min" => *value = (*value).min(input),
+                "prod" | "mul" => *value = value.wrapping_mul(input),
                 _ => *value = value.wrapping_add(input),
             }
         }
@@ -3593,7 +3622,7 @@ fn reduce_window_accumulate_literal(
                 });
             };
             match reduce_op {
-                "min" => *value &= input,
+                "min" | "prod" | "mul" => *value &= input,
                 _ => *value |= input,
             }
         }
@@ -3612,6 +3641,12 @@ fn reduce_window_accumulate_literal(
                         *im = input.1;
                     }
                 }
+                "prod" | "mul" => {
+                    let (a, b) = (*re, *im);
+                    let (c, d) = input;
+                    *re = a * c - b * d;
+                    *im = a * d + b * c;
+                }
                 _ => {
                     *re += input.0;
                     *im += input.1;
@@ -3623,6 +3658,7 @@ fn reduce_window_accumulate_literal(
             match reduce_op {
                 "max" => *value = jax_max_f64(*value, input),
                 "min" => *value = jax_min_f64(*value, input),
+                "prod" | "mul" => *value *= input,
                 _ => *value += input,
             }
         }
@@ -3665,7 +3701,7 @@ fn reduce_window_accumulator_literal(
 }
 
 fn reduce_window_sum_like(reduce_op: &str) -> bool {
-    !matches!(reduce_op, "max" | "min")
+    matches!(reduce_op, "sum" | "add")
 }
 
 fn reduce_window_unsupported(primitive: Primitive, detail: &'static str) -> EvalError {
@@ -6162,17 +6198,20 @@ fn eval_reduce_window_dense_float(
     #[derive(Clone, Copy)]
     enum Op {
         Sum,
+        Prod,
         Max,
         Min,
     }
     let op = match reduce_op {
         "max" => Op::Max,
         "min" => Op::Min,
+        "prod" | "mul" => Op::Prod,
         _ => Op::Sum,
     };
     let init = match op {
         Op::Max => f64::NEG_INFINITY,
         Op::Min => f64::INFINITY,
+        Op::Prod => 1.0,
         Op::Sum => 0.0,
     };
 
@@ -6207,6 +6246,11 @@ fn eval_reduce_window_dense_float(
                         acc += src[base + off];
                     }
                 }
+                Op::Prod => {
+                    for &off in &tap_offsets {
+                        acc *= src[base + off];
+                    }
+                }
                 Op::Max => {
                     for &off in &tap_offsets {
                         acc = jax_max_f64(acc, src[base + off]);
@@ -6238,6 +6282,7 @@ fn eval_reduce_window_dense_float(
                 let tap = if in_bounds { src[flat] } else { init };
                 match op {
                     Op::Sum => acc += tap,
+                    Op::Prod => acc *= tap,
                     Op::Max => acc = jax_max_f64(acc, tap),
                     Op::Min => acc = jax_min_f64(acc, tap),
                 }
@@ -9167,14 +9212,12 @@ fn eval_reduce_window(
     let rank2_f64_maxmin_legacy = params
         .get("__fj_rank2_f64_maxmin_legacy")
         .is_some_and(|value| value == "1");
-    // Fail closed on unknown reducers: only sum/max/min are implemented. Without this an
-    // unrecognized reduce_op (e.g. "mul"/"prod" or a typo) silently falls through to the
-    // sum accumulator (init 0, wrapping_add), computing a wrong result with no error.
-    if !matches!(reduce_op, "sum" | "max" | "min") {
+    // Fail closed on unknown reducers: only sum/add/prod/mul/max/min are implemented.
+    if !matches!(reduce_op, "sum" | "add" | "prod" | "mul" | "max" | "min") {
         return Err(EvalError::Unsupported {
             primitive,
             detail: format!(
-                "unsupported reduce_window reduce_op {reduce_op:?}; expected \"sum\", \"max\", or \"min\""
+                "unsupported reduce_window reduce_op {reduce_op:?}; expected \"sum\", \"prod\", \"max\", or \"min\""
             ),
         });
     }

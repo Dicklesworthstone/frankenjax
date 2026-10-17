@@ -8,7 +8,9 @@ use fj_core::{
 use fj_lax::{eval_igamma_grad_a, eval_primitive, eval_primitive_multi};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::Arc;
+#[cfg(not(test))]
+use std::sync::{OnceLock, RwLock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdError {
@@ -92,25 +94,47 @@ struct CustomDerivativeRegistry {
     jaxpr_jvp_rules: BTreeMap<String, CustomJaxprJvpRule>,
 }
 
+#[cfg(not(test))]
 static CUSTOM_DERIVATIVE_REGISTRY: OnceLock<RwLock<CustomDerivativeRegistry>> = OnceLock::new();
 
+#[cfg(not(test))]
 fn custom_derivative_registry() -> &'static RwLock<CustomDerivativeRegistry> {
     CUSTOM_DERIVATIVE_REGISTRY.get_or_init(|| RwLock::new(CustomDerivativeRegistry::default()))
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_CUSTOM_DERIVATIVE_REGISTRY: std::cell::RefCell<CustomDerivativeRegistry> =
+        std::cell::RefCell::new(CustomDerivativeRegistry::default());
+}
+
 fn with_registry_read<R>(f: impl FnOnce(&CustomDerivativeRegistry) -> R) -> R {
-    let lock = custom_derivative_registry();
-    match lock.read() {
-        Ok(guard) => f(&guard),
-        Err(poisoned) => f(&poisoned.into_inner()),
+    #[cfg(not(test))]
+    {
+        let lock = custom_derivative_registry();
+        match lock.read() {
+            Ok(guard) => f(&guard),
+            Err(poisoned) => f(&poisoned.into_inner()),
+        }
+    }
+    #[cfg(test)]
+    {
+        TEST_CUSTOM_DERIVATIVE_REGISTRY.with(|cell| f(&cell.borrow()))
     }
 }
 
 fn with_registry_write<R>(f: impl FnOnce(&mut CustomDerivativeRegistry) -> R) -> R {
-    let lock = custom_derivative_registry();
-    match lock.write() {
-        Ok(mut guard) => f(&mut guard),
-        Err(poisoned) => f(&mut poisoned.into_inner()),
+    #[cfg(not(test))]
+    {
+        let lock = custom_derivative_registry();
+        match lock.write() {
+            Ok(mut guard) => f(&mut guard),
+            Err(poisoned) => f(&mut poisoned.into_inner()),
+        }
+    }
+    #[cfg(test)]
+    {
+        TEST_CUSTOM_DERIVATIVE_REGISTRY.with(|cell| f(&mut cell.borrow_mut()))
     }
 }
 
@@ -261,6 +285,7 @@ struct TapeEntry {
     /// Empty for selected single-output primitives whose VJP ignores primal outputs.
     output_values: TapeValues,
     params: BTreeMap<String, String>,
+    sub_jaxprs: Vec<Jaxpr>,
 }
 
 #[derive(Debug, Clone)]
@@ -1867,7 +1892,11 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
             }
         }
 
-        let mut output_values = if let Some(output) =
+        let mut output_values: TapeValues = if !eqn.sub_jaxprs.is_empty() {
+            eval_sub_jaxpr_equation(eqn.primitive, &resolved, &eqn.params, &eqn.sub_jaxprs)?
+                .into_iter()
+                .collect()
+        } else if let Some(output) =
             scalar_f64_forward_output(eqn.primitive, &resolved, &eqn.params)
         {
             let mut values = TapeValues::new();
@@ -1888,25 +1917,27 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
                 actual: output_values.len(),
             });
         }
-        let output_values =
-            if out_var_ids.len() == 1 && single_output_vjp_ignores_outputs(eqn.primitive) {
-                let output_value = output_values.pop().ok_or(AdError::PrimitiveOutputArity {
-                    primitive: eqn.primitive,
-                    expected: 1,
-                    actual: 0,
-                })?;
-                env.insert(out_var_ids[0], output_value);
-                TapeValues::new()
-            } else {
-                for (var, val) in out_var_ids.iter().zip(output_values.iter()) {
-                    env.insert(*var, val.clone());
-                }
-                // `output_values` is no longer needed after this point (env already has
-                // its own clones), so move it into the tape instead of cloning the whole
-                // Vec a second time. For tensor-valued intermediates this elides an O(n)
-                // copy per equation; the stored values are identical.
-                output_values
-            };
+        let output_values = if out_var_ids.len() == 1
+            && eqn.sub_jaxprs.is_empty()
+            && single_output_vjp_ignores_outputs(eqn.primitive)
+        {
+            let output_value = output_values.pop().ok_or(AdError::PrimitiveOutputArity {
+                primitive: eqn.primitive,
+                expected: 1,
+                actual: 0,
+            })?;
+            env.insert(out_var_ids[0], output_value);
+            TapeValues::new()
+        } else {
+            for (var, val) in out_var_ids.iter().zip(output_values.iter()) {
+                env.insert(*var, val.clone());
+            }
+            // `output_values` is no longer needed after this point (env already has
+            // its own clones), so move it into the tape instead of cloning the whole
+            // Vec a second time. For tensor-valued intermediates this elides an O(n)
+            // copy per equation; the stored values are identical.
+            output_values
+        };
         tape.entries.push(TapeEntry {
             primitive: eqn.primitive,
             inputs: input_var_ids,
@@ -1914,6 +1945,7 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
             input_values: resolved,
             output_values,
             params: eqn.params.clone(),
+            sub_jaxprs: eqn.sub_jaxprs.clone(),
         });
     }
 
@@ -3373,54 +3405,97 @@ fn backward(
     jaxpr: &Jaxpr,
     env: &AdValueStore,
 ) -> Result<Vec<Value>, AdError> {
+    backward_multi(
+        tape,
+        std::slice::from_ref(&output_var),
+        std::slice::from_ref(&output_cotangent),
+        jaxpr,
+        env,
+    )
+}
+
+fn backward_multi(
+    tape: &Tape,
+    output_vars: &[VarId],
+    output_cotangents: &[Value],
+    jaxpr: &Jaxpr,
+    env: &AdValueStore,
+) -> Result<Vec<Value>, AdError> {
     let mut adjoints = AdValueStore::for_jaxpr(jaxpr);
-    adjoints.insert(output_var, output_cotangent);
+    for (out_var, out_cot) in output_vars.iter().zip(output_cotangents.iter()) {
+        adjoints.add_or_insert(*out_var, out_cot.clone())?;
+    }
 
     for entry in tape.entries.iter().rev() {
-        let cotangents = match entry.outputs.as_slice() {
-            [output_var] => {
-                let Some(g) = adjoints.get(output_var).cloned() else {
-                    continue;
-                };
-                if is_zero_value(&g) {
-                    continue;
-                }
-                if try_accumulate_repeated_mul_vjp(&mut adjoints, entry, &g)? {
-                    continue;
-                }
-                vjp(
-                    entry.primitive,
-                    &entry.input_values,
-                    std::slice::from_ref(&g),
-                    &entry.output_values,
-                    &entry.params,
-                )?
+        let cotangents = if !entry.sub_jaxprs.is_empty() {
+            let gs: TapeValues = entry
+                .outputs
+                .iter()
+                .enumerate()
+                .map(|(i, var)| {
+                    adjoints
+                        .get(var)
+                        .cloned()
+                        .unwrap_or_else(|| zeros_like(&entry.output_values[i]))
+                })
+                .collect();
+            if gs.iter().all(is_zero_value) {
+                continue;
             }
-            _ => {
-                // Gather gradients for all outputs of this equation.
-                let gs: TapeValues = entry
-                    .outputs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, var)| {
-                        adjoints
-                            .get(var)
-                            .cloned()
-                            .unwrap_or_else(|| zeros_like(&entry.output_values[i]))
-                    })
-                    .collect();
-                // Skip if all output gradients are zero.
-                if gs.iter().all(is_zero_value) {
-                    continue;
+            vjp_with_sub_jaxprs(
+                entry.primitive,
+                &entry.input_values,
+                &gs,
+                &entry.output_values,
+                &entry.params,
+                &entry.sub_jaxprs,
+            )?
+        } else {
+            match entry.outputs.as_slice() {
+                [output_var] => {
+                    let Some(g) = adjoints.get(output_var).cloned() else {
+                        continue;
+                    };
+                    if is_zero_value(&g) {
+                        continue;
+                    }
+                    if try_accumulate_repeated_mul_vjp(&mut adjoints, entry, &g)? {
+                        continue;
+                    }
+                    vjp(
+                        entry.primitive,
+                        &entry.input_values,
+                        std::slice::from_ref(&g),
+                        &entry.output_values,
+                        &entry.params,
+                    )?
                 }
+                _ => {
+                    // Gather gradients for all outputs of this equation.
+                    let gs: TapeValues = entry
+                        .outputs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, var)| {
+                            adjoints
+                                .get(var)
+                                .cloned()
+                                .unwrap_or_else(|| zeros_like(&entry.output_values[i]))
+                        })
+                        .collect();
+                    // Skip if all output gradients are zero.
+                    if gs.iter().all(is_zero_value) {
+                        continue;
+                    }
 
-                vjp(
-                    entry.primitive,
-                    &entry.input_values,
-                    &gs,
-                    &entry.output_values,
-                    &entry.params,
-                )?
+                    vjp(
+                        entry.primitive,
+                        &entry.input_values,
+                        &gs,
+                        &entry.output_values,
+                        &entry.params,
+                    )?
+                }
             }
         };
 
@@ -3452,6 +3527,648 @@ fn backward(
         .collect();
 
     Ok(grads)
+}
+
+/// Evaluate VJP of a general (possibly multi-output) `Jaxpr` given `args` and `output_cotangents`.
+pub fn vjp_jaxpr_multi(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    output_cotangents: &[Value],
+) -> Result<Vec<Value>, AdError> {
+    if output_cotangents.len() != jaxpr.outvars.len() {
+        return Err(AdError::CotangentArity {
+            primitive: Primitive::Cond,
+            expected_at_least: jaxpr.outvars.len(),
+            actual: output_cotangents.len(),
+        });
+    }
+    let (_, tape, env) = forward_with_tape(jaxpr, args)?;
+    backward_multi(&tape, &jaxpr.outvars, output_cotangents, jaxpr, &env)
+}
+
+fn bind_sub_jaxpr_consts_as_invars(sub: &Jaxpr) -> std::borrow::Cow<'_, Jaxpr> {
+    if sub.constvars.is_empty() {
+        std::borrow::Cow::Borrowed(sub)
+    } else {
+        let mut owned = sub.clone();
+        let mut invars = Vec::with_capacity(sub.constvars.len() + sub.invars.len());
+        invars.extend_from_slice(&sub.constvars);
+        invars.extend_from_slice(&sub.invars);
+        owned.invars = invars;
+        owned.constvars.clear();
+        std::borrow::Cow::Owned(owned)
+    }
+}
+
+fn slice_value_axis0(value: &Value, index: usize) -> Result<Value, AdError> {
+    match value {
+        Value::Scalar(lit) => Ok(Value::Scalar(*lit)),
+        Value::Tensor(t) => t
+            .slice_axis0(index)
+            .map_err(|e| AdError::EvalFailed(e.to_string())),
+    }
+}
+
+fn stack_values_axis0(
+    slices: &[Value],
+    leading_dim: usize,
+    template: &Value,
+) -> Result<Value, AdError> {
+    if slices.is_empty() {
+        return match template {
+            Value::Scalar(lit) => Ok(Value::Scalar(*lit)),
+            Value::Tensor(t) => {
+                let mut dims = vec![leading_dim as u32];
+                if t.shape.rank() > 1 {
+                    dims.extend_from_slice(&t.shape.dims[1..]);
+                }
+                Ok(Value::Tensor(
+                    TensorValue::new(t.dtype, Shape { dims }, vec![])
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+                ))
+            }
+        };
+    }
+    match &slices[0] {
+        Value::Scalar(first_lit) => {
+            let dtype = dtype_for_literal(first_lit);
+            let mut elements = Vec::with_capacity(slices.len());
+            for s in slices {
+                match s {
+                    Value::Scalar(lit) => elements.push(*lit),
+                    Value::Tensor(t) if t.elements.len() == 1 => elements.push(t.elements[0]),
+                    other => {
+                        return Err(AdError::EvalFailed(format!(
+                            "scan stack expected scalar slice, got {other:?}"
+                        )));
+                    }
+                }
+            }
+            Ok(Value::Tensor(
+                TensorValue::new(
+                    dtype,
+                    Shape {
+                        dims: vec![leading_dim as u32],
+                    },
+                    elements,
+                )
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            ))
+        }
+        Value::Tensor(first_t) => {
+            let dtype = first_t.dtype;
+            let mut dims = vec![leading_dim as u32];
+            dims.extend_from_slice(&first_t.shape.dims);
+            let mut elements = Vec::with_capacity(leading_dim * first_t.elements.len());
+            for s in slices {
+                match s {
+                    Value::Tensor(t) => elements.extend_from_slice(&t.elements),
+                    Value::Scalar(lit) => elements.push(*lit),
+                }
+            }
+            Ok(Value::Tensor(
+                TensorValue::new(dtype, Shape { dims }, elements)
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            ))
+        }
+    }
+}
+
+fn eval_sub_jaxpr_equation(
+    primitive: Primitive,
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+    sub_jaxprs: &[Jaxpr],
+) -> Result<Vec<Value>, AdError> {
+    match primitive {
+        Primitive::Cond => {
+            if sub_jaxprs.len() < 2 || inputs.is_empty() {
+                return Err(AdError::EvalFailed(
+                    "Cond with sub_jaxprs requires 2 branch jaxprs and a predicate input"
+                        .to_owned(),
+                ));
+            }
+            let pred = scalar_predicate_for_ad(Primitive::Cond, "predicate", &inputs[0])?;
+            let branch = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[if pred { 0 } else { 1 }]);
+            let (outs, _, _) = forward_with_tape(&branch, &inputs[1..])?;
+            Ok(outs)
+        }
+        Primitive::Switch => {
+            if sub_jaxprs.is_empty() || inputs.is_empty() {
+                return Err(AdError::EvalFailed(
+                    "Switch with sub_jaxprs requires at least 1 branch jaxpr and an index input"
+                        .to_owned(),
+                ));
+            }
+            let raw_idx = match &inputs[0] {
+                Value::Scalar(Literal::I64(v)) => *v,
+                Value::Scalar(Literal::I32(v)) => i64::from(*v),
+                Value::Scalar(Literal::U32(v)) => i64::from(*v),
+                Value::Scalar(Literal::U64(v)) => *v as i64,
+                Value::Scalar(lit) => lit.as_f64().unwrap_or(0.0) as i64,
+                _ => {
+                    return Err(AdError::EvalFailed(
+                        "Switch index must be a scalar".to_owned(),
+                    ));
+                }
+            };
+            let branch_idx = raw_idx.clamp(0, (sub_jaxprs.len() - 1) as i64) as usize;
+            let branch = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[branch_idx]);
+            let (outs, _, _) = forward_with_tape(&branch, &inputs[1..])?;
+            Ok(outs)
+        }
+        Primitive::While => {
+            if sub_jaxprs.len() < 2 {
+                return Err(AdError::EvalFailed(
+                    "While with sub_jaxprs requires [cond_jaxpr, body_jaxpr]".to_owned(),
+                ));
+            }
+            let c_cond = sub_jaxprs[0].constvars.len();
+            let c_body = sub_jaxprs[1].constvars.len();
+            if inputs.len() < c_cond + c_body {
+                return Err(AdError::InputArity {
+                    expected: c_cond + c_body + 1,
+                    actual: inputs.len(),
+                });
+            }
+            let cond_consts = &inputs[..c_cond];
+            let body_consts = &inputs[c_cond..c_cond + c_body];
+            let mut carries = inputs[c_cond + c_body..].to_vec();
+            let cond_jaxpr = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[0]);
+            let body_jaxpr = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[1]);
+            let max_iter: usize = params
+                .get("max_iter")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1000);
+            for _ in 0..max_iter {
+                let mut cond_args = Vec::with_capacity(c_cond + carries.len());
+                cond_args.extend_from_slice(cond_consts);
+                cond_args.extend_from_slice(&carries);
+                let (cond_outs, _, _) = forward_with_tape(&cond_jaxpr, &cond_args)?;
+                let cond_val = cond_outs.first().ok_or_else(|| {
+                    AdError::EvalFailed("While cond_jaxpr returned no outputs".to_owned())
+                })?;
+                if !while_cond_value_to_bool(cond_val)? {
+                    return Ok(carries);
+                }
+                let mut body_args = Vec::with_capacity(c_body + carries.len());
+                body_args.extend_from_slice(body_consts);
+                body_args.extend_from_slice(&carries);
+                let (next_carries, _, _) = forward_with_tape(&body_jaxpr, &body_args)?;
+                carries = next_carries;
+            }
+            Err(AdError::EvalFailed(format!(
+                "while loop exceeded max_iter={max_iter}"
+            )))
+        }
+        Primitive::Scan => {
+            if sub_jaxprs.is_empty() {
+                return Err(AdError::EvalFailed(
+                    "Scan with sub_jaxprs requires body_jaxpr".to_owned(),
+                ));
+            }
+            let body_orig = &sub_jaxprs[0];
+            let const_count = body_orig.constvars.len();
+            let carry_count: usize = params
+                .get("num_carry")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| body_orig.invars.len().saturating_sub(1));
+            let y_count = body_orig.outvars.len().saturating_sub(carry_count);
+            if inputs.len() < const_count + carry_count + 1 {
+                return Err(AdError::InputArity {
+                    expected: const_count + carry_count + 1,
+                    actual: inputs.len(),
+                });
+            }
+            let consts = &inputs[..const_count];
+            let mut carries = inputs[const_count..const_count + carry_count].to_vec();
+            let xs = &inputs[const_count + carry_count];
+            let reverse = params.get("reverse").map(|s| s == "true").unwrap_or(false);
+            let body_jaxpr = bind_sub_jaxpr_consts_as_invars(body_orig);
+
+            let leading_dim = match xs {
+                Value::Scalar(_) => 1usize,
+                Value::Tensor(t) => {
+                    if t.shape.rank() == 0 {
+                        1usize
+                    } else {
+                        t.shape.dims[0] as usize
+                    }
+                }
+            };
+            if leading_dim == 0 {
+                let mut result = carries;
+                for _ in 0..y_count {
+                    result.push(stack_values_axis0(&[], 0, xs)?);
+                }
+                return Ok(result);
+            }
+
+            let indices: Vec<usize> = if reverse {
+                (0..leading_dim).rev().collect()
+            } else {
+                (0..leading_dim).collect()
+            };
+
+            let mut ys_per_output: Vec<Vec<Option<Value>>> =
+                (0..y_count).map(|_| vec![None; leading_dim]).collect();
+
+            for &idx in &indices {
+                let x_slice = slice_value_axis0(xs, idx)?;
+                let mut step_args = Vec::with_capacity(const_count + carry_count + 1);
+                step_args.extend_from_slice(consts);
+                step_args.extend_from_slice(&carries);
+                step_args.push(x_slice);
+                let (step_outs, _, _) = forward_with_tape(&body_jaxpr, &step_args)?;
+                carries = step_outs[..carry_count].to_vec();
+                for (k, y_val) in step_outs[carry_count..].iter().enumerate() {
+                    if k < y_count {
+                        ys_per_output[k][idx] = Some(y_val.clone());
+                    }
+                }
+            }
+
+            let mut result = carries;
+            for y_opts in ys_per_output {
+                let slices: Vec<Value> = y_opts.into_iter().flatten().collect();
+                result.push(stack_values_axis0(&slices, leading_dim, xs)?);
+            }
+            Ok(result)
+        }
+        _ => fj_lax::eval_primitive_multi(primitive, inputs, params)
+            .map_err(|e| AdError::EvalFailed(e.to_string())),
+    }
+}
+
+fn vjp_with_sub_jaxprs(
+    primitive: Primitive,
+    inputs: &[Value],
+    gs: &[Value],
+    outputs: &[Value],
+    params: &BTreeMap<String, String>,
+    sub_jaxprs: &[Jaxpr],
+) -> Result<Vec<Value>, AdError> {
+    match primitive {
+        Primitive::Cond => {
+            let pred = scalar_predicate_for_ad(Primitive::Cond, "predicate", &inputs[0])?;
+            let branch = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[if pred { 0 } else { 1 }]);
+            let branch_grads = vjp_jaxpr_multi(&branch, &inputs[1..], gs)?;
+            let mut result = Vec::with_capacity(1 + branch_grads.len());
+            result.push(zeros_like(&inputs[0]));
+            result.extend(branch_grads);
+            Ok(result)
+        }
+        Primitive::Switch => {
+            let raw_idx = match &inputs[0] {
+                Value::Scalar(Literal::I64(v)) => *v,
+                Value::Scalar(Literal::I32(v)) => i64::from(*v),
+                Value::Scalar(Literal::U32(v)) => i64::from(*v),
+                Value::Scalar(Literal::U64(v)) => *v as i64,
+                Value::Scalar(lit) => lit.as_f64().unwrap_or(0.0) as i64,
+                _ => 0,
+            };
+            let branch_idx = raw_idx.clamp(0, (sub_jaxprs.len() - 1) as i64) as usize;
+            let branch = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[branch_idx]);
+            let branch_grads = vjp_jaxpr_multi(&branch, &inputs[1..], gs)?;
+            let mut result = Vec::with_capacity(1 + branch_grads.len());
+            result.push(zeros_like(&inputs[0]));
+            result.extend(branch_grads);
+            Ok(result)
+        }
+        Primitive::While => {
+            let c_cond = sub_jaxprs[0].constvars.len();
+            let c_body = sub_jaxprs[1].constvars.len();
+            let cond_consts = &inputs[..c_cond];
+            let body_consts = &inputs[c_cond..c_cond + c_body];
+            let init_carries = &inputs[c_cond + c_body..];
+            let cond_jaxpr = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[0]);
+            let body_jaxpr = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[1]);
+            let max_iter: usize = params
+                .get("max_iter")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1000);
+
+            let mut carry_history: Vec<Vec<Value>> = Vec::new();
+            let mut carries = init_carries.to_vec();
+            let mut terminated = false;
+            for _ in 0..max_iter {
+                let mut cond_args = Vec::with_capacity(c_cond + carries.len());
+                cond_args.extend_from_slice(cond_consts);
+                cond_args.extend_from_slice(&carries);
+                let (cond_outs, _, _) = forward_with_tape(&cond_jaxpr, &cond_args)?;
+                let cond_val = cond_outs.first().ok_or_else(|| {
+                    AdError::EvalFailed("While cond_jaxpr returned no outputs".to_owned())
+                })?;
+                if !while_cond_value_to_bool(cond_val)? {
+                    terminated = true;
+                    break;
+                }
+                carry_history.push(carries.clone());
+                let mut body_args = Vec::with_capacity(c_body + carries.len());
+                body_args.extend_from_slice(body_consts);
+                body_args.extend_from_slice(&carries);
+                let (next_carries, _, _) = forward_with_tape(&body_jaxpr, &body_args)?;
+                carries = next_carries;
+            }
+            if !terminated {
+                return Err(AdError::EvalFailed(format!(
+                    "while VJP exceeded max_iter={max_iter}"
+                )));
+            }
+
+            let g_cond_consts: Vec<Value> = cond_consts.iter().map(zeros_like).collect();
+            let mut g_body_consts: Vec<Value> = body_consts.iter().map(zeros_like).collect();
+            let mut g_carries: Vec<Value> = gs.to_vec();
+
+            for step_carries in carry_history.iter().rev() {
+                let mut body_args = Vec::with_capacity(c_body + step_carries.len());
+                body_args.extend_from_slice(body_consts);
+                body_args.extend_from_slice(step_carries);
+                let step_grads = vjp_jaxpr_multi(&body_jaxpr, &body_args, &g_carries)?;
+                for (acc, dg) in g_body_consts.iter_mut().zip(&step_grads[..c_body]) {
+                    *acc = value_add(acc, dg)?;
+                }
+                g_carries = step_grads[c_body..].to_vec();
+            }
+
+            let mut result = Vec::with_capacity(inputs.len());
+            result.extend(g_cond_consts);
+            result.extend(g_body_consts);
+            result.extend(g_carries);
+            Ok(result)
+        }
+        Primitive::Scan => {
+            let body_orig = &sub_jaxprs[0];
+            let const_count = body_orig.constvars.len();
+            let carry_count: usize = params
+                .get("num_carry")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| body_orig.invars.len().saturating_sub(1));
+            let y_count = body_orig.outvars.len().saturating_sub(carry_count);
+            let consts = &inputs[..const_count];
+            let init_carries = &inputs[const_count..const_count + carry_count];
+            let xs = &inputs[const_count + carry_count];
+            let reverse = params.get("reverse").map(|s| s == "true").unwrap_or(false);
+            let body_jaxpr = bind_sub_jaxpr_consts_as_invars(body_orig);
+
+            let leading_dim = match xs {
+                Value::Scalar(_) => 1usize,
+                Value::Tensor(t) => {
+                    if t.shape.rank() == 0 {
+                        1usize
+                    } else {
+                        t.shape.dims[0] as usize
+                    }
+                }
+            };
+            if leading_dim == 0 {
+                let mut result: Vec<Value> = consts.iter().map(zeros_like).collect();
+                result.extend_from_slice(&gs[..carry_count]);
+                result.push(zeros_like(xs));
+                return Ok(result);
+            }
+
+            let indices: Vec<usize> = if reverse {
+                (0..leading_dim).rev().collect()
+            } else {
+                (0..leading_dim).collect()
+            };
+
+            let mut carries_history: Vec<Vec<Value>> = Vec::with_capacity(leading_dim);
+            let mut x_slices: Vec<Value> = Vec::with_capacity(leading_dim);
+            let mut carries = init_carries.to_vec();
+            for &idx in &indices {
+                let x_slice = slice_value_axis0(xs, idx)?;
+                carries_history.push(carries.clone());
+                x_slices.push(x_slice.clone());
+                let mut step_args = Vec::with_capacity(const_count + carry_count + 1);
+                step_args.extend_from_slice(consts);
+                step_args.extend_from_slice(&carries);
+                step_args.push(x_slice);
+                let (step_outs, _, _) = forward_with_tape(&body_jaxpr, &step_args)?;
+                carries = step_outs[..carry_count].to_vec();
+            }
+
+            let mut g_consts: Vec<Value> = consts.iter().map(zeros_like).collect();
+            let mut g_carries: Vec<Value> = gs[..carry_count].to_vec();
+            let g_ys = &gs[carry_count..];
+            let mut g_x_slices: Vec<Option<Value>> = vec![None; leading_dim];
+
+            for (step, &orig_idx) in indices.iter().enumerate().rev() {
+                let mut step_cotangents = Vec::with_capacity(carry_count + y_count);
+                step_cotangents.extend_from_slice(&g_carries);
+                for k in 0..y_count {
+                    let g_y_slice = if let Some(g_y) = g_ys.get(k) {
+                        slice_value_axis0(g_y, orig_idx)?
+                    } else if let Some(out_y) = outputs.get(carry_count + k) {
+                        zeros_like(&slice_value_axis0(out_y, orig_idx)?)
+                    } else {
+                        Value::scalar_f64(0.0)
+                    };
+                    step_cotangents.push(g_y_slice);
+                }
+
+                let mut step_args = Vec::with_capacity(const_count + carry_count + 1);
+                step_args.extend_from_slice(consts);
+                step_args.extend_from_slice(&carries_history[step]);
+                step_args.push(x_slices[step].clone());
+
+                let step_grads = vjp_jaxpr_multi(&body_jaxpr, &step_args, &step_cotangents)?;
+                for (acc, dg) in g_consts.iter_mut().zip(&step_grads[..const_count]) {
+                    *acc = value_add(acc, dg)?;
+                }
+                g_carries = step_grads[const_count..const_count + carry_count].to_vec();
+                g_x_slices[orig_idx] = Some(step_grads[const_count + carry_count].clone());
+            }
+
+            let ordered_g_x: Vec<Value> = g_x_slices.into_iter().flatten().collect();
+            let g_xs = match xs {
+                Value::Scalar(_) => ordered_g_x
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| zeros_like(xs)),
+                Value::Tensor(_) => stack_values_axis0(&ordered_g_x, leading_dim, xs)?,
+            };
+
+            let mut result = Vec::with_capacity(const_count + carry_count + 1);
+            result.extend(g_consts);
+            result.extend(g_carries);
+            result.push(g_xs);
+            Ok(result)
+        }
+        _ => vjp(primitive, inputs, gs, outputs, params),
+    }
+}
+
+fn jvp_with_sub_jaxprs(
+    primitive: Primitive,
+    primals: &[Value],
+    tangents: &[Value],
+    params: &BTreeMap<String, String>,
+    sub_jaxprs: &[Jaxpr],
+) -> Result<JvpResult, AdError> {
+    match primitive {
+        Primitive::Cond => {
+            let pred = scalar_predicate_for_ad(Primitive::Cond, "predicate", &primals[0])?;
+            let branch = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[if pred { 0 } else { 1 }]);
+            jvp(&branch, &primals[1..], &tangents[1..])
+        }
+        Primitive::Switch => {
+            let raw_idx = match &primals[0] {
+                Value::Scalar(Literal::I64(v)) => *v,
+                Value::Scalar(Literal::I32(v)) => i64::from(*v),
+                Value::Scalar(Literal::U32(v)) => i64::from(*v),
+                Value::Scalar(Literal::U64(v)) => *v as i64,
+                Value::Scalar(lit) => lit.as_f64().unwrap_or(0.0) as i64,
+                _ => 0,
+            };
+            let branch_idx = raw_idx.clamp(0, (sub_jaxprs.len() - 1) as i64) as usize;
+            let branch = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[branch_idx]);
+            jvp(&branch, &primals[1..], &tangents[1..])
+        }
+        Primitive::While => {
+            let c_cond = sub_jaxprs[0].constvars.len();
+            let c_body = sub_jaxprs[1].constvars.len();
+            let cond_consts_p = &primals[..c_cond];
+            let body_consts_p = &primals[c_cond..c_cond + c_body];
+            let body_consts_t = &tangents[c_cond..c_cond + c_body];
+            let mut carry_p = primals[c_cond + c_body..].to_vec();
+            let mut carry_t = tangents[c_cond + c_body..].to_vec();
+            let cond_jaxpr = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[0]);
+            let body_jaxpr = bind_sub_jaxpr_consts_as_invars(&sub_jaxprs[1]);
+            let max_iter: usize = params
+                .get("max_iter")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1000);
+
+            for _ in 0..max_iter {
+                let mut cond_args = Vec::with_capacity(c_cond + carry_p.len());
+                cond_args.extend_from_slice(cond_consts_p);
+                cond_args.extend_from_slice(&carry_p);
+                let (cond_outs, _, _) = forward_with_tape(&cond_jaxpr, &cond_args)?;
+                let cond_val = cond_outs.first().ok_or_else(|| {
+                    AdError::EvalFailed("While cond_jaxpr returned no outputs".to_owned())
+                })?;
+                if !while_cond_value_to_bool(cond_val)? {
+                    return Ok(JvpResult {
+                        primals: carry_p,
+                        tangents: carry_t,
+                    });
+                }
+                let mut body_p = Vec::with_capacity(c_body + carry_p.len());
+                body_p.extend_from_slice(body_consts_p);
+                body_p.extend_from_slice(&carry_p);
+                let mut body_t = Vec::with_capacity(c_body + carry_t.len());
+                body_t.extend_from_slice(body_consts_t);
+                body_t.extend_from_slice(&carry_t);
+                let step = jvp(&body_jaxpr, &body_p, &body_t)?;
+                carry_p = step.primals;
+                carry_t = step.tangents;
+            }
+            Err(AdError::EvalFailed(format!(
+                "while JVP exceeded max_iter={max_iter}"
+            )))
+        }
+        Primitive::Scan => {
+            let body_orig = &sub_jaxprs[0];
+            let const_count = body_orig.constvars.len();
+            let carry_count: usize = params
+                .get("num_carry")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| body_orig.invars.len().saturating_sub(1));
+            let y_count = body_orig.outvars.len().saturating_sub(carry_count);
+            let consts_p = &primals[..const_count];
+            let consts_t = &tangents[..const_count];
+            let mut carry_p = primals[const_count..const_count + carry_count].to_vec();
+            let mut carry_t = tangents[const_count..const_count + carry_count].to_vec();
+            let xs_p = &primals[const_count + carry_count];
+            let xs_t = &tangents[const_count + carry_count];
+            let reverse = params.get("reverse").map(|s| s == "true").unwrap_or(false);
+            let body_jaxpr = bind_sub_jaxpr_consts_as_invars(body_orig);
+
+            let leading_dim = match xs_p {
+                Value::Scalar(_) => 1usize,
+                Value::Tensor(t) => {
+                    if t.shape.rank() == 0 {
+                        1usize
+                    } else {
+                        t.shape.dims[0] as usize
+                    }
+                }
+            };
+            if leading_dim == 0 {
+                let mut out_p = carry_p;
+                let mut out_t = carry_t;
+                for _ in 0..y_count {
+                    out_p.push(stack_values_axis0(&[], 0, xs_p)?);
+                    out_t.push(stack_values_axis0(&[], 0, xs_t)?);
+                }
+                return Ok(JvpResult {
+                    primals: out_p,
+                    tangents: out_t,
+                });
+            }
+
+            let indices: Vec<usize> = if reverse {
+                (0..leading_dim).rev().collect()
+            } else {
+                (0..leading_dim).collect()
+            };
+
+            let mut ys_p_per_out: Vec<Vec<Option<Value>>> =
+                (0..y_count).map(|_| vec![None; leading_dim]).collect();
+            let mut ys_t_per_out: Vec<Vec<Option<Value>>> =
+                (0..y_count).map(|_| vec![None; leading_dim]).collect();
+
+            for &idx in &indices {
+                let x_p_slice = slice_value_axis0(xs_p, idx)?;
+                let x_t_slice = slice_value_axis0(xs_t, idx)?;
+                let mut step_p = Vec::with_capacity(const_count + carry_count + 1);
+                step_p.extend_from_slice(consts_p);
+                step_p.extend_from_slice(&carry_p);
+                step_p.push(x_p_slice);
+
+                let mut step_t = Vec::with_capacity(const_count + carry_count + 1);
+                step_t.extend_from_slice(consts_t);
+                step_t.extend_from_slice(&carry_t);
+                step_t.push(x_t_slice);
+
+                let step_res = jvp(&body_jaxpr, &step_p, &step_t)?;
+                carry_p = step_res.primals[..carry_count].to_vec();
+                carry_t = step_res.tangents[..carry_count].to_vec();
+                for k in 0..y_count {
+                    ys_p_per_out[k][idx] = Some(step_res.primals[carry_count + k].clone());
+                    ys_t_per_out[k][idx] = Some(step_res.tangents[carry_count + k].clone());
+                }
+            }
+
+            let mut out_p = carry_p;
+            let mut out_t = carry_t;
+            for (y_p_opts, y_t_opts) in ys_p_per_out.into_iter().zip(ys_t_per_out) {
+                let p_slices: Vec<Value> = y_p_opts.into_iter().flatten().collect();
+                let t_slices: Vec<Value> = y_t_opts.into_iter().flatten().collect();
+                out_p.push(stack_values_axis0(&p_slices, leading_dim, xs_p)?);
+                out_t.push(stack_values_axis0(&t_slices, leading_dim, xs_t)?);
+            }
+            Ok(JvpResult {
+                primals: out_p,
+                tangents: out_t,
+            })
+        }
+        _ => {
+            let primal_outs = fj_lax::eval_primitive_multi(primitive, primals, params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let tangent_outs = if primal_outs.len() > 1 {
+                jvp_rule_multi(primitive, primals, tangents, &primal_outs, params)?
+            } else {
+                vec![jvp_rule(primitive, primals, tangents, params)?]
+            };
+            Ok(JvpResult {
+                primals: primal_outs,
+                tangents: tangent_outs,
+            })
+        }
+    }
 }
 
 // ── VJP rules (tensor-aware) ──────────────────────────────────────
@@ -4875,12 +5592,7 @@ pub fn vjp(
             dynamic_update_slice_vjp(inputs, g)
         }
         Primitive::Cumsum => {
-            // VJP of cumsum is reverse cumsum of gradient.
-            // For scalar: pass through (cumsum of scalar = scalar).
-            // For tensor: reverse cumulative sum along the cumsum axis,
-            // preserving the input dtype (real or complex). The previous
-            // implementation funneled everything through f64, which
-            // silently zeroed complex inputs and widened every real type.
+            // VJP of cumsum is reverse cumsum of gradient (or forward cumsum if reverse=true).
             match g {
                 Value::Scalar(_) => Ok(vec![g.clone()]),
                 Value::Tensor(gt) => {
@@ -4888,6 +5600,7 @@ pub fn vjp(
                         .get("axis")
                         .and_then(|s| s.trim().parse().ok())
                         .unwrap_or(0);
+                    let reverse = params.get("reverse").map(|s| s == "true").unwrap_or(false);
                     let dims: Vec<usize> = gt.shape.dims.iter().map(|&d| d as usize).collect();
                     let rank = dims.len();
                     let total = gt.elements.len();
@@ -4907,14 +5620,8 @@ pub fn vjp(
                     let outer_count = total / axis_len;
                     let g_dtype = gt.dtype;
 
-                    // Two accumulation regimes: complex (re/im pair) or
-                    // real f64 with dtype-preserving rebuild.
                     let result_elements: Vec<Literal> = match g_dtype {
                         DType::Complex64 | DType::Complex128 => {
-                            // Convert to (re, im) f64 pairs, accumulate in
-                            // f64 (sufficient precision for both Complex64
-                            // and Complex128 sums), then re-encode at the
-                            // input's complex dtype.
                             let pairs: Vec<(f64, f64)> = gt
                                 .elements
                                 .iter()
@@ -4942,7 +5649,8 @@ pub fn vjp(
                                 }
                                 let mut run_re = 0.0_f64;
                                 let mut run_im = 0.0_f64;
-                                for i in (0..axis_len).rev() {
+                                for step in 0..axis_len {
+                                    let i = if reverse { step } else { axis_len - 1 - step };
                                     let idx = base + i * axis_stride;
                                     run_re += pairs[idx].0;
                                     run_im += pairs[idx].1;
@@ -4977,14 +5685,13 @@ pub fn vjp(
                                     rem /= dims[d];
                                 }
                                 let mut running = 0.0;
-                                for i in (0..axis_len).rev() {
+                                for step in 0..axis_len {
+                                    let i = if reverse { step } else { axis_len - 1 - step };
                                     let idx = base + i * axis_stride;
                                     running += g_vals[idx];
                                     result[idx] = running;
                                 }
                             }
-                            // Re-encode at the input's real dtype so we
-                            // don't widen e.g. F32 to F64 in the AD chain.
                             result
                                 .into_iter()
                                 .map(|v| match g_dtype {
@@ -4995,7 +5702,6 @@ pub fn vjp(
                                     DType::I64 | DType::I32 => Literal::I64(v as i64),
                                     DType::U32 => Literal::U32(v as u32),
                                     DType::U64 => Literal::U64(v as u64),
-                                    // Bool / others: legacy F64 zero path
                                     _ => Literal::from_f64(v),
                                 })
                                 .collect()
@@ -5014,197 +5720,171 @@ pub fn vjp(
                 }
             }
         }
-        Primitive::Cumprod => {
-            // VJP of cumprod: grad_x[i] = sum_{j>=i} g[j] * cumprod[j] / x[i]
-            // For scalar: pass through (cumprod of scalar = scalar).
-            // For tensor: two regimes — complex (re,im pair) and real
-            // (f64 accumulation re-encoded at input dtype). The previous
-            // f64 round-trip silently zeroed complex gradients and widened
-            // every real type.
-            match g {
-                Value::Scalar(_) => Ok(vec![g.clone()]),
-                Value::Tensor(gt) => {
-                    let x = &inputs[0];
-                    let x_tensor = match x {
-                        Value::Tensor(t) => t,
-                        Value::Scalar(_) => return Ok(vec![g.clone()]),
-                    };
-                    let axis: usize = params
-                        .get("axis")
-                        .and_then(|s| s.trim().parse().ok())
-                        .unwrap_or(0);
-                    let dims: Vec<usize> = gt.shape.dims.iter().map(|&d| d as usize).collect();
-                    let rank = dims.len();
-                    let total = gt.elements.len();
+        Primitive::Cumprod => match g {
+            Value::Scalar(_) => Ok(vec![g.clone()]),
+            Value::Tensor(gt) => {
+                let x = &inputs[0];
+                let x_tensor = match x {
+                    Value::Tensor(t) => t,
+                    Value::Scalar(_) => return Ok(vec![g.clone()]),
+                };
+                let axis: usize = params
+                    .get("axis")
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(0);
+                let reverse = params.get("reverse").map(|s| s == "true").unwrap_or(false);
+                let dims: Vec<usize> = gt.shape.dims.iter().map(|&d| d as usize).collect();
+                let rank = dims.len();
+                let total = gt.elements.len();
 
-                    let mut strides = vec![1usize; rank];
-                    if rank > 0 {
-                        for i in (0..rank - 1).rev() {
-                            strides[i] = strides[i + 1] * dims[i + 1];
-                        }
+                let mut strides = vec![1usize; rank];
+                if rank > 0 {
+                    for i in (0..rank - 1).rev() {
+                        strides[i] = strides[i + 1] * dims[i + 1];
                     }
-                    let axis_len = dims[axis];
-                    if axis_len == 0 {
-                        return Ok(vec![g.clone()]);
-                    }
-                    let axis_stride = strides[axis];
-                    let outer_count = total / axis_len;
-                    let g_dtype = gt.dtype;
+                }
+                let axis_len = dims[axis];
+                if axis_len == 0 {
+                    return Ok(vec![g.clone()]);
+                }
+                let axis_stride = strides[axis];
+                let outer_count = total / axis_len;
+                let g_dtype = gt.dtype;
+                let step_to_pos = |step: usize| if reverse { axis_len - 1 - step } else { step };
 
-                    let result_elements: Vec<Literal> = match g_dtype {
-                        DType::Complex64 | DType::Complex128 => {
-                            // (re, im) pair arithmetic. Complex *: (a+bi)*(c+di) =
-                            // (ac - bd, ad + bc). Complex /: (a+bi)/(c+di) =
-                            // (a+bi)*(c-di) / (c^2 + d^2).
-                            let to_pair = |lit: &Literal| -> (f64, f64) {
-                                match lit {
-                                    Literal::Complex64Bits(re, im) => (
-                                        f64::from(f32::from_bits(*re)),
-                                        f64::from(f32::from_bits(*im)),
-                                    ),
-                                    Literal::Complex128Bits(re, im) => {
-                                        (f64::from_bits(*re), f64::from_bits(*im))
-                                    }
-                                    _ => (0.0, 0.0),
+                let result_elements: Vec<Literal> = match g_dtype {
+                    DType::Complex64 | DType::Complex128 => {
+                        let to_pair = |lit: &Literal| -> (f64, f64) {
+                            match lit {
+                                Literal::Complex64Bits(re, im) => (
+                                    f64::from(f32::from_bits(*re)),
+                                    f64::from(f32::from_bits(*im)),
+                                ),
+                                Literal::Complex128Bits(re, im) => {
+                                    (f64::from_bits(*re), f64::from_bits(*im))
                                 }
+                                _ => (0.0, 0.0),
+                            }
+                        };
+                        let g_pairs: Vec<(f64, f64)> = gt.elements.iter().map(to_pair).collect();
+                        let x_pairs: Vec<(f64, f64)> =
+                            x_tensor.elements.iter().map(to_pair).collect();
+                        let mut result = vec![(0.0_f64, 0.0_f64); total];
+
+                        for outer in 0..outer_count {
+                            let mut base = 0;
+                            let mut rem = outer;
+                            for d in (0..rank).rev() {
+                                if d == axis {
+                                    continue;
+                                }
+                                base += (rem % dims[d]) * strides[d];
+                                rem /= dims[d];
+                            }
+
+                            let cmul = |a: (f64, f64), b: (f64, f64)| {
+                                (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
                             };
-                            let g_pairs: Vec<(f64, f64)> =
-                                gt.elements.iter().map(to_pair).collect();
-                            let x_pairs: Vec<(f64, f64)> =
-                                x_tensor.elements.iter().map(to_pair).collect();
-                            let mut result = vec![(0.0_f64, 0.0_f64); total];
-
-                            for outer in 0..outer_count {
-                                let mut base = 0;
-                                let mut rem = outer;
-                                for d in (0..rank).rev() {
-                                    if d == axis {
-                                        continue;
-                                    }
-                                    base += (rem % dims[d]) * strides[d];
-                                    rem /= dims[d];
-                                }
-
-                                // Division-free complex VJP (see the real path):
-                                // grad[i] = prefix[i] * suffix[i] with complex
-                                // prefix products and the suffix recurrence
-                                // suffix[i] = g[i] + x[i+1]*suffix[i+1]. No complex
-                                // division (the old path skipped it at |x|≈0,
-                                // silently zeroing the gradient there).
-                                let cmul = |a: (f64, f64), b: (f64, f64)| {
-                                    (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
+                            let mut prefixes = vec![(0.0_f64, 0.0_f64); axis_len];
+                            let mut prefix = (1.0_f64, 0.0_f64);
+                            for (step, slot) in prefixes.iter_mut().enumerate() {
+                                let pos = step_to_pos(step);
+                                *slot = prefix;
+                                prefix = cmul(prefix, x_pairs[base + pos * axis_stride]);
+                            }
+                            let mut suffix = (0.0_f64, 0.0_f64);
+                            for step in (0..axis_len).rev() {
+                                let pos = step_to_pos(step);
+                                let idx = base + pos * axis_stride;
+                                let x_next = if step + 1 < axis_len {
+                                    x_pairs[base + step_to_pos(step + 1) * axis_stride]
+                                } else {
+                                    (0.0, 0.0)
                                 };
-                                let mut prefixes = vec![(0.0_f64, 0.0_f64); axis_len];
-                                let mut prefix = (1.0_f64, 0.0_f64);
-                                for i in 0..axis_len {
-                                    prefixes[i] = prefix;
-                                    prefix = cmul(prefix, x_pairs[base + i * axis_stride]);
-                                }
-                                let mut suffix = (0.0_f64, 0.0_f64);
-                                for i in (0..axis_len).rev() {
-                                    let idx = base + i * axis_stride;
-                                    let x_next = if i + 1 < axis_len {
-                                        x_pairs[base + (i + 1) * axis_stride]
-                                    } else {
-                                        (0.0, 0.0)
-                                    };
-                                    let xs = cmul(x_next, suffix);
-                                    suffix = (g_pairs[idx].0 + xs.0, g_pairs[idx].1 + xs.1);
-                                    result[idx] = cmul(prefixes[i], suffix);
-                                }
+                                let xs = cmul(x_next, suffix);
+                                suffix = (g_pairs[idx].0 + xs.0, g_pairs[idx].1 + xs.1);
+                                result[idx] = cmul(prefixes[step], suffix);
                             }
-                            result
-                                .into_iter()
-                                .map(|(re, im)| match g_dtype {
-                                    DType::Complex64 => {
-                                        Literal::from_complex64(re as f32, im as f32)
-                                    }
-                                    _ => Literal::from_complex128(re, im),
-                                })
-                                .collect()
                         }
-                        _ => {
-                            let g_vals: Vec<f64> = gt
-                                .elements
-                                .iter()
-                                .map(|l| l.as_f64().unwrap_or(0.0))
-                                .collect();
-                            let x_vals: Vec<f64> = x_tensor
-                                .elements
-                                .iter()
-                                .map(|l| l.as_f64().unwrap_or(0.0))
-                                .collect();
-                            let mut result = vec![0.0_f64; total];
+                        result
+                            .into_iter()
+                            .map(|(re, im)| match g_dtype {
+                                DType::Complex64 => Literal::from_complex64(re as f32, im as f32),
+                                _ => Literal::from_complex128(re, im),
+                            })
+                            .collect()
+                    }
+                    _ => {
+                        let g_vals: Vec<f64> = gt
+                            .elements
+                            .iter()
+                            .map(|l| l.as_f64().unwrap_or(0.0))
+                            .collect();
+                        let x_vals: Vec<f64> = x_tensor
+                            .elements
+                            .iter()
+                            .map(|l| l.as_f64().unwrap_or(0.0))
+                            .collect();
+                        let mut result = vec![0.0_f64; total];
 
-                            for outer in 0..outer_count {
-                                let mut base = 0;
-                                let mut rem = outer;
-                                for d in (0..rank).rev() {
-                                    if d == axis {
-                                        continue;
-                                    }
-                                    base += (rem % dims[d]) * strides[d];
-                                    rem /= dims[d];
+                        for outer in 0..outer_count {
+                            let mut base = 0;
+                            let mut rem = outer;
+                            for d in (0..rank).rev() {
+                                if d == axis {
+                                    continue;
                                 }
-
-                                // Division-free VJP (transpose of the product-rule
-                                // JVP): grad[i] = prefix[i] * suffix[i], where
-                                //   prefix[i] = prod_{m<i} x_m   (exclusive prefix)
-                                //   suffix[i] = g[i] + x[i+1] * suffix[i+1]
-                                // Exact and zero-safe. The old `suffix_sum / x[i]`
-                                // divided by the input, so it silently produced a
-                                // WRONG 0 gradient wherever x[i] == 0 (and was
-                                // unstable for tiny x[i]). Matches JAX, which
-                                // differentiates cumprod through
-                                // associative_scan(mul) — no division.
-                                let mut prefixes = vec![0.0_f64; axis_len];
-                                let mut prefix = 1.0_f64;
-                                for i in 0..axis_len {
-                                    prefixes[i] = prefix;
-                                    prefix *= x_vals[base + i * axis_stride];
-                                }
-                                let mut suffix = 0.0_f64;
-                                for i in (0..axis_len).rev() {
-                                    let idx = base + i * axis_stride;
-                                    let x_next = if i + 1 < axis_len {
-                                        x_vals[base + (i + 1) * axis_stride]
-                                    } else {
-                                        0.0
-                                    };
-                                    suffix = g_vals[idx] + x_next * suffix;
-                                    result[idx] = prefixes[i] * suffix;
-                                }
+                                base += (rem % dims[d]) * strides[d];
+                                rem /= dims[d];
                             }
-                            // Re-encode at the input's real dtype so we
-                            // don't widen e.g. F32 to F64 in the AD chain.
-                            result
-                                .into_iter()
-                                .map(|v| match g_dtype {
-                                    DType::F32 => Literal::from_f32(v as f32),
-                                    DType::BF16 => Literal::from_bf16_f32(v as f32),
-                                    DType::F16 => Literal::from_f16_f32(v as f32),
-                                    DType::F64 => Literal::from_f64(v),
-                                    DType::I64 | DType::I32 => Literal::I64(v as i64),
-                                    DType::U32 => Literal::U32(v as u32),
-                                    DType::U64 => Literal::U64(v as u64),
-                                    _ => Literal::from_f64(v),
-                                })
-                                .collect()
+
+                            let mut prefixes = vec![0.0_f64; axis_len];
+                            let mut prefix = 1.0_f64;
+                            for (step, slot) in prefixes.iter_mut().enumerate() {
+                                let pos = step_to_pos(step);
+                                *slot = prefix;
+                                prefix *= x_vals[base + pos * axis_stride];
+                            }
+                            let mut suffix = 0.0_f64;
+                            for step in (0..axis_len).rev() {
+                                let pos = step_to_pos(step);
+                                let idx = base + pos * axis_stride;
+                                let x_next = if step + 1 < axis_len {
+                                    x_vals[base + step_to_pos(step + 1) * axis_stride]
+                                } else {
+                                    0.0
+                                };
+                                suffix = g_vals[idx] + x_next * suffix;
+                                result[idx] = prefixes[step] * suffix;
+                            }
                         }
-                    };
+                        result
+                            .into_iter()
+                            .map(|v| match g_dtype {
+                                DType::F32 => Literal::from_f32(v as f32),
+                                DType::BF16 => Literal::from_bf16_f32(v as f32),
+                                DType::F16 => Literal::from_f16_f32(v as f32),
+                                DType::F64 => Literal::from_f64(v),
+                                DType::I64 | DType::I32 => Literal::I64(v as i64),
+                                DType::U32 => Literal::U32(v as u32),
+                                DType::U64 => Literal::U64(v as u64),
+                                _ => Literal::from_f64(v),
+                            })
+                            .collect()
+                    }
+                };
 
-                    let out_dtype = match g_dtype {
-                        DType::Bool => DType::F64,
-                        other => other,
-                    };
+                let out_dtype = match g_dtype {
+                    DType::Bool => DType::F64,
+                    other => other,
+                };
 
-                    Ok(vec![Value::Tensor(
-                        TensorValue::new(out_dtype, gt.shape.clone(), result_elements)
-                            .map_err(|e| AdError::EvalFailed(e.to_string()))?,
-                    )])
-                }
+                Ok(vec![Value::Tensor(
+                    TensorValue::new(out_dtype, gt.shape.clone(), result_elements)
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+                )])
             }
-        }
+        },
         Primitive::Cummax | Primitive::Cummin => {
             // VJP of cummax/cummin: route each output cotangent back to the
             // input element that produced the running extremum reaching that
@@ -6485,6 +7165,11 @@ fn vjp_reduce_window(
     let window_dilation = parse_reduce_window_grad_dilation(params, rank);
 
     let reduce_op = params.get("reduce_op").map(|s| s.as_str()).unwrap_or("sum");
+    if !matches!(reduce_op, "sum" | "add" | "prod" | "mul" | "max" | "min") {
+        return Err(AdError::EvalFailed(format!(
+            "unsupported reduce_window reduce_op {reduce_op:?}"
+        )));
+    }
 
     let padding = params.get("padding").map(|s| s.as_str()).unwrap_or("valid");
 
@@ -6522,15 +7207,6 @@ fn vjp_reduce_window(
 
     let win_total = ad_checked_usize_product("reduce_window window", &window_dims)?;
 
-    // Flat offset of each window tap relative to the window corner: tap t at win
-    // index w contributes Σ_d w[d]·window_dilation[d]·input_stride[d]. For an
-    // INTERIOR output (the whole dilated window lands in bounds) the contributing
-    // input flat is simply corner_flat + tap_offsets[t] — no per-tap N-d decode
-    // and no padding bounds test. This is the dense-stencil analogue of the
-    // forward pass, replacing the old O(output·window) scatter list + per-tap
-    // `compute_flat_index` decode. Border outputs (window overhangs the padding)
-    // still take the exact per-tap path, so bounds/overflow semantics are
-    // unchanged on that ring.
     let mut tap_offsets = vec![0usize; win_total];
     {
         let mut win_idx = vec![0usize; rank];
@@ -6546,17 +7222,33 @@ fn vjp_reduce_window(
 
     let want_extremum = reduce_op == "max" || reduce_op == "min";
     let want_max = reduce_op == "max";
+    let want_prod = matches!(reduce_op, "prod" | "mul");
 
-    // Real magnitudes used only for max/min window selection (complex max/min
-    // pooling is undefined). Skip the O(input) boxed extraction for sum.
-    let input_cow = if want_extremum {
+    let is_complex = matches!(input_tensor.dtype, DType::Complex64 | DType::Complex128);
+
+    // Real magnitudes used for max/min window selection or prod/mul product rule.
+    let input_cow = if (want_extremum || want_prod) && !is_complex {
         vjp_extract_dense_f64(input_tensor)
     } else {
         std::borrow::Cow::Owned(Vec::new())
     };
     let input_vals: &[f64] = &input_cow;
-
-    let is_complex = matches!(input_tensor.dtype, DType::Complex64 | DType::Complex128);
+    let input_pairs: Vec<(f64, f64)> = if want_prod && is_complex {
+        input_tensor
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::Complex64Bits(re, im) => (
+                    f64::from(f32::from_bits(*re)),
+                    f64::from(f32::from_bits(*im)),
+                ),
+                Literal::Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
+                _ => (0.0, 0.0),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Cotangent extracted once in the accumulation regime (see dtype note below).
     let g_cow = if is_complex {
@@ -6582,13 +7274,6 @@ fn vjp_reduce_window(
         Vec::new()
     };
 
-    // Accumulate in the upstream dtype's regime, then rebuild literals at
-    // `input_tensor.dtype` so the AD chain neither widens F32/BF16/F16 nor zeros
-    // complex gradients. Accumulation is streamed directly into `acc` (no
-    // materialized scatter list); across outputs the order is ascending
-    // `out_flat` in both regimes and within a window the row-major tap order is
-    // preserved, so the f64 accumulation order — hence the bits — is identical
-    // to the previous scatter-list version.
     let mut acc_r = if is_complex {
         Vec::new()
     } else {
@@ -6606,9 +7291,6 @@ fn vjp_reduce_window(
     for out_flat in 0..total_output {
         tap_buf.clear();
 
-        // Window corner (win index 0) per axis; interior iff the whole dilated
-        // window lands in bounds, in which case corner_flat + tap_offsets[t] is
-        // the input flat for tap t (corner_flat ≥ 0 holds when interior).
         let mut interior = true;
         let mut corner_flat = 0isize;
         for d in 0..rank {
@@ -6673,7 +7355,7 @@ fn vjp_reduce_window(
                 tap_buf.push(idx);
             }
         } else if interior {
-            // Sum: gradient scatters to every (in-bounds) window position.
+            // Sum or Prod: gradient scatters to every (in-bounds) window position.
             let base = corner_flat as usize;
             for &off in &tap_offsets {
                 tap_buf.push(base + off);
@@ -6697,7 +7379,35 @@ fn vjp_reduce_window(
             }
         }
 
-        if is_complex {
+        if want_prod {
+            if is_complex {
+                let (gr, gi) = g_pairs[out_flat];
+                for (m, &in_flat) in tap_buf.iter().enumerate() {
+                    let (mut pr, mut pi) = (1.0_f64, 0.0_f64);
+                    for (j, &other_flat) in tap_buf.iter().enumerate() {
+                        if j != m {
+                            let (xr, xi) = input_pairs[other_flat];
+                            let (nr, ni) = (pr * xr - pi * xi, pr * xi + pi * xr);
+                            pr = nr;
+                            pi = ni;
+                        }
+                    }
+                    acc_c[in_flat].0 += gr * pr - gi * pi;
+                    acc_c[in_flat].1 += gr * pi + gi * pr;
+                }
+            } else {
+                let gv = g_vals[out_flat];
+                for (m, &in_flat) in tap_buf.iter().enumerate() {
+                    let mut prod_others = 1.0_f64;
+                    for (j, &other_flat) in tap_buf.iter().enumerate() {
+                        if j != m {
+                            prod_others *= input_vals[other_flat];
+                        }
+                    }
+                    acc_r[in_flat] += gv * prod_others;
+                }
+            }
+        } else if is_complex {
             let (gr, gi) = g_pairs[out_flat];
             for &in_flat in &tap_buf {
                 acc_c[in_flat].0 += gr;
@@ -6733,6 +7443,118 @@ fn vjp_reduce_window(
     let grad_tensor = TensorValue::new(input_tensor.dtype, input_tensor.shape.clone(), elements)
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
     Ok(vec![Value::Tensor(grad_tensor)])
+}
+
+/// ReduceWindow JVP for PROD/MUL reduction: zero-safe product rule across window taps.
+fn jvp_reduce_window_prod(
+    primals: &[Value],
+    tangents: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    let input_tensor = match &primals[0] {
+        Value::Tensor(t) => t,
+        Value::Scalar(_) => return Ok(tangents[0].clone()),
+    };
+    let tan_tensor = match &tangents[0] {
+        Value::Tensor(t) => t,
+        Value::Scalar(_) => return Ok(tangents[0].clone()),
+    };
+    let rank = input_tensor.shape.rank();
+
+    let base_dilation = parse_reduce_window_base_dilation(params, rank);
+    if base_dilation.iter().any(|&d| d > 1) {
+        let primal_fill = reduce_window_grad_init_lit("prod", input_tensor.dtype);
+        let tan_fill = literal_from_f64_for_dtype(tan_tensor.dtype, 0.0);
+        let dilated_primal = dilate_with_fill(input_tensor, &base_dilation, primal_fill)?;
+        let dilated_tangent = dilate_with_fill(tan_tensor, &base_dilation, tan_fill)?;
+        let mut inner = params.clone();
+        inner.remove("base_dilation");
+        return jvp_reduce_window_prod(
+            &[Value::Tensor(dilated_primal)],
+            &[Value::Tensor(dilated_tangent)],
+            &inner,
+        );
+    }
+
+    let window_dims: Vec<usize> = params
+        .get("window_dimensions")
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![2; rank]);
+    let strides: Vec<usize> = params
+        .get("window_strides")
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![1; rank]);
+    let window_dilation = parse_reduce_window_grad_dilation(params, rank);
+    let input_dims: Vec<usize> = input_tensor
+        .shape
+        .dims
+        .iter()
+        .map(|d| *d as usize)
+        .collect();
+
+    let primal_out = eval_primitive(Primitive::ReduceWindow, &[primals[0].clone()], params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    let out_tensor = match &primal_out {
+        Value::Tensor(t) => t,
+        Value::Scalar(_) => return Ok(tangents[0].clone()),
+    };
+    let out_dims: Vec<usize> = out_tensor.shape.dims.iter().map(|d| *d as usize).collect();
+    let total_output = ad_checked_usize_product("reduce_window output", &out_dims)?;
+    let padding = params.get("padding").map(|s| s.as_str()).unwrap_or("valid");
+    let pad_lows = reduce_window_grad_pad_lows(
+        padding,
+        &out_dims,
+        &input_dims,
+        &window_dims,
+        &window_dilation,
+        &strides,
+    );
+
+    let input_cow = vjp_extract_dense_f64(input_tensor);
+    let input_vals: &[f64] = &input_cow;
+    let tan_cow = vjp_extract_dense_f64(tan_tensor);
+    let tan_vals: &[f64] = &tan_cow;
+
+    let win_total = ad_checked_usize_product("reduce_window window", &window_dims)?;
+    let mut tap_buf: Vec<usize> = Vec::with_capacity(win_total);
+    let mut out_elems: Vec<Literal> = Vec::with_capacity(total_output);
+    let mut out_idx = vec![0usize; rank];
+
+    for _ in 0..total_output {
+        tap_buf.clear();
+        let mut win_idx = vec![0usize; rank];
+        for _ in 0..win_total {
+            if let Some(flat_idx) = compute_flat_index(
+                &out_idx,
+                &win_idx,
+                &strides,
+                &input_dims,
+                &pad_lows,
+                &window_dilation,
+                rank,
+            )? {
+                tap_buf.push(flat_idx);
+            }
+            increment_nd_index(&mut win_idx, &window_dims);
+        }
+
+        let mut dy = 0.0_f64;
+        for (m, &in_flat) in tap_buf.iter().enumerate() {
+            let mut prod_others = 1.0_f64;
+            for (j, &other_flat) in tap_buf.iter().enumerate() {
+                if j != m {
+                    prod_others *= input_vals[other_flat];
+                }
+            }
+            dy += tan_vals[in_flat] * prod_others;
+        }
+        out_elems.push(literal_from_f64_for_dtype(tan_tensor.dtype, dy));
+        increment_nd_index(&mut out_idx, &out_dims);
+    }
+
+    let out = TensorValue::new(tan_tensor.dtype, out_tensor.shape.clone(), out_elems)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    Ok(Value::Tensor(out))
 }
 
 /// ReduceWindow JVP for MAX/MIN pooling.
@@ -7655,39 +8477,49 @@ fn associative_scan_vjp(
         });
     }
 
-    let body_op_name = params.get("body_op").map(|s| s.as_str()).unwrap_or("add");
+    let body_op_name = params
+        .get("body_op")
+        .or_else(|| params.get("mode"))
+        .map(|s| s.as_str())
+        .unwrap_or("add");
 
     match body_op_name {
-        "add" => {
-            let mut params_rev = BTreeMap::new();
-            params_rev.insert("body_op".to_owned(), "add".to_owned());
-            params_rev.insert("reverse".to_owned(), "true".to_owned());
-            let dx = eval_primitive(Primitive::AssociativeScan, &[g.clone()], &params_rev)
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            Ok(vec![dx])
-        }
-        "mul" => {
-            let xs = &inputs[0];
-            let ys = eval_primitive(Primitive::AssociativeScan, &[xs.clone()], params)
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let mut rev_params = params.clone();
-            rev_params.insert("reverse".to_owned(), "true".to_owned());
-            let g_cumsum = eval_primitive(Primitive::AssociativeScan, &[g.clone()], &rev_params)
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let div_result = eval_primitive(Primitive::Div, &[ys, xs.clone()], &BTreeMap::new())
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let dx = eval_primitive(Primitive::Mul, &[g_cumsum, div_result], &BTreeMap::new())
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            Ok(vec![dx])
-        }
-        _ => Ok(vec![zeros_like(&inputs[0])]),
+        "add" | "sum" => vjp(
+            Primitive::Cumsum,
+            inputs,
+            std::slice::from_ref(g),
+            &[],
+            params,
+        ),
+        "mul" | "prod" => vjp(
+            Primitive::Cumprod,
+            inputs,
+            std::slice::from_ref(g),
+            &[],
+            params,
+        ),
+        "max" => vjp(
+            Primitive::Cummax,
+            inputs,
+            std::slice::from_ref(g),
+            &[],
+            params,
+        ),
+        "min" => vjp(
+            Primitive::Cummin,
+            inputs,
+            std::slice::from_ref(g),
+            &[],
+            params,
+        ),
+        "and" | "or" | "xor" => Ok(vec![zeros_like(&inputs[0])]),
+        other => Err(AdError::EvalFailed(format!(
+            "unsupported associative_scan body_op {other:?}"
+        ))),
     }
 }
 
 /// AssociativeScan JVP: propagate tangents forward through the prefix chain.
-///
-/// For associative_scan with add: y[i] = sum(x[0..=i])
-/// JVP tangent: dy[i] = sum(dx[0..=i]) = associative_scan(dx)
 fn associative_scan_jvp(
     primals: &[Value],
     tangents: &[Value],
@@ -7700,15 +8532,29 @@ fn associative_scan_jvp(
         });
     }
 
-    eval_primitive(Primitive::AssociativeScan, &[tangents[0].clone()], params)
-        .map_err(|e| AdError::EvalFailed(e.to_string()))
+    let body_op_name = params
+        .get("body_op")
+        .or_else(|| params.get("mode"))
+        .map(|s| s.as_str())
+        .unwrap_or("add");
+
+    match body_op_name {
+        "add" | "sum" => jvp_rule(Primitive::Cumsum, primals, tangents, params),
+        "mul" | "prod" => jvp_rule(Primitive::Cumprod, primals, tangents, params),
+        "max" => jvp_rule(Primitive::Cummax, primals, tangents, params),
+        "min" => jvp_rule(Primitive::Cummin, primals, tangents, params),
+        "and" | "or" | "xor" => Ok(zeros_like(&tangents[0])),
+        other => Err(AdError::EvalFailed(format!(
+            "unsupported associative_scan body_op {other:?}"
+        ))),
+    }
 }
 
 fn while_body_op_for_ad(body_op_name: &str) -> Option<Primitive> {
     match body_op_name {
         "add" => Some(Primitive::Add),
         "sub" => Some(Primitive::Sub),
-        "mul" => Some(Primitive::Mul),
+        "mul" | "scale" => Some(Primitive::Mul),
         "div" => Some(Primitive::Div),
         "pow" => Some(Primitive::Pow),
         _ => None,
@@ -7769,6 +8615,7 @@ fn while_vjp(
     // Forward pass: collect intermediate carries
     let mut carries = vec![init_carry.clone()];
     let mut carry = init_carry.clone();
+    let mut terminated = false;
 
     for _ in 0..max_iter {
         let cond_result = eval_primitive(
@@ -7778,11 +8625,18 @@ fn while_vjp(
         )
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
         if !while_cond_value_to_bool(&cond_result)? {
+            terminated = true;
             break;
         }
         carry = eval_primitive(body_op, &[carry, step_value.clone()], &BTreeMap::new())
             .map_err(|e| AdError::EvalFailed(e.to_string()))?;
         carries.push(carry.clone());
+    }
+
+    if !terminated {
+        return Err(AdError::EvalFailed(format!(
+            "while VJP exceeded max_iter={max_iter}"
+        )));
     }
 
     let num_iters = carries.len() - 1; // number of body applications
@@ -8294,11 +9148,12 @@ fn dilate_with_fill(
 }
 
 /// Reduction init literal (the value reduce_window dilation-holes carry), typed to
-/// `dtype`: −∞ for max, +∞ for min, 0 for sum.
+/// `dtype`: −∞ for max, +∞ for min, 1 for prod/mul, 0 for sum.
 fn reduce_window_grad_init_lit(reduce_op: &str, dtype: DType) -> Literal {
     let v = match reduce_op {
         "max" => f64::NEG_INFINITY,
         "min" => f64::INFINITY,
+        "prod" | "mul" => 1.0,
         _ => 0.0,
     };
     match dtype {
@@ -9537,6 +10392,7 @@ fn cumprod_jvp_tensor(
     }
 
     let axis = parse_cumulative_axis(params, rank, Primitive::Cumprod)?;
+    let reverse = params.get("reverse").map(|s| s == "true").unwrap_or(false);
     let dims = primal
         .shape
         .dims
@@ -9563,7 +10419,8 @@ fn cumprod_jvp_tensor(
 
         let mut running_product = 1.0_f64;
         let mut running_tangent = 0.0_f64;
-        for axis_idx in 0..axis_len {
+        for step in 0..axis_len {
+            let axis_idx = if reverse { axis_len - 1 - step } else { step };
             let flat_idx = base + axis_idx * axis_stride;
             let primal_value = primal.elements[flat_idx]
                 .as_f64()
@@ -10181,6 +11038,27 @@ fn jvp_inner(
                     resolved_primals.push(pval);
                 }
             }
+        }
+
+        if !eqn.sub_jaxprs.is_empty() {
+            let sub_res = jvp_with_sub_jaxprs(
+                eqn.primitive,
+                &resolved_primals,
+                &resolved_tangents,
+                &eqn.params,
+                &eqn.sub_jaxprs,
+            )?;
+            for (idx, var) in eqn.outputs.iter().enumerate() {
+                if let Some(p) = sub_res.primals.get(idx) {
+                    primal_env.insert(*var, p.clone());
+                }
+                if let Some(t) = sub_res.tangents.get(idx) {
+                    tangent_env.insert(*var, t.clone());
+                } else if let Some(p) = sub_res.primals.get(idx) {
+                    tangent_env.insert(*var, zeros_like(p));
+                }
+            }
+            continue;
         }
 
         let primal_outs =
@@ -11160,12 +12038,16 @@ fn jvp_rule(
         Primitive::ReduceWindow => {
             // Sum reduction is linear: d rw_sum(x) = rw_sum(dx). Max/min pooling
             // is a SELECTION — the output tangent must follow the primal's
-            // arg-extremum (gather), not re-reduce the tangent.
+            // arg-extremum (gather), not re-reduce the tangent. Prod reduction
+            // uses the zero-safe window product rule.
             let reduce_op = params.get("reduce_op").map(|s| s.as_str()).unwrap_or("sum");
-            if reduce_op == "max" || reduce_op == "min" {
-                jvp_reduce_window_select(primals, tangents, params)
-            } else {
-                ep_p(Primitive::ReduceWindow, &[tangents[0].clone()], params)
+            match reduce_op {
+                "max" | "min" => jvp_reduce_window_select(primals, tangents, params),
+                "prod" | "mul" => jvp_reduce_window_prod(primals, tangents, params),
+                "sum" | "add" => ep_p(Primitive::ReduceWindow, &[tangents[0].clone()], params),
+                other => Err(AdError::EvalFailed(format!(
+                    "unsupported reduce_window reduce_op {other:?}"
+                ))),
             }
         }
 
@@ -12088,6 +12970,1360 @@ pub fn value_and_grad_jaxpr_with_custom_vjp_key(
 pub fn grad_first(jaxpr: &Jaxpr, args: &[Value]) -> Result<f64, AdError> {
     let grads = grad_jaxpr(jaxpr, args)?;
     to_f64(&grads[0])
+}
+
+// ── Symbolic Jaxpr-to-Jaxpr Differentiation (JVP / VJP / Grad) ─────
+
+struct SymbolicJaxprBuilder {
+    next_var: u32,
+    equations: Vec<fj_core::Equation>,
+}
+
+impl SymbolicJaxprBuilder {
+    fn new(start_var: u32) -> Self {
+        Self {
+            next_var: start_var,
+            equations: Vec::new(),
+        }
+    }
+
+    fn fresh_var(&mut self) -> VarId {
+        let id = VarId(self.next_var);
+        self.next_var += 1;
+        id
+    }
+
+    fn emit(
+        &mut self,
+        primitive: Primitive,
+        inputs: SmallVec<[Atom; 4]>,
+        params: BTreeMap<String, String>,
+    ) -> VarId {
+        let out = self.fresh_var();
+        self.equations.push(fj_core::Equation {
+            primitive,
+            inputs,
+            outputs: smallvec::smallvec![out],
+            params,
+            sub_jaxprs: Vec::new(),
+            effects: Vec::new(),
+        });
+        out
+    }
+
+    fn emit_unary(&mut self, primitive: Primitive, x: Atom) -> VarId {
+        self.emit(primitive, smallvec::smallvec![x], BTreeMap::new())
+    }
+
+    fn emit_unary_params(
+        &mut self,
+        primitive: Primitive,
+        x: Atom,
+        params: BTreeMap<String, String>,
+    ) -> VarId {
+        self.emit(primitive, smallvec::smallvec![x], params)
+    }
+
+    fn emit_binary(&mut self, primitive: Primitive, a: Atom, b: Atom) -> VarId {
+        self.emit(primitive, smallvec::smallvec![a, b], BTreeMap::new())
+    }
+
+    fn emit_binary_params(
+        &mut self,
+        primitive: Primitive,
+        a: Atom,
+        b: Atom,
+        params: BTreeMap<String, String>,
+    ) -> VarId {
+        self.emit(primitive, smallvec::smallvec![a, b], params)
+    }
+
+    fn emit_ternary(&mut self, primitive: Primitive, a: Atom, b: Atom, c: Atom) -> VarId {
+        self.emit(primitive, smallvec::smallvec![a, b, c], BTreeMap::new())
+    }
+
+    fn emit_zeros_like(&mut self, x: Atom) -> VarId {
+        self.emit_binary(Primitive::Sub, x.clone(), x)
+    }
+
+    fn emit_ones_like(&mut self, x: Atom) -> VarId {
+        let z = self.emit_zeros_like(x);
+        self.emit_binary(
+            Primitive::Add,
+            Atom::Var(z),
+            Atom::Lit(Literal::from_f64(1.0)),
+        )
+    }
+
+    fn emit_add_cotangents(&mut self, a: VarId, b: VarId) -> VarId {
+        self.emit_binary(Primitive::Add, Atom::Var(a), Atom::Var(b))
+    }
+
+    fn emit_broadcast_reduced_to(
+        &mut self,
+        reduced: Atom,
+        target: Atom,
+        params: &BTreeMap<String, String>,
+    ) -> VarId {
+        let mut current = reduced;
+        if let Some(axes_str) = params.get("axes") {
+            let mut axes: Vec<usize> = axes_str
+                .split(',')
+                .filter_map(|s| s.trim().parse::<usize>().ok())
+                .collect();
+            axes.sort_unstable();
+            for axis in axes {
+                let mut exp_params = BTreeMap::new();
+                exp_params.insert("axis".to_owned(), axis.to_string());
+                let expanded = self.emit_unary_params(Primitive::ExpandDims, current, exp_params);
+                current = Atom::Var(expanded);
+            }
+        }
+        let target_zero = self.emit_zeros_like(target);
+        self.emit_binary(Primitive::Add, current, Atom::Var(target_zero))
+    }
+}
+
+fn max_var_id_in_jaxpr(jaxpr: &Jaxpr) -> u32 {
+    let mut max_id = 0u32;
+    for v in jaxpr
+        .invars
+        .iter()
+        .chain(jaxpr.constvars.iter())
+        .chain(jaxpr.outvars.iter())
+    {
+        max_id = max_id.max(v.0);
+    }
+    for eqn in &jaxpr.equations {
+        for atom in &eqn.inputs {
+            if let Atom::Var(v) = atom {
+                max_id = max_id.max(v.0);
+            }
+        }
+        for v in &eqn.outputs {
+            max_id = max_id.max(v.0);
+        }
+        for sub in &eqn.sub_jaxprs {
+            max_id = max_id.max(max_var_id_in_jaxpr(sub));
+        }
+    }
+    max_id
+}
+
+fn is_input_differentiable(primitive: Primitive, input_idx: usize) -> bool {
+    match primitive {
+        Primitive::Eq
+        | Primitive::Ne
+        | Primitive::Lt
+        | Primitive::Le
+        | Primitive::Gt
+        | Primitive::Ge
+        | Primitive::Floor
+        | Primitive::Ceil
+        | Primitive::Round
+        | Primitive::Trunc
+        | Primitive::Sign
+        | Primitive::IsFinite
+        | Primitive::IsInf
+        | Primitive::IsNan
+        | Primitive::Signbit
+        | Primitive::Nextafter
+        | Primitive::StopGradient
+        | Primitive::BitcastConvertType
+        | Primitive::BitwiseAnd
+        | Primitive::BitwiseOr
+        | Primitive::BitwiseXor
+        | Primitive::BitwiseNot
+        | Primitive::PopulationCount
+        | Primitive::CountLeadingZeros
+        | Primitive::CountTrailingZeros
+        | Primitive::ShiftLeft
+        | Primitive::ShiftRightArithmetic
+        | Primitive::ShiftRightLogical
+        | Primitive::Iota
+        | Primitive::BroadcastedIota
+        | Primitive::OneHot
+        | Primitive::Argmax
+        | Primitive::Argmin
+        | Primitive::Argsort
+        | Primitive::ReduceAnd
+        | Primitive::ReduceOr
+        | Primitive::ReduceXor => false,
+        Primitive::Select | Primitive::Cond | Primitive::Switch => input_idx >= 1,
+        Primitive::DynamicSlice | Primitive::Gather => input_idx == 0,
+        Primitive::DynamicUpdateSlice => input_idx <= 1,
+        Primitive::Scatter => input_idx == 0 || input_idx == 2,
+        Primitive::Heaviside => input_idx == 1,
+        _ => true,
+    }
+}
+
+fn equation_obviously_non_scalar_output(eqn: &fj_core::Equation) -> bool {
+    match eqn.primitive {
+        Primitive::BroadcastInDim => eqn
+            .params
+            .get("shape")
+            .is_some_and(|s| !s.trim().is_empty() && s.trim() != "1"),
+        Primitive::Reshape => eqn
+            .params
+            .get("new_shape")
+            .is_some_and(|s| !s.trim().is_empty()),
+        Primitive::Iota => eqn
+            .params
+            .get("length")
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .is_some_and(|n| n > 1),
+        _ => false,
+    }
+}
+
+fn collect_referenced_vars_in_jaxpr(jaxpr: &Jaxpr, out: &mut std::collections::BTreeSet<VarId>) {
+    for v in &jaxpr.outvars {
+        out.insert(*v);
+    }
+    for eqn in &jaxpr.equations {
+        for atom in &eqn.inputs {
+            if let Atom::Var(v) = atom {
+                out.insert(*v);
+            }
+        }
+        for sub in &eqn.sub_jaxprs {
+            collect_referenced_vars_in_jaxpr(sub, out);
+        }
+    }
+}
+
+fn dce_equations(equations: Vec<fj_core::Equation>, outvars: &[VarId]) -> Vec<fj_core::Equation> {
+    let mut live: std::collections::BTreeSet<VarId> = outvars.iter().copied().collect();
+    let mut keep = vec![false; equations.len()];
+    for (idx, eqn) in equations.iter().enumerate().rev() {
+        let defines_live = eqn.outputs.iter().any(|v| live.contains(v)) || !eqn.effects.is_empty();
+        if defines_live {
+            keep[idx] = true;
+            for atom in &eqn.inputs {
+                if let Atom::Var(v) = atom {
+                    live.insert(*v);
+                }
+            }
+            for sub in &eqn.sub_jaxprs {
+                collect_referenced_vars_in_jaxpr(sub, &mut live);
+            }
+        }
+    }
+    equations
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(eqn, k)| k.then_some(eqn))
+        .collect()
+}
+
+fn canonicalize_symbolic_outvars(
+    builder: &mut SymbolicJaxprBuilder,
+    invars: &[VarId],
+    constvars: &[VarId],
+    raw_outvars: Vec<VarId>,
+) -> Vec<VarId> {
+    let mut seen_outvars = std::collections::BTreeSet::new();
+    let mut outvars = Vec::with_capacity(raw_outvars.len());
+    for v in raw_outvars {
+        if !seen_outvars.insert(v) {
+            let copied = builder.emit_unary(Primitive::Copy, Atom::Var(v));
+            outvars.push(copied);
+        } else {
+            outvars.push(v);
+        }
+    }
+    let _ = (invars, constvars);
+    outvars
+}
+
+fn emit_symbolic_jvp_equation(
+    builder: &mut SymbolicJaxprBuilder,
+    eqn: &fj_core::Equation,
+    tangent_of_atom: &dyn Fn(&mut SymbolicJaxprBuilder, Atom) -> Atom,
+) -> Result<Vec<VarId>, AdError> {
+    let p_in = &eqn.inputs;
+    let t_in: Vec<Atom> = p_in
+        .iter()
+        .map(|a| tangent_of_atom(builder, a.clone()))
+        .collect();
+    let p_out = &eqn.outputs;
+    let params = &eqn.params;
+    let p = |i: usize| p_in[i].clone();
+    let t = |i: usize| t_in[i].clone();
+
+    if !eqn.sub_jaxprs.is_empty() && eqn.primitive == Primitive::Cond && eqn.sub_jaxprs.len() == 2 {
+        let jvp_true = build_jvp_jaxpr(&eqn.sub_jaxprs[0])?;
+        let jvp_false = build_jvp_jaxpr(&eqn.sub_jaxprs[1])?;
+        let mut cond_inputs = SmallVec::<[Atom; 4]>::with_capacity(1 + 2 * (p_in.len() - 1));
+        cond_inputs.push(p(0));
+        for a in &p_in[1..] {
+            cond_inputs.push(a.clone());
+        }
+        for da in &t_in[1..] {
+            cond_inputs.push(da.clone());
+        }
+        let mut cond_outputs = SmallVec::<[VarId; 2]>::with_capacity(2 * p_out.len());
+        let mut tangent_vars = Vec::with_capacity(p_out.len());
+        for _ in 0..p_out.len() {
+            cond_outputs.push(builder.fresh_var());
+        }
+        for _ in 0..p_out.len() {
+            let tv = builder.fresh_var();
+            cond_outputs.push(tv);
+            tangent_vars.push(tv);
+        }
+        builder.equations.push(fj_core::Equation {
+            primitive: Primitive::Cond,
+            inputs: cond_inputs,
+            outputs: cond_outputs,
+            params: params.clone(),
+            sub_jaxprs: vec![jvp_true, jvp_false],
+            effects: eqn.effects.clone(),
+        });
+        return Ok(tangent_vars);
+    }
+
+    if (0..p_in.len()).all(|i| !is_input_differentiable(eqn.primitive, i)) {
+        return Ok(p_out
+            .iter()
+            .map(|&out_v| builder.emit_zeros_like(Atom::Var(out_v)))
+            .collect());
+    }
+
+    let dy = match eqn.primitive {
+        Primitive::Add => builder.emit_binary(Primitive::Add, t(0), t(1)),
+        Primitive::Sub => builder.emit_binary(Primitive::Sub, t(0), t(1)),
+        Primitive::Mul => {
+            let lhs = builder.emit_binary(Primitive::Mul, t(0), p(1));
+            let rhs = builder.emit_binary(Primitive::Mul, p(0), t(1));
+            builder.emit_binary(Primitive::Add, Atom::Var(lhs), Atom::Var(rhs))
+        }
+        Primitive::Div => {
+            let y = Atom::Var(p_out[0]);
+            let y_dy = builder.emit_binary(Primitive::Mul, y, t(1));
+            let num = builder.emit_binary(Primitive::Sub, t(0), Atom::Var(y_dy));
+            builder.emit_binary(Primitive::Div, Atom::Var(num), p(1))
+        }
+        Primitive::Rem => {
+            let q = builder.emit_binary(Primitive::Div, p(0), p(1));
+            let fq = builder.emit_unary(Primitive::Floor, Atom::Var(q));
+            let rhs = builder.emit_binary(Primitive::Mul, t(1), Atom::Var(fq));
+            builder.emit_binary(Primitive::Sub, t(0), Atom::Var(rhs))
+        }
+        Primitive::Pow => {
+            let one = Atom::Lit(Literal::from_f64(1.0));
+            let bm1 = builder.emit_binary(Primitive::Sub, p(1), one);
+            let a_bm1 = builder.emit_binary(Primitive::Pow, p(0), Atom::Var(bm1));
+            let b_abm1 = builder.emit_binary(Primitive::Mul, p(1), Atom::Var(a_bm1));
+            let da_term = builder.emit_binary(Primitive::Mul, t(0), Atom::Var(b_abm1));
+            if matches!(p_in[1], Atom::Lit(_)) {
+                da_term
+            } else {
+                let abs_a = builder.emit_unary(Primitive::Abs, p(0));
+                let safe_a = builder.emit_binary(
+                    Primitive::Max,
+                    Atom::Var(abs_a),
+                    Atom::Lit(Literal::from_f64(1e-30)),
+                );
+                let ln_a = builder.emit_unary(Primitive::Log, Atom::Var(safe_a));
+                let out_lna =
+                    builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(ln_a));
+                let db_term = builder.emit_binary(Primitive::Mul, t(1), Atom::Var(out_lna));
+                builder.emit_binary(Primitive::Add, Atom::Var(da_term), Atom::Var(db_term))
+            }
+        }
+        Primitive::Max => {
+            let ge = builder.emit_binary(Primitive::Ge, p(0), p(1));
+            builder.emit_ternary(Primitive::Select, Atom::Var(ge), t(0), t(1))
+        }
+        Primitive::Min => {
+            let le = builder.emit_binary(Primitive::Le, p(0), p(1));
+            builder.emit_ternary(Primitive::Select, Atom::Var(le), t(0), t(1))
+        }
+        Primitive::Atan2 => {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let y2 = builder.emit_binary(Primitive::Mul, p(1), p(1));
+            let denom = builder.emit_binary(Primitive::Add, Atom::Var(x2), Atom::Var(y2));
+            let y_dx = builder.emit_binary(Primitive::Mul, p(1), t(0));
+            let x_dy = builder.emit_binary(Primitive::Mul, p(0), t(1));
+            let num = builder.emit_binary(Primitive::Sub, Atom::Var(y_dx), Atom::Var(x_dy));
+            builder.emit_binary(Primitive::Div, Atom::Var(num), Atom::Var(denom))
+        }
+        Primitive::Hypot => {
+            let x_dx = builder.emit_binary(Primitive::Mul, p(0), t(0));
+            let y_dy = builder.emit_binary(Primitive::Mul, p(1), t(1));
+            let num = builder.emit_binary(Primitive::Add, Atom::Var(x_dx), Atom::Var(y_dy));
+            builder.emit_binary(Primitive::Div, Atom::Var(num), Atom::Var(p_out[0]))
+        }
+        Primitive::Neg => builder.emit_unary(Primitive::Neg, t(0)),
+        Primitive::Abs => {
+            let s = builder.emit_unary(Primitive::Sign, p(0));
+            builder.emit_binary(Primitive::Mul, Atom::Var(s), t(0))
+        }
+        Primitive::Square => {
+            let two_x =
+                builder.emit_binary(Primitive::Mul, Atom::Lit(Literal::from_f64(2.0)), p(0));
+            builder.emit_binary(Primitive::Mul, Atom::Var(two_x), t(0))
+        }
+        Primitive::Sqrt => {
+            let two_y = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Lit(Literal::from_f64(2.0)),
+                Atom::Var(p_out[0]),
+            );
+            builder.emit_binary(Primitive::Div, t(0), Atom::Var(two_y))
+        }
+        Primitive::Rsqrt => {
+            let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
+            let y3 = builder.emit_binary(Primitive::Mul, Atom::Var(y2), Atom::Var(p_out[0]));
+            let half_y3 = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Lit(Literal::from_f64(-0.5)),
+                Atom::Var(y3),
+            );
+            builder.emit_binary(Primitive::Mul, t(0), Atom::Var(half_y3))
+        }
+        Primitive::Cbrt => {
+            let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
+            let three_y2 = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Lit(Literal::from_f64(3.0)),
+                Atom::Var(y2),
+            );
+            builder.emit_binary(Primitive::Div, t(0), Atom::Var(three_y2))
+        }
+        Primitive::Reciprocal => {
+            let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
+            let neg_y2 = builder.emit_unary(Primitive::Neg, Atom::Var(y2));
+            builder.emit_binary(Primitive::Mul, t(0), Atom::Var(neg_y2))
+        }
+        Primitive::Exp => builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), t(0)),
+        Primitive::Expm1 => {
+            let ex = builder.emit_unary(Primitive::Exp, p(0));
+            builder.emit_binary(Primitive::Mul, Atom::Var(ex), t(0))
+        }
+        Primitive::Exp2 => {
+            let ln2 = Atom::Lit(Literal::from_f64(std::f64::consts::LN_2));
+            let y_ln2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), ln2);
+            builder.emit_binary(Primitive::Mul, Atom::Var(y_ln2), t(0))
+        }
+        Primitive::Log => builder.emit_binary(Primitive::Div, t(0), p(0)),
+        Primitive::Log1p => {
+            let xp1 = builder.emit_binary(Primitive::Add, p(0), Atom::Lit(Literal::from_f64(1.0)));
+            builder.emit_binary(Primitive::Div, t(0), Atom::Var(xp1))
+        }
+        Primitive::Log2 => {
+            let dx_x = builder.emit_binary(Primitive::Div, t(0), p(0));
+            builder.emit_binary(
+                Primitive::Mul,
+                Atom::Var(dx_x),
+                Atom::Lit(Literal::from_f64(1.0 / std::f64::consts::LN_2)),
+            )
+        }
+        Primitive::Sin => {
+            let cx = builder.emit_unary(Primitive::Cos, p(0));
+            builder.emit_binary(Primitive::Mul, Atom::Var(cx), t(0))
+        }
+        Primitive::Cos => {
+            let sx = builder.emit_unary(Primitive::Sin, p(0));
+            let nsx = builder.emit_unary(Primitive::Neg, Atom::Var(sx));
+            builder.emit_binary(Primitive::Mul, Atom::Var(nsx), t(0))
+        }
+        Primitive::Tan => {
+            let cx = builder.emit_unary(Primitive::Cos, p(0));
+            let c2 = builder.emit_binary(Primitive::Mul, Atom::Var(cx), Atom::Var(cx));
+            builder.emit_binary(Primitive::Div, t(0), Atom::Var(c2))
+        }
+        Primitive::Sinh => {
+            let ch = builder.emit_unary(Primitive::Cosh, p(0));
+            builder.emit_binary(Primitive::Mul, Atom::Var(ch), t(0))
+        }
+        Primitive::Cosh => {
+            let sh = builder.emit_unary(Primitive::Sinh, p(0));
+            builder.emit_binary(Primitive::Mul, Atom::Var(sh), t(0))
+        }
+        Primitive::Tanh => {
+            let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
+            let one_m_y2 = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(y2),
+            );
+            builder.emit_binary(Primitive::Mul, Atom::Var(one_m_y2), t(0))
+        }
+        Primitive::Asin => {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let omx2 = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(x2),
+            );
+            let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(omx2));
+            builder.emit_binary(Primitive::Div, t(0), Atom::Var(denom))
+        }
+        Primitive::Acos => {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let omx2 = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(x2),
+            );
+            let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(omx2));
+            let ndx = builder.emit_unary(Primitive::Neg, t(0));
+            builder.emit_binary(Primitive::Div, Atom::Var(ndx), Atom::Var(denom))
+        }
+        Primitive::Atan => {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let denom = builder.emit_binary(
+                Primitive::Add,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(x2),
+            );
+            builder.emit_binary(Primitive::Div, t(0), Atom::Var(denom))
+        }
+        Primitive::Asinh => {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let x2p1 = builder.emit_binary(
+                Primitive::Add,
+                Atom::Var(x2),
+                Atom::Lit(Literal::from_f64(1.0)),
+            );
+            let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(x2p1));
+            builder.emit_binary(Primitive::Div, t(0), Atom::Var(denom))
+        }
+        Primitive::Acosh => {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let x2m1 = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Var(x2),
+                Atom::Lit(Literal::from_f64(1.0)),
+            );
+            let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(x2m1));
+            builder.emit_binary(Primitive::Div, t(0), Atom::Var(denom))
+        }
+        Primitive::Atanh => {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let denom = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(x2),
+            );
+            builder.emit_binary(Primitive::Div, t(0), Atom::Var(denom))
+        }
+        Primitive::Logistic => {
+            let one_m_y = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(p_out[0]),
+            );
+            let y_omy =
+                builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(one_m_y));
+            builder.emit_binary(Primitive::Mul, Atom::Var(y_omy), t(0))
+        }
+        Primitive::Erf | Primitive::Erfc => {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let nx2 = builder.emit_unary(Primitive::Neg, Atom::Var(x2));
+            let ex = builder.emit_unary(Primitive::Exp, Atom::Var(nx2));
+            let coef = if eqn.primitive == Primitive::Erf {
+                2.0 / std::f64::consts::PI.sqrt()
+            } else {
+                -2.0 / std::f64::consts::PI.sqrt()
+            };
+            let d = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Lit(Literal::from_f64(coef)),
+                Atom::Var(ex),
+            );
+            builder.emit_binary(Primitive::Mul, Atom::Var(d), t(0))
+        }
+        Primitive::Select => builder.emit_ternary(Primitive::Select, p(0), t(1), t(2)),
+        Primitive::Clamp => {
+            let lt_min = builder.emit_binary(Primitive::Lt, p(1), p(0));
+            let gt_max = builder.emit_binary(Primitive::Gt, p(1), p(2));
+            let inner = builder.emit_ternary(Primitive::Select, Atom::Var(gt_max), t(2), t(1));
+            builder.emit_ternary(Primitive::Select, Atom::Var(lt_min), t(0), Atom::Var(inner))
+        }
+        Primitive::Fma => {
+            let da_b = builder.emit_binary(Primitive::Mul, t(0), p(1));
+            let a_db = builder.emit_binary(Primitive::Mul, p(0), t(1));
+            let ab = builder.emit_binary(Primitive::Add, Atom::Var(da_b), Atom::Var(a_db));
+            builder.emit_binary(Primitive::Add, Atom::Var(ab), t(2))
+        }
+        Primitive::Dot => {
+            let da_b = builder.emit_binary(Primitive::Dot, t(0), p(1));
+            let a_db = builder.emit_binary(Primitive::Dot, p(0), t(1));
+            builder.emit_binary(Primitive::Add, Atom::Var(da_b), Atom::Var(a_db))
+        }
+        Primitive::DotGeneral => {
+            let da_b =
+                builder.emit_binary_params(Primitive::DotGeneral, t(0), p(1), params.clone());
+            let a_db =
+                builder.emit_binary_params(Primitive::DotGeneral, p(0), t(1), params.clone());
+            builder.emit_binary(Primitive::Add, Atom::Var(da_b), Atom::Var(a_db))
+        }
+        Primitive::ReduceSum
+        | Primitive::Reshape
+        | Primitive::Transpose
+        | Primitive::BroadcastInDim
+        | Primitive::Slice
+        | Primitive::Rev
+        | Primitive::Squeeze
+        | Primitive::ExpandDims
+        | Primitive::Copy
+        | Primitive::ReducePrecision
+        | Primitive::Cumsum
+        | Primitive::Real
+        | Primitive::Imag
+        | Primitive::Conj
+        | Primitive::Fft
+        | Primitive::Ifft
+        | Primitive::Rfft
+        | Primitive::Irfft => builder.emit_unary_params(eqn.primitive, t(0), params.clone()),
+        Primitive::Complex => builder.emit_binary(Primitive::Complex, t(0), t(1)),
+        _ => return Err(AdError::UnsupportedPrimitive(eqn.primitive)),
+    };
+
+    Ok(vec![dy])
+}
+
+/// Build a symbolic forward-mode JVP `Jaxpr` from `jaxpr`.
+///
+/// If `jaxpr` has `n` `invars` and `m` `outvars`, the returned `Jaxpr` has:
+/// - `2n` `invars`: `[primals..., tangents...]`
+/// - `2m` `outvars`: `[primal_outputs..., tangent_outputs...]`
+pub fn build_jvp_jaxpr(jaxpr: &Jaxpr) -> Result<Jaxpr, AdError> {
+    if lookup_custom_jaxpr_jvp(jaxpr).is_some()
+        || jaxpr
+            .equations
+            .iter()
+            .any(|eqn| lookup_custom_jvp(eqn.primitive).is_some())
+    {
+        return Err(AdError::EvalFailed(
+            "symbolic jvp jaxpr cannot inline runtime custom_jvp closure".to_owned(),
+        ));
+    }
+    let mut builder = SymbolicJaxprBuilder::new(max_var_id_in_jaxpr(jaxpr) + 1);
+    let mut tangent_map: std::collections::BTreeMap<VarId, VarId> =
+        std::collections::BTreeMap::new();
+
+    let mut invars = Vec::with_capacity(2 * jaxpr.invars.len());
+    invars.extend_from_slice(&jaxpr.invars);
+    for &invar in &jaxpr.invars {
+        let dinvar = builder.fresh_var();
+        invars.push(dinvar);
+        tangent_map.insert(invar, dinvar);
+    }
+
+    for &cvar in &jaxpr.constvars {
+        let zero_c = builder.emit_zeros_like(Atom::Var(cvar));
+        tangent_map.insert(cvar, zero_c);
+    }
+
+    for eqn in &jaxpr.equations {
+        builder.equations.push(eqn.clone());
+        let tangent_outs = emit_symbolic_jvp_equation(&mut builder, eqn, &|b, atom| match atom {
+            Atom::Var(v) => {
+                if let Some(&tv) = tangent_map.get(&v) {
+                    Atom::Var(tv)
+                } else {
+                    Atom::Var(b.emit_zeros_like(Atom::Var(v)))
+                }
+            }
+            Atom::Lit(lit) => Atom::Var(b.emit_zeros_like(Atom::Lit(lit))),
+        })?;
+        for (&p_var, t_var) in eqn.outputs.iter().zip(tangent_outs) {
+            tangent_map.insert(p_var, t_var);
+        }
+    }
+
+    let mut raw_outvars = Vec::with_capacity(2 * jaxpr.outvars.len());
+    raw_outvars.extend_from_slice(&jaxpr.outvars);
+    for &outvar in &jaxpr.outvars {
+        let tout = if let Some(&tv) = tangent_map.get(&outvar) {
+            tv
+        } else {
+            builder.emit_zeros_like(Atom::Var(outvar))
+        };
+        raw_outvars.push(tout);
+    }
+
+    let outvars =
+        canonicalize_symbolic_outvars(&mut builder, &invars, &jaxpr.constvars, raw_outvars);
+    let equations = dce_equations(builder.equations, &outvars);
+
+    Ok(Jaxpr::new(
+        invars,
+        jaxpr.constvars.clone(),
+        outvars,
+        equations,
+    ))
+}
+
+fn emit_symbolic_vjp_equation(
+    builder: &mut SymbolicJaxprBuilder,
+    eqn: &fj_core::Equation,
+    g_var: VarId,
+    need_input: &[bool],
+) -> Result<Vec<Option<VarId>>, AdError> {
+    let p_in = &eqn.inputs;
+    let p_out = &eqn.outputs;
+    let params = &eqn.params;
+    let p = |i: usize| p_in[i].clone();
+    let g = || Atom::Var(g_var);
+
+    if !eqn.sub_jaxprs.is_empty() && eqn.primitive == Primitive::Cond && eqn.sub_jaxprs.len() == 2 {
+        let active_branch_argnums: Vec<usize> = (1..p_in.len())
+            .filter_map(|i| need_input[i].then_some(i - 1))
+            .collect();
+        if active_branch_argnums.is_empty() {
+            return Ok(vec![None; p_in.len()]);
+        }
+        let grad_true = build_grad_jaxpr(&eqn.sub_jaxprs[0], &active_branch_argnums)?;
+        let grad_false = build_grad_jaxpr(&eqn.sub_jaxprs[1], &active_branch_argnums)?;
+        let mut cond_inputs = SmallVec::<[Atom; 4]>::with_capacity(p_in.len());
+        for a in p_in {
+            cond_inputs.push(a.clone());
+        }
+        let mut cond_outputs = SmallVec::<[VarId; 2]>::with_capacity(active_branch_argnums.len());
+        for _ in 0..active_branch_argnums.len() {
+            cond_outputs.push(builder.fresh_var());
+        }
+        builder.equations.push(fj_core::Equation {
+            primitive: Primitive::Cond,
+            inputs: cond_inputs,
+            outputs: cond_outputs.clone(),
+            params: params.clone(),
+            sub_jaxprs: vec![grad_true, grad_false],
+            effects: eqn.effects.clone(),
+        });
+        let mut result = vec![None; p_in.len()];
+        for (k, &branch_arg) in active_branch_argnums.iter().enumerate() {
+            let scaled = builder.emit_binary(Primitive::Mul, g(), Atom::Var(cond_outputs[k]));
+            result[1 + branch_arg] = Some(scaled);
+        }
+        return Ok(result);
+    }
+
+    match eqn.primitive {
+        Primitive::Add => Ok(vec![
+            need_input[0].then_some(g_var),
+            need_input[1].then_some(g_var),
+        ]),
+        Primitive::Sub => {
+            let g0 = need_input[0].then_some(g_var);
+            let g1 = need_input[1].then(|| builder.emit_unary(Primitive::Neg, g()));
+            Ok(vec![g0, g1])
+        }
+        Primitive::Mul => {
+            let g0 = need_input[0].then(|| builder.emit_binary(Primitive::Mul, g(), p(1)));
+            let g1 = need_input[1].then(|| builder.emit_binary(Primitive::Mul, g(), p(0)));
+            Ok(vec![g0, g1])
+        }
+        Primitive::Div => {
+            let g0 = need_input[0].then(|| builder.emit_binary(Primitive::Div, g(), p(1)));
+            let g1 = need_input[1].then(|| {
+                let gx = builder.emit_binary(Primitive::Mul, g(), p(0));
+                let y2 = builder.emit_binary(Primitive::Mul, p(1), p(1));
+                let q = builder.emit_binary(Primitive::Div, Atom::Var(gx), Atom::Var(y2));
+                builder.emit_unary(Primitive::Neg, Atom::Var(q))
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::Rem => {
+            let g0 = need_input[0].then_some(g_var);
+            let g1 = need_input[1].then(|| {
+                let q = builder.emit_binary(Primitive::Div, p(0), p(1));
+                let fq = builder.emit_unary(Primitive::Floor, Atom::Var(q));
+                let gfq = builder.emit_binary(Primitive::Mul, g(), Atom::Var(fq));
+                builder.emit_unary(Primitive::Neg, Atom::Var(gfq))
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::Pow => {
+            let g0 = need_input[0].then(|| {
+                let bm1 =
+                    builder.emit_binary(Primitive::Sub, p(1), Atom::Lit(Literal::from_f64(1.0)));
+                let a_bm1 = builder.emit_binary(Primitive::Pow, p(0), Atom::Var(bm1));
+                let b_abm1 = builder.emit_binary(Primitive::Mul, p(1), Atom::Var(a_bm1));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(b_abm1))
+            });
+            let g1 = need_input[1].then(|| {
+                let abs_a = builder.emit_unary(Primitive::Abs, p(0));
+                let safe_a = builder.emit_binary(
+                    Primitive::Max,
+                    Atom::Var(abs_a),
+                    Atom::Lit(Literal::from_f64(1e-30)),
+                );
+                let ln_a = builder.emit_unary(Primitive::Log, Atom::Var(safe_a));
+                let out_lna =
+                    builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(ln_a));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(out_lna))
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::Max => {
+            let ge = builder.emit_binary(Primitive::Ge, p(0), p(1));
+            let zero = builder.emit_zeros_like(g());
+            let g0 = need_input[0].then(|| {
+                builder.emit_ternary(Primitive::Select, Atom::Var(ge), g(), Atom::Var(zero))
+            });
+            let g1 = need_input[1].then(|| {
+                builder.emit_ternary(Primitive::Select, Atom::Var(ge), Atom::Var(zero), g())
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::Min => {
+            let le = builder.emit_binary(Primitive::Le, p(0), p(1));
+            let zero = builder.emit_zeros_like(g());
+            let g0 = need_input[0].then(|| {
+                builder.emit_ternary(Primitive::Select, Atom::Var(le), g(), Atom::Var(zero))
+            });
+            let g1 = need_input[1].then(|| {
+                builder.emit_ternary(Primitive::Select, Atom::Var(le), Atom::Var(zero), g())
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::Atan2 => {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let y2 = builder.emit_binary(Primitive::Mul, p(1), p(1));
+            let denom = builder.emit_binary(Primitive::Add, Atom::Var(x2), Atom::Var(y2));
+            let g0 = need_input[0].then(|| {
+                let gy = builder.emit_binary(Primitive::Mul, g(), p(1));
+                builder.emit_binary(Primitive::Div, Atom::Var(gy), Atom::Var(denom))
+            });
+            let g1 = need_input[1].then(|| {
+                let gx = builder.emit_binary(Primitive::Mul, g(), p(0));
+                let q = builder.emit_binary(Primitive::Div, Atom::Var(gx), Atom::Var(denom));
+                builder.emit_unary(Primitive::Neg, Atom::Var(q))
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::Hypot => {
+            let g0 = need_input[0].then(|| {
+                let gx = builder.emit_binary(Primitive::Mul, g(), p(0));
+                builder.emit_binary(Primitive::Div, Atom::Var(gx), Atom::Var(p_out[0]))
+            });
+            let g1 = need_input[1].then(|| {
+                let gy = builder.emit_binary(Primitive::Mul, g(), p(1));
+                builder.emit_binary(Primitive::Div, Atom::Var(gy), Atom::Var(p_out[0]))
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::Neg => Ok(vec![
+            need_input[0].then(|| builder.emit_unary(Primitive::Neg, g())),
+        ]),
+        Primitive::Abs => Ok(vec![need_input[0].then(|| {
+            let s = builder.emit_unary(Primitive::Sign, p(0));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(s))
+        })]),
+        Primitive::Square => Ok(vec![need_input[0].then(|| {
+            let two_x =
+                builder.emit_binary(Primitive::Mul, Atom::Lit(Literal::from_f64(2.0)), p(0));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(two_x))
+        })]),
+        Primitive::Sqrt => Ok(vec![need_input[0].then(|| {
+            let two_y = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Lit(Literal::from_f64(2.0)),
+                Atom::Var(p_out[0]),
+            );
+            builder.emit_binary(Primitive::Div, g(), Atom::Var(two_y))
+        })]),
+        Primitive::Rsqrt => Ok(vec![need_input[0].then(|| {
+            let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
+            let y3 = builder.emit_binary(Primitive::Mul, Atom::Var(y2), Atom::Var(p_out[0]));
+            let half_y3 = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Lit(Literal::from_f64(-0.5)),
+                Atom::Var(y3),
+            );
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(half_y3))
+        })]),
+        Primitive::Cbrt => Ok(vec![need_input[0].then(|| {
+            let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
+            let three_y2 = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Lit(Literal::from_f64(3.0)),
+                Atom::Var(y2),
+            );
+            builder.emit_binary(Primitive::Div, g(), Atom::Var(three_y2))
+        })]),
+        Primitive::Reciprocal => Ok(vec![need_input[0].then(|| {
+            let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
+            let neg_y2 = builder.emit_unary(Primitive::Neg, Atom::Var(y2));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(neg_y2))
+        })]),
+        Primitive::Exp => {
+            Ok(vec![need_input[0].then(|| {
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(p_out[0]))
+            })])
+        }
+        Primitive::Expm1 => Ok(vec![need_input[0].then(|| {
+            let ex = builder.emit_unary(Primitive::Exp, p(0));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(ex))
+        })]),
+        Primitive::Exp2 => Ok(vec![need_input[0].then(|| {
+            let ln2 = Atom::Lit(Literal::from_f64(std::f64::consts::LN_2));
+            let y_ln2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), ln2);
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(y_ln2))
+        })]),
+        Primitive::Log => Ok(vec![
+            need_input[0].then(|| builder.emit_binary(Primitive::Div, g(), p(0))),
+        ]),
+        Primitive::Log1p => Ok(vec![need_input[0].then(|| {
+            let xp1 = builder.emit_binary(Primitive::Add, p(0), Atom::Lit(Literal::from_f64(1.0)));
+            builder.emit_binary(Primitive::Div, g(), Atom::Var(xp1))
+        })]),
+        Primitive::Log2 => Ok(vec![need_input[0].then(|| {
+            let gx = builder.emit_binary(Primitive::Div, g(), p(0));
+            builder.emit_binary(
+                Primitive::Mul,
+                Atom::Var(gx),
+                Atom::Lit(Literal::from_f64(1.0 / std::f64::consts::LN_2)),
+            )
+        })]),
+        Primitive::Sin => Ok(vec![need_input[0].then(|| {
+            let cx = builder.emit_unary(Primitive::Cos, p(0));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(cx))
+        })]),
+        Primitive::Cos => Ok(vec![need_input[0].then(|| {
+            let sx = builder.emit_unary(Primitive::Sin, p(0));
+            let nsx = builder.emit_unary(Primitive::Neg, Atom::Var(sx));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(nsx))
+        })]),
+        Primitive::Tan => Ok(vec![need_input[0].then(|| {
+            let cx = builder.emit_unary(Primitive::Cos, p(0));
+            let c2 = builder.emit_binary(Primitive::Mul, Atom::Var(cx), Atom::Var(cx));
+            builder.emit_binary(Primitive::Div, g(), Atom::Var(c2))
+        })]),
+        Primitive::Sinh => Ok(vec![need_input[0].then(|| {
+            let ch = builder.emit_unary(Primitive::Cosh, p(0));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(ch))
+        })]),
+        Primitive::Cosh => Ok(vec![need_input[0].then(|| {
+            let sh = builder.emit_unary(Primitive::Sinh, p(0));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(sh))
+        })]),
+        Primitive::Tanh => Ok(vec![need_input[0].then(|| {
+            let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
+            let one_m_y2 = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(y2),
+            );
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(one_m_y2))
+        })]),
+        Primitive::Asin => Ok(vec![need_input[0].then(|| {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let omx2 = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(x2),
+            );
+            let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(omx2));
+            builder.emit_binary(Primitive::Div, g(), Atom::Var(denom))
+        })]),
+        Primitive::Acos => Ok(vec![need_input[0].then(|| {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let omx2 = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(x2),
+            );
+            let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(omx2));
+            let ng = builder.emit_unary(Primitive::Neg, g());
+            builder.emit_binary(Primitive::Div, Atom::Var(ng), Atom::Var(denom))
+        })]),
+        Primitive::Atan => Ok(vec![need_input[0].then(|| {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let denom = builder.emit_binary(
+                Primitive::Add,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(x2),
+            );
+            builder.emit_binary(Primitive::Div, g(), Atom::Var(denom))
+        })]),
+        Primitive::Asinh => Ok(vec![need_input[0].then(|| {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let x2p1 = builder.emit_binary(
+                Primitive::Add,
+                Atom::Var(x2),
+                Atom::Lit(Literal::from_f64(1.0)),
+            );
+            let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(x2p1));
+            builder.emit_binary(Primitive::Div, g(), Atom::Var(denom))
+        })]),
+        Primitive::Acosh => Ok(vec![need_input[0].then(|| {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let x2m1 = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Var(x2),
+                Atom::Lit(Literal::from_f64(1.0)),
+            );
+            let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(x2m1));
+            builder.emit_binary(Primitive::Div, g(), Atom::Var(denom))
+        })]),
+        Primitive::Atanh => Ok(vec![need_input[0].then(|| {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let denom = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(x2),
+            );
+            builder.emit_binary(Primitive::Div, g(), Atom::Var(denom))
+        })]),
+        Primitive::Logistic => Ok(vec![need_input[0].then(|| {
+            let one_m_y = builder.emit_binary(
+                Primitive::Sub,
+                Atom::Lit(Literal::from_f64(1.0)),
+                Atom::Var(p_out[0]),
+            );
+            let y_omy =
+                builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(one_m_y));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(y_omy))
+        })]),
+        Primitive::Erf | Primitive::Erfc => Ok(vec![need_input[0].then(|| {
+            let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
+            let nx2 = builder.emit_unary(Primitive::Neg, Atom::Var(x2));
+            let ex = builder.emit_unary(Primitive::Exp, Atom::Var(nx2));
+            let coef = if eqn.primitive == Primitive::Erf {
+                2.0 / std::f64::consts::PI.sqrt()
+            } else {
+                -2.0 / std::f64::consts::PI.sqrt()
+            };
+            let d = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Lit(Literal::from_f64(coef)),
+                Atom::Var(ex),
+            );
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(d))
+        })]),
+        Primitive::Select => {
+            let zero = builder.emit_zeros_like(g());
+            let g1 = need_input[1]
+                .then(|| builder.emit_ternary(Primitive::Select, p(0), g(), Atom::Var(zero)));
+            let g2 = need_input[2]
+                .then(|| builder.emit_ternary(Primitive::Select, p(0), Atom::Var(zero), g()));
+            Ok(vec![None, g1, g2])
+        }
+        Primitive::Clamp => {
+            let lt_min = builder.emit_binary(Primitive::Lt, p(1), p(0));
+            let gt_max = builder.emit_binary(Primitive::Gt, p(1), p(2));
+            let out_of_bounds =
+                builder.emit_binary(Primitive::BitwiseOr, Atom::Var(lt_min), Atom::Var(gt_max));
+            let in_mid = builder.emit_unary(Primitive::BitwiseNot, Atom::Var(out_of_bounds));
+            let zero = builder.emit_zeros_like(g());
+            let g0 = need_input[0].then(|| {
+                builder.emit_ternary(Primitive::Select, Atom::Var(lt_min), g(), Atom::Var(zero))
+            });
+            let g1 = need_input[1].then(|| {
+                builder.emit_ternary(Primitive::Select, Atom::Var(in_mid), g(), Atom::Var(zero))
+            });
+            let g2 = need_input[2].then(|| {
+                builder.emit_ternary(Primitive::Select, Atom::Var(gt_max), g(), Atom::Var(zero))
+            });
+            Ok(vec![g0, g1, g2])
+        }
+        Primitive::Fma => {
+            let g0 = need_input[0].then(|| builder.emit_binary(Primitive::Mul, g(), p(1)));
+            let g1 = need_input[1].then(|| builder.emit_binary(Primitive::Mul, g(), p(0)));
+            let g2 = need_input[2].then_some(g_var);
+            Ok(vec![g0, g1, g2])
+        }
+        Primitive::Dot => {
+            let g0 = need_input[0].then(|| {
+                let bt = builder.emit_unary(Primitive::Transpose, p(1));
+                builder.emit_binary(Primitive::Dot, g(), Atom::Var(bt))
+            });
+            let g1 = need_input[1].then(|| {
+                let at = builder.emit_unary(Primitive::Transpose, p(0));
+                builder.emit_binary(Primitive::Dot, Atom::Var(at), g())
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::ReduceSum => {
+            Ok(vec![need_input[0].then(|| {
+                builder.emit_broadcast_reduced_to(g(), p(0), params)
+            })])
+        }
+        Primitive::ReduceProd => Ok(vec![need_input[0].then(|| {
+            let y_bcast = builder.emit_broadcast_reduced_to(Atom::Var(p_out[0]), p(0), params);
+            let g_bcast = builder.emit_broadcast_reduced_to(g(), p(0), params);
+            let gy = builder.emit_binary(Primitive::Mul, Atom::Var(g_bcast), Atom::Var(y_bcast));
+            builder.emit_binary(Primitive::Div, Atom::Var(gy), p(0))
+        })]),
+        Primitive::ReduceMax | Primitive::ReduceMin => Ok(vec![need_input[0].then(|| {
+            let y_bcast = builder.emit_broadcast_reduced_to(Atom::Var(p_out[0]), p(0), params);
+            let g_bcast = builder.emit_broadcast_reduced_to(g(), p(0), params);
+            let mask = builder.emit_binary(Primitive::Eq, p(0), Atom::Var(y_bcast));
+            let one = builder.emit_ones_like(p(0));
+            let zero = builder.emit_zeros_like(p(0));
+            let ind = builder.emit_ternary(
+                Primitive::Select,
+                Atom::Var(mask),
+                Atom::Var(one),
+                Atom::Var(zero),
+            );
+            let counts =
+                builder.emit_unary_params(Primitive::ReduceSum, Atom::Var(ind), params.clone());
+            let counts_bcast = builder.emit_broadcast_reduced_to(Atom::Var(counts), p(0), params);
+            let share =
+                builder.emit_binary(Primitive::Div, Atom::Var(g_bcast), Atom::Var(counts_bcast));
+            builder.emit_binary(Primitive::Mul, Atom::Var(ind), Atom::Var(share))
+        })]),
+        Primitive::Transpose => Ok(vec![need_input[0].then(|| {
+            let mut inv_params = BTreeMap::new();
+            if let Some(perm_str) = params.get("permutation") {
+                let perm: Vec<usize> = perm_str
+                    .split(',')
+                    .filter_map(|s| s.trim().parse::<usize>().ok())
+                    .collect();
+                let mut inv = vec![0usize; perm.len()];
+                for (i, &p_idx) in perm.iter().enumerate() {
+                    if p_idx < inv.len() {
+                        inv[p_idx] = i;
+                    }
+                }
+                inv_params.insert(
+                    "permutation".to_owned(),
+                    inv.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+            }
+            builder.emit_unary_params(Primitive::Transpose, g(), inv_params)
+        })]),
+        Primitive::Rev | Primitive::ReducePrecision | Primitive::Conj => {
+            Ok(vec![need_input[0].then(|| {
+                builder.emit_unary_params(eqn.primitive, g(), params.clone())
+            })])
+        }
+        Primitive::Copy => Ok(vec![need_input[0].then_some(g_var)]),
+        Primitive::ExpandDims => Ok(vec![need_input[0].then(|| {
+            let mut sq_params = BTreeMap::new();
+            if let Some(axis) = params.get("axis") {
+                sq_params.insert("dimensions".to_owned(), axis.clone());
+            }
+            builder.emit_unary_params(Primitive::Squeeze, g(), sq_params)
+        })]),
+        Primitive::Squeeze => Ok(vec![need_input[0].then(|| {
+            let mut current = g();
+            if let Some(dims_str) = params.get("dimensions") {
+                let mut dims: Vec<usize> = dims_str
+                    .split(',')
+                    .filter_map(|s| s.trim().parse::<usize>().ok())
+                    .collect();
+                dims.sort_unstable();
+                for axis in dims {
+                    let mut exp_params = BTreeMap::new();
+                    exp_params.insert("axis".to_owned(), axis.to_string());
+                    let exp = builder.emit_unary_params(Primitive::ExpandDims, current, exp_params);
+                    current = Atom::Var(exp);
+                }
+            }
+            let z = builder.emit_zeros_like(p(0));
+            builder.emit_binary(Primitive::Add, current, Atom::Var(z))
+        })]),
+        Primitive::BroadcastInDim => Ok(vec![need_input[0].then(|| {
+            let sum_g = builder.emit_unary(Primitive::ReduceSum, g());
+            let z = builder.emit_zeros_like(p(0));
+            builder.emit_binary(Primitive::Add, Atom::Var(sum_g), Atom::Var(z))
+        })]),
+        Primitive::Cumsum => Ok(vec![need_input[0].then(|| {
+            let mut rev_params = params.clone();
+            let was_rev = params.get("reverse").is_some_and(|s| s == "true");
+            rev_params.insert(
+                "reverse".to_owned(),
+                if was_rev {
+                    "false".to_owned()
+                } else {
+                    "true".to_owned()
+                },
+            );
+            builder.emit_unary_params(Primitive::Cumsum, g(), rev_params)
+        })]),
+        Primitive::Complex => {
+            let g0 = need_input[0].then(|| builder.emit_unary(Primitive::Real, g()));
+            let g1 = need_input[1].then(|| builder.emit_unary(Primitive::Imag, g()));
+            Ok(vec![g0, g1])
+        }
+        Primitive::Real => Ok(vec![need_input[0].then(|| {
+            let zero = builder.emit_zeros_like(g());
+            builder.emit_binary(Primitive::Complex, g(), Atom::Var(zero))
+        })]),
+        Primitive::Imag => Ok(vec![need_input[0].then(|| {
+            let zero = builder.emit_zeros_like(g());
+            builder.emit_binary(Primitive::Complex, Atom::Var(zero), g())
+        })]),
+        _ => Err(AdError::UnsupportedPrimitive(eqn.primitive)),
+    }
+}
+
+fn build_grad_jaxpr_internal(
+    jaxpr: &Jaxpr,
+    argnums: &[usize],
+    include_value: bool,
+) -> Result<Jaxpr, AdError> {
+    if lookup_custom_jaxpr_vjp(jaxpr).is_some()
+        || jaxpr
+            .equations
+            .iter()
+            .any(|eqn| lookup_custom_vjp(eqn.primitive).is_some())
+    {
+        return Err(AdError::EvalFailed(
+            "symbolic grad jaxpr cannot inline runtime custom_vjp closure".to_owned(),
+        ));
+    }
+    if jaxpr.outvars.len() != 1 {
+        return Err(AdError::NonScalarGradientOutput);
+    }
+    if argnums.is_empty() {
+        return Err(AdError::InputArity {
+            expected: 1,
+            actual: 0,
+        });
+    }
+    for &argnum in argnums {
+        if argnum >= jaxpr.invars.len() {
+            return Err(AdError::InputArity {
+                expected: argnum + 1,
+                actual: jaxpr.invars.len(),
+            });
+        }
+    }
+
+    let out_var = jaxpr.outvars[0];
+    for eqn in &jaxpr.equations {
+        if eqn.outputs.contains(&out_var) && equation_obviously_non_scalar_output(eqn) {
+            return Err(AdError::NonScalarGradientOutput);
+        }
+    }
+
+    // 1. Forward activity analysis from differentiated `invars[argnum]`.
+    let mut active: std::collections::BTreeSet<VarId> =
+        argnums.iter().map(|&idx| jaxpr.invars[idx]).collect();
+    for eqn in &jaxpr.equations {
+        let any_active_input = eqn.inputs.iter().enumerate().any(|(i, atom)| match atom {
+            Atom::Var(v) => is_input_differentiable(eqn.primitive, i) && active.contains(v),
+            Atom::Lit(_) => false,
+        });
+        if any_active_input {
+            for &out in &eqn.outputs {
+                active.insert(out);
+            }
+        }
+    }
+
+    // 2. Reverse usefulness analysis from `out_var`.
+    let mut useful: std::collections::BTreeSet<VarId> = std::collections::BTreeSet::new();
+    if active.contains(&out_var) {
+        useful.insert(out_var);
+    }
+    for eqn in jaxpr.equations.iter().rev() {
+        let any_useful_output = eqn
+            .outputs
+            .iter()
+            .any(|out| useful.contains(out) && active.contains(out));
+        if any_useful_output {
+            for (i, atom) in eqn.inputs.iter().enumerate() {
+                if let Atom::Var(v) = atom
+                    && is_input_differentiable(eqn.primitive, i)
+                    && active.contains(v)
+                {
+                    useful.insert(*v);
+                }
+            }
+        }
+    }
+
+    let mut builder = SymbolicJaxprBuilder::new(max_var_id_in_jaxpr(jaxpr) + 1);
+    for eqn in &jaxpr.equations {
+        builder.equations.push(eqn.clone());
+    }
+
+    let mut adjoints: std::collections::BTreeMap<VarId, VarId> = std::collections::BTreeMap::new();
+    if useful.contains(&out_var) {
+        let seed_var = builder.emit_unary(Primitive::Copy, Atom::Lit(Literal::from_f64(1.0)));
+        adjoints.insert(out_var, seed_var);
+    }
+
+    for eqn in jaxpr.equations.iter().rev() {
+        let Some(&out0) = eqn.outputs.first() else {
+            continue;
+        };
+        let Some(&g_var) = adjoints.get(&out0) else {
+            continue;
+        };
+        let need_input: Vec<bool> = eqn
+            .inputs
+            .iter()
+            .enumerate()
+            .map(|(i, atom)| match atom {
+                Atom::Var(v) => {
+                    is_input_differentiable(eqn.primitive, i)
+                        && active.contains(v)
+                        && useful.contains(v)
+                }
+                Atom::Lit(_) => false,
+            })
+            .collect();
+        if !need_input.iter().any(|&b| b) {
+            continue;
+        }
+
+        let input_grads = emit_symbolic_vjp_equation(&mut builder, eqn, g_var, &need_input)?;
+        for (atom, maybe_cot) in eqn.inputs.iter().zip(input_grads) {
+            if let (Atom::Var(v), Some(cot_var)) = (atom, maybe_cot) {
+                if let Some(&prev) = adjoints.get(v) {
+                    let sum = builder.emit_add_cotangents(prev, cot_var);
+                    adjoints.insert(*v, sum);
+                } else {
+                    adjoints.insert(*v, cot_var);
+                }
+            }
+        }
+    }
+
+    let mut raw_outvars = Vec::with_capacity((if include_value { 1 } else { 0 }) + argnums.len());
+    if include_value {
+        raw_outvars.push(out_var);
+    }
+    for &argnum in argnums {
+        let invar = jaxpr.invars[argnum];
+        let grad_var = if let Some(&gv) = adjoints.get(&invar) {
+            gv
+        } else {
+            builder.emit_zeros_like(Atom::Var(invar))
+        };
+        raw_outvars.push(grad_var);
+    }
+
+    let outvars =
+        canonicalize_symbolic_outvars(&mut builder, &jaxpr.invars, &jaxpr.constvars, raw_outvars);
+    let equations = dce_equations(builder.equations, &outvars);
+
+    Ok(Jaxpr::new(
+        jaxpr.invars.clone(),
+        jaxpr.constvars.clone(),
+        outvars,
+        equations,
+    ))
+}
+
+/// Build a symbolic gradient `Jaxpr` differentiating `jaxpr` with respect to `argnums`.
+///
+/// Performs forward activity analysis, reverse usefulness analysis, and dead-code
+/// elimination so inactive branches (e.g., `exp(y)` when differentiating `sin(x) + exp(y)`
+/// w.r.t. `x`) are completely pruned from the returned `Jaxpr`.
+pub fn build_grad_jaxpr(jaxpr: &Jaxpr, argnums: &[usize]) -> Result<Jaxpr, AdError> {
+    build_grad_jaxpr_internal(jaxpr, argnums, false)
+}
+
+/// Build a symbolic `value_and_grad` `Jaxpr` returning `[value, grad_0, ...]` for `argnums`.
+pub fn build_value_and_grad_jaxpr(jaxpr: &Jaxpr, argnums: &[usize]) -> Result<Jaxpr, AdError> {
+    build_grad_jaxpr_internal(jaxpr, argnums, true)
 }
 
 fn flatten_value_to_f64(value: &Value) -> Result<Vec<f64>, AdError> {
@@ -13693,6 +15929,11 @@ pub fn hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
     if let Some(exact) = hessian_adjacent_pair_sum(jaxpr, args, input_dim)? {
         return Ok(exact);
     }
+    if input_dim.saturating_mul(jaxpr.equations.len()) < HESSIAN_PARALLEL_WORK_PER_THREAD
+        && let Some(exact) = try_symbolic_hessian_jaxpr(jaxpr, args, &input_lengths, input_dim)?
+    {
+        return Ok(exact);
+    }
 
     // Each Hessian COLUMN is two INDEPENDENT grad calls (central difference at
     // x ± ε·e_j), so column j depends on nothing computed for any other column —
@@ -13804,6 +16045,92 @@ pub fn hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
     }
 
     matrix_value(input_dim, input_dim, hessian)
+}
+
+/// Compute the exact analytical Hessian of a scalar-valued `Jaxpr` using
+/// symbolic forward-over-reverse differentiation (`jvp` over `build_grad_jaxpr`).
+pub fn symbolic_hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
+    if args.is_empty() {
+        return Err(AdError::InputArity {
+            expected: 1,
+            actual: 0,
+        });
+    }
+    let base_flat_args = args
+        .iter()
+        .map(flatten_value_to_f64)
+        .collect::<Result<Vec<_>, _>>()?;
+    let input_lengths = base_flat_args.iter().map(Vec::len).collect::<Vec<_>>();
+    let input_dim = input_lengths.iter().sum::<usize>();
+    if input_dim == 0 {
+        return Err(AdError::EvalFailed(
+            "hessian requires at least one differentiable input dimension".to_owned(),
+        ));
+    }
+    let argnums: Vec<usize> = (0..jaxpr.invars.len()).collect();
+    let grad_ir = build_grad_jaxpr(jaxpr, &argnums)?;
+    let zero_tangents: Vec<Value> = args.iter().map(zeros_like).collect();
+    let mut hessian = vec![0.0_f64; input_dim * input_dim];
+    for basis_idx in 0..input_dim {
+        let (arg_idx, local_idx) = global_basis_to_arg_index(&input_lengths, basis_idx)
+            .ok_or_else(|| {
+                AdError::EvalFailed(format!("unable to resolve basis index {basis_idx}"))
+            })?;
+        let mut tangents = zero_tangents.clone();
+        tangents[arg_idx] = basis_value_like(&args[arg_idx], local_idx)?;
+        let jvp_res = jvp(&grad_ir, args, &tangents)?;
+        let col = flatten_values_to_f64(&jvp_res.tangents)?;
+        if col.len() != input_dim {
+            return Err(AdError::EvalFailed(format!(
+                "symbolic Hessian column length mismatch: expected {input_dim}, got {}",
+                col.len()
+            )));
+        }
+        for (row, &val) in col.iter().enumerate() {
+            hessian[row * input_dim + basis_idx] = val;
+        }
+    }
+    matrix_value(input_dim, input_dim, hessian)
+}
+
+fn try_symbolic_hessian_jaxpr(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    input_lengths: &[usize],
+    input_dim: usize,
+) -> Result<Option<Value>, AdError> {
+    if args.len() != jaxpr.invars.len() {
+        return Ok(None);
+    }
+    let argnums: Vec<usize> = (0..jaxpr.invars.len()).collect();
+    let Ok(grad_ir) = build_grad_jaxpr(jaxpr, &argnums) else {
+        return Ok(None);
+    };
+    let zero_tangents: Vec<Value> = args.iter().map(zeros_like).collect();
+    let mut hessian = vec![0.0_f64; input_dim * input_dim];
+    for basis_idx in 0..input_dim {
+        let Some((arg_idx, local_idx)) = global_basis_to_arg_index(input_lengths, basis_idx) else {
+            return Ok(None);
+        };
+        let mut tangents = zero_tangents.clone();
+        let Ok(basis_t) = basis_value_like(&args[arg_idx], local_idx) else {
+            return Ok(None);
+        };
+        tangents[arg_idx] = basis_t;
+        let Ok(jvp_res) = jvp(&grad_ir, args, &tangents) else {
+            return Ok(None);
+        };
+        let Ok(col) = flatten_values_to_f64(&jvp_res.tangents) else {
+            return Ok(None);
+        };
+        if col.len() != input_dim {
+            return Ok(None);
+        }
+        for (row, &val) in col.iter().enumerate() {
+            hessian[row * input_dim + basis_idx] = val;
+        }
+    }
+    matrix_value(input_dim, input_dim, hessian).map(Some)
 }
 
 #[cfg(test)]
@@ -29034,5 +31361,467 @@ mod tests {
                 "stop_gradient VJP must return zeros"
             );
         }
+    }
+
+    #[test]
+    fn rc26_10_control_flow_sub_jaxprs_grad_and_jvp() {
+        use fj_core::{Atom, Equation, Jaxpr, Primitive, VarId};
+        use smallvec::smallvec;
+        use std::collections::BTreeMap;
+
+        // 1. Cond with sub_jaxprs: true_branch = x^2 + y, false_branch = x * y^2
+        let true_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let false_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let cond_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3)],
+            vec![],
+            vec![VarId(4)],
+            vec![Equation {
+                primitive: Primitive::Cond,
+                inputs: smallvec![
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(2)),
+                    Atom::Var(VarId(3))
+                ],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![true_jaxpr.clone(), false_jaxpr.clone()],
+                effects: vec![],
+            }],
+        );
+        let grads_true = grad_jaxpr(
+            &cond_jaxpr,
+            &[
+                Value::scalar_bool(true),
+                Value::scalar_f64(3.0),
+                Value::scalar_f64(5.0),
+            ],
+        )
+        .expect("cond true grad");
+        assert!((grads_true[1].as_f64_scalar().unwrap() - 6.0).abs() < 1e-12);
+        assert!((grads_true[2].as_f64_scalar().unwrap() - 1.0).abs() < 1e-12);
+
+        let grads_false = grad_jaxpr(
+            &cond_jaxpr,
+            &[
+                Value::scalar_bool(false),
+                Value::scalar_f64(3.0),
+                Value::scalar_f64(5.0),
+            ],
+        )
+        .expect("cond false grad");
+        assert!((grads_false[1].as_f64_scalar().unwrap() - 25.0).abs() < 1e-12);
+        assert!((grads_false[2].as_f64_scalar().unwrap() - 30.0).abs() < 1e-12);
+
+        let jvp_false = jvp(
+            &cond_jaxpr,
+            &[
+                Value::scalar_bool(false),
+                Value::scalar_f64(3.0),
+                Value::scalar_f64(5.0),
+            ],
+            &[
+                Value::scalar_f64(0.0),
+                Value::scalar_f64(1.0),
+                Value::scalar_f64(2.0),
+            ],
+        )
+        .expect("cond false jvp");
+        assert!((jvp_false.primals[0].as_f64_scalar().unwrap() - 75.0).abs() < 1e-12);
+        assert!((jvp_false.tangents[0].as_f64_scalar().unwrap() - 85.0).abs() < 1e-12);
+
+        // 2. While with sub_jaxprs: while state < limit: state = state * state (from 2.0 < 10.0 -> 4.0 -> 16.0)
+        let cond_sub = Jaxpr::new(
+            vec![VarId(1)],
+            vec![VarId(2)],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Lt,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let body_sub = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let while_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::While,
+                inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::from([("max_iter".to_owned(), "5".to_owned())]),
+                sub_jaxprs: vec![cond_sub, body_sub],
+                effects: vec![],
+            }],
+        );
+        // From init=2.0, limit=10.0: iter 1 -> 4.0 (<10), iter 2 -> 16.0 (>=10). Out = x^4, d/dx = 4*x^3 = 32.0.
+        let while_grads = grad_jaxpr(
+            &while_jaxpr,
+            &[Value::scalar_f64(2.0), Value::scalar_f64(10.0)],
+        )
+        .expect("while sub_jaxpr grad");
+        assert!((while_grads[0].as_f64_scalar().unwrap() - 32.0).abs() < 1e-12);
+
+        let while_jvp_res = jvp(
+            &while_jaxpr,
+            &[Value::scalar_f64(2.0), Value::scalar_f64(10.0)],
+            &[Value::scalar_f64(1.0), Value::scalar_f64(0.0)],
+        )
+        .expect("while sub_jaxpr jvp");
+        assert!((while_jvp_res.primals[0].as_f64_scalar().unwrap() - 16.0).abs() < 1e-12);
+        assert!((while_jvp_res.tangents[0].as_f64_scalar().unwrap() - 32.0).abs() < 1e-12);
+
+        // 3. Scan with sub_jaxprs: carry_{t+1} = carry_t * x_t
+        let scan_body = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let scan_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Scan,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![scan_body],
+                effects: vec![],
+            }],
+        );
+        let init = Value::scalar_f64(2.0);
+        let xs = Value::vector_f64(&[3.0, 4.0]).unwrap();
+        // final carry = init * x0 * x1 = 2 * 3 * 4 = 24
+        // d/d(init) = 12, d/dx = [init * x1, init * x0] = [8, 6]
+        let scan_grads = grad_jaxpr(&scan_jaxpr, &[init.clone(), xs.clone()]).expect("scan grad");
+        assert!((scan_grads[0].as_f64_scalar().unwrap() - 12.0).abs() < 1e-12);
+        let dx = scan_grads[1].as_tensor().unwrap().to_f64_vec().unwrap();
+        assert_eq!(dx, vec![8.0, 6.0]);
+    }
+
+    #[test]
+    fn rc26_10_associative_scan_modes_reverse_cumsum_and_reduce_window_prod() {
+        use fj_core::{Atom, Equation, Jaxpr, Primitive, Shape, VarId};
+        use smallvec::smallvec;
+        use std::collections::BTreeMap;
+
+        // AssociativeScan with mode="mul" and a zero element: [2.0, 0.0, 3.0] -> [2.0, 0.0, 0.0]
+        // Sum of outputs = 2.0 + 0.0 + 0.0 = 2.0; d/dx0 = 1, d/dx1 = 2*1 + 2*3 = 8, d/dx2 = 0
+        let assoc_mul_jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::AssociativeScan,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::from([("mode".to_owned(), "mul".to_owned())]),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let x_zero = Value::vector_f64(&[2.0, 0.0, 3.0]).unwrap();
+        let g_assoc = grad_jaxpr(&assoc_mul_jaxpr, std::slice::from_ref(&x_zero))
+            .expect("associative_scan mul grad with zero");
+        let g_vec = g_assoc[0].as_tensor().unwrap().to_f64_vec().unwrap();
+        assert_eq!(g_vec, vec![1.0, 8.0, 0.0]);
+
+        // Reverse Cumsum VJP: y = cumsum([1, 2, 3], reverse=true) = [6, 5, 3]
+        // Weighted sum: sum([1, 10, 100] * y) => g_x = cumsum([1, 10, 100], reverse=false) = [1, 11, 111]
+        let rev_cumsum_vjp = super::vjp_single(
+            Primitive::Cumsum,
+            &[Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap()],
+            &Value::vector_f64(&[1.0, 10.0, 100.0]).unwrap(),
+            &BTreeMap::from([("reverse".to_owned(), "true".to_owned())]),
+        )
+        .expect("reverse cumsum vjp");
+        assert_eq!(
+            rev_cumsum_vjp[0].as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![1.0, 11.0, 111.0]
+        );
+
+        // ReduceWindow with reduce_op="prod": window=2, stride=1 over [2.0, 3.0, 4.0] -> [6.0, 12.0]
+        // Sum of windows = 18.0; d/dx = [3.0, 2.0 + 4.0, 3.0] = [3.0, 6.0, 3.0]
+        let rw_prod_jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::ReduceWindow,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::from([
+                        ("reduce_op".to_owned(), "prod".to_owned()),
+                        ("window_dimensions".to_owned(), "2".to_owned()),
+                        ("window_strides".to_owned(), "1".to_owned()),
+                    ]),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let x_rw = Value::vector_f64(&[2.0, 3.0, 4.0]).unwrap();
+        let g_rw = grad_jaxpr(&rw_prod_jaxpr, std::slice::from_ref(&x_rw))
+            .expect("reduce_window prod grad");
+        assert_eq!(
+            g_rw[0].as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![3.0, 6.0, 3.0]
+        );
+        let jvp_rw = jvp(
+            &rw_prod_jaxpr,
+            std::slice::from_ref(&x_rw),
+            &[Value::Tensor(
+                TensorValue::new(
+                    fj_core::DType::F64,
+                    Shape { dims: vec![3] },
+                    vec![
+                        fj_core::Literal::from_f64(1.0),
+                        fj_core::Literal::from_f64(1.0),
+                        fj_core::Literal::from_f64(1.0),
+                    ],
+                )
+                .unwrap(),
+            )],
+        )
+        .expect("reduce_window prod jvp");
+        assert!((jvp_rw.primals[0].as_f64_scalar().unwrap() - 18.0).abs() < 1e-12);
+        assert!((jvp_rw.tangents[0].as_f64_scalar().unwrap() - 12.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rc26_8_symbolic_jaxpr_differentiation_and_activity_pruning() {
+        use fj_core::{Atom, Equation, Jaxpr, Primitive, VarId};
+        use smallvec::smallvec;
+        use std::collections::BTreeMap;
+
+        // 1. Activity analysis & dead-code elimination: f(x, y) = sin(x) + exp(y)
+        // Differentiating w.r.t. argnums = &[0] must prune Primitive::Exp completely!
+        let f_xy = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(5)],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Exp,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(4))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+
+        let grad_x_jaxpr = super::build_grad_jaxpr(&f_xy, &[0]).expect("build_grad_jaxpr");
+        grad_x_jaxpr
+            .validate_well_formed()
+            .expect("grad_x_jaxpr must be well-formed");
+        assert!(
+            !grad_x_jaxpr
+                .equations
+                .iter()
+                .any(|e| e.primitive == Primitive::Exp),
+            "inactive exp(y) branch must be pruned when differentiating only w.r.t. x"
+        );
+        let args = [Value::scalar_f64(0.7), Value::scalar_f64(2.5)];
+        let sym_out = fj_interpreters::eval_jaxpr(&grad_x_jaxpr, &args).expect("eval grad_x_jaxpr");
+        let tape_out = grad_jaxpr(&f_xy, &args).expect("tape grad_jaxpr");
+        assert!(
+            (sym_out[0].as_f64_scalar().unwrap() - tape_out[0].as_f64_scalar().unwrap()).abs()
+                < 1e-12
+        );
+
+        // 2. build_value_and_grad_jaxpr preserves primal output and computes exact gradient
+        let vag_jaxpr =
+            super::build_value_and_grad_jaxpr(&f_xy, &[0, 1]).expect("build_value_and_grad_jaxpr");
+        vag_jaxpr
+            .validate_well_formed()
+            .expect("vag_jaxpr must be well-formed");
+        let vag_out = fj_interpreters::eval_jaxpr(&vag_jaxpr, &args).expect("eval vag_jaxpr");
+        assert_eq!(vag_out.len(), 3);
+        let expected_val = 0.7_f64.sin() + 2.5_f64.exp();
+        assert!((vag_out[0].as_f64_scalar().unwrap() - expected_val).abs() < 1e-12);
+        assert!(
+            (vag_out[1].as_f64_scalar().unwrap() - tape_out[0].as_f64_scalar().unwrap()).abs()
+                < 1e-12
+        );
+        assert!(
+            (vag_out[2].as_f64_scalar().unwrap() - tape_out[1].as_f64_scalar().unwrap()).abs()
+                < 1e-12
+        );
+
+        // 3. Higher-order symbolic differentiation: grad(grad(x^3)) = 6*x
+        // f(x) = x * x * x
+        let f_cube = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let df_jaxpr = super::build_grad_jaxpr(&f_cube, &[0]).expect("first symbolic grad");
+        df_jaxpr.validate_well_formed().expect("df well-formed");
+        let d2f_jaxpr = super::build_grad_jaxpr(&df_jaxpr, &[0]).expect("second symbolic grad");
+        d2f_jaxpr.validate_well_formed().expect("d2f well-formed");
+        let d3f_jaxpr = super::build_grad_jaxpr(&d2f_jaxpr, &[0]).expect("third symbolic grad");
+        d3f_jaxpr.validate_well_formed().expect("d3f well-formed");
+
+        let x_val = [Value::scalar_f64(2.5)];
+        let d1 = fj_interpreters::eval_jaxpr(&df_jaxpr, &x_val).unwrap()[0]
+            .as_f64_scalar()
+            .unwrap();
+        let d2 = fj_interpreters::eval_jaxpr(&d2f_jaxpr, &x_val).unwrap()[0]
+            .as_f64_scalar()
+            .unwrap();
+        let d3 = fj_interpreters::eval_jaxpr(&d3f_jaxpr, &x_val).unwrap()[0]
+            .as_f64_scalar()
+            .unwrap();
+        assert!((d1 - 3.0 * 2.5 * 2.5).abs() < 1e-12);
+        assert!((d2 - 6.0 * 2.5).abs() < 1e-12);
+        assert!((d3 - 6.0).abs() < 1e-12);
+
+        // 4. build_jvp_jaxpr matches runtime jvp
+        let jvp_jaxpr = super::build_jvp_jaxpr(&f_xy).expect("build_jvp_jaxpr");
+        jvp_jaxpr
+            .validate_well_formed()
+            .expect("jvp_jaxpr well-formed");
+        let jvp_args = [
+            Value::scalar_f64(0.7),
+            Value::scalar_f64(2.5),
+            Value::scalar_f64(1.0),
+            Value::scalar_f64(-0.5),
+        ];
+        let jvp_sym_out = fj_interpreters::eval_jaxpr(&jvp_jaxpr, &jvp_args).expect("eval jvp");
+        let jvp_rt = jvp(&f_xy, &jvp_args[0..2], &jvp_args[2..4]).expect("rt jvp");
+        assert!(
+            (jvp_sym_out[0].as_f64_scalar().unwrap() - jvp_rt.primals[0].as_f64_scalar().unwrap())
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (jvp_sym_out[1].as_f64_scalar().unwrap() - jvp_rt.tangents[0].as_f64_scalar().unwrap())
+                .abs()
+                < 1e-12
+        );
     }
 }

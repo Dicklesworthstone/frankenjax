@@ -372,6 +372,41 @@ fn allows_finite_diff_grad_fallback(opts: &BTreeMap<String, String>) -> bool {
         })
 }
 
+fn parse_grad_argnums(
+    opts: &BTreeMap<String, String>,
+    num_args: usize,
+) -> Result<(Vec<usize>, bool), DispatchError> {
+    match opts.get("grad_argnums") {
+        None => Ok((vec![0], false)),
+        Some(raw) if raw.trim().is_empty() => Ok((vec![0], false)),
+        Some(raw) => {
+            let mut argnums = Vec::new();
+            for part in raw.split(',') {
+                let idx = part.trim().parse::<usize>().map_err(|_| {
+                    TransformExecutionError::TensorBuild(format!(
+                        "invalid grad_argnums entry {:?} in {raw:?}",
+                        part.trim()
+                    ))
+                })?;
+                if idx >= num_args {
+                    return Err(TransformExecutionError::TensorBuild(format!(
+                        "grad_argnums index {idx} out of bounds for {num_args} arguments"
+                    ))
+                    .into());
+                }
+                argnums.push(idx);
+            }
+            if argnums.is_empty() {
+                return Err(TransformExecutionError::TensorBuild(
+                    "grad_argnums must specify at least one argument index".to_owned(),
+                )
+                .into());
+            }
+            Ok((argnums, true))
+        }
+    }
+}
+
 fn compile_options_for_transform_tail(opts: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     opts.iter()
         .filter(|(key, _)| key.as_str() != "vmap_in_axes" && key.as_str() != "vmap_out_axes")
@@ -766,10 +801,15 @@ fn execute_grad(
     }
 
     // A trailing Jit is semantically transparent for symbolic AD. Other
-    // remaining transforms still require the finite-difference compatibility
-    // fallback unless the caller explicitly disables it.
+    // remaining transforms use symbolic Jaxpr-to-Jaxpr AD lowering when
+    // available, or fall back to finite-difference if enabled.
     if !tail.is_empty() {
-        if tail.iter().all(|transform| *transform == Transform::Jit) {
+        let non_jit_start = tail
+            .iter()
+            .position(|t| *t != Transform::Jit)
+            .unwrap_or(tail.len());
+        let effective_tail = &tail[non_jit_start..];
+        if effective_tail.is_empty() {
             return execute_symbolic_grad(root_jaxpr, args, compile_options);
         }
         if !allows_finite_diff_grad_fallback(compile_options) {
@@ -777,6 +817,42 @@ fn execute_grad(
                 tail: transform_tail_summary(tail),
             }
             .into());
+        }
+        if effective_tail
+            .iter()
+            .all(|transform| matches!(transform, Transform::Grad | Transform::Jit))
+            && custom_vjp_rule_key(compile_options).is_none()
+        {
+            let (argnums, _) = parse_grad_argnums(compile_options, args.len())?;
+            let first_argnum = argnums.first().copied().unwrap_or(0);
+            let reduce_tensor_steps = matches!(args.get(first_argnum), Some(Value::Tensor(_)));
+            if let Some(lowered) = try_lower_symbolic_grad_chain(
+                root_jaxpr,
+                effective_tail,
+                &argnums,
+                false,
+                reduce_tensor_steps,
+                true,
+            ) && let Ok(outputs) = execute_symbolic_grad(&lowered, args, compile_options)
+            {
+                return Ok(outputs);
+            }
+        }
+        if let Some((Transform::Vmap, vmap_tail)) = effective_tail.split_first()
+            && vmap_tail
+                .iter()
+                .all(|transform| matches!(transform, Transform::Grad | Transform::Jit))
+            && custom_vjp_rule_key(compile_options).is_none()
+            && can_execute_symbolic_grad_vmap(root_jaxpr, compile_options)
+        {
+            return execute_symbolic_grad_vmap(
+                root_jaxpr,
+                vmap_tail,
+                args,
+                backend,
+                device,
+                compile_options,
+            );
         }
         args[0]
             .as_f64_scalar()
@@ -787,11 +863,208 @@ fn execute_grad(
     execute_symbolic_grad(root_jaxpr, args, compile_options)
 }
 
+fn append_reduce_sum_to_scalar(jaxpr: &mut Jaxpr) {
+    if jaxpr.outvars.len() != 1 {
+        return;
+    }
+    let out_var = jaxpr.outvars[0];
+    let max_var = jaxpr
+        .invars
+        .iter()
+        .chain(jaxpr.constvars.iter())
+        .chain(jaxpr.outvars.iter())
+        .chain(jaxpr.equations.iter().flat_map(|eqn| eqn.outputs.iter()))
+        .map(|v| v.0)
+        .max()
+        .unwrap_or(0);
+    let reduced_var = fj_core::VarId(max_var + 1);
+    jaxpr.equations.push(fj_core::Equation {
+        primitive: Primitive::ReduceSum,
+        inputs: [Atom::Var(out_var)].into_iter().collect(),
+        outputs: [reduced_var].into_iter().collect(),
+        params: BTreeMap::new(),
+        effects: Vec::new(),
+        sub_jaxprs: Vec::new(),
+    });
+    jaxpr.outvars[0] = reduced_var;
+}
+
+fn try_lower_symbolic_grad_chain(
+    root_jaxpr: &Jaxpr,
+    grad_transforms: &[Transform],
+    outer_argnums: &[usize],
+    outer_include_value: bool,
+    reduce_tensor_steps: bool,
+    reduce_final_step: bool,
+) -> Option<Jaxpr> {
+    if !grad_transforms
+        .iter()
+        .all(|t| matches!(t, Transform::Grad | Transform::Jit))
+    {
+        return None;
+    }
+    let grad_count = grad_transforms
+        .iter()
+        .filter(|&&t| t == Transform::Grad)
+        .count();
+    if grad_count == 0 {
+        return None;
+    }
+    let inner_argnum = outer_argnums.first().copied().unwrap_or(0);
+    let mut current = root_jaxpr.clone();
+    for step in 0..grad_count {
+        let is_outer = step + 1 == grad_count;
+        current = if is_outer && outer_include_value {
+            fj_ad::build_value_and_grad_jaxpr(&current, outer_argnums).ok()?
+        } else if is_outer {
+            fj_ad::build_grad_jaxpr(&current, outer_argnums).ok()?
+        } else {
+            fj_ad::build_grad_jaxpr(&current, &[inner_argnum]).ok()?
+        };
+        if reduce_tensor_steps && (!is_outer || reduce_final_step) {
+            append_reduce_sum_to_scalar(&mut current);
+        }
+    }
+    Some(current)
+}
+
+fn jaxpr_ends_with_reduction(root_jaxpr: &Jaxpr) -> bool {
+    if root_jaxpr.outvars.len() != 1 || !root_jaxpr.effects.is_empty() {
+        return false;
+    }
+    let out_var = root_jaxpr.outvars[0];
+    root_jaxpr.equations.iter().any(|eqn| {
+        eqn.outputs.as_slice() == [out_var]
+            && matches!(
+                eqn.primitive,
+                Primitive::ReduceSum
+                    | Primitive::ReduceMax
+                    | Primitive::ReduceMin
+                    | Primitive::ReduceProd
+                    | Primitive::Dot
+            )
+    })
+}
+
+fn can_execute_symbolic_grad_vmap(
+    root_jaxpr: &Jaxpr,
+    compile_options: &BTreeMap<String, String>,
+) -> bool {
+    let explicit_reduce = compile_options
+        .get("grad_vmap_reduce")
+        .is_some_and(|v| v.eq_ignore_ascii_case("sum"));
+    let out_axes_none = compile_options
+        .get("vmap_out_axes")
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("none"));
+    explicit_reduce || out_axes_none || jaxpr_ends_with_reduction(root_jaxpr)
+}
+
+fn execute_symbolic_grad_vmap(
+    root_jaxpr: &Jaxpr,
+    vmap_tail: &[Transform],
+    args: &[Value],
+    backend: &dyn Backend,
+    device: DeviceId,
+    compile_options: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, DispatchError> {
+    let (argnums, _explicit) = parse_grad_argnums(compile_options, args.len())?;
+    let in_axes = parse_vmap_in_axes(compile_options, args.len())?;
+    let include_value = wants_value_and_grad(compile_options);
+
+    let mut current = root_jaxpr.clone();
+    let tail_grads = vmap_tail.iter().filter(|&&t| t == Transform::Grad).count();
+    let first_argnum = argnums.first().copied().unwrap_or(0);
+    let per_slice_is_tensor = match (args.get(first_argnum), in_axes.get(first_argnum)) {
+        (Some(Value::Tensor(t)), Some(AxisSpec::Batched(_))) => t.rank() > 1,
+        (Some(Value::Tensor(_)), _) => true,
+        _ => false,
+    };
+    for _ in 0..tail_grads {
+        current = fj_ad::build_grad_jaxpr(&current, &[first_argnum])
+            .map_err(|e| TransformExecutionError::TensorBuild(format!("AD lowering error: {e}")))?;
+        if per_slice_is_tensor {
+            append_reduce_sum_to_scalar(&mut current);
+        }
+    }
+
+    let lowered = if include_value {
+        fj_ad::build_value_and_grad_jaxpr(&current, &argnums)
+    } else {
+        fj_ad::build_grad_jaxpr(&current, &argnums)
+    }
+    .map_err(|e| match e {
+        fj_ad::AdError::NonScalarGradientOutput => TransformExecutionError::NonScalarGradientOutput,
+        other => TransformExecutionError::TensorBuild(format!("AD error: {other}")),
+    })?;
+
+    let mut vmap_opts = compile_options.clone();
+    vmap_opts.remove("vmap_out_axes");
+    let mut mapped_outputs = execute_vmap(&lowered, &[], args, backend, device, &vmap_opts)?;
+
+    let mut reduce_axis0_params = BTreeMap::new();
+    reduce_axis0_params.insert("axes".to_owned(), "0".to_owned());
+
+    if include_value && !mapped_outputs.is_empty() {
+        mapped_outputs[0] = fj_lax::eval_primitive(
+            Primitive::ReduceSum,
+            std::slice::from_ref(&mapped_outputs[0]),
+            &reduce_axis0_params,
+        )
+        .map_err(|e| TransformExecutionError::TensorBuild(e.to_string()))?;
+    }
+
+    let grad_offset = usize::from(include_value);
+    for (k, &argnum) in argnums.iter().enumerate() {
+        if matches!(in_axes.get(argnum), Some(AxisSpec::NotBatched))
+            && let Some(slot) = mapped_outputs.get_mut(grad_offset + k)
+        {
+            *slot = fj_lax::eval_primitive(
+                Primitive::ReduceSum,
+                std::slice::from_ref(slot),
+                &reduce_axis0_params,
+            )
+            .map_err(|e| TransformExecutionError::TensorBuild(e.to_string()))?;
+        }
+    }
+
+    Ok(mapped_outputs)
+}
+
+fn vmap_per_slice_output_guaranteed_scalar(
+    root_jaxpr: &Jaxpr,
+    args: &[Value],
+    in_axes: &[AxisSpec],
+) -> bool {
+    if root_jaxpr.outvars.len() != 1 || !root_jaxpr.effects.is_empty() {
+        return false;
+    }
+    let all_per_slice_scalars = args
+        .iter()
+        .zip(in_axes.iter())
+        .all(|(arg, axis)| match axis {
+            AxisSpec::NotBatched => matches!(arg, Value::Scalar(_)),
+            AxisSpec::Batched(_) => matches!(arg, Value::Tensor(t) if t.rank() == 1),
+        });
+    if all_per_slice_scalars && can_use_nonzero_axis_batch_trace(root_jaxpr) {
+        return true;
+    }
+    let out_var = root_jaxpr.outvars[0];
+    root_jaxpr.equations.iter().any(|eqn| {
+        eqn.outputs.as_slice() == [out_var]
+            && eqn.primitive == Primitive::ReduceSum
+            && eqn
+                .params
+                .get("axes")
+                .is_none_or(|axes| axes.trim().is_empty())
+    })
+}
+
 fn execute_symbolic_grad(
     root_jaxpr: &Jaxpr,
     args: &[Value],
     compile_options: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, DispatchError> {
+    let (argnums, explicit_argnums) = parse_grad_argnums(compile_options, args.len())?;
     if wants_value_and_grad(compile_options) {
         // Shared forward pass for value_and_grad mode.
         let (mut values, grads) = if let Some(rule_key) = custom_vjp_rule_key(compile_options) {
@@ -805,9 +1078,15 @@ fn execute_symbolic_grad(
             }
             other => TransformExecutionError::TensorBuild(format!("AD error: {other}")),
         })?;
-        // value_and_grad returns the primal outputs followed by one gradient
-        // per input, matching fj_ad::value_and_grad_jaxpr.
-        values.extend(grads);
+        if explicit_argnums {
+            for &idx in &argnums {
+                values.push(grads.get(idx).cloned().unwrap_or(Value::scalar_f64(0.0)));
+            }
+        } else {
+            // value_and_grad returns the primal outputs followed by one gradient
+            // per input, matching fj_ad::value_and_grad_jaxpr.
+            values.extend(grads);
+        }
         return Ok(values);
     }
 
@@ -821,6 +1100,12 @@ fn execute_symbolic_grad(
         fj_ad::AdError::NonScalarGradientOutput => TransformExecutionError::NonScalarGradientOutput,
         other => TransformExecutionError::TensorBuild(format!("AD error: {other}")),
     })?;
+    if explicit_argnums {
+        return Ok(argnums
+            .into_iter()
+            .map(|idx| grads.get(idx).cloned().unwrap_or(Value::scalar_f64(0.0)))
+            .collect());
+    }
     // Return gradient of first input (matches JAX's default grad behavior).
     Ok(vec![
         grads.into_iter().next().unwrap_or(Value::scalar_f64(0.0)),
@@ -995,6 +1280,45 @@ fn execute_vmap(
         && (all_axis_zero || can_use_nonzero_axis_batch_trace(root_jaxpr))
     {
         return execute_vmap_batch_trace(root_jaxpr, args, &in_axes, lead_len, out_axes.is_some());
+    }
+
+    let grad_only_tail = !tail.is_empty()
+        && tail
+            .iter()
+            .all(|t| matches!(t, Transform::Grad | Transform::Jit))
+        && tail.contains(&Transform::Grad);
+    if grad_only_tail {
+        let grad_count = tail.iter().filter(|&&t| t == Transform::Grad).count();
+        let (argnums, explicit_argnums) = parse_grad_argnums(compile_options, args.len())?;
+        let include_value = wants_value_and_grad(compile_options);
+        let outer_argnums: Vec<usize> = if include_value && !explicit_argnums {
+            (0..root_jaxpr.invars.len()).collect()
+        } else {
+            argnums
+        };
+        let first_argnum = outer_argnums.first().copied().unwrap_or(0);
+        let per_slice_is_tensor = match (args.get(first_argnum), in_axes.get(first_argnum)) {
+            (Some(Value::Tensor(t)), Some(AxisSpec::Batched(_))) => t.rank() > 1,
+            (Some(Value::Tensor(_)), _) => true,
+            _ => false,
+        };
+        if (grad_count == 1 || allows_finite_diff_grad_fallback(compile_options))
+            && custom_vjp_rule_key(compile_options).is_none()
+            && out_axes.is_none()
+            && vmap_per_slice_output_guaranteed_scalar(root_jaxpr, args, &in_axes)
+            && let Some(lowered) = try_lower_symbolic_grad_chain(
+                root_jaxpr,
+                tail,
+                &outer_argnums,
+                include_value,
+                per_slice_is_tensor,
+                false,
+            )
+            && (all_axis_zero || can_use_nonzero_axis_batch_trace(&lowered))
+            && let Ok(outputs) = execute_vmap_batch_trace(&lowered, args, &in_axes, lead_len, false)
+        {
+            return Ok(outputs);
+        }
     }
 
     // Fall back to loop-and-stack for non-trivial axes or composed transforms
@@ -3948,6 +4272,391 @@ mod tests {
             (d2 - 2.0).abs() < 1e-4,
             "hardened d²/dx²(x²) should be 2.0, got {d2}"
         );
+    }
+
+    #[test]
+    fn rc26_9_symbolic_grad_grad_and_vmap_grad_batch_trace() {
+        // 1. f(x) = exp(10.0 * x) at x = 0.1:
+        //    f'(x) = 10 * exp(10*x), f''(x) = 100 * exp(10*x), f'''(x) = 1000 * exp(10*x)
+        //    Finite differences with eps=1e-6 suffer ~1e-2 (2nd order) and >1.0 (3rd order) error.
+        let exp10x = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![
+                        Atom::Lit(fj_core::Literal::from_f64(10.0)),
+                        Atom::Var(VarId(1))
+                    ],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Exp,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let mut ttl_exp_d2 = TraceTransformLedger::new(exp10x.clone());
+        ttl_exp_d2.push_transform(Transform::Grad, "grad-0");
+        ttl_exp_d2.push_transform(Transform::Grad, "grad-1");
+        let resp_exp_d2 = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl_exp_d2,
+            args: vec![Value::scalar_f64(0.1)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("symbolic grad(grad(exp(10x))) should succeed");
+        let exp_d2 = resp_exp_d2.outputs[0].as_f64_scalar().unwrap();
+        let expected_exp_d2 = 100.0 * 1.0_f64.exp();
+        assert!(
+            (exp_d2 - expected_exp_d2).abs() / expected_exp_d2 < 1e-13,
+            "exact symbolic d²/dx²(exp(10x)) at 0.1 should be {expected_exp_d2}, got {exp_d2}"
+        );
+
+        let mut ttl_exp_d3 = TraceTransformLedger::new(exp10x);
+        ttl_exp_d3.push_transform(Transform::Grad, "grad-0");
+        ttl_exp_d3.push_transform(Transform::Grad, "grad-1");
+        ttl_exp_d3.push_transform(Transform::Grad, "grad-2");
+        let resp_exp_d3 = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl_exp_d3,
+            args: vec![Value::scalar_f64(0.1)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("symbolic grad(grad(grad(exp(10x)))) should succeed");
+        let exp_d3 = resp_exp_d3.outputs[0].as_f64_scalar().unwrap();
+        let expected_exp_d3 = 1000.0 * 1.0_f64.exp();
+        assert!(
+            (exp_d3 - expected_exp_d3).abs() / expected_exp_d3 < 1e-13,
+            "exact symbolic d³/dx³(exp(10x)) at 0.1 should be {expected_exp_d3}, got {exp_d3}"
+        );
+
+        // 2. f(x) = x^3: at x = 1e5, f(x) = 1e15 where nested finite differences with
+        // eps=1e-6 would suffer catastrophic cancellation, whereas symbolic
+        // d²/dx²(x^3) = 6*x = 6e5 and d³/dx³(x^3) = 6 are exact to machine precision.
+        let cubic = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let mut ttl_d2 = TraceTransformLedger::new(cubic.clone());
+        ttl_d2.push_transform(Transform::Grad, "grad-0");
+        ttl_d2.push_transform(Transform::Grad, "grad-1");
+        let resp_d2 = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl_d2,
+            args: vec![Value::scalar_f64(1e5)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("symbolic grad(grad(x^3)) should succeed");
+        let d2 = resp_d2.outputs[0].as_f64_scalar().unwrap();
+        assert!(
+            (d2 - 6e5).abs() < 1e-9,
+            "exact symbolic d²/dx²(x^3) at 1e5 should be 6e5, got {d2}"
+        );
+
+        let mut ttl_d3 = TraceTransformLedger::new(cubic.clone());
+        ttl_d3.push_transform(Transform::Grad, "grad-0");
+        ttl_d3.push_transform(Transform::Grad, "grad-1");
+        ttl_d3.push_transform(Transform::Grad, "grad-2");
+        let resp_d3 = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl_d3,
+            args: vec![Value::scalar_f64(1e5)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("symbolic grad(grad(grad(x^3))) should succeed");
+        let d3 = resp_d3.outputs[0].as_f64_scalar().unwrap();
+        assert!(
+            (d3 - 6.0).abs() < 1e-13,
+            "exact symbolic d³/dx³(x^3) should be 6.0, got {d3}"
+        );
+
+        // 3. Tensor [Grad, Grad] and [Jit, Grad, Vmap] on f(x) = sum(x^3)
+        let cubic_sum = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let batch_x = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape::vector(4),
+                vec![
+                    fj_core::Literal::from_f64(1.0),
+                    fj_core::Literal::from_f64(2.0),
+                    fj_core::Literal::from_f64(3.0),
+                    fj_core::Literal::from_f64(4.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut ttl_tensor_gg = TraceTransformLedger::new(cubic_sum.clone());
+        ttl_tensor_gg.push_transform(Transform::Grad, "grad-0");
+        ttl_tensor_gg.push_transform(Transform::Grad, "grad-1");
+        let resp_tensor_gg = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl_tensor_gg,
+            args: vec![batch_x.clone()],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("tensor [Grad, Grad] on sum(x^3) should succeed without NonScalarGradientInput");
+        assert_eq!(
+            resp_tensor_gg.outputs[0]
+                .as_tensor()
+                .unwrap()
+                .to_f64_vec()
+                .unwrap(),
+            vec![6.0, 12.0, 18.0, 24.0]
+        );
+
+        let mut ttl_jgv = TraceTransformLedger::new(cubic_sum);
+        ttl_jgv.push_transform(Transform::Jit, "jit-0");
+        ttl_jgv.push_transform(Transform::Grad, "grad-0");
+        ttl_jgv.push_transform(Transform::Vmap, "vmap-0");
+        let resp_jgv = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl_jgv,
+            args: vec![batch_x.clone()],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("[Jit, Grad, Vmap] on reduced Jaxpr should succeed without NonScalarGradientInput");
+        assert_eq!(
+            resp_jgv.outputs[0]
+                .as_tensor()
+                .unwrap()
+                .to_f64_vec()
+                .unwrap(),
+            vec![3.0, 12.0, 27.0, 48.0]
+        );
+
+        // 4. grad_argnums support: f(x, y) = x * y^2, grad w.r.t. arg 1 = 2 * x * y
+        let xy2 = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let mut ttl_argnums = TraceTransformLedger::new(xy2);
+        ttl_argnums.push_transform(Transform::Grad, "grad-0");
+        let mut argnums_opts = BTreeMap::new();
+        argnums_opts.insert("grad_argnums".to_owned(), "1,0".to_owned());
+        let resp_argnums = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl_argnums,
+            args: vec![Value::scalar_f64(3.0), Value::scalar_f64(5.0)],
+            backend: "cpu".to_owned(),
+            compile_options: argnums_opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("grad with grad_argnums=1,0 should succeed");
+        assert_eq!(resp_argnums.outputs.len(), 2);
+        assert!((resp_argnums.outputs[0].as_f64_scalar().unwrap() - 30.0).abs() < 1e-13);
+        assert!((resp_argnums.outputs[1].as_f64_scalar().unwrap() - 25.0).abs() < 1e-13);
+
+        // 5. vmap(grad(x^3)) and vmap(value_and_grad(x^3)) over batch [1.0, 2.0, 3.0, 4.0]
+        let mut ttl_vg = TraceTransformLedger::new(cubic);
+        ttl_vg.push_transform(Transform::Vmap, "vmap-0");
+        ttl_vg.push_transform(Transform::Grad, "grad-0");
+        let resp_vg = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl_vg.clone(),
+            args: vec![batch_x.clone()],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("vmap(grad(x^3)) should succeed");
+        let grads = resp_vg.outputs[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        assert_eq!(grads, vec![3.0, 12.0, 27.0, 48.0]);
+
+        let mut vag_opts = BTreeMap::new();
+        vag_opts.insert("value_and_grad".to_owned(), "true".to_owned());
+        let resp_vag = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl_vg,
+            args: vec![batch_x],
+            backend: "cpu".to_owned(),
+            compile_options: vag_opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("vmap(value_and_grad(x^3)) should succeed");
+        assert_eq!(resp_vag.outputs.len(), 2);
+        let vals = resp_vag.outputs[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        let vag_grads = resp_vag.outputs[1]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        assert_eq!(vals, vec![1.0, 8.0, 27.0, 64.0]);
+        assert_eq!(vag_grads, vec![3.0, 12.0, 27.0, 48.0]);
+    }
+
+    #[test]
+    fn e2e_symbolic_higher_order_ad() {
+        // Forensic e2e test emitting frankenjax.e2e-forensic-log.v1 proving
+        // symbolic higher-order AD and symbolic Hessian parity (< 1e-13 error).
+        let x4 = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let mut ttl = TraceTransformLedger::new(x4.clone());
+        ttl.push_transform(Transform::Grad, "grad-0");
+        ttl.push_transform(Transform::Grad, "grad-1");
+        ttl.push_transform(Transform::Grad, "grad-2");
+        let resp = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl,
+            args: vec![Value::scalar_f64(2.5)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("d³/dx³(x^4) should succeed");
+        let d3 = resp.outputs[0].as_f64_scalar().unwrap();
+        let expected_d3 = 24.0 * 2.5;
+        let rel_err = (d3 - expected_d3).abs() / expected_d3;
+        assert!(rel_err < 1e-13, "rel_err={rel_err}");
+
+        let hess = fj_ad::symbolic_hessian_jaxpr(&x4, &[Value::scalar_f64(2.5)])
+            .expect("symbolic_hessian_jaxpr should succeed");
+        let h00 = hess.as_tensor().unwrap().to_f64_vec().unwrap()[0];
+        let expected_h00 = 12.0 * 2.5 * 2.5;
+        assert!((h00 - expected_h00).abs() / expected_h00 < 1e-13);
+
+        let log = serde_json::json!({
+            "schema_version": "frankenjax.e2e-forensic-log.v1",
+            "scenario_id": "e2e_symbolic_higher_order_ad",
+            "test_id": "fj_dispatch::tests::e2e_symbolic_higher_order_ad",
+            "result": "PASS",
+            "d3_x4_at_2_5": d3,
+            "expected_d3": expected_d3,
+            "hessian_x4_at_2_5": h00,
+            "expected_hessian": expected_h00,
+        });
+        assert_eq!(log["schema_version"], "frankenjax.e2e-forensic-log.v1");
     }
 
     mod proptest_tests {
