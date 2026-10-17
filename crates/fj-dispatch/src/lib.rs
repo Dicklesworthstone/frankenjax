@@ -407,6 +407,68 @@ fn parse_grad_argnums(
     }
 }
 
+fn parse_static_argnums(
+    opts: &BTreeMap<String, String>,
+    num_invars: usize,
+) -> Result<Vec<usize>, DispatchError> {
+    match opts.get("static_argnums") {
+        None => Ok(Vec::new()),
+        Some(raw) if raw.trim().is_empty() => Ok(Vec::new()),
+        Some(raw) => {
+            let mut argnums = Vec::new();
+            for part in raw.split(',') {
+                let idx = part.trim().parse::<usize>().map_err(|_| {
+                    TransformExecutionError::TensorBuild(format!(
+                        "invalid static_argnums entry {:?} in {raw:?}",
+                        part.trim()
+                    ))
+                })?;
+                if idx >= num_invars {
+                    return Err(TransformExecutionError::TensorBuild(format!(
+                        "static_argnums index {idx} out of bounds for {num_invars} inputs"
+                    ))
+                    .into());
+                }
+                if !argnums.contains(&idx) {
+                    argnums.push(idx);
+                }
+            }
+            argnums.sort_unstable();
+            Ok(argnums)
+        }
+    }
+}
+
+fn format_static_arg_value(val: &Value) -> String {
+    match val {
+        Value::Scalar(lit) => format!("S:{lit:?}"),
+        Value::Tensor(tensor) => format!(
+            "T:{:?}:{:?}:{:?}",
+            tensor.dtype, tensor.shape.dims, tensor.elements
+        ),
+    }
+}
+
+fn compile_options_with_static_args(
+    opts: &BTreeMap<String, String>,
+    static_argnums: &[usize],
+    args: &[Value],
+) -> BTreeMap<String, String> {
+    let mut out = opts.clone();
+    let encoded = static_argnums
+        .iter()
+        .map(|&idx| {
+            let val_repr = args
+                .get(idx)
+                .map_or_else(|| "missing".to_owned(), format_static_arg_value);
+            format!("{idx}={val_repr}")
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    out.insert("__static_arg_values".to_owned(), encoded);
+    out
+}
+
 fn compile_options_for_transform_tail(opts: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     opts.iter()
         .filter(|(key, _)| key.as_str() != "vmap_in_axes" && key.as_str() != "vmap_out_axes")
@@ -421,11 +483,178 @@ fn transform_tail_summary(tail: &[Transform]) -> String {
         .join(">")
 }
 
+/// Telemetry from the `fj-cache` compilation cache and `fj-interpreters::staging`
+/// pipeline attached to a [`DispatchResponse`].
+///
+/// Excluded from [`PartialEq`] comparisons so memoized warm calls remain
+/// logically equal to cold calls while still exposing hit/miss and staging
+/// metadata to callers and tests.
+#[derive(Debug, Clone, Default)]
+pub struct DispatchCacheTelemetry {
+    pub cache_hit: bool,
+    pub cache_stats: fj_cache::backend::CacheStats,
+    pub staged_program: Option<std::sync::Arc<fj_interpreters::staging::StagedProgram>>,
+}
+
+impl PartialEq for DispatchCacheTelemetry {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for DispatchCacheTelemetry {}
+
+#[derive(Clone)]
+pub struct CachedDispatchPlan {
+    pub cache_key: CacheKey,
+    pub effective_jaxpr: std::sync::Arc<Jaxpr>,
+    pub compiled_jaxpr: Option<std::sync::Arc<fj_interpreters::CompiledJaxpr>>,
+    pub staged_program: Option<std::sync::Arc<fj_interpreters::staging::StagedProgram>>,
+    pub compiled_unknown_jaxpr: Option<std::sync::Arc<fj_interpreters::CompiledJaxpr>>,
+}
+
+impl std::fmt::Debug for CachedDispatchPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedDispatchPlan")
+            .field("cache_key", &self.cache_key)
+            .field("effective_jaxpr", &self.effective_jaxpr)
+            .field("has_compiled_jaxpr", &self.compiled_jaxpr.is_some())
+            .field("staged_program", &self.staged_program)
+            .field(
+                "has_compiled_unknown_jaxpr",
+                &self.compiled_unknown_jaxpr.is_some(),
+            )
+            .finish()
+    }
+}
+
+struct DispatchCompilationCache {
+    lru_store: fj_cache::eviction::LruCache<fj_cache::backend::InMemoryCache>,
+    plans: std::collections::HashMap<CacheKey, std::sync::Arc<CachedDispatchPlan>>,
+    hits: u64,
+    misses: u64,
+}
+
+impl DispatchCompilationCache {
+    fn new() -> Self {
+        Self {
+            lru_store: fj_cache::eviction::LruCache::new(
+                fj_cache::backend::InMemoryCache::new(),
+                fj_cache::eviction::LruConfig::default(),
+            ),
+            plans: std::collections::HashMap::new(),
+            hits: 0,
+            misses: 0,
+        }
+    }
+}
+
+static DISPATCH_COMPILATION_CACHE: std::sync::OnceLock<std::sync::Mutex<DispatchCompilationCache>> =
+    std::sync::OnceLock::new();
+
+fn compilation_cache() -> &'static std::sync::Mutex<DispatchCompilationCache> {
+    DISPATCH_COMPILATION_CACHE
+        .get_or_init(|| std::sync::Mutex::new(DispatchCompilationCache::new()))
+}
+
+/// Return current `LruCache` statistics (`entry_count`, `total_bytes`) for the
+/// process-wide dispatch compilation cache.
+#[must_use]
+pub fn dispatch_cache_stats() -> fj_cache::backend::CacheStats {
+    use fj_cache::backend::CacheBackend;
+    let guard = compilation_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    guard.lru_store.stats()
+}
+
+/// Return cumulative `(hits, misses)` recorded by the dispatch compilation cache.
+#[must_use]
+pub fn dispatch_cache_hit_miss_counts() -> (u64, u64) {
+    let guard = compilation_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    (guard.hits, guard.misses)
+}
+
+/// Clear all entries and reset hit/miss counters in the dispatch compilation cache.
+pub fn clear_dispatch_cache() {
+    use fj_cache::backend::CacheBackend;
+    let mut guard = compilation_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    guard.lru_store.clear();
+    guard.plans.clear();
+    guard.hits = 0;
+    guard.misses = 0;
+}
+
+/// Register a pre-compiled `JitWrapped` plan in the dispatch `LruCache` on cold
+/// compilation.
+pub fn register_compiled_dispatch_plan(
+    cache_key: CacheKey,
+    root_jaxpr: &Jaxpr,
+    compiled: Option<std::sync::Arc<fj_interpreters::CompiledJaxpr>>,
+) {
+    use fj_cache::backend::CacheBackend;
+    let payload = root_jaxpr.canonical_fingerprint().as_bytes().to_vec();
+    let artifact = fj_cache::CachedArtifact {
+        integrity_sha256_hex: fj_cache::sha256_hex(&payload),
+        data: payload,
+    };
+    let plan = std::sync::Arc::new(CachedDispatchPlan {
+        cache_key: cache_key.clone(),
+        effective_jaxpr: std::sync::Arc::new(root_jaxpr.clone()),
+        compiled_jaxpr: compiled,
+        staged_program: None,
+        compiled_unknown_jaxpr: None,
+    });
+    let mut guard = compilation_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if guard.lru_store.get(&cache_key).is_some() {
+        guard.hits += 1;
+    } else {
+        guard.misses += 1;
+        guard.lru_store.put(&cache_key, artifact);
+        guard.plans.insert(cache_key, plan);
+    }
+}
+
+/// Record a warm cache hit in the dispatch compilation cache.
+pub fn record_dispatch_cache_hit(cache_key: &CacheKey) {
+    use fj_cache::backend::CacheBackend;
+    let mut guard = compilation_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if guard.lru_store.get(cache_key).is_some() {
+        guard.hits += 1;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DispatchResponse {
     pub outputs: Vec<Value>,
     pub cache_key: String,
     pub evidence_ledger: EvidenceLedger,
+    pub telemetry: DispatchCacheTelemetry,
+}
+
+impl DispatchResponse {
+    #[must_use]
+    pub fn cache_hit(&self) -> bool {
+        self.telemetry.cache_hit
+    }
+
+    #[must_use]
+    pub fn cache_stats(&self) -> &fj_cache::backend::CacheStats {
+        &self.telemetry.cache_stats
+    }
+
+    #[must_use]
+    pub fn staged_program(&self) -> Option<&fj_interpreters::staging::StagedProgram> {
+        self.telemetry.staged_program.as_deref()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -597,52 +826,63 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
 }
 
 pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse, DispatchError> {
-    // The composition proof and cache key are pure functions of the static
-    // dispatch inputs (no `args` dependence). Reuse caller-precomputed metadata
-    // when available to skip the per-call fingerprint signature allocation and
-    // FNV/SHA-256 hashing; otherwise derive it identically here.
+    use fj_cache::backend::CacheBackend;
     use std::borrow::Cow;
-    let (composition_proof, cache_key): (Cow<'_, _>, Cow<'_, _>) = match request.prepared {
-        Some(meta) => {
-            if request.mode == CompatibilityMode::Strict
-                && !request.unknown_incompatible_features.is_empty()
-            {
-                return Err(CacheKeyError::UnknownIncompatibleFeatures {
-                    features: request.unknown_incompatible_features.to_vec(),
-                }
-                .into());
-            }
-            if !meta.static_inputs.matches_request(&request) {
-                return Err(DispatchError::TransformExecution(
-                    TransformExecutionError::TensorBuild(
-                        "prepared dispatch metadata does not match request static inputs"
-                            .to_owned(),
-                    ),
-                ));
-            }
-            (
-                Cow::Borrowed(&meta.composition_proof),
-                Cow::Borrowed(&meta.cache_key),
-            )
-        }
-        None => {
-            let composition_proof = verify_transform_composition_parts(
-                request.root_jaxpr,
-                request.transform_stack,
-                request.transform_evidence,
-            )?;
-            let cache_key = build_cache_key_ref(&CacheKeyInputRef {
-                mode: request.mode,
-                backend: request.backend,
-                jaxpr: request.root_jaxpr,
-                transform_stack: request.transform_stack,
-                compile_options: &request.compile_options,
-                custom_hook: request.custom_hook,
-                unknown_incompatible_features: request.unknown_incompatible_features,
-            })?;
-            (Cow::Owned(composition_proof), Cow::Owned(cache_key))
-        }
+
+    let static_argnums =
+        parse_static_argnums(&request.compile_options, request.root_jaxpr.invars.len())?;
+    let effective_key_opts: Cow<'_, BTreeMap<String, String>> = if static_argnums.is_empty() {
+        Cow::Borrowed(&request.compile_options)
+    } else {
+        Cow::Owned(compile_options_with_static_args(
+            &request.compile_options,
+            &static_argnums,
+            &request.args,
+        ))
     };
+
+    let (composition_proof, cache_key): (Cow<'_, _>, Cow<'_, _>) =
+        match (request.prepared, static_argnums.is_empty()) {
+            (Some(meta), true) => {
+                if request.mode == CompatibilityMode::Strict
+                    && !request.unknown_incompatible_features.is_empty()
+                {
+                    return Err(CacheKeyError::UnknownIncompatibleFeatures {
+                        features: request.unknown_incompatible_features.to_vec(),
+                    }
+                    .into());
+                }
+                if !meta.static_inputs.matches_request(&request) {
+                    return Err(DispatchError::TransformExecution(
+                        TransformExecutionError::TensorBuild(
+                            "prepared dispatch metadata does not match request static inputs"
+                                .to_owned(),
+                        ),
+                    ));
+                }
+                (
+                    Cow::Borrowed(&meta.composition_proof),
+                    Cow::Borrowed(&meta.cache_key),
+                )
+            }
+            _ => {
+                let composition_proof = verify_transform_composition_parts(
+                    request.root_jaxpr,
+                    request.transform_stack,
+                    request.transform_evidence,
+                )?;
+                let cache_key = build_cache_key_ref(&CacheKeyInputRef {
+                    mode: request.mode,
+                    backend: request.backend,
+                    jaxpr: request.root_jaxpr,
+                    transform_stack: request.transform_stack,
+                    compile_options: &effective_key_opts,
+                    custom_hook: request.custom_hook,
+                    unknown_incompatible_features: request.unknown_incompatible_features,
+                })?;
+                (Cow::Owned(composition_proof), Cow::Owned(cache_key))
+            }
+        };
     let nested_trace_summary =
         simulate_nested_trace_contexts(request.transform_stack, &request.args).map_err(|err| {
             TransformExecutionError::TensorBuild(format!("nested trace simulation failed: {err}"))
@@ -652,30 +892,155 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
     let mut effect_ctx = EffectContext::new();
     thread_jaxpr_effect_tokens(&mut effect_ctx, request.root_jaxpr);
 
-    // Optionally run e-graph equality saturation to simplify the Jaxpr.
-    let optimized_jaxpr;
-    let exec_jaxpr = if wants_egraph_optimize(&request.compile_options) {
-        optimized_jaxpr = fj_egraph::optimize_jaxpr_with_config(
-            request.root_jaxpr,
-            &fj_egraph::OptimizationConfig::safe(),
-        );
-        &optimized_jaxpr
+    // Look up or compile the execution plan in the LruCache-backed compilation cache.
+    let cached_hit = {
+        let mut guard = compilation_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if guard.lru_store.get(&cache_key).is_some()
+            && let Some(plan) = guard.plans.get(&cache_key).cloned()
+        {
+            guard.hits += 1;
+            let stats = guard.lru_store.stats();
+            Some((plan, stats))
+        } else {
+            None
+        }
+    };
+
+    let (plan, cache_hit, cache_stats) = if let Some((plan, stats)) = cached_hit {
+        (plan, true, stats)
     } else {
-        request.root_jaxpr
+        let effective_jaxpr = if wants_egraph_optimize(&request.compile_options) {
+            std::sync::Arc::new(fj_egraph::optimize_jaxpr_with_config(
+                request.root_jaxpr,
+                &fj_egraph::OptimizationConfig::safe(),
+            ))
+        } else {
+            std::sync::Arc::new(request.root_jaxpr.clone())
+        };
+
+        let (staged_program, compiled_unknown_jaxpr) =
+            if !static_argnums.is_empty() && request.args.len() == effective_jaxpr.invars.len() {
+                let unknowns: Vec<bool> = (0..effective_jaxpr.invars.len())
+                    .map(|idx| !static_argnums.contains(&idx))
+                    .collect();
+                let known_values: Vec<Value> = static_argnums
+                    .iter()
+                    .map(|&idx| request.args[idx].clone())
+                    .collect();
+                let staged = fj_interpreters::staging::stage_jaxpr(
+                    &effective_jaxpr,
+                    &unknowns,
+                    &known_values,
+                )
+                .map_err(|e| TransformExecutionError::TensorBuild(format!("staging error: {e}")))?;
+                let compiled_unk =
+                    fj_interpreters::compile_jaxpr_for_repeated_eval(&staged.jaxpr_unknown)
+                        .map(std::sync::Arc::new);
+                (Some(std::sync::Arc::new(staged)), compiled_unk)
+            } else {
+                (None, None)
+            };
+
+        let compiled_jaxpr = if staged_program.is_none()
+            && request.transform_stack.iter().all(|t| *t == Transform::Jit)
+        {
+            fj_interpreters::compile_jaxpr_for_repeated_eval(&effective_jaxpr)
+                .map(std::sync::Arc::new)
+        } else {
+            None
+        };
+
+        let payload_str = match &staged_program {
+            Some(staged) => format!(
+                "{}|{}",
+                effective_jaxpr.canonical_fingerprint(),
+                staged.jaxpr_unknown.canonical_fingerprint()
+            ),
+            None => effective_jaxpr.canonical_fingerprint().to_owned(),
+        };
+        let payload_bytes = payload_str.into_bytes();
+        let artifact = fj_cache::CachedArtifact {
+            integrity_sha256_hex: fj_cache::sha256_hex(&payload_bytes),
+            data: payload_bytes,
+        };
+        if let Some(cache_dir) = request.compile_options.get("cache_dir") {
+            let mut file_cache =
+                fj_cache::backend::FileCache::new(std::path::PathBuf::from(cache_dir));
+            file_cache.put(&cache_key, artifact.clone());
+        }
+
+        let new_plan = std::sync::Arc::new(CachedDispatchPlan {
+            cache_key: cache_key.as_ref().clone(),
+            effective_jaxpr,
+            compiled_jaxpr,
+            staged_program,
+            compiled_unknown_jaxpr,
+        });
+
+        let stats = {
+            let mut guard = compilation_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            guard.misses += 1;
+            guard.lru_store.put(&cache_key, artifact);
+            guard
+                .plans
+                .insert(cache_key.as_ref().clone(), new_plan.clone());
+            guard.lru_store.stats()
+        };
+        (new_plan, false, stats)
     };
 
     let backend_registry = BackendRegistry::new(vec![Box::new(fj_backend_cpu::CpuBackend::new())]);
     let requested_backend = (!request.backend.is_empty()).then_some(request.backend);
     let (backend, device, _fell_back) =
         backend_registry.resolve_with_fallback(&DevicePlacement::Default, requested_backend)?;
-    let outputs = execute_with_transforms(
-        exec_jaxpr,
-        request.transform_stack,
-        &request.args,
-        backend,
-        device,
-        &request.compile_options,
-    )?;
+
+    let outputs = if let Some(staged) = &plan.staged_program {
+        let dynamic_args: Vec<Value> = request
+            .args
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, val)| (!static_argnums.contains(&idx)).then_some(val.clone()))
+            .collect();
+        if request.transform_stack.iter().all(|t| *t == Transform::Jit) {
+            fj_interpreters::staging::execute_staged(staged, &dynamic_args).map_err(|e| {
+                DispatchError::BackendExecution(BackendError::ExecutionFailed {
+                    detail: e.to_string(),
+                })
+            })?
+        } else {
+            let mut full_unk_args = staged.residuals.clone();
+            full_unk_args.extend(dynamic_args);
+            execute_with_transforms(
+                &staged.jaxpr_unknown,
+                request.transform_stack,
+                &full_unk_args,
+                backend,
+                device,
+                &request.compile_options,
+            )?
+        }
+    } else if request.transform_stack.iter().all(|t| *t == Transform::Jit)
+        && let Some(compiled) = &plan.compiled_jaxpr
+    {
+        compiled.eval(&request.args).map_err(|e| {
+            DispatchError::BackendExecution(BackendError::ExecutionFailed {
+                detail: e.to_string(),
+            })
+        })?
+    } else {
+        execute_with_transforms(
+            &plan.effective_jaxpr,
+            request.transform_stack,
+            &request.args,
+            backend,
+            device,
+            &request.compile_options,
+        )?
+    };
 
     let effect_tokens = effect_ctx.finalize();
     let effect_count = effect_tokens.len();
@@ -748,6 +1113,11 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
         outputs,
         cache_key: cache_key.as_string(),
         evidence_ledger,
+        telemetry: DispatchCacheTelemetry {
+            cache_hit,
+            cache_stats,
+            staged_program: plan.staged_program.clone(),
+        },
     })
 }
 

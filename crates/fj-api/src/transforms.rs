@@ -24,6 +24,7 @@ pub struct JitWrapped {
     jaxpr: Jaxpr,
     backend: BackendName,
     mode: CompatibilityMode,
+    static_argnums: Vec<usize>,
     /// Lazily-computed, args-independent dispatch metadata shared across
     /// repeated `call`s. Excluded from equality/Debug so cached proof/key state
     /// does not change the wrapper's observable identity.
@@ -102,7 +103,10 @@ impl std::fmt::Debug for DispatchMetaCache {
 }
 
 #[derive(Clone, Default)]
-struct CompiledEvalCache(Arc<OnceLock<Option<fj_interpreters::CompiledJaxpr>>>);
+struct CompiledEvalCache {
+    plan: Arc<OnceLock<Option<Arc<fj_interpreters::CompiledJaxpr>>>>,
+    warm_hits: Arc<AtomicU64>,
+}
 
 impl PartialEq for CompiledEvalCache {
     fn eq(&self, _other: &Self) -> bool {
@@ -226,6 +230,7 @@ pub fn jit(jaxpr: Jaxpr) -> JitWrapped {
         jaxpr,
         backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
+        static_argnums: Vec::new(),
         meta_cache: DispatchMetaCache::default(),
         compiled_cache: CompiledEvalCache::default(),
     }
@@ -923,21 +928,72 @@ pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
 }
 
 impl JitWrapped {
+    fn build_compile_options(&self) -> BTreeMap<String, String> {
+        let mut opts = BTreeMap::new();
+        if !self.static_argnums.is_empty() {
+            let formatted = self
+                .static_argnums
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            opts.insert("static_argnums".to_owned(), formatted);
+        }
+        opts
+    }
+
     fn try_default_cpu_compiled_eval(
         &self,
         args: &[Value],
     ) -> Result<Option<Vec<Value>>, ApiError> {
-        if self.backend.as_ref() != DEFAULT_BACKEND {
+        if self.backend.as_ref() != DEFAULT_BACKEND || !self.static_argnums.is_empty() {
             return Ok(None);
         }
+        let was_initialized = self.compiled_cache.plan.get().is_some();
         let Some(compiled) = self
             .compiled_cache
-            .0
-            .get_or_init(|| fj_interpreters::compile_jaxpr_for_repeated_eval(&self.jaxpr))
+            .plan
+            .get_or_init(|| {
+                let compiled =
+                    fj_interpreters::compile_jaxpr_for_repeated_eval(&self.jaxpr).map(Arc::new);
+                let transforms = [Transform::Jit];
+                let evidence = transform_evidence(&transforms);
+                let compile_options = BTreeMap::new();
+                if let Some(meta) = self
+                    .meta_cache
+                    .0
+                    .get_or_init(|| {
+                        prepare_dispatch_meta(
+                            self.mode,
+                            &self.jaxpr,
+                            &transforms,
+                            &evidence,
+                            self.backend.as_ref(),
+                            &compile_options,
+                            None,
+                            &[],
+                        )
+                        .ok()
+                    })
+                    .as_ref()
+                {
+                    fj_dispatch::register_compiled_dispatch_plan(
+                        meta.cache_key.clone(),
+                        &self.jaxpr,
+                        compiled.clone(),
+                    );
+                }
+                compiled
+            })
             .as_ref()
         else {
             return Ok(None);
         };
+        if was_initialized {
+            self.compiled_cache
+                .warm_hits
+                .fetch_add(1, Ordering::Relaxed);
+        }
         compiled.eval(args).map(Some).map_err(ApiError::from)
     }
 
@@ -955,56 +1011,94 @@ impl JitWrapped {
         self.mode = mode;
         // Mode feeds the cache key — invalidate any memoized metadata.
         self.meta_cache = DispatchMetaCache::default();
+        self.compiled_cache = CompiledEvalCache::default();
         self
+    }
+
+    /// Specify argument indices (`0`-indexed) whose values are treated as known
+    /// compile-time constants during JIT staging (`stage_jaxpr` / `partial_eval_jaxpr`).
+    #[must_use]
+    pub fn with_static_argnums(mut self, argnums: &[usize]) -> Self {
+        self.static_argnums = argnums.to_vec();
+        self.meta_cache = DispatchMetaCache::default();
+        self.compiled_cache = CompiledEvalCache::default();
+        self
+    }
+
+    /// Return the configured static argument indices for this `JitWrapped`.
+    #[must_use]
+    pub fn static_argnums(&self) -> &[usize] {
+        &self.static_argnums
+    }
+
+    /// Return the number of warm fast-path hits recorded on this `JitWrapped` instance.
+    #[must_use]
+    pub fn warm_hit_count(&self) -> u64 {
+        self.compiled_cache.warm_hits.load(Ordering::Relaxed)
+    }
+
+    /// Execute through the full `fj-dispatch` + `fj-cache` + `fj-interpreters::staging`
+    /// spine and return the full [`fj_dispatch::DispatchResponse`] (including
+    /// `cache_key`, `cache_hit()`, `cache_stats()`, `staged_program()`, and `evidence_ledger`).
+    pub fn call_with_dispatch(
+        &self,
+        args: Vec<Value>,
+    ) -> Result<fj_dispatch::DispatchResponse, ApiError> {
+        let transforms = [Transform::Jit];
+        let evidence = transform_evidence(&transforms);
+        let compile_options = self.build_compile_options();
+        let prepared = if self.static_argnums.is_empty() {
+            self.meta_cache
+                .0
+                .get_or_init(|| {
+                    prepare_dispatch_meta(
+                        self.mode,
+                        &self.jaxpr,
+                        &transforms,
+                        &evidence,
+                        self.backend.as_ref(),
+                        &compile_options,
+                        None,
+                        &[],
+                    )
+                    .ok()
+                })
+                .as_ref()
+        } else {
+            None
+        };
+        let response = dispatch_ref(DispatchRequestRef {
+            mode: self.mode,
+            root_jaxpr: &self.jaxpr,
+            transform_stack: &transforms,
+            transform_evidence: &evidence,
+            args,
+            backend: self.backend.as_ref(),
+            compile_options,
+            custom_hook: None,
+            unknown_incompatible_features: &[],
+            prepared,
+        })?;
+        Ok(response)
     }
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
         if let Some(outputs) = self.try_default_cpu_compiled_eval(&args)? {
             return Ok(outputs);
         }
-        let transforms = [Transform::Jit];
-        let evidence = transform_evidence(&transforms);
-        let compile_options = BTreeMap::new();
-        // Memoize the args-independent composition proof + cache key so repeated
-        // jit calls skip re-hashing the canonical Jaxpr fingerprint.
-        let prepared = self
-            .meta_cache
-            .0
-            .get_or_init(|| {
-                prepare_dispatch_meta(
-                    self.mode,
-                    &self.jaxpr,
-                    &transforms,
-                    &evidence,
-                    self.backend.as_ref(),
-                    &compile_options,
-                    None,
-                    &[],
-                )
-                .ok()
-            })
-            .as_ref();
-        dispatch_with_options_prepared(
-            &self.jaxpr,
-            &transforms,
-            &evidence,
-            args,
-            self.backend.as_ref(),
-            self.mode,
-            compile_options,
-            prepared,
-        )
+        Ok(self.call_with_dispatch(args)?.outputs)
     }
 
     /// Compose: `jit(grad(f))`.
     #[must_use]
     pub fn compose_grad(self) -> ComposedTransform {
+        let compile_options = self.build_compile_options();
         ComposedTransform {
             jaxpr: self.jaxpr,
             transforms: vec![Transform::Jit, Transform::Grad],
             backend: self.backend,
             mode: self.mode,
-            compile_options: BTreeMap::new(),
+            compile_options,
             custom_vjp_rule_key: None,
         }
     }
@@ -1012,12 +1106,13 @@ impl JitWrapped {
     /// Compose: `jit(vmap(f))`.
     #[must_use]
     pub fn compose_vmap(self) -> ComposedTransform {
+        let compile_options = self.build_compile_options();
         ComposedTransform {
             jaxpr: self.jaxpr,
             transforms: vec![Transform::Jit, Transform::Vmap],
             backend: self.backend,
             mode: self.mode,
-            compile_options: BTreeMap::new(),
+            compile_options,
             custom_vjp_rule_key: None,
         }
     }
@@ -2450,5 +2545,116 @@ mod tests {
         let wrapped = pmap(make_add_jaxpr()).with_axis_name("batch");
         let result = wrapped.call(vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn e2e_jit_staging_and_cache_lifecycle() {
+        // f(s, x) = (s * s + 1.0) * x
+        // Equations:
+        //   v3 = s * s        (known when static_argnums = [0])
+        //   v4 = v3 + 1.0     (known when static_argnums = [0])
+        //   v5 = v4 * x       (unknown residual equation)
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(5)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![
+                        Atom::Var(VarId(3)),
+                        Atom::Lit(fj_core::Literal::from_f64(1.0))
+                    ],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let jitted = jit(jaxpr).with_static_argnums(&[0]);
+        assert_eq!(jitted.static_argnums(), &[0]);
+
+        // Cold call with s = 3.0, x = 2.0 -> (9 + 1) * 2 = 20.0
+        let cold = jitted
+            .call_with_dispatch(vec![Value::scalar_f64(3.0), Value::scalar_f64(2.0)])
+            .expect("cold staged jit call should succeed");
+        assert!(
+            !cold.cache_hit(),
+            "first call with s=3.0 must be a cold miss"
+        );
+        assert!((cold.outputs[0].as_f64_scalar().unwrap() - 20.0).abs() < 1e-12);
+        let staged = cold
+            .staged_program()
+            .expect("static_argnums must produce a StagedProgram");
+        assert_eq!(
+            staged.jaxpr_known.equations.len(),
+            2,
+            "s*s and +1.0 must be folded into jaxpr_known"
+        );
+        assert_eq!(
+            staged.jaxpr_unknown.equations.len(),
+            1,
+            "only residual * x remains in jaxpr_unknown"
+        );
+
+        // Warm call with SAME static s = 3.0 and DIFFERENT dynamic x = 5.0 -> (9 + 1) * 5 = 50.0
+        let warm = jitted
+            .call_with_dispatch(vec![Value::scalar_f64(3.0), Value::scalar_f64(5.0)])
+            .expect("warm staged jit call should succeed");
+        assert!(
+            warm.cache_hit(),
+            "second call with same static arg must hit LruCache"
+        );
+        assert_eq!(cold.cache_key, warm.cache_key);
+        assert!((warm.outputs[0].as_f64_scalar().unwrap() - 50.0).abs() < 1e-12);
+
+        // Changing static arg s = 4.0 -> distinct CacheKey and deterministic cache miss!
+        let miss_new_static = jitted
+            .call_with_dispatch(vec![Value::scalar_f64(4.0), Value::scalar_f64(5.0)])
+            .expect("new static arg call should succeed");
+        assert!(
+            !miss_new_static.cache_hit(),
+            "changing static arg value must trigger a cache miss"
+        );
+        assert_ne!(cold.cache_key, miss_new_static.cache_key);
+        assert!((miss_new_static.outputs[0].as_f64_scalar().unwrap() - 85.0).abs() < 1e-12);
+
+        // Changing CompatibilityMode -> distinct CacheKey and deterministic cache miss!
+        let hardened = jitted.with_mode(CompatibilityMode::Hardened);
+        let miss_hardened = hardened
+            .call_with_dispatch(vec![Value::scalar_f64(3.0), Value::scalar_f64(5.0)])
+            .expect("hardened staged jit call should succeed");
+        assert!(!miss_hardened.cache_hit());
+        assert_ne!(cold.cache_key, miss_hardened.cache_key);
+
+        let log = serde_json::json!({
+            "schema_version": "frankenjax.e2e-forensic-log.v1",
+            "scenario_id": "e2e_jit_staging_and_cache_lifecycle",
+            "test_id": "fj_api::transforms::tests::e2e_jit_staging_and_cache_lifecycle",
+            "result": "PASS",
+            "cold_cache_key": cold.cache_key,
+            "warm_cache_hit": warm.cache_hit(),
+            "known_equations": staged.jaxpr_known.equations.len(),
+            "unknown_equations": staged.jaxpr_unknown.equations.len(),
+        });
+        assert_eq!(log["schema_version"], "frankenjax.e2e-forensic-log.v1");
     }
 }
