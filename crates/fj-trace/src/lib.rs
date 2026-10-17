@@ -928,7 +928,7 @@ impl SimpleTraceContext {
                     shape: inputs[0].shape.clone(),
                 }])
             }
-            // Nextafter: binary, same shape as inputs
+            // Nextafter: binary elementwise with broadcasting and dtype promotion
             Primitive::Nextafter => {
                 if inputs.len() != 2 {
                     return Err(TraceError::ShapeInferenceFailed {
@@ -936,7 +936,17 @@ impl SimpleTraceContext {
                         detail: format!("expected 2 inputs, got {}", inputs.len()),
                     });
                 }
-                Ok(vec![inputs[0].clone()])
+                let shape = broadcast_shape(&inputs[0].shape, &inputs[1].shape).ok_or(
+                    TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "cannot broadcast {:?} with {:?}",
+                            inputs[0].shape.dims, inputs[1].shape.dims
+                        ),
+                    },
+                )?;
+                let dtype = promote_dtype(inputs[0].dtype, inputs[1].dtype);
+                Ok(vec![ShapedArray { dtype, shape }])
             }
             Primitive::Cholesky => infer_cholesky(inputs),
             Primitive::Lu => infer_lu(inputs),
@@ -973,7 +983,9 @@ impl SimpleTraceContext {
                         detail: format!("expected 3 inputs, got {}", inputs.len()),
                     });
                 }
-                if inputs[0].shape != inputs[1].shape || inputs[0].shape != inputs[2].shape {
+                let cond_matches =
+                    inputs[0].shape == inputs[1].shape || inputs[0].shape == Shape::scalar();
+                if !cond_matches || inputs[1].shape != inputs[2].shape {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
                         detail: format!(
@@ -2313,7 +2325,7 @@ impl SimpleTraceContext {
                 }])
             }
 
-            // Bitwise binary: same shape as inputs, integer type preserved
+            // Bitwise binary: broadcast shape, integer/bool type preserved
             Primitive::BitwiseAnd
             | Primitive::BitwiseOr
             | Primitive::BitwiseXor
@@ -2326,10 +2338,24 @@ impl SimpleTraceContext {
                         detail: format!("bitwise binary op expects 2 inputs, got {}", inputs.len()),
                     });
                 }
-                Ok(vec![ShapedArray {
-                    dtype: inputs[0].dtype,
-                    shape: inputs[0].shape.clone(),
-                }])
+                let shape = broadcast_shape(&inputs[0].shape, &inputs[1].shape).ok_or(
+                    TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "cannot broadcast {:?} with {:?}",
+                            inputs[0].shape.dims, inputs[1].shape.dims
+                        ),
+                    },
+                )?;
+                let dtype = if matches!(
+                    primitive,
+                    Primitive::BitwiseAnd | Primitive::BitwiseOr | Primitive::BitwiseXor
+                ) {
+                    promote_dtype(inputs[0].dtype, inputs[1].dtype)
+                } else {
+                    inputs[0].dtype
+                };
+                Ok(vec![ShapedArray { dtype, shape }])
             }
 
             // Bitwise/integer unary: same shape and type as input
@@ -4927,6 +4953,861 @@ impl TracerRef {
             .collect::<Result<Vec<_>, TraceError>>()?;
         Ok(refs)
     }
+
+    fn single_output_with_params(
+        &self,
+        primitive: Primitive,
+        other_inputs: &[&TracerRef],
+        params: BTreeMap<String, String>,
+    ) -> Result<TracerRef, TraceError> {
+        let mut outs = self.primitive_with_params(primitive, other_inputs, params)?;
+        Ok(outs.remove(0))
+    }
+
+    // ── Parameterized unary & conversion primitives ───────────────────
+
+    /// Round to nearest even integer (`Primitive::Round`).
+    pub fn round(&self) -> Result<TracerRef, TraceError> {
+        self.unary_op(Primitive::Round)
+    }
+
+    /// Round with an explicit rounding method (`"nearest_even"` or `"away_from_zero"`).
+    pub fn round_with_method(&self, rounding_method: &str) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("rounding_method".to_owned(), rounding_method.to_owned());
+        self.single_output_with_params(Primitive::Round, &[], params)
+    }
+
+    /// Raise each element to a fixed integer power (`Primitive::IntegerPow`).
+    pub fn integer_pow(&self, count: i64) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("y".to_owned(), count.to_string());
+        params.insert("count".to_owned(), count.to_string());
+        self.single_output_with_params(Primitive::IntegerPow, &[], params)
+    }
+
+    /// Cast elements to `new_dtype` (`Primitive::ConvertElementType`).
+    pub fn convert_element_type(&self, new_dtype: DType) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "new_dtype".to_owned(),
+            dtype_param_str(new_dtype).to_owned(),
+        );
+        self.single_output_with_params(Primitive::ConvertElementType, &[], params)
+    }
+
+    /// Alias for [`TracerRef::convert_element_type`].
+    pub fn astype(&self, new_dtype: DType) -> Result<TracerRef, TraceError> {
+        self.convert_element_type(new_dtype)
+    }
+
+    /// Reinterpret element bits as `new_dtype` (`Primitive::BitcastConvertType`).
+    pub fn bitcast_convert_type(&self, new_dtype: DType) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "new_dtype".to_owned(),
+            dtype_param_str(new_dtype).to_owned(),
+        );
+        self.single_output_with_params(Primitive::BitcastConvertType, &[], params)
+    }
+
+    /// Reduce floating-point precision (`Primitive::ReducePrecision`).
+    pub fn reduce_precision(
+        &self,
+        exponent_bits: u32,
+        mantissa_bits: u32,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("exponent_bits".to_owned(), exponent_bits.to_string());
+        params.insert("mantissa_bits".to_owned(), mantissa_bits.to_string());
+        self.single_output_with_params(Primitive::ReducePrecision, &[], params)
+    }
+
+    // ── Ternary & selection primitives ────────────────────────────────
+
+    /// Fused multiply-add `self * b + c` (`Primitive::Fma`).
+    pub fn fma(&self, b: &TracerRef, c: &TracerRef) -> Result<TracerRef, TraceError> {
+        self.single_output_with_params(Primitive::Fma, &[b, c], BTreeMap::new())
+    }
+
+    /// Regularized incomplete beta function `I_x(self, b)` (`Primitive::Betainc`).
+    pub fn betainc(&self, b: &TracerRef, x: &TracerRef) -> Result<TracerRef, TraceError> {
+        self.single_output_with_params(Primitive::Betainc, &[b, x], BTreeMap::new())
+    }
+
+    /// Elementwise ternary selection `where(self, on_true, on_false)` (`Primitive::Select`).
+    pub fn select(
+        &self,
+        on_true: &TracerRef,
+        on_false: &TracerRef,
+    ) -> Result<TracerRef, TraceError> {
+        self.single_output_with_params(Primitive::Select, &[on_true, on_false], BTreeMap::new())
+    }
+
+    /// Multi-way indexed selection (`Primitive::SelectN`) with `self` as integer index.
+    pub fn select_n(&self, cases: &[&TracerRef]) -> Result<TracerRef, TraceError> {
+        self.single_output_with_params(Primitive::SelectN, cases, BTreeMap::new())
+    }
+
+    /// Clamp `self` to `[min, max]` (`Primitive::Clamp`, recording JAX operand order `[min, self, max]`).
+    pub fn clamp(&self, min: &TracerRef, max: &TracerRef) -> Result<TracerRef, TraceError> {
+        min.single_output_with_params(Primitive::Clamp, &[self, max], BTreeMap::new())
+    }
+
+    // ── Shape, indexing, and encoding primitives ──────────────────────
+
+    /// Reshape to `new_shape` (`Primitive::Reshape`).
+    pub fn reshape(&self, new_shape: &[u32]) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("new_shape".to_owned(), join_slice(new_shape));
+        self.single_output_with_params(Primitive::Reshape, &[], params)
+    }
+
+    /// Reshape with signed dimensions (supporting a single `-1` inferred dimension).
+    pub fn reshape_i64(&self, new_shape: &[i64]) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("new_shape".to_owned(), join_slice(new_shape));
+        self.single_output_with_params(Primitive::Reshape, &[], params)
+    }
+
+    /// Permute dimensions (`Primitive::Transpose`). If `permutation` is `None`, reverses all axes.
+    pub fn transpose(&self, permutation: Option<&[usize]>) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(perm) = permutation {
+            params.insert("permutation".to_owned(), join_slice(perm));
+        }
+        self.single_output_with_params(Primitive::Transpose, &[], params)
+    }
+
+    /// Broadcast `self` into `shape` mapping input axes to `broadcast_dimensions` (`Primitive::BroadcastInDim`).
+    pub fn broadcast_in_dim(
+        &self,
+        shape: &[u32],
+        broadcast_dimensions: &[usize],
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("shape".to_owned(), join_slice(shape));
+        params.insert(
+            "broadcast_dimensions".to_owned(),
+            join_slice(broadcast_dimensions),
+        );
+        self.single_output_with_params(Primitive::BroadcastInDim, &[], params)
+    }
+
+    /// Prepend `sizes` as leading dimensions (`lax.broadcast(self, sizes)` via `Primitive::BroadcastInDim`).
+    pub fn broadcast(&self, sizes: &[u32]) -> Result<TracerRef, TraceError> {
+        let rank = self.aval.shape.rank();
+        let mut target_shape = Vec::with_capacity(sizes.len() + rank);
+        target_shape.extend_from_slice(sizes);
+        target_shape.extend_from_slice(&self.aval.shape.dims);
+        let broadcast_dims: Vec<usize> = (sizes.len()..sizes.len() + rank).collect();
+        self.broadcast_in_dim(&target_shape, &broadcast_dims)
+    }
+
+    /// Static slice (`Primitive::Slice`) with optional `strides`.
+    pub fn slice(
+        &self,
+        start_indices: &[u32],
+        limit_indices: &[u32],
+        strides: Option<&[u32]>,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("start_indices".to_owned(), join_slice(start_indices));
+        params.insert("limit_indices".to_owned(), join_slice(limit_indices));
+        if let Some(st) = strides {
+            params.insert("strides".to_owned(), join_slice(st));
+        }
+        self.single_output_with_params(Primitive::Slice, &[], params)
+    }
+
+    /// Dynamic slice (`Primitive::DynamicSlice`) with scalar start-index tracers and static `slice_sizes`.
+    pub fn dynamic_slice(
+        &self,
+        start_indices: &[&TracerRef],
+        slice_sizes: &[u32],
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), join_slice(slice_sizes));
+        self.single_output_with_params(Primitive::DynamicSlice, start_indices, params)
+    }
+
+    /// Dynamic update slice (`Primitive::DynamicUpdateSlice`).
+    pub fn dynamic_update_slice(
+        &self,
+        update: &TracerRef,
+        start_indices: &[&TracerRef],
+    ) -> Result<TracerRef, TraceError> {
+        let mut inputs = Vec::with_capacity(1 + start_indices.len());
+        inputs.push(update);
+        inputs.extend_from_slice(start_indices);
+        self.single_output_with_params(Primitive::DynamicUpdateSlice, &inputs, BTreeMap::new())
+    }
+
+    /// Gather slices from `self` at `start_indices` (`Primitive::Gather`).
+    pub fn gather(
+        &self,
+        start_indices: &TracerRef,
+        slice_sizes: &[u32],
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), join_slice(slice_sizes));
+        self.single_output_with_params(Primitive::Gather, &[start_indices], params)
+    }
+
+    /// Scatter `updates` into `self` at `scatter_indices` (`Primitive::Scatter`).
+    pub fn scatter(
+        &self,
+        scatter_indices: &TracerRef,
+        updates: &TracerRef,
+        mode: Option<&str>,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(m) = mode {
+            params.insert("mode".to_owned(), m.to_owned());
+        }
+        self.single_output_with_params(Primitive::Scatter, &[scatter_indices, updates], params)
+    }
+
+    /// Scatter-add `updates` into `self` (`Primitive::Scatter` with `mode = "add"`).
+    pub fn scatter_add(
+        &self,
+        scatter_indices: &TracerRef,
+        updates: &TracerRef,
+    ) -> Result<TracerRef, TraceError> {
+        self.scatter(scatter_indices, updates, Some("add"))
+    }
+
+    /// Scatter-max `updates` into `self` (`Primitive::Scatter` with `mode = "max"`).
+    pub fn scatter_max(
+        &self,
+        scatter_indices: &TracerRef,
+        updates: &TracerRef,
+    ) -> Result<TracerRef, TraceError> {
+        self.scatter(scatter_indices, updates, Some("max"))
+    }
+
+    /// Scatter-min `updates` into `self` (`Primitive::Scatter` with `mode = "min"`).
+    pub fn scatter_min(
+        &self,
+        scatter_indices: &TracerRef,
+        updates: &TracerRef,
+    ) -> Result<TracerRef, TraceError> {
+        self.scatter(scatter_indices, updates, Some("min"))
+    }
+
+    /// Concatenate `inputs` along `dimension` (`Primitive::Concatenate`).
+    pub fn concatenate(inputs: &[&TracerRef], dimension: usize) -> Result<TracerRef, TraceError> {
+        let Some((first, rest)) = inputs.split_first() else {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Concatenate,
+                detail: "expected at least 1 input".to_owned(),
+            });
+        };
+        first.concat_with(rest, dimension)
+    }
+
+    /// Concatenate `self` with `others` along `dimension` (`Primitive::Concatenate`).
+    pub fn concat_with(
+        &self,
+        others: &[&TracerRef],
+        dimension: usize,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("dimension".to_owned(), dimension.to_string());
+        self.single_output_with_params(Primitive::Concatenate, others, params)
+    }
+
+    /// Pad `self` with scalar `padding_value` (`Primitive::Pad`).
+    pub fn pad(
+        &self,
+        padding_value: &TracerRef,
+        padding_low: &[i64],
+        padding_high: &[i64],
+        padding_interior: &[u32],
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("padding_low".to_owned(), join_slice(padding_low));
+        params.insert("padding_high".to_owned(), join_slice(padding_high));
+        params.insert("padding_interior".to_owned(), join_slice(padding_interior));
+        self.single_output_with_params(Primitive::Pad, &[padding_value], params)
+    }
+
+    /// Reverse elements along `axes` (`Primitive::Rev`).
+    pub fn rev(&self, axes: &[usize]) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), join_slice(axes));
+        self.single_output_with_params(Primitive::Rev, &[], params)
+    }
+
+    /// Remove singleton dimensions (`Primitive::Squeeze`). If `dimensions` is `None`, squeezes all size-1 axes.
+    pub fn squeeze(&self, dimensions: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(dims) = dimensions {
+            params.insert("dimensions".to_owned(), join_slice(dims));
+        }
+        self.single_output_with_params(Primitive::Squeeze, &[], params)
+    }
+
+    /// Split `self` along `axis` into `num_sections` equal sections (`Primitive::Split`).
+    pub fn split(&self, axis: i64, num_sections: usize) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("axis".to_owned(), axis.to_string());
+        params.insert("num_sections".to_owned(), num_sections.to_string());
+        self.single_output_with_params(Primitive::Split, &[], params)
+    }
+
+    /// Split `self` along `axis` with explicit section `sizes` (`Primitive::Split`).
+    pub fn split_sizes(&self, axis: i64, sizes: &[usize]) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("axis".to_owned(), axis.to_string());
+        params.insert("sizes".to_owned(), join_slice(sizes));
+        self.single_output_with_params(Primitive::Split, &[], params)
+    }
+
+    /// Insert a singleton dimension at `axis` (`Primitive::ExpandDims`).
+    pub fn expand_dims(&self, axis: i64) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("axis".to_owned(), axis.to_string());
+        self.single_output_with_params(Primitive::ExpandDims, &[], params)
+    }
+
+    /// Tile `self` according to per-axis `reps` (`Primitive::Tile`).
+    pub fn tile(&self, reps: &[usize]) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("reps".to_owned(), join_slice(reps));
+        self.single_output_with_params(Primitive::Tile, &[], params)
+    }
+
+    /// One-hot encode integer indices (`Primitive::OneHot`).
+    pub fn one_hot(
+        &self,
+        num_classes: u32,
+        dtype: DType,
+        axis: Option<i64>,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("num_classes".to_owned(), num_classes.to_string());
+        params.insert("dtype".to_owned(), dtype_param_str(dtype).to_owned());
+        if let Some(ax) = axis {
+            params.insert("axis".to_owned(), ax.to_string());
+        }
+        self.single_output_with_params(Primitive::OneHot, &[], params)
+    }
+
+    // ── Reductions, cumulative scans, sorting, and pooling ────────────
+
+    fn reduce_with_axes(
+        &self,
+        primitive: Primitive,
+        axes: Option<&[i64]>,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(ax) = axes {
+            params.insert("axes".to_owned(), join_slice(ax));
+        }
+        self.single_output_with_params(primitive, &[], params)
+    }
+
+    /// Sum reduction along `axes` (`None` reduces over all axes).
+    pub fn reduce_sum(&self, axes: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        self.reduce_with_axes(Primitive::ReduceSum, axes)
+    }
+
+    /// Max reduction along `axes` (`None` reduces over all axes).
+    pub fn reduce_max(&self, axes: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        self.reduce_with_axes(Primitive::ReduceMax, axes)
+    }
+
+    /// Min reduction along `axes` (`None` reduces over all axes).
+    pub fn reduce_min(&self, axes: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        self.reduce_with_axes(Primitive::ReduceMin, axes)
+    }
+
+    /// Product reduction along `axes` (`None` reduces over all axes).
+    pub fn reduce_prod(&self, axes: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        self.reduce_with_axes(Primitive::ReduceProd, axes)
+    }
+
+    /// Logical/bitwise AND reduction along `axes` (`None` reduces over all axes).
+    pub fn reduce_and(&self, axes: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        self.reduce_with_axes(Primitive::ReduceAnd, axes)
+    }
+
+    /// Logical/bitwise OR reduction along `axes` (`None` reduces over all axes).
+    pub fn reduce_or(&self, axes: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        self.reduce_with_axes(Primitive::ReduceOr, axes)
+    }
+
+    /// Logical/bitwise XOR reduction along `axes` (`None` reduces over all axes).
+    pub fn reduce_xor(&self, axes: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        self.reduce_with_axes(Primitive::ReduceXor, axes)
+    }
+
+    fn cumulative_with_axis(
+        &self,
+        primitive: Primitive,
+        axis: Option<i64>,
+        reverse: bool,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(ax) = axis {
+            params.insert("axis".to_owned(), ax.to_string());
+        }
+        if reverse {
+            params.insert("reverse".to_owned(), "true".to_owned());
+        }
+        self.single_output_with_params(primitive, &[], params)
+    }
+
+    /// Cumulative sum along `axis` (`Primitive::Cumsum`).
+    pub fn cumsum(&self, axis: Option<i64>, reverse: bool) -> Result<TracerRef, TraceError> {
+        self.cumulative_with_axis(Primitive::Cumsum, axis, reverse)
+    }
+
+    /// Cumulative product along `axis` (`Primitive::Cumprod`).
+    pub fn cumprod(&self, axis: Option<i64>, reverse: bool) -> Result<TracerRef, TraceError> {
+        self.cumulative_with_axis(Primitive::Cumprod, axis, reverse)
+    }
+
+    /// Cumulative maximum along `axis` (`Primitive::Cummax`).
+    pub fn cummax(&self, axis: Option<i64>, reverse: bool) -> Result<TracerRef, TraceError> {
+        self.cumulative_with_axis(Primitive::Cummax, axis, reverse)
+    }
+
+    /// Cumulative minimum along `axis` (`Primitive::Cummin`).
+    pub fn cummin(&self, axis: Option<i64>, reverse: bool) -> Result<TracerRef, TraceError> {
+        self.cumulative_with_axis(Primitive::Cummin, axis, reverse)
+    }
+
+    /// Associative prefix scan (`Primitive::AssociativeScan`) with `mode` (`"sum"`, `"prod"`, `"max"`, `"min"`).
+    pub fn associative_scan(
+        &self,
+        mode: &str,
+        axis: Option<i64>,
+        reverse: bool,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("mode".to_owned(), mode.to_owned());
+        if let Some(ax) = axis {
+            params.insert("axis".to_owned(), ax.to_string());
+        }
+        if reverse {
+            params.insert("reverse".to_owned(), "true".to_owned());
+        }
+        self.single_output_with_params(Primitive::AssociativeScan, &[], params)
+    }
+
+    /// Sort elements along `axis` (`Primitive::Sort`).
+    pub fn sort(&self, axis: Option<i64>, descending: bool) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(ax) = axis {
+            params.insert("axis".to_owned(), ax.to_string());
+        }
+        if descending {
+            params.insert("descending".to_owned(), "true".to_owned());
+        }
+        self.single_output_with_params(Primitive::Sort, &[], params)
+    }
+
+    /// Indices that sort `self` along `axis` (`Primitive::Argsort`).
+    pub fn argsort(&self, axis: Option<i64>, descending: bool) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(ax) = axis {
+            params.insert("axis".to_owned(), ax.to_string());
+        }
+        if descending {
+            params.insert("descending".to_owned(), "true".to_owned());
+        }
+        self.single_output_with_params(Primitive::Argsort, &[], params)
+    }
+
+    /// Top-`k` values and indices along the last axis (`Primitive::TopK`).
+    pub fn top_k(&self, k: u32) -> Result<(TracerRef, TracerRef), TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("k".to_owned(), k.to_string());
+        let mut outs = self.primitive_with_params(Primitive::TopK, &[], params)?;
+        let indices = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        let values = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        Ok((values, indices))
+    }
+
+    /// Index of minimum element along `axis` (`Primitive::Argmin`).
+    pub fn argmin(&self, axis: Option<i64>) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(ax) = axis {
+            params.insert("axis".to_owned(), ax.to_string());
+        }
+        self.single_output_with_params(Primitive::Argmin, &[], params)
+    }
+
+    /// Index of maximum element along `axis` (`Primitive::Argmax`).
+    pub fn argmax(&self, axis: Option<i64>) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(ax) = axis {
+            params.insert("axis".to_owned(), ax.to_string());
+        }
+        self.single_output_with_params(Primitive::Argmax, &[], params)
+    }
+
+    /// Windowed reduction / pooling (`Primitive::ReduceWindow`).
+    pub fn reduce_window(
+        &self,
+        mode: &str,
+        window_dimensions: &[usize],
+        window_strides: &[usize],
+        padding: &str,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("mode".to_owned(), mode.to_owned());
+        params.insert(
+            "window_dimensions".to_owned(),
+            join_slice(window_dimensions),
+        );
+        params.insert("window_strides".to_owned(), join_slice(window_strides));
+        params.insert("padding".to_owned(), padding.to_owned());
+        self.single_output_with_params(Primitive::ReduceWindow, &[], params)
+    }
+
+    // ── Contractions, convolutions, linear algebra, and FFT ───────────
+
+    /// Dot product / matrix multiplication (`Primitive::Dot`).
+    pub fn dot(&self, rhs: &TracerRef) -> Result<TracerRef, TraceError> {
+        self.binary_op(Primitive::Dot, rhs)
+    }
+
+    /// Alias for [`TracerRef::dot`].
+    pub fn matmul(&self, rhs: &TracerRef) -> Result<TracerRef, TraceError> {
+        self.dot(rhs)
+    }
+
+    /// General tensor contraction (`Primitive::DotGeneral`).
+    pub fn dot_general(
+        &self,
+        rhs: &TracerRef,
+        lhs_contracting_dims: &[usize],
+        rhs_contracting_dims: &[usize],
+        lhs_batch_dims: &[usize],
+        rhs_batch_dims: &[usize],
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "lhs_contracting_dims".to_owned(),
+            join_slice(lhs_contracting_dims),
+        );
+        params.insert(
+            "rhs_contracting_dims".to_owned(),
+            join_slice(rhs_contracting_dims),
+        );
+        params.insert("lhs_batch_dims".to_owned(), join_slice(lhs_batch_dims));
+        params.insert("rhs_batch_dims".to_owned(), join_slice(rhs_batch_dims));
+        self.single_output_with_params(Primitive::DotGeneral, &[rhs], params)
+    }
+
+    /// 1D or 2D convolution (`Primitive::Conv`).
+    pub fn conv(
+        &self,
+        rhs: &TracerRef,
+        strides: &[usize],
+        padding: &str,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if !strides.is_empty() {
+            params.insert("strides".to_owned(), join_slice(strides));
+        }
+        params.insert("padding".to_owned(), padding.to_owned());
+        self.single_output_with_params(Primitive::Conv, &[rhs], params)
+    }
+
+    /// General dilated / grouped convolution (`Primitive::Conv`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_general_dilated(
+        &self,
+        rhs: &TracerRef,
+        strides: &[usize],
+        padding: &str,
+        lhs_dilation: &[usize],
+        rhs_dilation: &[usize],
+        feature_group_count: usize,
+        batch_group_count: usize,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if !strides.is_empty() {
+            params.insert("strides".to_owned(), join_slice(strides));
+        }
+        params.insert("padding".to_owned(), padding.to_owned());
+        if !lhs_dilation.is_empty() {
+            params.insert("lhs_dilation".to_owned(), join_slice(lhs_dilation));
+        }
+        if !rhs_dilation.is_empty() {
+            params.insert("rhs_dilation".to_owned(), join_slice(rhs_dilation));
+        }
+        if feature_group_count > 1 {
+            params.insert(
+                "feature_group_count".to_owned(),
+                feature_group_count.to_string(),
+            );
+        }
+        if batch_group_count > 1 {
+            params.insert(
+                "batch_group_count".to_owned(),
+                batch_group_count.to_string(),
+            );
+        }
+        self.single_output_with_params(Primitive::Conv, &[rhs], params)
+    }
+
+    /// Cholesky decomposition `L` such that `self = L @ L^T` (`Primitive::Cholesky`).
+    pub fn cholesky(&self) -> Result<TracerRef, TraceError> {
+        self.unary_op(Primitive::Cholesky)
+    }
+
+    /// QR decomposition `(Q, R)` (`Primitive::Qr`).
+    pub fn qr(&self, full_matrices: bool) -> Result<(TracerRef, TracerRef), TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("full_matrices".to_owned(), full_matrices.to_string());
+        let mut outs = self.primitive_with_params(Primitive::Qr, &[], params)?;
+        let r = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        let q = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        Ok((q, r))
+    }
+
+    /// LU decomposition `(lu, pivots, permutation)` (`Primitive::Lu`).
+    pub fn lu(&self) -> Result<(TracerRef, TracerRef, TracerRef), TraceError> {
+        let mut outs = self.primitive_with_params(Primitive::Lu, &[], BTreeMap::new())?;
+        let permutation = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        let pivots = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        let lu = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        Ok((lu, pivots, permutation))
+    }
+
+    /// Singular value decomposition `(U, S, Vt)` (`Primitive::Svd`).
+    pub fn svd(
+        &self,
+        full_matrices: bool,
+    ) -> Result<(TracerRef, TracerRef, TracerRef), TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("full_matrices".to_owned(), full_matrices.to_string());
+        let mut outs = self.primitive_with_params(Primitive::Svd, &[], params)?;
+        let vt = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        let s = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        let u = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        Ok((u, s, vt))
+    }
+
+    /// Solve triangular linear system (`Primitive::TriangularSolve`).
+    pub fn triangular_solve(
+        &self,
+        rhs: &TracerRef,
+        lower: bool,
+        transpose_a: bool,
+        unit_diagonal: bool,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("lower".to_owned(), lower.to_string());
+        params.insert("transpose_a".to_owned(), transpose_a.to_string());
+        params.insert("unit_diagonal".to_owned(), unit_diagonal.to_string());
+        self.single_output_with_params(Primitive::TriangularSolve, &[rhs], params)
+    }
+
+    /// Symmetric/Hermitian eigendecomposition `(eigenvalues, eigenvectors)` (`Primitive::Eigh`).
+    pub fn eigh(&self) -> Result<(TracerRef, TracerRef), TraceError> {
+        let mut outs = self.primitive_with_params(Primitive::Eigh, &[], BTreeMap::new())?;
+        let eigenvectors = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        let eigenvalues = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        Ok((eigenvalues, eigenvectors))
+    }
+
+    /// General eigendecomposition `(eigenvalues, eigenvectors)` (`Primitive::Eig`).
+    pub fn eig(&self) -> Result<(TracerRef, TracerRef), TraceError> {
+        let mut outs = self.primitive_with_params(Primitive::Eig, &[], BTreeMap::new())?;
+        let eigenvectors = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        let eigenvalues = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        Ok((eigenvalues, eigenvectors))
+    }
+
+    /// Solve general linear system `self @ x = rhs` (`Primitive::Solve`).
+    pub fn solve(&self, rhs: &TracerRef) -> Result<TracerRef, TraceError> {
+        self.binary_op(Primitive::Solve, rhs)
+    }
+
+    /// Matrix determinant (`Primitive::Det`).
+    pub fn det(&self) -> Result<TracerRef, TraceError> {
+        self.unary_op(Primitive::Det)
+    }
+
+    /// Sign and log-absolute-determinant `(sign, logabsdet)` (`Primitive::Slogdet`).
+    pub fn slogdet(&self) -> Result<(TracerRef, TracerRef), TraceError> {
+        let mut outs = self.primitive_with_params(Primitive::Slogdet, &[], BTreeMap::new())?;
+        let logabsdet = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        let sign = outs.pop().ok_or(TraceError::CompositionViolation)?;
+        Ok((sign, logabsdet))
+    }
+
+    /// 1D complex Fast Fourier Transform along the last axis (`Primitive::Fft`).
+    pub fn fft(&self, fft_length: Option<u32>) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(len) = fft_length {
+            params.insert("fft_length".to_owned(), len.to_string());
+        }
+        self.single_output_with_params(Primitive::Fft, &[], params)
+    }
+
+    /// 1D inverse complex Fast Fourier Transform along the last axis (`Primitive::Ifft`).
+    pub fn ifft(&self, fft_length: Option<u32>) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(len) = fft_length {
+            params.insert("fft_length".to_owned(), len.to_string());
+        }
+        self.single_output_with_params(Primitive::Ifft, &[], params)
+    }
+
+    /// 1D real-to-complex Fast Fourier Transform along the last axis (`Primitive::Rfft`).
+    pub fn rfft(&self, fft_length: Option<u32>) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(len) = fft_length {
+            params.insert("fft_length".to_owned(), len.to_string());
+        }
+        self.single_output_with_params(Primitive::Rfft, &[], params)
+    }
+
+    /// 1D complex-to-real inverse Fast Fourier Transform along the last axis (`Primitive::Irfft`).
+    pub fn irfft(&self, fft_length: Option<u32>) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        if let Some(len) = fft_length {
+            params.insert("fft_length".to_owned(), len.to_string());
+        }
+        self.single_output_with_params(Primitive::Irfft, &[], params)
+    }
+}
+
+macro_rules! impl_tracer_unary_methods {
+    ($(($method:ident, $primitive:expr)),* $(,)?) => {
+        impl TracerRef {
+            $(
+                #[doc = concat!("Record `", stringify!($primitive), "` on `self`.")]
+                pub fn $method(&self) -> Result<TracerRef, TraceError> {
+                    self.unary_op($primitive)
+                }
+            )*
+        }
+    };
+}
+
+impl_tracer_unary_methods!(
+    (neg_op, Primitive::Neg),
+    (abs, Primitive::Abs),
+    (exp, Primitive::Exp),
+    (expm1, Primitive::Expm1),
+    (exp2, Primitive::Exp2),
+    (log, Primitive::Log),
+    (log1p, Primitive::Log1p),
+    (log2, Primitive::Log2),
+    (sqrt, Primitive::Sqrt),
+    (rsqrt, Primitive::Rsqrt),
+    (cbrt, Primitive::Cbrt),
+    (floor, Primitive::Floor),
+    (ceil, Primitive::Ceil),
+    (trunc, Primitive::Trunc),
+    (sin, Primitive::Sin),
+    (cos, Primitive::Cos),
+    (tan, Primitive::Tan),
+    (asin, Primitive::Asin),
+    (acos, Primitive::Acos),
+    (atan, Primitive::Atan),
+    (deg2rad, Primitive::Deg2Rad),
+    (rad2deg, Primitive::Rad2Deg),
+    (sinh, Primitive::Sinh),
+    (cosh, Primitive::Cosh),
+    (tanh, Primitive::Tanh),
+    (asinh, Primitive::Asinh),
+    (acosh, Primitive::Acosh),
+    (atanh, Primitive::Atanh),
+    (sinc, Primitive::Sinc),
+    (sign, Primitive::Sign),
+    (square, Primitive::Square),
+    (reciprocal, Primitive::Reciprocal),
+    (logistic, Primitive::Logistic),
+    (erf, Primitive::Erf),
+    (erfc, Primitive::Erfc),
+    (erf_inv, Primitive::ErfInv),
+    (lgamma, Primitive::Lgamma),
+    (digamma, Primitive::Digamma),
+    (bessel_i0e, Primitive::BesselI0e),
+    (bessel_i1e, Primitive::BesselI1e),
+    (is_finite, Primitive::IsFinite),
+    (is_nan, Primitive::IsNan),
+    (is_inf, Primitive::IsInf),
+    (signbit, Primitive::Signbit),
+    (conj, Primitive::Conj),
+    (real, Primitive::Real),
+    (imag, Primitive::Imag),
+    (copy, Primitive::Copy),
+    (stop_gradient, Primitive::StopGradient),
+    (bitwise_not, Primitive::BitwiseNot),
+    (population_count, Primitive::PopulationCount),
+    (count_leading_zeros, Primitive::CountLeadingZeros),
+    (count_trailing_zeros, Primitive::CountTrailingZeros),
+);
+
+macro_rules! impl_tracer_binary_methods {
+    ($(($method:ident, $primitive:expr)),* $(,)?) => {
+        impl TracerRef {
+            $(
+                #[doc = concat!("Record binary `", stringify!($primitive), "` between `self` and `other`.")]
+                pub fn $method(&self, other: &TracerRef) -> Result<TracerRef, TraceError> {
+                    self.binary_op($primitive, other)
+                }
+            )*
+        }
+    };
+}
+
+impl_tracer_binary_methods!(
+    (add_op, Primitive::Add),
+    (sub_op, Primitive::Sub),
+    (mul_op, Primitive::Mul),
+    (div_op, Primitive::Div),
+    (rem_op, Primitive::Rem),
+    (max, Primitive::Max),
+    (min, Primitive::Min),
+    (pow, Primitive::Pow),
+    (atan2, Primitive::Atan2),
+    (hypot, Primitive::Hypot),
+    (log_add_exp, Primitive::LogAddExp),
+    (log_add_exp2, Primitive::LogAddExp2),
+    (gcd, Primitive::Gcd),
+    (lcm, Primitive::Lcm),
+    (copy_sign, Primitive::CopySign),
+    (ldexp, Primitive::Ldexp),
+    (xlogy, Primitive::XLogY),
+    (xlog1py, Primitive::XLog1PY),
+    (polygamma, Primitive::Polygamma),
+    (heaviside, Primitive::Heaviside),
+    (igamma, Primitive::Igamma),
+    (igammac, Primitive::Igammac),
+    (zeta, Primitive::Zeta),
+    (nextafter, Primitive::Nextafter),
+    (complex, Primitive::Complex),
+    (eq, Primitive::Eq),
+    (ne, Primitive::Ne),
+    (lt, Primitive::Lt),
+    (le, Primitive::Le),
+    (gt, Primitive::Gt),
+    (ge, Primitive::Ge),
+    (bitwise_and, Primitive::BitwiseAnd),
+    (bitwise_or, Primitive::BitwiseOr),
+    (bitwise_xor, Primitive::BitwiseXor),
+    (shift_left, Primitive::ShiftLeft),
+    (shift_right_arithmetic, Primitive::ShiftRightArithmetic),
+    (shift_right_logical, Primitive::ShiftRightLogical),
+);
+
+fn join_slice<T: std::fmt::Display>(items: &[T]) -> String {
+    items
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn dtype_param_str(dtype: DType) -> &'static str {
@@ -11025,6 +11906,175 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn test_tracer_ref_typed_methods_complex_predicates_onehot_broadcast_shape() {
+        let closed = crate::make_jaxpr_fallible(
+            |inputs| {
+                let re = &inputs[0];
+                let im = &inputs[1];
+                let idx = &inputs[2];
+
+                let z = re.complex(im)?;
+                assert_eq!(z.aval().dtype, DType::Complex128);
+                let z_re = z.real()?;
+                let z_im = z.imag()?;
+                assert_eq!(z_re.aval().dtype, DType::F64);
+                assert_eq!(z_im.aval().dtype, DType::F64);
+
+                let finite = z_re.is_finite()?;
+                assert_eq!(finite.aval().dtype, DType::Bool);
+
+                let oh = idx.one_hot(4, DType::F64, None)?;
+                assert_eq!(oh.aval().shape, Shape { dims: vec![3, 4] });
+
+                let bcast = z_re.broadcast(&[2])?;
+                assert_eq!(bcast.aval().shape, Shape { dims: vec![2, 3] });
+
+                let reshaped = bcast.reshape(&[3, 2])?;
+                let transposed = reshaped.transpose(Some(&[1, 0]))?;
+                assert_eq!(transposed.aval().shape, Shape { dims: vec![2, 3] });
+
+                let summed = transposed.reduce_sum(Some(&[0]))?;
+                assert_eq!(summed.aval().shape, Shape { dims: vec![3] });
+
+                Ok(vec![summed + z_im, finite, oh])
+            },
+            vec![
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::vector(3),
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::vector(3),
+                },
+                ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape::vector(3),
+                },
+            ],
+        )
+        .expect("typed TracerRef complex/predicate/shape/onehot trace should succeed");
+
+        closed
+            .jaxpr
+            .validate_well_formed()
+            .expect("traced jaxpr should be well-formed");
+
+        let outputs = fj_interpreters::eval_jaxpr(
+            &closed.jaxpr,
+            &[
+                Value::vector_f64(&[1.0, 2.0, 3.0]).expect("re"),
+                Value::vector_f64(&[0.5, 1.5, 2.5]).expect("im"),
+                Value::vector_i64(&[0, 2, 3]).expect("idx"),
+            ],
+        )
+        .expect("eval_jaxpr should succeed");
+        // bcast([1,2,3], [2]) -> [[1,2,3],[1,2,3]]
+        // reshape([3,2]) -> [[1,2],[3,1],[2,3]]
+        // transpose([1,0]) -> [[1,3,2],[2,1,3]]
+        // reduce_sum([0]) -> [3,4,5]
+        // + im [0.5, 1.5, 2.5] -> [3.5, 5.5, 7.5]
+        assert_eq!(
+            outputs[0],
+            Value::vector_f64(&[3.5, 5.5, 7.5]).expect("expected sum")
+        );
+        assert_eq!(
+            outputs[1].as_tensor().expect("bool tensor").dtype,
+            DType::Bool
+        );
+        assert_eq!(
+            outputs[2].as_tensor().expect("onehot tensor").shape,
+            Shape { dims: vec![3, 4] }
+        );
+    }
+
+    #[test]
+    fn test_tracer_ref_typed_methods_linalg_and_fft() {
+        let closed = crate::make_jaxpr_fallible(
+            |inputs| {
+                let mat = &inputs[0];
+                let sig = &inputs[1];
+
+                let (q, r) = mat.qr(false)?;
+                assert_eq!(q.aval().shape, Shape { dims: vec![2, 2] });
+                assert_eq!(r.aval().shape, Shape { dims: vec![2, 2] });
+
+                let (u, s, vt) = mat.svd(false)?;
+                assert_eq!(u.aval().shape, Shape { dims: vec![2, 2] });
+                assert_eq!(s.aval().shape, Shape { dims: vec![2] });
+                assert_eq!(vt.aval().shape, Shape { dims: vec![2, 2] });
+
+                let spec = sig.rfft(None)?;
+                assert_eq!(spec.aval().dtype, DType::Complex128);
+                assert_eq!(spec.aval().shape, Shape { dims: vec![3] });
+                let spec_re = spec.real()?;
+
+                let recon = q.matmul(&r)?;
+                Ok(vec![recon, s, spec_re])
+            },
+            vec![
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![2, 2] },
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::vector(4),
+                },
+            ],
+        )
+        .expect("typed linalg and rfft trace should succeed");
+
+        closed
+            .jaxpr
+            .validate_well_formed()
+            .expect("traced jaxpr should be well-formed");
+
+        let mat_val = Value::Tensor(
+            fj_core::TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    fj_core::Literal::from_f64(3.0),
+                    fj_core::Literal::from_f64(0.0),
+                    fj_core::Literal::from_f64(0.0),
+                    fj_core::Literal::from_f64(4.0),
+                ],
+            )
+            .expect("2x2 matrix"),
+        );
+        let sig_val = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0]).expect("signal");
+        let outputs = fj_interpreters::eval_jaxpr(&closed.jaxpr, &[mat_val, sig_val])
+            .expect("eval_jaxpr for qr/svd/rfft should succeed");
+
+        let recon = outputs[0]
+            .as_tensor()
+            .expect("recon tensor")
+            .to_f64_vec()
+            .expect("f64 vec");
+        for (actual, expected) in recon.iter().zip([3.0, 0.0, 0.0, 4.0]) {
+            assert!(
+                (actual - expected).abs() < 1e-9,
+                "got {actual} vs {expected}"
+            );
+        }
+        let s_vals = outputs[1]
+            .as_tensor()
+            .expect("s tensor")
+            .to_f64_vec()
+            .expect("f64 vec");
+        assert!((s_vals[0] - 4.0).abs() < 1e-9);
+        assert!((s_vals[1] - 3.0).abs() < 1e-9);
+        let rfft_re = outputs[2]
+            .as_tensor()
+            .expect("rfft_re tensor")
+            .to_f64_vec()
+            .expect("f64 vec");
+        // DC component of [1, 2, 3, 4] is 10.0
+        assert!((rfft_re[0] - 10.0).abs() < 1e-9);
     }
 
     mod proptest_tests {
