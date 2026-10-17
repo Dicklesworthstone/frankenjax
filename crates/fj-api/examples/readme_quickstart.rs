@@ -18,8 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         |inputs| {
             let x = &inputs[0];
             let square = x * x;
-            let double = x + x;
-            let triple = &double + x;
+            let triple = 3.0_f64 * x;
             vec![square + triple]
         },
         vec![ShapedArray {
@@ -87,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "value_and_grad_grad": value_and_grad_gradient,
     });
     let expected = json!({
-        "jaxpr_equation_count": 4,
+        "jaxpr_equation_count": 3,
         "jit_value": expected_jit,
         "grad_value": expected_grad,
         "vmap_values": expected_vmap,

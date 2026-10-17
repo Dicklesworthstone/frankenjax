@@ -368,6 +368,7 @@ pub struct SimpleTraceContext {
     fast_binary_elementwise_ops: bool,
     tracer_avals: Vec<ShapedArray>,
     const_values: BTreeMap<TracerId, Value>,
+    literal_values: BTreeMap<TracerId, fj_core::Literal>,
     frame_stack: Vec<TraceFrame>,
 }
 
@@ -400,6 +401,7 @@ impl SimpleTraceContext {
             fast_binary_elementwise_ops,
             tracer_avals: Vec::new(),
             const_values: BTreeMap::new(),
+            literal_values: BTreeMap::new(),
             frame_stack: vec![Self::root_frame()],
         }
     }
@@ -457,6 +459,16 @@ impl SimpleTraceContext {
         self.const_values.insert(tracer_id, value);
         let frame = self.active_frame_mut()?;
         frame.const_ids.push(tracer_id);
+        Ok(tracer_id)
+    }
+
+    pub fn bind_literal(&mut self, literal: fj_core::Literal) -> Result<TracerId, TraceError> {
+        if self.frame_stack.is_empty() {
+            return Err(TraceError::CompositionViolation);
+        }
+        let aval = ShapedArray::from_value(&Value::Scalar(literal));
+        let tracer_id = self.allocate_tracer(aval);
+        self.literal_values.insert(tracer_id, literal);
         Ok(tracer_id)
     }
 
@@ -635,6 +647,18 @@ impl SimpleTraceContext {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
                         detail: format!("expected 2 inputs, got {}", inputs.len()),
+                    });
+                }
+                if inputs[0].dtype == DType::Bool
+                    && inputs[1].dtype == DType::Bool
+                    && !matches!(
+                        primitive,
+                        Primitive::Add | Primitive::Mul | Primitive::Max | Primitive::Min
+                    )
+                {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: "unsupported bool/bool binary operation".to_owned(),
                     });
                 }
                 let shape = broadcast_shape(&inputs[0].shape, &inputs[1].shape).ok_or(
@@ -2540,8 +2564,12 @@ impl SimpleTraceContext {
 
             let mut in_atoms: SmallVec<[Atom; 4]> = SmallVec::with_capacity(inputs.len());
             for input_id in &inputs {
-                let var = dense_var(&tracer_to_var, *input_id)?;
-                in_atoms.push(Atom::Var(var));
+                if let Some(&lit) = self.literal_values.get(input_id) {
+                    in_atoms.push(Atom::Lit(lit));
+                } else {
+                    let var = dense_var(&tracer_to_var, *input_id)?;
+                    in_atoms.push(Atom::Var(var));
+                }
             }
 
             let mut out_vars: SmallVec<[VarId; 2]> = SmallVec::with_capacity(outputs.len());
@@ -2590,14 +2618,31 @@ impl SimpleTraceContext {
             &last_output_ids
         };
 
-        let outvars = out_ids
-            .iter()
-            .map(|tracer_id| {
-                dense_var(&tracer_to_var, *tracer_id).map_err(|_| TraceError::UnresolvedOutvar {
+        let mut outvars = Vec::with_capacity(out_ids.len());
+        for tracer_id in out_ids {
+            if let Ok(var) = dense_var(&tracer_to_var, *tracer_id) {
+                outvars.push(var);
+            } else if let Some(&lit) = self.literal_values.get(tracer_id) {
+                let out_var = ensure_dense_var(&mut tracer_to_var, &mut next_var, *tracer_id)?;
+                let mut inputs = SmallVec::new();
+                inputs.push(Atom::Lit(lit));
+                let mut outputs = SmallVec::new();
+                outputs.push(out_var);
+                equations.push(Equation {
+                    primitive: Primitive::Copy,
+                    inputs,
+                    outputs,
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                });
+                outvars.push(out_var);
+            } else {
+                return Err(TraceError::UnresolvedOutvar {
                     tracer_id: *tracer_id,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                });
+            }
+        }
 
         let const_values = const_ids
             .iter()
@@ -4256,6 +4301,29 @@ fn infer_binary_elementwise_output_aval(
     lhs: &ShapedArray,
     rhs: &ShapedArray,
 ) -> Result<ShapedArray, TraceError> {
+    if lhs.dtype == DType::Bool
+        && rhs.dtype == DType::Bool
+        && matches!(
+            primitive,
+            Primitive::Add
+                | Primitive::Sub
+                | Primitive::Mul
+                | Primitive::Max
+                | Primitive::Min
+                | Primitive::Pow
+                | Primitive::Div
+                | Primitive::Rem
+                | Primitive::Atan2
+        )
+    {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "{} does not support bool inputs without promotion",
+                primitive.as_str()
+            ),
+        });
+    }
     let shape =
         broadcast_shape(&lhs.shape, &rhs.shape).ok_or(TraceError::ShapeInferenceFailed {
             primitive,
@@ -4274,6 +4342,8 @@ fn promote_dtype(lhs: DType, rhs: DType) -> DType {
     // JAX type promotion lattice — must match fj-lax/src/type_promotion.rs
     match (lhs, rhs) {
         (Complex128, _) | (_, Complex128) => Complex128,
+        // Complex64 with 64-bit types promotes to Complex128
+        (Complex64, F64 | I64 | U64) | (F64 | I64 | U64, Complex64) => Complex128,
         (Complex64, _) | (_, Complex64) => Complex64,
         (F64, _) | (_, F64) => F64,
         (F32, _) | (_, F32) => F32,
@@ -4282,7 +4352,8 @@ fn promote_dtype(lhs: DType, rhs: DType) -> DType {
         (F16, F16) => F16,
         (BF16, Bool | I32 | I64 | U32 | U64) | (Bool | I32 | I64 | U32 | U64, BF16) => BF16,
         (F16, Bool | I32 | I64 | U32 | U64) | (Bool | I32 | I64 | U32 | U64, F16) => F16,
-        (U64, I64) | (I64, U64) => F64,
+        // U64 with signed integers promotes to F64 (no integer type fits both)
+        (U64, I32 | I64) | (I32 | I64, U64) => F64,
         (I32, U32) | (U32, I32) => I64,
         (I64, U32) | (U32, I64) => I64,
         (I64, _) | (_, I64) => I64,
@@ -4512,10 +4583,43 @@ fn parse_axis_insert_param(
 
 // ── make_jaxpr: Trace Rust closures into Jaxpr ────────────────────
 
+std::thread_local! {
+    static ACTIVE_TRACE_CTX_STACK: RefCell<Vec<Rc<RefCell<SimpleTraceContext>>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+struct ActiveTraceCtxGuard;
+
+impl ActiveTraceCtxGuard {
+    fn push(ctx: Rc<RefCell<SimpleTraceContext>>) -> Self {
+        ACTIVE_TRACE_CTX_STACK.with(|stack| stack.borrow_mut().push(ctx));
+        Self
+    }
+}
+
+impl Drop for ActiveTraceCtxGuard {
+    fn drop(&mut self) {
+        ACTIVE_TRACE_CTX_STACK.with(|stack| {
+            let _ = stack.borrow_mut().pop();
+        });
+    }
+}
+
+fn active_trace_ctx() -> Result<Rc<RefCell<SimpleTraceContext>>, TraceError> {
+    ACTIVE_TRACE_CTX_STACK.with(|stack| {
+        stack
+            .borrow()
+            .last()
+            .cloned()
+            .ok_or(TraceError::CompositionViolation)
+    })
+}
+
 /// A tracer reference that records primitive operations into a shared trace context.
 ///
-/// Supports operator overloading (Add, Sub, Mul, Neg) so users can write
-/// natural mathematical expressions that get traced into a Jaxpr.
+/// Supports operator overloading (`Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`) both between
+/// tracers and with Rust scalar literals (`f64`, `f32`, `i64`, `i32`, `bool`) so users can
+/// write natural mathematical expressions that get traced into a `Jaxpr`.
 #[derive(Clone)]
 pub struct TracerRef {
     id: TracerId,
@@ -4548,6 +4652,12 @@ impl TracerRef {
         Ok(())
     }
 
+    /// Return a cloned handle to the underlying trace context.
+    #[must_use]
+    pub fn context(&self) -> Rc<RefCell<SimpleTraceContext>> {
+        Rc::clone(&self.ctx)
+    }
+
     /// Get the tracer ID.
     #[must_use]
     pub fn id(&self) -> TracerId {
@@ -4558,6 +4668,160 @@ impl TracerRef {
     #[must_use]
     pub fn aval(&self) -> &ShapedArray {
         &self.aval
+    }
+
+    /// Bind an inline scalar [`fj_core::Literal`] into `ctx`, emitting `Atom::Lit(lit)` when used
+    /// as an equation input.
+    pub fn literal_in(
+        ctx: &Rc<RefCell<SimpleTraceContext>>,
+        literal: fj_core::Literal,
+    ) -> Result<TracerRef, TraceError> {
+        let id = ctx.borrow_mut().bind_literal(literal)?;
+        let aval = ctx.borrow().tracer_aval(id)?.clone();
+        Ok(TracerRef {
+            id,
+            aval,
+            ctx: Rc::clone(ctx),
+        })
+    }
+
+    /// Bind an inline scalar [`fj_core::Literal`] into the currently active `make_jaxpr` trace.
+    pub fn literal(literal: fj_core::Literal) -> Result<TracerRef, TraceError> {
+        let ctx = active_trace_ctx()?;
+        Self::literal_in(&ctx, literal)
+    }
+
+    /// Bind an inline scalar [`fj_core::Literal`] into the same trace context as `self`.
+    pub fn bind_literal(&self, literal: fj_core::Literal) -> Result<TracerRef, TraceError> {
+        self.validate_against_ctx(&self.ctx)?;
+        Self::literal_in(&self.ctx, literal)
+    }
+
+    /// Bind a constant [`Value`] into `ctx`.
+    ///
+    /// Scalar values are bound as inline `Atom::Lit` literals; tensor values are bound into
+    /// `ClosedJaxpr::const_values` / `Jaxpr::constvars`.
+    pub fn constant_in(
+        ctx: &Rc<RefCell<SimpleTraceContext>>,
+        value: Value,
+    ) -> Result<TracerRef, TraceError> {
+        match value {
+            Value::Scalar(lit) => Self::literal_in(ctx, lit),
+            tensor @ Value::Tensor(_) => {
+                let id = ctx.borrow_mut().bind_const_value(tensor)?;
+                let aval = ctx.borrow().tracer_aval(id)?.clone();
+                Ok(TracerRef {
+                    id,
+                    aval,
+                    ctx: Rc::clone(ctx),
+                })
+            }
+        }
+    }
+
+    /// Bind a constant [`Value`] into the currently active `make_jaxpr` trace.
+    pub fn constant(value: Value) -> Result<TracerRef, TraceError> {
+        let ctx = active_trace_ctx()?;
+        Self::constant_in(&ctx, value)
+    }
+
+    /// Bind a constant [`Value`] into the same trace context as `self`.
+    pub fn bind_constant(&self, value: Value) -> Result<TracerRef, TraceError> {
+        self.validate_against_ctx(&self.ctx)?;
+        Self::constant_in(&self.ctx, value)
+    }
+
+    /// Record a zero-input primitive (e.g., `Iota` or `BroadcastedIota`) in `ctx`.
+    pub fn nullary_primitive_in(
+        ctx: &Rc<RefCell<SimpleTraceContext>>,
+        primitive: Primitive,
+        params: BTreeMap<String, String>,
+    ) -> Result<Vec<TracerRef>, TraceError> {
+        let output_ids = ctx.borrow_mut().process_primitive(primitive, &[], params)?;
+        let ctx_ref = ctx.borrow();
+        output_ids
+            .into_iter()
+            .map(|oid| {
+                let aval = ctx_ref.tracer_aval(oid)?.clone();
+                Ok(TracerRef {
+                    id: oid,
+                    aval,
+                    ctx: Rc::clone(ctx),
+                })
+            })
+            .collect()
+    }
+
+    /// Record a zero-input primitive (e.g., `Iota` or `BroadcastedIota`) in the currently active
+    /// `make_jaxpr` trace.
+    pub fn nullary_primitive(
+        primitive: Primitive,
+        params: BTreeMap<String, String>,
+    ) -> Result<Vec<TracerRef>, TraceError> {
+        let ctx = active_trace_ctx()?;
+        Self::nullary_primitive_in(&ctx, primitive, params)
+    }
+
+    /// Record `Primitive::Iota` (`0..length`) in `ctx` with zero input tracers.
+    pub fn iota_in(
+        ctx: &Rc<RefCell<SimpleTraceContext>>,
+        length: u32,
+        dtype: DType,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert("length".to_owned(), length.to_string());
+        params.insert("dtype".to_owned(), dtype_param_str(dtype).to_owned());
+        let mut outs = Self::nullary_primitive_in(ctx, Primitive::Iota, params)?;
+        Ok(outs.remove(0))
+    }
+
+    /// Record `Primitive::Iota` (`0..length`) in the currently active `make_jaxpr` trace.
+    pub fn iota(length: u32, dtype: DType) -> Result<TracerRef, TraceError> {
+        let ctx = active_trace_ctx()?;
+        Self::iota_in(&ctx, length, dtype)
+    }
+
+    /// Record `Primitive::Iota` with signed length validation (rejecting negative lengths).
+    pub fn iota_i64(length: i64, dtype: DType) -> Result<TracerRef, TraceError> {
+        let ctx = active_trace_ctx()?;
+        let length_u32 = u32::try_from(length).map_err(|_| TraceError::InvalidPrimitiveParam {
+            primitive: Primitive::Iota,
+            key: "length",
+            value: length.to_string(),
+        })?;
+        Self::iota_in(&ctx, length_u32, dtype)
+    }
+
+    /// Record `Primitive::BroadcastedIota` in `ctx` with zero input tracers.
+    pub fn broadcasted_iota_in(
+        ctx: &Rc<RefCell<SimpleTraceContext>>,
+        shape: &[u32],
+        dimension: usize,
+        dtype: DType,
+    ) -> Result<TracerRef, TraceError> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "shape".to_owned(),
+            shape
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        params.insert("dimension".to_owned(), dimension.to_string());
+        params.insert("dtype".to_owned(), dtype_param_str(dtype).to_owned());
+        let mut outs = Self::nullary_primitive_in(ctx, Primitive::BroadcastedIota, params)?;
+        Ok(outs.remove(0))
+    }
+
+    /// Record `Primitive::BroadcastedIota` in the currently active `make_jaxpr` trace.
+    pub fn broadcasted_iota(
+        shape: &[u32],
+        dimension: usize,
+        dtype: DType,
+    ) -> Result<TracerRef, TraceError> {
+        let ctx = active_trace_ctx()?;
+        Self::broadcasted_iota_in(&ctx, shape, dimension, dtype)
     }
 
     /// Apply a unary primitive operation (e.g., sin, cos, neg, exp).
@@ -4612,6 +4876,26 @@ impl TracerRef {
         })
     }
 
+    /// Apply a binary primitive operation with `self` on the LHS and a scalar `Literal` on the RHS.
+    pub fn binary_op_with_literal(
+        &self,
+        primitive: Primitive,
+        rhs: fj_core::Literal,
+    ) -> Result<TracerRef, TraceError> {
+        let rhs_tracer = self.bind_literal(rhs)?;
+        self.binary_op(primitive, &rhs_tracer)
+    }
+
+    /// Apply a binary primitive operation with a scalar `Literal` on the LHS and `self` on the RHS.
+    pub fn binary_op_from_literal(
+        &self,
+        primitive: Primitive,
+        lhs: fj_core::Literal,
+    ) -> Result<TracerRef, TraceError> {
+        let lhs_tracer = self.bind_literal(lhs)?;
+        lhs_tracer.binary_op(primitive, self)
+    }
+
     /// Apply a primitive with custom parameters.
     pub fn primitive_with_params(
         &self,
@@ -4645,6 +4929,22 @@ impl TracerRef {
     }
 }
 
+fn dtype_param_str(dtype: DType) -> &'static str {
+    match dtype {
+        DType::BF16 => "bf16",
+        DType::F16 => "f16",
+        DType::F32 => "f32",
+        DType::F64 => "f64",
+        DType::I32 => "i32",
+        DType::I64 => "i64",
+        DType::U32 => "u32",
+        DType::U64 => "u64",
+        DType::Bool => "bool",
+        DType::Complex64 => "complex64",
+        DType::Complex128 => "complex128",
+    }
+}
+
 // ── Operator overloading for TracerRef ────────────────────────────
 
 /// Operator traits cannot return `Result`, so they preserve expression syntax
@@ -4660,47 +4960,95 @@ fn operator_trace_or_panic(
     }
 }
 
-impl std::ops::Add for &TracerRef {
-    type Output = TracerRef;
-    fn add(self, rhs: Self) -> TracerRef {
-        operator_trace_or_panic(Primitive::Add, self.binary_op(Primitive::Add, rhs))
-    }
+macro_rules! impl_tracer_binary_op {
+    ($trait:ident, $method:ident, $primitive:expr) => {
+        impl std::ops::$trait<&TracerRef> for &TracerRef {
+            type Output = TracerRef;
+            fn $method(self, rhs: &TracerRef) -> TracerRef {
+                operator_trace_or_panic($primitive, self.binary_op($primitive, rhs))
+            }
+        }
+
+        impl std::ops::$trait<TracerRef> for TracerRef {
+            type Output = TracerRef;
+            fn $method(self, rhs: TracerRef) -> TracerRef {
+                operator_trace_or_panic($primitive, self.binary_op($primitive, &rhs))
+            }
+        }
+
+        impl std::ops::$trait<&TracerRef> for TracerRef {
+            type Output = TracerRef;
+            fn $method(self, rhs: &TracerRef) -> TracerRef {
+                operator_trace_or_panic($primitive, self.binary_op($primitive, rhs))
+            }
+        }
+
+        impl std::ops::$trait<TracerRef> for &TracerRef {
+            type Output = TracerRef;
+            fn $method(self, rhs: TracerRef) -> TracerRef {
+                operator_trace_or_panic($primitive, self.binary_op($primitive, &rhs))
+            }
+        }
+    };
 }
 
-impl std::ops::Add for TracerRef {
-    type Output = TracerRef;
-    fn add(self, rhs: Self) -> TracerRef {
-        operator_trace_or_panic(Primitive::Add, self.binary_op(Primitive::Add, &rhs))
-    }
+impl_tracer_binary_op!(Add, add, Primitive::Add);
+impl_tracer_binary_op!(Sub, sub, Primitive::Sub);
+impl_tracer_binary_op!(Mul, mul, Primitive::Mul);
+impl_tracer_binary_op!(Div, div, Primitive::Div);
+impl_tracer_binary_op!(Rem, rem, Primitive::Rem);
+
+macro_rules! impl_tracer_scalar_binary_op {
+    ($trait:ident, $method:ident, $primitive:expr, $scalar_ty:ty, $to_lit:expr) => {
+        impl std::ops::$trait<$scalar_ty> for &TracerRef {
+            type Output = TracerRef;
+            fn $method(self, rhs: $scalar_ty) -> TracerRef {
+                let lit = ($to_lit)(rhs);
+                operator_trace_or_panic($primitive, self.binary_op_with_literal($primitive, lit))
+            }
+        }
+
+        impl std::ops::$trait<$scalar_ty> for TracerRef {
+            type Output = TracerRef;
+            fn $method(self, rhs: $scalar_ty) -> TracerRef {
+                let lit = ($to_lit)(rhs);
+                operator_trace_or_panic($primitive, self.binary_op_with_literal($primitive, lit))
+            }
+        }
+
+        impl std::ops::$trait<&TracerRef> for $scalar_ty {
+            type Output = TracerRef;
+            fn $method(self, rhs: &TracerRef) -> TracerRef {
+                let lit = ($to_lit)(self);
+                operator_trace_or_panic($primitive, rhs.binary_op_from_literal($primitive, lit))
+            }
+        }
+
+        impl std::ops::$trait<TracerRef> for $scalar_ty {
+            type Output = TracerRef;
+            fn $method(self, rhs: TracerRef) -> TracerRef {
+                let lit = ($to_lit)(self);
+                operator_trace_or_panic($primitive, rhs.binary_op_from_literal($primitive, lit))
+            }
+        }
+    };
 }
 
-impl std::ops::Sub for &TracerRef {
-    type Output = TracerRef;
-    fn sub(self, rhs: Self) -> TracerRef {
-        operator_trace_or_panic(Primitive::Sub, self.binary_op(Primitive::Sub, rhs))
-    }
+macro_rules! impl_all_scalar_ops_for_type {
+    ($scalar_ty:ty, $to_lit:expr) => {
+        impl_tracer_scalar_binary_op!(Add, add, Primitive::Add, $scalar_ty, $to_lit);
+        impl_tracer_scalar_binary_op!(Sub, sub, Primitive::Sub, $scalar_ty, $to_lit);
+        impl_tracer_scalar_binary_op!(Mul, mul, Primitive::Mul, $scalar_ty, $to_lit);
+        impl_tracer_scalar_binary_op!(Div, div, Primitive::Div, $scalar_ty, $to_lit);
+        impl_tracer_scalar_binary_op!(Rem, rem, Primitive::Rem, $scalar_ty, $to_lit);
+    };
 }
 
-impl std::ops::Sub for TracerRef {
-    type Output = TracerRef;
-    fn sub(self, rhs: Self) -> TracerRef {
-        operator_trace_or_panic(Primitive::Sub, self.binary_op(Primitive::Sub, &rhs))
-    }
-}
-
-impl std::ops::Mul for &TracerRef {
-    type Output = TracerRef;
-    fn mul(self, rhs: Self) -> TracerRef {
-        operator_trace_or_panic(Primitive::Mul, self.binary_op(Primitive::Mul, rhs))
-    }
-}
-
-impl std::ops::Mul for TracerRef {
-    type Output = TracerRef;
-    fn mul(self, rhs: Self) -> TracerRef {
-        operator_trace_or_panic(Primitive::Mul, self.binary_op(Primitive::Mul, &rhs))
-    }
-}
+impl_all_scalar_ops_for_type!(f64, fj_core::Literal::from_f64);
+impl_all_scalar_ops_for_type!(f32, fj_core::Literal::from_f32);
+impl_all_scalar_ops_for_type!(i64, fj_core::Literal::I64);
+impl_all_scalar_ops_for_type!(i32, |v: i32| fj_core::Literal::I64(i64::from(v)));
+impl_all_scalar_ops_for_type!(bool, fj_core::Literal::Bool);
 
 impl std::ops::Neg for &TracerRef {
     type Output = TracerRef;
@@ -4770,8 +5118,11 @@ where
         })
         .collect::<Result<Vec<_>, TraceError>>()?;
 
-    // Run the user's closure
+    // Run the user's closure with this trace context active on the thread-local stack
+    let active_guard = ActiveTraceCtxGuard::push(Rc::clone(&ctx));
     let output_refs = f(&input_refs);
+    drop(active_guard);
+
     for output in &output_refs {
         output.validate_against_ctx(&ctx)?;
     }
@@ -4819,7 +5170,11 @@ where
         })
         .collect::<Result<Vec<_>, TraceError>>()?;
 
-    let output_refs = f(&input_refs)?;
+    let active_guard = ActiveTraceCtxGuard::push(Rc::clone(&ctx));
+    let output_refs_result = f(&input_refs);
+    drop(active_guard);
+    let output_refs = output_refs_result?;
+
     for output in &output_refs {
         output.validate_against_ctx(&ctx)?;
     }
@@ -10461,6 +10816,215 @@ mod tests {
             .expect("VALID conv with oversized height kernel should produce zero-height output");
         let aval = ctx.tracer_aval(out[0]).expect("aval present");
         assert_eq!(aval.shape.dims, vec![1, 0, 3, 1]);
+    }
+
+    #[test]
+    fn test_make_jaxpr_scalar_tracer_operator_mixing_emits_atom_lit() {
+        let closed = crate::make_jaxpr(
+            |inputs| {
+                let x = &inputs[0];
+                let square = x * x;
+                let triple = 3.0_f64 * x;
+                vec![square + triple]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            }],
+        )
+        .expect("scalar-tracer polynomial trace should succeed");
+
+        closed
+            .jaxpr
+            .validate_well_formed()
+            .expect("traced jaxpr should be well-formed");
+        assert_eq!(closed.jaxpr.invars, vec![VarId(1)]);
+        assert!(closed.jaxpr.constvars.is_empty());
+        assert!(closed.const_values.is_empty());
+        assert_eq!(closed.jaxpr.equations.len(), 3);
+        assert_eq!(closed.jaxpr.equations[0].primitive, Primitive::Mul);
+        assert_eq!(
+            closed.jaxpr.equations[0].inputs.as_slice(),
+            &[Atom::Var(VarId(1)), Atom::Var(VarId(1))]
+        );
+        assert_eq!(closed.jaxpr.equations[1].primitive, Primitive::Mul);
+        assert_eq!(
+            closed.jaxpr.equations[1].inputs.as_slice(),
+            &[
+                Atom::Lit(fj_core::Literal::from_f64(3.0)),
+                Atom::Var(VarId(1))
+            ]
+        );
+        assert_eq!(closed.jaxpr.equations[2].primitive, Primitive::Add);
+
+        let out = fj_interpreters::eval_jaxpr(&closed.jaxpr, &[Value::scalar_f64(2.0)])
+            .expect("eval_jaxpr should succeed");
+        assert_eq!(out, vec![Value::scalar_f64(10.0)]);
+    }
+
+    #[test]
+    fn test_make_jaxpr_scalar_operators_all_numeric_types_and_directions() {
+        let closed = crate::make_jaxpr(
+            |inputs| {
+                let x_f64 = &inputs[0];
+                let x_i64 = &inputs[1];
+                let a = (x_f64 + 1.5_f64) - (0.5_f32 * x_f64);
+                let b = (a / 2.0_f64) % 4.0_f64;
+                let c = (x_i64 + 10_i64) - (2_i32 * x_i64);
+                let d = (100_i64 / (c + 1_i64)) % 7_i32;
+                vec![b, d]
+            },
+            vec![
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::scalar(),
+                },
+                ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape::scalar(),
+                },
+            ],
+        )
+        .expect("mixed scalar operators should trace");
+
+        closed
+            .jaxpr
+            .validate_well_formed()
+            .expect("traced jaxpr should be well-formed");
+        let outputs = fj_interpreters::eval_jaxpr(
+            &closed.jaxpr,
+            &[Value::scalar_f64(4.0), Value::scalar_i64(3)],
+        )
+        .expect("eval_jaxpr should succeed");
+        // a = (4.0 + 1.5) - (0.5 * 4.0) = 3.5; b = (3.5 / 2.0) % 4.0 = 1.75
+        // c = (3 + 10) - (2 * 3) = 7; d = (100 / 8) % 7 = 12 % 7 = 5
+        assert_eq!(outputs, vec![Value::scalar_f64(1.75), Value::scalar_i64(5)]);
+    }
+
+    #[test]
+    fn test_make_jaxpr_literal_and_tensor_constants() {
+        let closed = crate::make_jaxpr_fallible(
+            |inputs| {
+                let x = &inputs[0];
+                let bias = TracerRef::constant(
+                    Value::vector_f64(&[10.0, 20.0, 30.0]).expect("vector constant"),
+                )?;
+                let scale = TracerRef::literal(fj_core::Literal::from_f64(2.0))?;
+                let bare_lit = TracerRef::literal(fj_core::Literal::I64(42))?;
+                Ok(vec![&(x * &scale) + &bias, bare_lit])
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::vector(3),
+            }],
+        )
+        .expect("trace with tensor constant and bare literal should succeed");
+
+        closed
+            .jaxpr
+            .validate_well_formed()
+            .expect("traced jaxpr should be well-formed");
+        assert_eq!(closed.jaxpr.constvars.len(), 1);
+        assert_eq!(closed.const_values.len(), 1);
+        let outputs = fj_interpreters::eval_jaxpr_with_consts(
+            &closed.jaxpr,
+            &closed.const_values,
+            &[Value::vector_f64(&[1.0, 2.0, 3.0]).expect("input vector")],
+        )
+        .expect("eval_jaxpr_with_consts should succeed");
+        assert_eq!(
+            outputs,
+            vec![
+                Value::vector_f64(&[12.0, 24.0, 36.0]).expect("expected vector"),
+                Value::scalar_i64(42),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_make_jaxpr_zero_input_iota_and_broadcasted_iota() {
+        let closed = crate::make_jaxpr_fallible(
+            |_inputs| {
+                let seq = TracerRef::iota(4, DType::I64)?;
+                let grid = TracerRef::broadcasted_iota(&[2, 3], 1, DType::F64)?;
+                Ok(vec![seq + 1_i64, grid * 2.0_f64])
+            },
+            vec![],
+        )
+        .expect("zero-input iota and broadcasted_iota should trace");
+
+        closed
+            .jaxpr
+            .validate_well_formed()
+            .expect("traced jaxpr should be well-formed");
+        assert!(closed.jaxpr.invars.is_empty());
+        assert_eq!(closed.jaxpr.equations[0].primitive, Primitive::Iota);
+        assert!(closed.jaxpr.equations[0].inputs.is_empty());
+        assert_eq!(
+            closed.jaxpr.equations[1].primitive,
+            Primitive::BroadcastedIota
+        );
+        assert!(closed.jaxpr.equations[1].inputs.is_empty());
+
+        let outputs =
+            fj_interpreters::eval_jaxpr(&closed.jaxpr, &[]).expect("eval_jaxpr should succeed");
+        assert_eq!(
+            outputs[0],
+            Value::vector_i64(&[1, 2, 3, 4]).expect("expected iota + 1")
+        );
+        let grid_vals = outputs[1]
+            .as_tensor()
+            .expect("grid tensor")
+            .to_f64_vec()
+            .expect("f64 vec");
+        assert_eq!(grid_vals, vec![0.0, 2.0, 4.0, 0.0, 2.0, 4.0]);
+    }
+
+    #[test]
+    fn test_make_jaxpr_negative_cases_no_active_trace_and_invalid_iota() {
+        let err = TracerRef::literal(fj_core::Literal::from_f64(1.0))
+            .expect_err("literal outside make_jaxpr should fail");
+        assert_eq!(err, TraceError::CompositionViolation);
+
+        let err = TracerRef::iota(4, DType::I64).expect_err("iota outside make_jaxpr should fail");
+        assert_eq!(err, TraceError::CompositionViolation);
+
+        let err = crate::make_jaxpr_fallible(
+            |_inputs| {
+                let seq = TracerRef::iota_i64(-3, DType::I64)?;
+                Ok(vec![seq])
+            },
+            vec![],
+        )
+        .expect_err("negative iota length must fail");
+        assert!(matches!(
+            err,
+            TraceError::InvalidPrimitiveParam {
+                primitive: Primitive::Iota,
+                key: "length",
+                ..
+            }
+        ));
+
+        let err = crate::make_jaxpr_fallible(
+            |inputs| {
+                let out = inputs[0]
+                    .binary_op_with_literal(Primitive::Add, fj_core::Literal::Bool(true))?;
+                Ok(vec![out])
+            },
+            vec![ShapedArray {
+                dtype: DType::Bool,
+                shape: Shape::scalar(),
+            }],
+        )
+        .expect_err("bool + bool should be rejected during trace");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Add,
+                ..
+            }
+        ));
     }
 
     mod proptest_tests {

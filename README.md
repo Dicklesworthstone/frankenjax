@@ -71,8 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         |inputs| {
             let x = &inputs[0];
             let square = x * x;
-            let double = x + x;
-            let triple = &double + x;
+            let triple = 3.0_f64 * x;
             vec![square + triple]
         },
         vec![ShapedArray {

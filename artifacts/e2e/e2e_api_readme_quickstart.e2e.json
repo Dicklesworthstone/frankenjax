@@ -1,7 +1,7 @@
 {
   "actual": {
     "grad_value": 13.0,
-    "jaxpr_equation_count": 4,
+    "jaxpr_equation_count": 3,
     "jit_value": 40.0,
     "value_and_grad_grad": 13.0,
     "value_and_grad_value": 40.0,
@@ -22,32 +22,31 @@
       "kind": "readme_quick_example",
       "path": "README.md",
       "required": true,
-      "sha256": "e3e7ac2108afc7dda51383e5d9b85b07092432af78f3fcf5509d507d58576acb"
+      "sha256": "8ed58f904b3ba1ae88c999c32ca6514ace2d1e2ab4c4584627b9b9540739c43f"
     },
     {
       "kind": "executable_readme_quickstart",
       "path": "crates/fj-api/examples/readme_quickstart.rs",
       "required": true,
-      "sha256": "df433307bd153e110e33cd1cc9e650ad32c038e5a45952c4b65216a67aeeb4bb"
+      "sha256": "52efe1c133fc861eb49c43db35d0f1b32fdefad47d3b91e2faf4132eed9ece6d"
     }
   ],
   "bead_id": "frankenjax-cstq.9",
   "command": [
-    "/data/tmp/cargo-target-frankenjax-codex-cstq7-local/debug/examples/readme_quickstart",
+    "/data/tmp/cargo-target/debug/examples/readme_quickstart",
     "--json",
     "/data/projects/frankenjax/artifacts/e2e/e2e_api_readme_quickstart.e2e.json"
   ],
   "environment": {
     "arch": "x86_64",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq7-local",
-    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/data/tmp/cargo-target",
+    "cargo_version": "cargo 1.100.0-nightly (e8cb624d5 2026-08-22)",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq7-local",
-      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target"
     },
     "os": "linux",
-    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
-    "timestamp_unix_ms": 1777742228809
+    "rust_version": "rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "timestamp_unix_ms": 1792259858546
   },
   "error": {
     "actual": null,
@@ -56,7 +55,7 @@
   },
   "expected": {
     "grad_value": 13.0,
-    "jaxpr_equation_count": 4,
+    "jaxpr_equation_count": 3,
     "jit_value": 40.0,
     "value_and_grad_grad": 13.0,
     "value_and_grad_value": 40.0,
@@ -107,7 +106,7 @@
     "dispatch_ms": 0,
     "eval_ms": 0,
     "setup_ms": 0,
-    "total_ms": 7,
+    "total_ms": 0,
     "trace_ms": 0,
     "verify_ms": 0
   },
