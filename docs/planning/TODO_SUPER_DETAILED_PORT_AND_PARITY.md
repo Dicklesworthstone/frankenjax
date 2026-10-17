@@ -1,8 +1,8 @@
 # TODO_SUPER_DETAILED_PORT_AND_PARITY
 
-Last updated: 2026-05-01
-Owner: Codex session
-Goal: Complete all identified next-step streams end-to-end in one pass.
+Last updated: 2026-10-13 (`HEAD = 4f04dd82ace83f609eedd232839244ce872bb4ce`)
+Owner: Antigravity session (`0bfbe145-820c-4bbf-848d-90bf02295c16`)
+Goal: End-to-end `/reality-check-for-project` audit, Bridge Plan, Ambition Rounds (1–3), Bead Creation (`frankenjax-rc26-n1emn`), and Plan-Space Refinement (Rounds 1–5).
 
 ## Legend
 
@@ -11,7 +11,138 @@ Goal: Complete all identified next-step streams end-to-end in one pass.
 - [x] completed
 - [!] blocked/needs follow-up
 
-## 2026-05-01 Full Reality Check, Ambition Rounds, and Bead Plan
+## 2026-10-13 Comprehensive Reality Check, Bridge Plan, Ambition Rounds (1–3), and Refined Bead Graph
+
+Tracker parent: `frankenjax-rc26-n1emn` (`in_progress`)
+Companion Vision vs Reality Matrix: `artifacts/conformance/vision_reality_checklist.v1.md`
+
+### RC26-0. Phase 0 Source Ingestion & Ground-Truth Audit
+- [x] Read `/data/projects/AGENTS.md` (all 664 lines, including Named Reward-Hacking Patterns and Work-Graph Discipline).
+- [x] Read `/data/projects/frankenjax/AGENTS.md` (all 867 lines).
+- [x] Read `/data/projects/frankenjax/README.md` (all 1,213 lines).
+- [x] Read `/data/projects/jeffreys-skills-private/.claude/skills/reality-check-for-project/SKILL.md` and all reference guides (`GAP-ANALYSIS.md`, `BRIDGE-PLAN.md`, `VISION-EXTRACTION.md`, `AMBITION-ROUNDS.md`, `LESSONS-FROM-SESSIONS.md`, `SELF-TEST.md`).
+- [x] Read all planning and evidence documents in `docs/planning/`, `CHANGELOG.md`, `docs/NEGATIVE_EVIDENCE.md`, and `artifacts/conformance/vision_reality_checklist.v1.md`.
+- [x] Audit every crate in `crates/` (`fj-core`, `fj-trace`, `fj-interpreters`, `fj-dispatch`, `fj-lax`, `fj-cache`, `fj-runtime`, `fj-conformance`, `fj-ledger`, `fj-ad`, `fj-egraph`, `fj-test-utils`, `fj-api`, `fj-backend-cpu`, `fj-backend-gpu`, `fj-ffi`, `fj-py`) and all gate/durability artifacts on disk.
+
+### RC26-1. Phase 1 Reality Check Answers (Code vs. Vision Gap Analysis)
+- [x] **What IS genuinely working:**
+  - **17 workspace crates** (`Cargo.toml:4-22`), **321,303 source LOC** in `crates/*/src/**/*.rs` (**459,828 total Rust LOC** in `crates/**/*.rs`), **9,355 `#[test]` functions** + **23 `proptest!` blocks** across **173 conformance test files**, and **861 JAX 0.9.2 oracle fixture cases** across 5 fixture bundles.
+  - **162 canonical `Primitive` variants** (`crates/fj-core/src/lib.rs:78-435`): all **157 V1 local primitives** have real pure-Rust evaluators in `fj-lax` (`157,522` LOC across 30 files), and the 5 `pmap` collectives fail closed with typed `EvalError::Unsupported`.
+  - **1st-order eager AD:** 115 primitives have analytical VJP + JVP rules in `fj-ad`, plus 35 non-differentiable primitives returning `zeros_like`.
+  - **Compiled slot-indexed interpreter (`frankenjax-so4wo`):** `CompiledJaxpr::eval` in `crates/fj-interpreters/src/lib.rs` executes scalar/small-tensor programs in `~180.6 ns`, and `fj-lax` beats JAX 0.10.2 XLA-CPU by `1.2x–230x` on QR (`30x`), LU (`12.9x`), slogdet/det (`7.3x/5.9x`), solve (`5.2x`), radix sort/argsort (`8x–94x`), 4D window pooling (`17x–141x`), i64 dot (`230x`), and cumsum/cumprod (`3.1x–3.9x`).
+- [x] **What is NOT working, disconnected, theatrical, or broken in code/docs:**
+  1. **Compiler Lint Gate & Zero-Panic Library Safety Are Broken (`rc26.1`, `rc26.2`, `rc26.3`):**
+     - `rch exec -- cargo clippy --workspace --all-targets -- -D warnings` fails with **125 errors** in `fj-lax` (123 `clippy::doc_lazy_continuation` + `benches/i64_matmul_speed.rs:245` + `crates/fj-lax/src/fft.rs:1664`).
+     - Contrary to `README.md:1107` (*"No panics in library code... The only unwrap() calls are in test code"*), non-test library code contains **28 `.unwrap()`**, **48 `.expect()`**, **5 `panic!()`**, **17 `unreachable!()`**, and **24 `assert!()`** calls, plus benchmark modules `cz0g0_f32accum_evidence.rs` and `cz0g0_fma_evidence.rs` compiled into production `fj-lax` (`crates/fj-lax/src/lib.rs:32-35`).
+     - Documentation across `README.md`, `AGENTS.md`, `FEATURE_PARITY.md`, `PARITY-COVERAGE.md`, and `CHANGELOG.md` contradicts itself on crate counts (`8`/`11`/`15`/`16` vs `17`), primitive counts (`110`/`118`/`157` vs `162`), e-graph rules (`86`/`87` vs `30 safe / 91 total`), LOC, and test counts; `scripts/validate_feature_parity.sh` and `scripts/bootstrap_vision_evidence_map.sh` fail when run.
+  2. **Tracing (`fj-trace`) & Public API (`fj-api`) Cannot Trace Most of the Language (`rc26.4`, `rc26.5`, `rc26.6`, `rc26.7`):**
+     - `crates/fj-api/src/transforms.rs:554-662` (`eval_shape`) does not call `fj_lax::eval_abstract_primitive`; it uses a broken 37-op match (wrong dtype for comparisons, wrong shape for axis reductions and permuted transpose) and a wildcard `_ => Ok(vec![inputs[0].clone()])` for the remaining 125 primitives!
+     - `crates/fj-trace/src/lib.rs:4517-4838` (`TracerRef`) has **0 named primitive methods**, only 4 operator traits (`Add`, `Sub`, `Mul`, `Neg` — no `Div`/`Rem`), cannot trace `Atom::Lit` constants (`L2541-2545`), fails on 0-input primitives (`Iota`, `BroadcastedIota` at `L1582, 1620`), hardcodes `sub_jaxprs: vec![]` (`L2643`), and has a 22-op wildcard `_ => Ok(vec![inputs[0].clone()])` in `infer_primitive_output_avals` (`L2431-2436`).
+     - `fj_lax::{nn, threefry, tree_util}` are standalone eager `&[f64]` / `TreeNode::Leaf(f64)` functions disconnected from `Primitive`, `fj-trace`, and `fj-api`.
+  3. **AD Composition Is Eager Tape + Numerical Finite Differences (`1e-5`/`1e-6`), Not a Symbolic `Jaxpr -> Jaxpr` Transform (`rc26.8`, `rc26.9`, `rc26.10`):**
+     - `fj-ad` evaluates a `Jaxpr` eagerly into `Vec<Value>` via a runtime `Tape` and never produces a derivative `Jaxpr`.
+     - In `crates/fj-dispatch/src/lib.rs:777-786, 830-876`, whenever `tail` contains a non-`Jit` transform (`[Grad]` or `[Vmap]`), `execute_grad` falls back to **`1e-6` central finite differences** (`execute_grad_finite_diff`), which only perturbs `args[0]` and rejects tensors (`NonScalarGradientInput`).
+     - **`grad(vmap(f))` ALWAYS fails** with `NonScalarGradientInput` (`L781`), `vmap(grad(f))` bypasses `BatchTrace` (`L983`) for a sequential `O(batch)` loop (`L1382-1496`), and `hessian_jaxpr` (`crates/fj-ad/src/lib.rs:13631-13807`) is `1e-5` finite differences in the general case.
+     - `fj-ad` completely ignores `eqn.sub_jaxprs` (`crates/fj-ad/src/lib.rs:1877, 7240-7880, 10187`), and `AssociativeScan` (`L7683, 7703`) and `ReduceWindow` `"prod"` JVP (`L11168`) have mathematical bugs.
+  4. **Disconnected Subsystem Islands (`rc26.11`, `rc26.12`):**
+     - `partial_eval_jaxpr` (`crates/fj-interpreters/src/partial_eval.rs:41`) and `stage_jaxpr` (`staging.rs:33`) have **0 call sites** in `fj-dispatch`, `fj-api`, or `fj-ad`.
+     - `fj-cache` storage managers (`CacheManager`, `InMemoryCache`, `FileCache`, `LruCache`, `TtlLruCache` in `crates/fj-cache/src/lib.rs:295-600`) have **0 call sites** in `fj-dispatch` or `fj-api`.
+     - `fj-backend-cpu` (`CpuBackend::execute_parallel` in `crates/fj-backend-cpu/src/executor.rs:347-460`) has **0 call sites** in `fj-dispatch` or `fj-api`.
+     - Default `fj_api::jit(jaxpr).call()` (`crates/fj-api/src/transforms.rs:888-891`) bypasses `fj-dispatch`, `fj-backend-cpu`, `fj-cache`, `TraceTransformLedger`, `fj-ledger`, and `fj-egraph`.
+  5. **Theatrical Crown Jewels & Isolated Bindings (`rc26.13`, `rc26.14`, `rc26.15`):**
+     - `TraceTransformLedger` (`crates/fj-core/src/lib.rs:5794-5999`) holds no output IR and only checks that `transform_evidence: Vec<String>` contains the token `"jit"`, `"grad"`, `"vmap"`, or `"pmap"`.
+     - `fj-ledger` runs *after* execution (`crates/fj-dispatch/src/lib.rs:659-710`) with a hardcoded formula `(eqn_count + 2*depth)/(eqn_count + 2*depth + 20)` whose decision is ignored; `LogDomainPosterior`, `ConformalPredictor`, `CalibrationReport`, and `EProcess` have 0 production callers.
+     - `fj-runtime` has 0 production callers and `frankentui_bridge` (`crates/fj-runtime/src/lib.rs:67-88`) is a fake stub (`let _type_check = std::any::type_name::<ftui::Style>();`).
+     - `fj-ffi` has 0 `extern "C"` exports; `fj-py` fails to build on host Python 3.14, cannot trace Python callables, and runs `1e-6` finite differences on Python functions (`crates/fj-py/src/lib.rs:711-754`).
+  6. **Potemkin Conformance Gates, Broken Durability Sidecars, & Blocked `+fma`/FFT Perf (`rc26.16`, `rc26.17`, `rc26.18`):**
+     - `security_adversarial.rs`, `numerical_stability.rs`, `decision_ledger.rs`, `onboarding_command.rs`, and `scripts/check_perf_regression.sh` serialize hardcoded static structs or grep a March 12 JSON file without running the workloads.
+     - **61 of 96** sidecars in `artifacts/durability/` have stale `source_sha256` hashes, **0 of 6** conformance fixture bundles have a valid sidecar on disk, `oracle_recapture_matrix.v1.json` has 4/5 mismatched fixture SHA-256s on disk, and `./scripts/run_durability_coverage_gate.sh` fails at **16% coverage** (`92/545`).
+- [x] **Would completing the 12 previously open beads achieve all project goals?**
+  - **Categorically NO.** All 12 previously open beads were narrow `fj-lax` micro-optimizations or lint notes from the June–July 2026 perf campaign (2 of which — `frankenjax-dedicated-gemv-h36uj` and `frankenjax-simd-reduce-window-maxmin-od11p` — were already resolved/rejected in their notes and have now been closed with cited evidence). Completing the remaining 10 perf beads would have left **100% of the tracing, symbolic-AD, transform-composition, caching, backend, TTL, ledger, FFI/Python, gate-honesty, and durability gaps untouched.**
+
+### RC26-2. Phase 2 Bridge Plan & Phase 3a Bead Creation (`frankenjax-rc26-n1emn`)
+- [x] Close resolved/rejected stale perf beads with cited evidence from `docs/NEGATIVE_EVIDENCE.md`:
+  - [x] Close `frankenjax-dedicated-gemv-h36uj` (ProudSalmon 2026-06-29 bench-backed 0.83x regression; existing row-block threaded `matmul_2d` `N==1` already at 1.08x near-parity with JAX).
+  - [x] Close `frankenjax-simd-reduce-window-maxmin-od11p` (SlateHarrier 2026-06-25 outer-dim threaded monotonic deque 4.24x speedup flipping `reduce_window` max/min to a win vs JAX).
+  - [x] Link `frankenjax-special-fn-rational-3gsc5` to its documented blocker `frankenjax-cntiy`.
+- [x] Create parent epic `frankenjax-rc26-n1emn` (`in_progress`) and 18 self-contained child beads across 6 execution tracks:
+  - **Track 1 — Workspace Hygiene, Compiler Lint Gate, Zero-Panic Library Safety, & Doc Truth:**
+    - [ ] `frankenjax-rc26-n1emn.1` (`P0`): Fix all 125 `cargo clippy` errors in `fj-lax` and `#[cfg(test)]`-gate embedded benchmark evidence modules (`cz0g0_*`).
+    - [ ] `frankenjax-rc26-n1emn.2` (`P1`): Eliminate all 122 non-test library `.unwrap()`, `.expect()`, `panic!()`, `unreachable!()`, and `assert!()` calls across all 14 core crates and enforce `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)`.
+    - [ ] `frankenjax-rc26-n1emn.3` (`P1`): Reconcile all documentation contradictions across `README.md`, `AGENTS.md`, `FEATURE_PARITY.md`, `PARITY-COVERAGE.md`, `COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`, and `CHANGELOG.md`, fix `validate_feature_parity.sh` / `bootstrap_vision_evidence_map.sh`, and add `doc_metric_truth_gate.rs`.
+  - **Track 2 — Tracing (`fj-trace`) & Public API (`fj-api`) Ergonomic and Semantic Completeness:**
+    - [ ] `frankenjax-rc26-n1emn.4` (`P0`): Wire `fj-api::eval_shape` directly to `fj_lax::eval_abstract_primitive` and remove the broken 37-op match + 125-op `inputs[0].clone()` fallback.
+    - [ ] `frankenjax-rc26-n1emn.5` (`P0`): Support `Atom::Lit` constants, scalar-tracer operator mixing, and zero-input primitives (`Iota`, `BroadcastedIota`) in `fj-trace::make_jaxpr`.
+    - [ ] `frankenjax-rc26-n1emn.6` (`P1`): Complete `TracerRef` primitive method surface (all 157 V1 local ops + `Div`/`Rem`) and eliminate the 22-op wildcard aval fallback in `fj-trace`.
+    - [ ] `frankenjax-rc26-n1emn.7` (`P1`): Trace higher-order control flow (`Cond`, `Scan`, `While`, `Switch` with `sub_jaxprs`) in `make_jaxpr` and expose traceable `fj_api::{nn, random, tree_util}` modules.
+  - **Track 3 — True Symbolic Jaxpr-to-Jaxpr Autodiff & Arbitrary-Order Transform Composition:**
+    - [ ] `frankenjax-rc26-n1emn.8` (`P0`): Implement symbolic Jaxpr-to-Jaxpr differentiation (`build_jvp_jaxpr` & `build_grad_jaxpr`) with activity analysis and dead-cotangent pruning in `fj-ad`.
+    - [ ] `frankenjax-rc26-n1emn.9` (`P0`): Replace `1e-6`/`1e-5` finite-difference fallbacks in `fj-dispatch::execute_grad` and `fj-ad::hessian_jaxpr` with symbolic AD composition (`grad(grad(f))`, `grad(vmap(f))`, `vmap(grad(f))` via `BatchTrace`, multi-arg `argnums`, symbolic `hessian`).
+    - [ ] `frankenjax-rc26-n1emn.10` (`P0`): Implement `sub_jaxprs`-aware JVP/VJP for `Cond`, `Scan`, `While`, `Switch` and fix `AssociativeScan` (`"max"`/`"min"` VJP, `"prod"` JVP) and `ReduceWindow` (`"prod"` JVP) mathematical bugs in `fj-ad`.
+  - **Track 4 — Connected Execution Spine: Partial Eval, Persistent Cache Store, Wave-Parallel CPU Backend, & E-Graph Fusion:**
+    - [ ] `frankenjax-rc26-n1emn.11` (`P0`): Wire `partial_eval_jaxpr`/`stage_jaxpr` (`static_argnums`) and `fj-cache` (`LruCache`/`FileCache`) into `fj-dispatch` and `fj-api::jit`.
+    - [ ] `frankenjax-rc26-n1emn.12` (`P1`): Integrate `fj-backend-cpu` wave-parallel DAG execution, `fj-egraph` cost-guided loop fusion, and `frankenjax-jjb1h` liveness-driven buffer donation into `dispatch` and `CompiledJaxpr`.
+  - **Track 5 — Crown-Jewel Proof-Carrying TTL, Live Decision/Runtime Governance, & FFI/Python Surfaces:**
+    - [ ] `frankenjax-rc26-n1emn.13` (`P0`): Upgrade `TraceTransformLedger` from string-token substring checks to a cryptographic Proof-Carrying IR Transform Ledger (TTL v2) binding per-step input/output `Jaxpr` SHA-256 hashes, `AbstractValue` signatures, and `TransformRewriteWitness` records.
+    - [ ] `frankenjax-rc26-n1emn.14` (`P1`): Wire `fj-ledger` (`LogDomainPosterior`, `ConformalPredictor`, `EProcess`, `CalibrationReport`) and `fj-runtime` (`RuntimeAdmissionModel`, `asupersync`, `frankentui`) into pre-execution dispatch routing and `fj-api` telemetry.
+    - [ ] `frankenjax-rc26-n1emn.15` (`P1`): Expose real `extern "C"` ABI exports in `fj-ffi` + `Primitive::CustomCall` dispatch, and upgrade `fj-py` for Python 3.14 compatibility and real Python callable tracing via `PyTracer`.
+  - **Track 6 — Gate Honesty, Artifact Freshness, RaptorQ Durability Repair, & vs-JAX Performance Architecture:**
+    - [ ] `frankenjax-rc26-n1emn.16` (`P0`): Replace static/hardcoded gate generators (`security_adversarial.rs`, `numerical_stability.rs`, `decision_ledger.rs`, `onboarding_command.rs`) with live workload execution and assert committed JSON artifact freshness in `oracle_recapture_gate` and `architecture_boundary_gate`.
+    - [ ] `frankenjax-rc26-n1emn.17` (`P0`): Unify RaptorQ durability policy, regenerate 61 stale sidecars + 6 missing fixture/oracle sidecar triplets, and enforce on-disk `source_sha256` verification in `tests/durability_coverage.rs` and `scripts/run_durability_coverage_gate.sh`.
+    - [ ] `frankenjax-rc26-n1emn.18` (`P1`): Implement `PrecisionPolicy::{BitExactPortable, HardwareFmaAccelerated}` runtime SIMD/FMA dispatch (unblocking `frankenjax-cntiy`), Stockham mixed-radix (`radix-2/3/4/5/8`) plan-hoisted batched FFT (unblocking `frankenjax-murmw`), and live vs-JAX 0.10.2 performance gate reporting.
+
+### RC26-3. Phase 4 Ambition Rounds (1–3) Applied In-Place
+- [x] **Ambition Round 1 — Architectural Integrity over Workarounds:**
+  - Rejected patching `execute_grad_finite_diff` to perturb tensors; escalated `rc26.8` + `rc26.9` to true symbolic Jaxpr-to-Jaxpr differentiation (`build_jvp_jaxpr` & `build_grad_jaxpr`) so `grad(grad(f))`, `grad(vmap(f))`, `vmap(grad(f))`, and `hessian` are 100% symbolic IR transformations with zero `1e-5`/`1e-6` truncation error.
+  - Escalated `fj-trace` (`rc26.5`–`rc26.7`) from adding a few helper functions to complete 157-primitive `TracerRef` coverage, `Atom::Lit` constant binding, zero-input generator tracing, nested `sub_jaxprs` closure tracing, and generic `PyTree<T>` support across `Value` and `TracerRef`.
+- [x] **Ambition Round 2 — Genuine Crown-Jewel Proofs & Zero-Potemkin Verification:**
+  - Escalated `TraceTransformLedger` (`rc26.13`) from string token matching (`evidence.contains("jit")`) to a Merkle-committed Proof-Carrying IR Transform Ledger verifying `output_jaxpr_sha256 == next.input_jaxpr_sha256` chain continuity and abstract shape/dtype preservation across `Jit`, `Grad`, and `Vmap`.
+  - Escalated `fj-ledger` and `fj-runtime` (`rc26.14`) from post-execution dead telemetry to pre-execution decision-theoretic governance using `LogDomainPosterior`, `ConformalPredictor` quantile bounds, and sequential `EProcess` drift guards.
+  - Escalated `fj-conformance` gates (`rc26.16`, `rc26.17`) to ban static struct serialization (`actual_error_class: spec.expected_error_class.to_owned()`) and enforce live `source_sha256` verification on all committed RaptorQ sidecar triplets.
+- [x] **Ambition Round 3 — Algorithmic & Performance Leapfrogging:**
+  - Added Activity Analysis & Dead-Cotangent Pruning to `build_grad_jaxpr` (`rc26.8`) so symbolic gradient `Jaxpr`s eliminate inactive primal/adjoint subgraphs before `CompiledJaxpr` lowering.
+  - Combined `fj-egraph` multi-op elementwise DAG fusion, `fj-backend-cpu` topological wave-parallel execution, and `frankenjax-jjb1h` `Arc::get_mut` liveness-driven buffer donation in `rc26.12`.
+  - Resolved the `frankenjax-cntiy` (`+fma` vs golden SHA-256) architectural deadlock in `rc26.18` via explicit `PrecisionPolicy::{BitExactPortable, HardwareFmaAccelerated}` runtime CPUID dispatch alongside Stockham mixed-radix (`radix-2/3/4/5/8`) plan-hoisted batched FFT (`frankenjax-murmw`).
+
+### RC26-4. Phase 5 Plan-Space Refinement Rounds (1–5)
+- [x] **Refinement Round 1 (Coverage & Stale-Bead Hygiene):** Verified 24/24 in-scope Vision Checklist rows have explicit bead owners (`0 NO_BEAD` rows); closed the 2 already-resolved/rejected perf beads (`frankenjax-dedicated-gemv-h36uj` and `frankenjax-simd-reduce-window-maxmin-od11p`) with cited `docs/NEGATIVE_EVIDENCE.md` records; linked `frankenjax-special-fn-rational-3gsc5` to `frankenjax-cntiy`.
+- [x] **Refinement Round 2 (Self-Containment & File/Line Grounding):** Verified every `rc26.1`–`rc26.18` bead description specifies exact file paths, line numbers, root-cause diagnosis, concrete implementation steps, and positive + negative test assertions.
+- [x] **Refinement Round 3 (Dependency Graph Unification):** Linked orphan open perf beads (`frankenjax-jjb1h`, `frankenjax-fgk6m`, `frankenjax-jyaz6`, `frankenjax-small-batched-gemm-q032w`, `frankenjax-cntiy`, `frankenjax-murmw`, `frankenjax-mcqr.111`) into the unified `rc26` + `mcqr` dependency DAG so `rc26.1` (fixing `fj-lax` clippy) unblocks all `fj-lax` work and `rc26.18` unblocks `cntiy` and `murmw`.
+- [x] **Refinement Round 4 (Parent-Child `bv` Mutual-Wait Elimination):** `bv --robot-triage` revealed that adding explicit `blocks` edges from parent `frankenjax-rc26-n1emn` to its children while `--parent` creates `child -> parent` edges caused a mutual wait in `bv` (`actionable_count: 0`). Removed the redundant `parent -> child` `blocks` edges and marked `frankenjax-rc26-n1emn` as `in_progress`, restoring `actionable_count: 4` and clean top-pick ranking (`rc26.1`, `rc26.4`, `rc26.5`).
+- [x] **Refinement Round 5 (Final Convergence Verification):**
+  - `br dep cycles --json`: `0` cycles.
+  - `br doctor`: DB and `.beads/issues.jsonl` in sync (`2,066` total records: `2,037` closed, `28` open, `1` in_progress).
+  - `bv --robot-triage`: Top 3 actionable picks are `frankenjax-rc26-n1emn.1` (score `0.5566`, unblocks 7 downstream items), `frankenjax-rc26-n1emn.4` (score `0.1937`, unblocks `rc26.6` & `rc26.8`), and `frankenjax-rc26-n1emn.5` (score `0.1543`, unblocks `rc26.6` & `rc26.7`).
+
+### RC26-5. Converged Dependency Graph & Execution Order
+- **Immediate Parallel Wave 1 (`br ready` P0 roots):**
+  - `frankenjax-rc26-n1emn.1`: Fix 125 `fj-lax` clippy errors + gate embedded bench modules (unblocks `.2`, `.3`, `.10`, `.11`, `.18`, `mcqr.111`, `jjb1h`, `fgk6m`, `jyaz6`).
+  - `frankenjax-rc26-n1emn.4`: Wire `fj-api::eval_shape` to `fj_lax::eval_abstract_primitive` (unblocks `.6`, `.8`).
+  - `frankenjax-rc26-n1emn.5`: Support `Atom::Lit` constants, scalar-tracer mixing, and 0-input primitives in `fj-trace` (unblocks `.6`, `.7`).
+- **Wave 2 (Symbolic AD Core, Full `TracerRef`, Staging/Cache Spine, & Precision/FFT Architecture):**
+  - `frankenjax-rc26-n1emn.2` (depends on `.1`): Zero-panic library safety (`deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)`).
+  - `frankenjax-rc26-n1emn.6` (depends on `.4`, `.5`): Complete 157-op `TracerRef` method surface & remove 22-op aval wildcard.
+  - `frankenjax-rc26-n1emn.8` (depends on `.4`): Symbolic `build_jvp_jaxpr` & `build_grad_jaxpr` with activity pruning.
+  - `frankenjax-rc26-n1emn.10` (depends on `.1`): `sub_jaxprs`-aware JVP/VJP for `Cond`/`Scan`/`While`/`Switch` + `AssociativeScan`/`ReduceWindow` AD fixes.
+  - `frankenjax-rc26-n1emn.11` (depends on `.1`): Wire `partial_eval_jaxpr`/`stage_jaxpr` (`static_argnums`) + `fj-cache` (`LruCache`/`FileCache`) into `fj-dispatch` & `fj-api::jit`.
+  - `frankenjax-rc26-n1emn.18` (depends on `.1`): `PrecisionPolicy` SIMD/FMA dispatch + Stockham mixed-radix batched FFT + live vs-JAX perf gate (unblocks `cntiy`, `murmw`, `murmw.1`, `q032w`, `3gsc5`).
+  - `frankenjax-jjb1h` (depends on `.1`): Liveness-driven output buffer donation (`Arc::get_mut`).
+- **Wave 3 (Higher-Order Symbolic AD Composition, Control-Flow Tracing, & Wave-Parallel/Fused Execution):**
+  - `frankenjax-rc26-n1emn.7` (depends on `.5`, `.6`): Higher-order `sub_jaxprs` tracing in `make_jaxpr` + `fj_api::{nn, random, tree_util}`.
+  - `frankenjax-rc26-n1emn.9` (depends on `.8`, `.10`): Eliminate `1e-6`/`1e-5` finite-difference fallbacks in `execute_grad` and `hessian_jaxpr`.
+  - `frankenjax-rc26-n1emn.12` (depends on `.11`, `jjb1h`): Integrate `fj-backend-cpu` wave-parallel DAG execution + `fj-egraph` fusion + buffer donation.
+- **Wave 4 (Proof-Carrying TTL v2, Pre-Execution Ledger Governance, & FFI/Python Bindings):**
+  - `frankenjax-rc26-n1emn.13` (depends on `.8`, `.9`, `.11`): Cryptographic Proof-Carrying IR Transform Ledger (TTL v2).
+  - `frankenjax-rc26-n1emn.14` (depends on `.11`, `.13`): Pre-execution `fj-ledger` + `fj-runtime` admission/routing + real `frankentui` rendering.
+  - `frankenjax-rc26-n1emn.15` (depends on `.6`, `.9`): `fj-ffi` `extern "C"` ABI + `CustomCall` dispatch & `fj-py` Python 3.14 + `PyTracer` callable tracing.
+- **Wave 5 (Live Conformance Gates, 100% RaptorQ Durability Triplets, & Final Doc-Truth Gate):**
+  - `frankenjax-rc26-n1emn.16` (depends on `.13`, `.14`): Replace static gate struct generators with live workload execution & refresh stale conformance JSON artifacts.
+  - `frankenjax-rc26-n1emn.17` (depends on `.16`): Regenerate all 61 stale + 6 missing fixture RaptorQ sidecar triplets & enforce `source_sha256` verification in `durability_coverage`.
+  - `frankenjax-rc26-n1emn.3` (depends on `.1`, `.16`, `.17`): Reconcile all docs, fix `validate_feature_parity.sh` & `bootstrap_vision_evidence_map.sh`, and enforce `doc_metric_truth_gate`.
+
+---
+
+## 2026-05-01 Full Reality Check, Ambition Rounds, and Bead Plan (Historical Archive)
 
 Tracker parent: `frankenjax-cstq`
 

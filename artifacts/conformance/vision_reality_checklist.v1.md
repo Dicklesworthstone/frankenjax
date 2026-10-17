@@ -1,54 +1,64 @@
-# Vision vs Reality Checklist — 2026-05-24
+# Vision vs Reality Checklist — 2026-10-13 (`HEAD = 4f04dd82`)
 
-Agent-verified audit of README/FEATURE_PARITY claims against actual code.
+Code-anchored reality-check audit (`/reality-check-for-project`) comparing all stated claims across `README.md`, `AGENTS.md`, `docs/planning/COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`, `docs/planning/FEATURE_PARITY.md`, and `docs/planning/PARITY-COVERAGE.md` against actual workspace code at `HEAD = 4f04dd82ace83f609eedd232839244ce872bb4ce`.
 
-## Vision Checklist
+---
 
-| Goal | Status | Evidence |
-|------|--------|----------|
-| **157 canonical primitives** | WORKING | fj-core Primitive enum: 157 variants, 152 eval+AD, 5 pmap fail-closed |
-| **Reverse-mode AD (VJP)** | WORKING | fj-ad: 120+ primitives with real VJP rules, 292 tests |
-| **Forward-mode AD (JVP)** | WORKING | fj-ad: jvp() + jvp_rule() for all differentiable primitives |
-| **jit transform** | WORKING | fj-api: 15+ tests, transparent pass-through |
-| **grad transform** | WORKING | fj-api: 20+ tests, tape-based reverse-mode |
-| **vmap transform** | WORKING | fj-dispatch: BatchTrace with 61 batching rules, not just loops |
-| **Transform composition** | WORKING | jit(grad), vmap(grad), grad(grad) all tested |
-| **value_and_grad** | WORKING | fj-api: 6+ tests, shared forward pass |
-| **jacobian/hessian** | WORKING | fj-api: tests for single/multi input/output |
-| **checkpoint (remat)** | WORKING | fj-api: rematerialization for memory efficiency |
-| **custom_vjp/custom_jvp** | WORKING | fj-api: 7+ tests, registry-based |
-| **Linear algebra (Chol/QR/SVD/Eigh)** | WORKING | fj-lax/linalg.rs: 55 tests, complex support |
-| **FFT (Fft/Ifft/Rfft/Irfft)** | WORKING | fj-lax/fft.rs: 29 tests, radix-2 fast path |
-| **Control flow (cond/scan/while/switch)** | WORKING | fj-lax + fj-dispatch: AD through control flow |
-| **ThreeFry RNG** | WORKING | fj-lax/threefry.rs: 34 tests, JAX-matched |
-| **E-graph optimizer** | WORKING | fj-egraph: 87 rules, 48 tests |
-| **861 oracle fixtures** | WORKING | fj-conformance: fixtures captured from JAX 0.9.2 |
-| **Strict/Hardened modes** | WORKING | fj-cache: mode split with tests |
-| **RaptorQ durability** | WORKING | fj-conformance: sidecar/scrub/proof pipeline |
-| **make_jaxpr tracing** | WORKING | fj-trace: 69 tests, nested contexts |
-| **11 DTypes** | WORKING | fj-core: BF16-Complex128, promotion rules |
-| **pmap collectives** | EXCLUDED_SCOPE | Explicit V1 exclusion: requires multi-device backend infrastructure (GPU/TPU mesh). Returns typed UnsupportedFeature error. |
-| **Python bindings** | PARTIAL | fj-py: alpha PyO3, smoke tests only |
+## 0. Ground-Truth Workspace Metrics at `HEAD = 4f04dd82`
 
-## Summary
+| Metric | Claimed in Docs (Various) | Actual Measured Ground Truth | Source |
+|---|---|---|---|
+| **Workspace crates** | `8` (`SPEC`), `11` (`AGENTS.md`), `15` / `16` (`README.md`, `FEATURE_PARITY.md`) | **17** (`fj-core`, `fj-trace`, `fj-interpreters`, `fj-dispatch`, `fj-lax`, `fj-cache`, `fj-runtime`, `fj-conformance`, `fj-ledger`, `fj-ad`, `fj-egraph`, `fj-test-utils`, `fj-api`, `fj-backend-cpu`, `fj-backend-gpu`, `fj-ffi`, `fj-py`) | `Cargo.toml:4-22` |
+| **Rust LOC** | `162,733` (`README.md:218`, `FEATURE_PARITY.md:3`) | **321,303** lines in `crates/*/src/**/*.rs` (**459,828** lines across all `crates/**/*.rs`) | `crates/` |
+| **Canonical `Primitive` variants** | `110` (`AGENTS.md:394`), `118` (`README.md:12,160,199`), `157` (`PARITY-COVERAGE.md:19`), `162` (`README.md:29,220,985`) | **162** total: **157** V1 local evaluators in `fj-lax` + **5** `pmap` collectives (`AllGather`, `AllReduce`, `AllToAll`, `PSum`, `Permute`) that fail closed | `crates/fj-core/src/lib.rs:78-435` |
+| **`ProgramSpec` variants** | `145+` (`README.md:1014`) | **121** variants | `crates/fj-core/src/lib.rs` |
+| **E-graph rewrite rules (`fj-egraph`)** | `86` (`README.md:34,427`), `87` (`FEATURE_PARITY.md:51`) | **30** safe rules enabled by default (`safe_algebraic_rules`) + **61** `numerically_unsafe_rules` disabled by default = **91** total (plus 2 `add_mul_safe_rules` + 6 `add_mul_aggressive_rules`) | `crates/fj-egraph/src/lib.rs:212-655` |
+| **Static test & proptest markers** | `4,416` (`README.md:38`), `7,407` (May checklist) | **9,355** `#[test]` functions + **23** `proptest!` blocks across **173** conformance test files | `crates/**/src`, `crates/**/tests` |
+| **JAX 0.9.2 oracle fixture cases** | `848` (`CHANGELOG.md:122`), `861` (`README.md:37`) | **861** cases across 5 active fixture bundles (`legacy_transform_cases`: 613, `dtype_promotion`: 162, `linalg_fft`: 46, `rng_determinism`: 25, `composition`: 15) | `crates/fj-conformance/fixtures/` |
+| **`cargo clippy --workspace --all-targets -- -D warnings`** | Claimed clean | **FAILS with 125 errors** in `fj-lax` (`123 doc_lazy_continuation` + `i64_matmul_speed.rs:245` + `fft.rs:1664`) | `crates/fj-lax/` |
+| **Non-test library panics / unwraps** | `0` (`README.md:1107`: *"No panics in library code... The only unwrap() calls are in test code."*) | **28 `.unwrap()`**, **48 `.expect()`**, **5 `panic!()`**, **17 `unreachable!()`**, **24 `assert!()`** in non-test library code + 2 benchmark modules compiled into `fj-lax` | `crates/*/src/**/*.rs` |
 
-- **WORKING**: 22/24 claimed features fully implemented with tests
-- **PARTIAL**: 1 (Python bindings - alpha, needs expansion)
-- **EXCLUDED_SCOPE**: 1 (pmap collectives - V1 exclusion, requires multi-device backend)
-- **NOT_STARTED**: 0
-- **REGRESSED**: 0
+---
 
-## Evidence Sources
+## 1. Comprehensive 25-Row Vision vs Reality Matrix
 
-- Agent audit of fj-api/src/lib.rs: 126 tests, all transforms working
-- Agent audit of fj-ad/src/lib.rs: 292 tests, real tape-based AD
-- Agent audit of fj-dispatch/src/lib.rs: real batching rules, composition works
-- Agent audit of fj-lax/src/lib.rs: 152/157 primitives implemented
-- Prior session: 7,407 workspace tests passing via rch
+| # | Vision Goal / Claim | Status | Code Reality (Exact File & Line Evidence) | Bead Coverage |
+|---|---|---|---|---|
+| 1 | **162 canonical primitives (157 V1 local + 5 pmap fail-closed)** | **WORKING** | `crates/fj-core/src/lib.rs:78-435` defines 162 `Primitive` variants. All 157 V1 local primitives have real evaluators in `crates/fj-lax/src/` (`eval_primitive` / `eval_primitive_multi`); the 5 `pmap` collectives return `EvalError::Unsupported`. | `COVERED` (`frankenjax-rc26-n1emn.3`) |
+| 2 | **11 DTypes (`BF16`–`Complex128`) & JAX promotion lattice** | **WORKING** | `crates/fj-core/src/lib.rs` defines 11 `DType` variants (`BF16`, `F16`, `F32`, `F64`, `I32`, `I64`, `U32`, `U64`, `Bool`, `Complex64`, `Complex128`); `crates/fj-lax/src/type_promotion.rs` passes all 162 `dtype_promotion_oracle.v1.json` cases. | `COVERED` |
+| 3 | **861 JAX 0.9.2 differential oracle fixtures** | **PARTIAL** (4/5 matrix hashes stale on disk) | All 861 fixture cases pass in memory, but `artifacts/conformance/oracle_recapture_matrix.v1.json` has **4 of 5 mismatched `fixture_sha256` hashes** on disk after `3e22ef6c0ba2`, hidden because `tests/oracle_recapture_gate.rs:14` never checks the committed JSON file. | `COVERED` (`frankenjax-rc26-n1emn.16`) |
+| 4 | **`make_jaxpr` tracing (`fj-trace`)** | **PARTIAL / BROKEN** | `crates/fj-trace/src/lib.rs:4517-4838`: `TracerRef` exposes **0 named primitive methods** and only 4 operator traits (`Add`, `Sub`, `Mul`, `Neg` — no `Div`/`Rem`); cannot trace `Atom::Lit` constants (`L2541-2545`), cannot trace 0-input primitives (`Iota`, `BroadcastedIota` fail arity checks at `L1582, 1620`), hardcodes `sub_jaxprs: vec![]` (`L2643`), and has a 22-op wildcard `_ => Ok(vec![inputs[0].clone()])` in `infer_primitive_output_avals` (`L2431-2436`). | `COVERED` (`frankenjax-rc26-n1emn.5`, `.6`, `.7`) |
+| 5 | **`fj-api::eval_shape` abstract shape/dtype inference** | **BROKEN** | `crates/fj-api/src/transforms.rs:554-662` does NOT call `fj_lax::eval_abstract_primitive`. It uses a broken 37-op match (returning `inputs[0].dtype` instead of `Bool` for comparisons, scalar for all reductions ignoring `axes`, reversing dims for `Transpose` ignoring `permutation`) and a wildcard `_ => Ok(vec![inputs[0].clone()])` (`L660`) for the other 125 primitives! | `COVERED` (`frankenjax-rc26-n1emn.4`) |
+| 6 | **First-class `grad` & `value_and_grad` (1st-order AD)** | **PARTIAL** | `crates/fj-ad/src/lib.rs`: 115 primitives have real analytical VJP+JVP rules (plus 35 non-differentiable returning `zeros_like`). However, `fj-ad` is an **eager `Value` tape evaluator**, NOT a `Jaxpr -> Jaxpr` symbolic transform, and `AssociativeScan` (`L7683, 7703`) and `ReduceWindow` `"prod"` JVP (`L11168`) have mathematical bugs. | `COVERED` (`frankenjax-rc26-n1emn.8`, `.10`) |
+| 7 | **Higher-order AD & Transform Composition (`grad(grad(f))`, `grad(vmap(f))`, `vmap(grad(f))`)** | **BROKEN / NUMERICAL FALLBACK** | In `crates/fj-dispatch/src/lib.rs:777-786, 830-876`: whenever `tail` has a non-`Jit` transform, `execute_grad` falls back to **`1e-6` numerical central finite differences** (`execute_grad_finite_diff`), which only perturbs `args[0]` and rejects tensors (`NonScalarGradientInput`). **`grad(vmap(f))` ALWAYS fails** with `NonScalarGradientInput` (`L781`)! `vmap(grad(f))` bypasses `BatchTrace` (`L983`) for a sequential `O(batch)` loop (`L1382-1496`). | `COVERED` (`frankenjax-rc26-n1emn.8`, `.9`) |
+| 8 | **`jacobian` & `hessian` transforms (`fj-ad` / `fj-api`)** | **PARTIAL** (`hessian` is `1e-5` finite diff) | `jacobian_jaxpr` uses forward JVP, but `hessian_jaxpr` (`crates/fj-ad/src/lib.rs:13631-13807`) uses **`1e-5` central finite differences** over `grad_jaxpr` in the general case (`L13726`), except for 3 narrow hardcoded benchmark patterns (`L13687-13695`). | `COVERED` (`frankenjax-rc26-n1emn.9`) |
+| 9 | **Control flow (`Cond`, `Scan`, `While`, `Switch`) + AD** | **PARTIAL / BROKEN** | `fj-interpreters` (`L1483-1738`) evaluates `eqn.sub_jaxprs`, but `fj-trace` (`L2643`) cannot trace `sub_jaxprs`, and `fj-ad` (`crates/fj-ad/src/lib.rs:1877, 7240-7880, 10187`) **completely ignores `eqn.sub_jaxprs`**, only differentiating toy string-param `body_op`s (`"add"`, `"mul"`, etc.) and returning `zeros_like` for `While` scale factor (`L7411`). | `COVERED` (`frankenjax-rc26-n1emn.7`, `.10`) |
+| 10 | **`vmap` vectorization (`BatchTrace`)** | **PARTIAL** | `crates/fj-dispatch/src/batching.rs` has real vectorized `BatchTrace` rules for single `vmap(f)`, but `execute_vmap` (`crates/fj-dispatch/src/lib.rs:983-1010`) only calls `batch_eval_jaxpr` when `tail.is_empty()`, falling back to `execute_vmap_loop_and_stack` (`L1382`) whenever `vmap` wraps `grad` or nested transforms. | `COVERED` (`frankenjax-rc26-n1emn.9`) |
+| 11 | **`jit` compilation with Partial Evaluation (`partial_eval_jaxpr` / `stage_jaxpr`)** | **DISCONNECTED** | `README.md:589-602` claims `jit` uses partial evaluation to fold known inputs at compile time. In reality, `partial_eval_jaxpr` (`crates/fj-interpreters/src/partial_eval.rs:41`) and `stage_jaxpr` (`staging.rs:33`) have **ZERO call sites** in `fj-dispatch`, `fj-api`, or `fj-ad`! | `COVERED` (`frankenjax-rc26-n1emn.11`) |
+| 12 | **SHA-256 Compilation & Execution Cache (`fj-cache`)** | **DISCONNECTED** | `crates/fj-cache/src/lib.rs:295-600` defines `CacheManager`, `InMemoryCache`, `FileCache`, `LruCache`, and `TtlLruCache`, which have **ZERO call sites** in `fj-dispatch` or `fj-api`. `dispatch_ref` (`L617`) only formats a `fjx-...` key string and re-evaluates from scratch every call; `fj_api::jit` (`transforms.rs:888`) bypasses `fj-cache` entirely. | `COVERED` (`frankenjax-rc26-n1emn.11`) |
+| 13 | **Dependency-Wave Parallel CPU Backend (`fj-backend-cpu`)** | **DISCONNECTED** | `crates/fj-backend-cpu/src/executor.rs:347-460` implements wave-parallel DAG execution (`build_dependency_waves` + `std::thread::scope`), but neither `fj-dispatch` nor `fj-api` depends on `fj-backend-cpu`! All dispatch/API calls run single-threaded `fj-interpreters`. | `COVERED` (`frankenjax-rc26-n1emn.12`) |
+| 14 | **E-Graph Equality Saturation Optimizer (`fj-egraph`)** | **PARTIAL / DISABLED BY DEFAULT** | `crates/fj-dispatch/src/lib.rs:629` only invokes `optimize_jaxpr` when `compile_options["egraph_optimize"] == "true"`. Default `OptimizationConfig::safe()` runs 30 rules (or 2 rules `add-comm`/`mul-comm` on add/mul segments), while the 61 rules in `numerically_unsafe_rules()` (including `x + 0 -> x`, `x * 1 -> x`, `x * 0 -> 0`, `exp(log(x)) -> x` cited in `README.md:429-434`) are disabled by default. | `COVERED` (`frankenjax-rc26-n1emn.12`) |
+| 15 | **Trace Transform Ledger (`TTL`) Crown-Jewel Proof** | **THEATRICAL** | `crates/fj-core/src/lib.rs:5794-5999`: `TraceTransformLedger` stores `{ root_jaxpr, transform_stack, transform_evidence: Vec<String> }` (no output IR!). `verify_transform_composition_parts` (`L5843-5978`) only checks that each string in `transform_evidence` is unique and contains the substring token `"jit"`, `"grad"`, `"vmap"`, or `"pmap"`, then FNV-1a hashes the string. | `COVERED` (`frankenjax-rc26-n1emn.13`) |
+| 16 | **Decision & Evidence Ledger (`fj-ledger`: Conformal, E-Process, Bayes)** | **THEATRICAL / DISCONNECTED** | `crates/fj-dispatch/src/lib.rs:659-710` runs the computation *first*, then computes a hardcoded formula `(eqn_count + 2*depth)/(eqn_count + 2*depth + 20)` whose action (`Keep`/`Kill`/`Reprofile`) is ignored; `fj-api` discards `response.evidence_ledger`; `LogDomainPosterior`, `ConformalPredictor`, `CalibrationReport`, and `EProcess` in `fj-ledger` have **0 production call sites**. | `COVERED` (`frankenjax-rc26-n1emn.14`) |
+| 17 | **Runtime Admission, `asupersync`, & `frankentui` (`fj-runtime`)** | **DISCONNECTED / STUB** | `crates/fj-runtime/src/lib.rs`: `RuntimeAdmissionModel` and `asupersync_bridge` have 0 callers outside unit tests; `frankentui_bridge::render_status_card` (`L67-88`) is a fake stub (`let _type_check = std::any::type_name::<ftui::Style>();` + plain `writeln!`). | `COVERED` (`frankenjax-rc26-n1emn.14`) |
+| 18 | **`jax.nn`, `jax.random` (ThreeFry), & `jax.tree_util` Surfaces** | **DISCONNECTED FROM API/TRACE** | `crates/fj-lax/src/{nn,threefry,tree_util}.rs` are standalone eager functions on `&[f64]` slices or `TreeNode::Leaf(f64)` — not `Primitive`-backed in `fj-trace`, not generic over `Value`/`TracerRef`, and not exposed in `fj-api` (`tree_util` has 0 callers outside `tree_util_oracle.rs`). | `COVERED` (`frankenjax-rc26-n1emn.7`) |
+| 19 | **C FFI Boundary (`fj-ffi`)** | **PARTIAL / ISOLATED** | `crates/fj-ffi` is an `rlib` with **0 `extern "C"` exports** and is not wired into `fj-interpreters` or `fj-dispatch` (`Primitive::CustomCall` cannot invoke `FfiRegistry`). | `COVERED` (`frankenjax-rc26-n1emn.15`) |
+| 20 | **Python Bindings (`fj-py`)** | **BROKEN ON PY3.14 / STUB** | `cargo test -p fj-py` fails on host Python 3.14 (`pyo3 0.23.5` max 3.13); `fj_py::make_jaxpr` (`L617-627`) only looks up hardcoded `ProgramSpec` names; `PyGradCallable` (`L711-754`) uses `1e-6` finite differences on Python functions; all config functions (`L1012-1046`) are no-op stubs. | `COVERED` (`frankenjax-rc26-n1emn.15`) |
+| 21 | **RaptorQ-Everywhere Durability (`artifacts/durability/`)** | **BROKEN ON DISK** | **61 of 96** sidecars in `artifacts/durability/` have stale `source_sha256` hashes; **0 of 6** conformance fixture bundles have a valid sidecar on disk (5 missing, 1 stale); `scripts/run_durability_coverage_gate.sh` fails at **16% coverage** (`92/545`), hidden because `tests/durability_coverage.rs` only tests a fresh `/tmp` copy. | `COVERED` (`frankenjax-rc26-n1emn.17`) |
+| 22 | **Security, Numerical Stability, & Decision Conformance Gates** | **THEATRICAL (STATIC STRUCTS)** | `security_adversarial.rs` (`L1071-1136`), `numerical_stability.rs` (`L942-1215`), and `decision_ledger.rs` (`L900-1187`) emit green reports from **hardcoded static Rust structs** (`actual_error_class: spec.expected_error_class.to_owned()`, hardcoded `max_abs_error: 8e-8`, file-count-only fuzz checks) without executing the fuzzers or numerical workloads. | `COVERED` (`frankenjax-rc26-n1emn.16`) |
+| 23 | **Zero-Panic Library Safety & Compiler Lint Gate** | **BROKEN** | `cargo clippy --workspace --all-targets -- -D warnings` fails with 125 errors in `fj-lax`; non-test library code has 28 `.unwrap()`, 48 `.expect()`, 5 `panic!()`, 17 `unreachable!()`, and 24 `assert!()` calls plus compiled-in benchmark modules `cz0g0_*`. | `COVERED` (`frankenjax-rc26-n1emn.1`, `.2`) |
+| 24 | **CPU Performance vs JAX 0.10.2 XLA-CPU** | **MIXED (WINS + BLOCKED GAPS)** | Wins `1.2x–230x` on QR (`30x`), LU (`12.9x`), det/slogdet (`5.9x/7.3x`), solve (`5.2x`), radix sort/argsort (`8x–94x`), 4D pooling (`17x–141x`), i64 dot (`230x`), cumsum (`3.1x`). Loses on f64 GEMM/Cholesky (`~6x`), batched/composite FFT (`7.6x–42.7x`), and large elementwise chains (`1.5x–20x`) due to missing `+fma` (`frankenjax-cntiy`), Bluestein/radix-2 FFT (`frankenjax-murmw`), and output buffer page faults (`frankenjax-jjb1h`). | `COVERED` (`frankenjax-rc26-n1emn.12`, `.18`, `cntiy`, `murmw`, `jjb1h`) |
+| 25 | **Multi-device `pmap` / GPU & TPU Backends** | **EXCLUDED_SCOPE (V1)** | `pmap` collectives fail closed with typed errors; `fj-backend-gpu` is an explicit mock/scaffold with 5 tests. Documented V1 scope exclusion. | `EXCLUDED_SCOPE` |
 
-## Gaps Requiring Beads
+---
 
-1. **fj-py expansion** - beyond smoke programs to user-defined tracing (tracked in FEATURE_PARITY)
-2. **pmap/multi-device** - requires backend infrastructure (out of V1 scope)
+## 2. Executive Summary
 
-No new beads required — existing tracking in FEATURE_PARITY.md is accurate.
+- **WORKING (Fully verified end-to-end):** **2 / 25** (`Primitive` 157 local evaluators + 5 fail-closed `pmap`; 11 `DType`s + promotion lattice)
+- **PARTIAL (Works in isolation, but missing key paths or stale on disk):** **7 / 25** (861 oracle fixtures, 1st-order `grad`, `jacobian`/`hessian`, `Cond`/`Scan`/`While`/`Switch`, `vmap`, `fj-egraph`, `fj-ffi`)
+- **MIXED (Verified wins + tracked architectural bottlenecks):** **1 / 25** (CPU performance vs JAX 0.10.2)
+- **DISCONNECTED (Implemented in isolation, 0 production call sites in `dispatch`/`api`):** **4 / 25** (`partial_eval_jaxpr`/`stage_jaxpr`, `fj-cache` stores, `fj-backend-cpu`, `fj-lax::{nn, random, tree_util}`)
+- **THEATRICAL (Hardcoded strings, post-hoc dummy formulas, or static struct generators):** **4 / 25** (`TraceTransformLedger`, `fj-ledger`, `fj-runtime`/`frankentui`, static conformance gates)
+- **BROKEN (Fails at runtime/compile time or falls back to `1e-6` finite differences / `inputs[0].clone()`):** **6 / 25** (`make_jaxpr` constants/0-input/sub_jaxprs, `fj-api::eval_shape`, higher-order AD composition `grad(grad)`/`grad(vmap)`, `fj-py` on Python 3.14, RaptorQ on-disk durability coverage, `cargo clippy` + library panic freedom)
+- **EXCLUDED_SCOPE:** **1 / 25** (`pmap` / GPU / TPU hardware execution)
+- **Bead Coverage:** **100% (`24/24` in-scope rows mapped to `frankenjax-rc26-n1emn` and its 18 child beads + linked perf beads; `0 NO_BEAD` rows remaining).**
