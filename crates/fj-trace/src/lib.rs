@@ -2647,9 +2647,32 @@ impl SimpleTraceContext {
         let mut outvars = Vec::with_capacity(out_ids.len());
         for tracer_id in out_ids {
             if let Ok(var) = dense_var(&tracer_to_var, *tracer_id) {
-                outvars.push(var);
+                if outvars.contains(&var) {
+                    let copy_var = VarId(next_var);
+                    next_var = next_var
+                        .checked_add(1)
+                        .ok_or(TraceError::CompositionViolation)?;
+                    let mut inputs = SmallVec::new();
+                    inputs.push(Atom::Var(var));
+                    let mut outputs = SmallVec::new();
+                    outputs.push(copy_var);
+                    equations.push(Equation {
+                        primitive: Primitive::Copy,
+                        inputs,
+                        outputs,
+                        params: BTreeMap::new(),
+                        effects: vec![],
+                        sub_jaxprs: vec![],
+                    });
+                    outvars.push(copy_var);
+                } else {
+                    outvars.push(var);
+                }
             } else if let Some(&lit) = self.literal_values.get(tracer_id) {
-                let out_var = ensure_dense_var(&mut tracer_to_var, &mut next_var, *tracer_id)?;
+                let out_var = VarId(next_var);
+                next_var = next_var
+                    .checked_add(1)
+                    .ok_or(TraceError::CompositionViolation)?;
                 let mut inputs = SmallVec::new();
                 inputs.push(Atom::Lit(lit));
                 let mut outputs = SmallVec::new();
@@ -6074,6 +6097,563 @@ where
         .into_inner();
 
     ctx_inner.finalize()
+}
+
+fn trace_sub_jaxpr_with_avals<F>(
+    f: F,
+    in_avals: Vec<ShapedArray>,
+) -> Result<(ClosedJaxpr, Vec<ShapedArray>), TraceError>
+where
+    F: FnOnce(&[TracerRef]) -> Result<Vec<TracerRef>, TraceError>,
+{
+    let ctx = Rc::new(RefCell::new(SimpleTraceContext::new()));
+
+    let input_refs: Vec<TracerRef> = in_avals
+        .into_iter()
+        .map(|aval| {
+            let id = ctx.borrow_mut().bind_input(aval.clone())?;
+            Ok(TracerRef {
+                id,
+                aval,
+                ctx: Rc::clone(&ctx),
+            })
+        })
+        .collect::<Result<Vec<_>, TraceError>>()?;
+
+    let active_guard = ActiveTraceCtxGuard::push(Rc::clone(&ctx));
+    let output_refs_result = f(&input_refs);
+    drop(active_guard);
+    let output_refs = output_refs_result?;
+
+    for output in &output_refs {
+        output.validate_against_ctx(&ctx)?;
+    }
+    let out_avals: Vec<ShapedArray> = output_refs.iter().map(|r| r.aval.clone()).collect();
+    let output_ids: Vec<TracerId> = output_refs.iter().map(|r| r.id).collect();
+    drop(input_refs);
+    drop(output_refs);
+
+    {
+        let mut ctx_mut = ctx.borrow_mut();
+        let frame = ctx_mut.active_frame_mut()?;
+        frame.last_output_ids = output_ids;
+    }
+
+    let ctx_inner = Rc::try_unwrap(ctx)
+        .map_err(|_| TraceError::CompositionViolation)?
+        .into_inner();
+
+    Ok((ctx_inner.finalize()?, out_avals))
+}
+
+/// Trace a conditional (`Primitive::Cond`) with two branch closures into `Equation::sub_jaxprs`.
+///
+/// Both branches receive tracers with the abstract values of `operands` and must return
+/// outputs with identical abstract values (count, dtype, and shape).
+pub fn trace_cond<T, F>(
+    predicate: &TracerRef,
+    operands: &[&TracerRef],
+    true_fn: T,
+    false_fn: F,
+) -> Result<Vec<TracerRef>, TraceError>
+where
+    T: FnOnce(&[TracerRef]) -> Result<Vec<TracerRef>, TraceError>,
+    F: FnOnce(&[TracerRef]) -> Result<Vec<TracerRef>, TraceError>,
+{
+    predicate.validate_against_ctx(&predicate.ctx)?;
+    if predicate.aval.shape != Shape::scalar() {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::Cond,
+            detail: format!(
+                "cond predicate must be scalar, got shape {:?}",
+                predicate.aval.shape.dims
+            ),
+        });
+    }
+    if matches!(predicate.aval.dtype, DType::Complex64 | DType::Complex128) {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::Cond,
+            detail: format!(
+                "cond predicate must be bool or real numeric, got {:?}",
+                predicate.aval.dtype
+            ),
+        });
+    }
+
+    let mut operand_avals = Vec::with_capacity(operands.len());
+    for op in operands {
+        op.validate_against_ctx(&predicate.ctx)?;
+        operand_avals.push(op.aval.clone());
+    }
+
+    let (true_closed, true_out_avals) = trace_sub_jaxpr_with_avals(true_fn, operand_avals.clone())?;
+    let (false_closed, false_out_avals) = trace_sub_jaxpr_with_avals(false_fn, operand_avals)?;
+
+    if true_out_avals.is_empty() {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::Cond,
+            detail: "cond branches must return at least 1 output".to_owned(),
+        });
+    }
+    if true_out_avals != false_out_avals {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::Cond,
+            detail: format!(
+                "cond branch output abstract values mismatch: true={true_out_avals:?} vs false={false_out_avals:?}"
+            ),
+        });
+    }
+    if true_closed.const_values != false_closed.const_values {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::Cond,
+            detail: "cond branches captured mismatched tensor constants".to_owned(),
+        });
+    }
+
+    let mut input_ids = Vec::with_capacity(1 + true_closed.const_values.len() + operands.len());
+    input_ids.push(predicate.id);
+    for const_val in &true_closed.const_values {
+        let cid = predicate
+            .ctx
+            .borrow_mut()
+            .bind_const_value(const_val.clone())?;
+        input_ids.push(cid);
+    }
+    for op in operands {
+        input_ids.push(op.id);
+    }
+
+    let output_ids = predicate.ctx.borrow_mut().process_control_flow_primitive(
+        Primitive::Cond,
+        &input_ids,
+        true_out_avals.clone(),
+        BTreeMap::new(),
+        vec![true_closed.jaxpr, false_closed.jaxpr],
+    )?;
+
+    Ok(output_ids
+        .into_iter()
+        .zip(true_out_avals)
+        .map(|(id, aval)| TracerRef {
+            id,
+            aval,
+            ctx: Rc::clone(&predicate.ctx),
+        })
+        .collect())
+}
+
+/// Trace a multi-way indexed branch (`Primitive::Switch`) into `Equation::sub_jaxprs`.
+pub fn trace_switch<I, B>(
+    index: &TracerRef,
+    operands: &[&TracerRef],
+    branches: I,
+) -> Result<Vec<TracerRef>, TraceError>
+where
+    I: IntoIterator<Item = B>,
+    B: FnOnce(&[TracerRef]) -> Result<Vec<TracerRef>, TraceError>,
+{
+    index.validate_against_ctx(&index.ctx)?;
+    if index.aval.shape != Shape::scalar() {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::Switch,
+            detail: format!(
+                "switch index must be scalar, got shape {:?}",
+                index.aval.shape.dims
+            ),
+        });
+    }
+    if !matches!(
+        index.aval.dtype,
+        DType::Bool | DType::I32 | DType::I64 | DType::U32 | DType::U64
+    ) {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::Switch,
+            detail: format!("switch index must be integer, got {:?}", index.aval.dtype),
+        });
+    }
+
+    let mut operand_avals = Vec::with_capacity(operands.len());
+    for op in operands {
+        op.validate_against_ctx(&index.ctx)?;
+        operand_avals.push(op.aval.clone());
+    }
+
+    let mut sub_jaxprs = Vec::new();
+    let mut expected_out_avals: Option<Vec<ShapedArray>> = None;
+    let mut expected_consts: Option<Vec<Value>> = None;
+
+    for (branch_idx, branch_fn) in branches.into_iter().enumerate() {
+        let (closed, out_avals) = trace_sub_jaxpr_with_avals(branch_fn, operand_avals.clone())?;
+        if out_avals.is_empty() {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Switch,
+                detail: format!("switch branch {branch_idx} returned 0 outputs"),
+            });
+        }
+        if let Some(ref exp_avals) = expected_out_avals {
+            if &out_avals != exp_avals {
+                return Err(TraceError::ShapeInferenceFailed {
+                    primitive: Primitive::Switch,
+                    detail: format!(
+                        "switch branch {branch_idx} output abstract values {out_avals:?} do not match branch 0 {exp_avals:?}"
+                    ),
+                });
+            }
+        } else {
+            expected_out_avals = Some(out_avals);
+        }
+        if let Some(ref exp_consts) = expected_consts {
+            if &closed.const_values != exp_consts {
+                return Err(TraceError::ShapeInferenceFailed {
+                    primitive: Primitive::Switch,
+                    detail: format!(
+                        "switch branch {branch_idx} captured different tensor constants than branch 0"
+                    ),
+                });
+            }
+        } else {
+            expected_consts = Some(closed.const_values);
+        }
+        sub_jaxprs.push(closed.jaxpr);
+    }
+
+    let Some(out_avals) = expected_out_avals else {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::Switch,
+            detail: "switch requires at least 1 branch".to_owned(),
+        });
+    };
+    let const_values = expected_consts.unwrap_or_default();
+
+    let mut input_ids = Vec::with_capacity(1 + const_values.len() + operands.len());
+    input_ids.push(index.id);
+    for const_val in &const_values {
+        let cid = index.ctx.borrow_mut().bind_const_value(const_val.clone())?;
+        input_ids.push(cid);
+    }
+    for op in operands {
+        input_ids.push(op.id);
+    }
+
+    let mut params = BTreeMap::new();
+    params.insert("num_branches".to_owned(), sub_jaxprs.len().to_string());
+
+    let output_ids = index.ctx.borrow_mut().process_control_flow_primitive(
+        Primitive::Switch,
+        &input_ids,
+        out_avals.clone(),
+        params,
+        sub_jaxprs,
+    )?;
+
+    Ok(output_ids
+        .into_iter()
+        .zip(out_avals)
+        .map(|(id, aval)| TracerRef {
+            id,
+            aval,
+            ctx: Rc::clone(&index.ctx),
+        })
+        .collect())
+}
+
+/// Trace a functional while loop (`Primitive::While`) with condition and body closures into `Equation::sub_jaxprs`.
+pub fn trace_while_loop<C, B>(
+    init_carries: &[&TracerRef],
+    cond_fn: C,
+    body_fn: B,
+    max_iter: Option<usize>,
+) -> Result<Vec<TracerRef>, TraceError>
+where
+    C: FnOnce(&[TracerRef]) -> Result<TracerRef, TraceError>,
+    B: FnOnce(&[TracerRef]) -> Result<Vec<TracerRef>, TraceError>,
+{
+    let Some(first_carry) = init_carries.first() else {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::While,
+            detail: "while_loop requires at least 1 carry value".to_owned(),
+        });
+    };
+    let ctx = &first_carry.ctx;
+    let mut carry_avals = Vec::with_capacity(init_carries.len());
+    for carry in init_carries {
+        carry.validate_against_ctx(ctx)?;
+        carry_avals.push(carry.aval.clone());
+    }
+
+    let (cond_closed, cond_out_avals) =
+        trace_sub_jaxpr_with_avals(|carries| Ok(vec![cond_fn(carries)?]), carry_avals.clone())?;
+    if cond_out_avals.len() != 1 || cond_out_avals[0].shape != Shape::scalar() {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::While,
+            detail: format!(
+                "while_loop condition must return a single scalar, got {cond_out_avals:?}"
+            ),
+        });
+    }
+    if matches!(
+        cond_out_avals[0].dtype,
+        DType::Complex64 | DType::Complex128
+    ) {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::While,
+            detail: format!(
+                "while_loop condition must be bool or real numeric, got {:?}",
+                cond_out_avals[0].dtype
+            ),
+        });
+    }
+
+    let (body_closed, body_out_avals) = trace_sub_jaxpr_with_avals(body_fn, carry_avals.clone())?;
+    if body_out_avals != carry_avals {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::While,
+            detail: format!(
+                "while_loop body carry abstract values {body_out_avals:?} do not match initial carries {carry_avals:?}"
+            ),
+        });
+    }
+
+    let mut input_ids = Vec::with_capacity(
+        cond_closed.const_values.len() + body_closed.const_values.len() + init_carries.len(),
+    );
+    for const_val in &cond_closed.const_values {
+        let cid = ctx.borrow_mut().bind_const_value(const_val.clone())?;
+        input_ids.push(cid);
+    }
+    for const_val in &body_closed.const_values {
+        let cid = ctx.borrow_mut().bind_const_value(const_val.clone())?;
+        input_ids.push(cid);
+    }
+    for carry in init_carries {
+        input_ids.push(carry.id);
+    }
+
+    let mut params = BTreeMap::new();
+    if let Some(limit) = max_iter {
+        params.insert("max_iter".to_owned(), limit.to_string());
+    }
+
+    let output_ids = ctx.borrow_mut().process_control_flow_primitive(
+        Primitive::While,
+        &input_ids,
+        carry_avals.clone(),
+        params,
+        vec![cond_closed.jaxpr, body_closed.jaxpr],
+    )?;
+
+    Ok(output_ids
+        .into_iter()
+        .zip(carry_avals)
+        .map(|(id, aval)| TracerRef {
+            id,
+            aval,
+            ctx: Rc::clone(ctx),
+        })
+        .collect())
+}
+
+/// Trace a functional scan (`Primitive::Scan`) over the leading axis of `xs` into `Equation::sub_jaxprs`.
+///
+/// The `body_fn` receives `(&[TracerRef], &TracerRef)` representing `(carries, x_slice)` and
+/// returns `(next_carries, y_slices)`. Returns `(final_carries, stacked_ys)`.
+pub fn trace_scan<B>(
+    init_carries: &[&TracerRef],
+    xs: &TracerRef,
+    body_fn: B,
+    reverse: bool,
+) -> Result<(Vec<TracerRef>, Vec<TracerRef>), TraceError>
+where
+    B: FnOnce(&[TracerRef], &TracerRef) -> Result<(Vec<TracerRef>, Vec<TracerRef>), TraceError>,
+{
+    if init_carries.is_empty() {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::Scan,
+            detail: "scan requires at least 1 carry value".to_owned(),
+        });
+    }
+    let ctx = &xs.ctx;
+    xs.validate_against_ctx(ctx)?;
+    if xs.aval.shape.rank() == 0 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::Scan,
+            detail: "scan xs input must have rank >= 1".to_owned(),
+        });
+    }
+
+    let scan_len = xs.aval.shape.dims[0];
+    let x_slice_aval = ShapedArray {
+        dtype: xs.aval.dtype,
+        shape: Shape {
+            dims: xs.aval.shape.dims[1..].to_vec(),
+        },
+    };
+
+    let carry_count = init_carries.len();
+    let mut body_in_avals = Vec::with_capacity(carry_count + 1);
+    let mut carry_avals = Vec::with_capacity(carry_count);
+    for carry in init_carries {
+        carry.validate_against_ctx(ctx)?;
+        carry_avals.push(carry.aval.clone());
+        body_in_avals.push(carry.aval.clone());
+    }
+    body_in_avals.push(x_slice_aval);
+
+    let mut captured_y_count = 0usize;
+    let (body_closed, body_out_avals) = trace_sub_jaxpr_with_avals(
+        |inputs| {
+            let (carries, x_rest) = inputs.split_at(carry_count);
+            let (next_carries, ys) = body_fn(carries, &x_rest[0])?;
+            if next_carries.len() != carry_count {
+                return Err(TraceError::ShapeInferenceFailed {
+                    primitive: Primitive::Scan,
+                    detail: format!(
+                        "scan body returned {} carry values, expected {carry_count}",
+                        next_carries.len()
+                    ),
+                });
+            }
+            captured_y_count = ys.len();
+            let mut all_outs = next_carries;
+            all_outs.extend(ys);
+            Ok(all_outs)
+        },
+        body_in_avals,
+    )?;
+
+    let (next_carry_avals, y_slice_avals) = body_out_avals.split_at(carry_count);
+    if next_carry_avals != carry_avals.as_slice() {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive: Primitive::Scan,
+            detail: format!(
+                "scan body carry abstract values {next_carry_avals:?} do not match initial carries {carry_avals:?}"
+            ),
+        });
+    }
+
+    let mut output_avals = carry_avals;
+    for y_aval in y_slice_avals {
+        let mut dims = Vec::with_capacity(1 + y_aval.shape.rank());
+        dims.push(scan_len);
+        dims.extend_from_slice(&y_aval.shape.dims);
+        output_avals.push(ShapedArray {
+            dtype: y_aval.dtype,
+            shape: Shape { dims },
+        });
+    }
+
+    let mut input_ids = Vec::with_capacity(body_closed.const_values.len() + init_carries.len() + 1);
+    for const_val in &body_closed.const_values {
+        let cid = ctx.borrow_mut().bind_const_value(const_val.clone())?;
+        input_ids.push(cid);
+    }
+    for carry in init_carries {
+        input_ids.push(carry.id);
+    }
+    input_ids.push(xs.id);
+
+    let mut params = BTreeMap::new();
+    if reverse {
+        params.insert("reverse".to_owned(), "true".to_owned());
+    }
+
+    let output_ids = ctx.borrow_mut().process_control_flow_primitive(
+        Primitive::Scan,
+        &input_ids,
+        output_avals.clone(),
+        params,
+        vec![body_closed.jaxpr],
+    )?;
+
+    let mut all_refs: Vec<TracerRef> = output_ids
+        .into_iter()
+        .zip(output_avals)
+        .map(|(id, aval)| TracerRef {
+            id,
+            aval,
+            ctx: Rc::clone(ctx),
+        })
+        .collect();
+    let y_refs = all_refs.split_off(carry_count);
+    debug_assert_eq!(y_refs.len(), captured_y_count);
+    Ok((all_refs, y_refs))
+}
+
+impl TracerRef {
+    /// Trace a single-operand, single-output conditional (`Primitive::Cond`) with `self` as scalar predicate.
+    pub fn cond<T, F>(
+        &self,
+        operand: &TracerRef,
+        true_fn: T,
+        false_fn: F,
+    ) -> Result<TracerRef, TraceError>
+    where
+        T: FnOnce(&TracerRef) -> Result<TracerRef, TraceError>,
+        F: FnOnce(&TracerRef) -> Result<TracerRef, TraceError>,
+    {
+        let mut outs = trace_cond(
+            self,
+            &[operand],
+            |ops| Ok(vec![true_fn(&ops[0])?]),
+            |ops| Ok(vec![false_fn(&ops[0])?]),
+        )?;
+        Ok(outs.remove(0))
+    }
+
+    /// Trace a multi-way branch (`Primitive::Switch`) with `self` as scalar integer index.
+    pub fn switch<I, B>(
+        &self,
+        operands: &[&TracerRef],
+        branches: I,
+    ) -> Result<Vec<TracerRef>, TraceError>
+    where
+        I: IntoIterator<Item = B>,
+        B: FnOnce(&[TracerRef]) -> Result<Vec<TracerRef>, TraceError>,
+    {
+        trace_switch(self, operands, branches)
+    }
+
+    /// Trace a single-carry `while_loop` (`Primitive::While`) starting from `self`.
+    pub fn while_loop<C, B>(
+        &self,
+        cond_fn: C,
+        body_fn: B,
+        max_iter: Option<usize>,
+    ) -> Result<TracerRef, TraceError>
+    where
+        C: FnOnce(&TracerRef) -> Result<TracerRef, TraceError>,
+        B: FnOnce(&TracerRef) -> Result<TracerRef, TraceError>,
+    {
+        let mut outs = trace_while_loop(
+            &[self],
+            |carries| cond_fn(&carries[0]),
+            |carries| Ok(vec![body_fn(&carries[0])?]),
+            max_iter,
+        )?;
+        Ok(outs.remove(0))
+    }
+
+    /// Trace a single-carry `scan` (`Primitive::Scan`) with `self` as initial carry and `xs` as sequence.
+    pub fn scan<B>(
+        &self,
+        xs: &TracerRef,
+        body_fn: B,
+        reverse: bool,
+    ) -> Result<(TracerRef, Vec<TracerRef>), TraceError>
+    where
+        B: FnOnce(&TracerRef, &TracerRef) -> Result<(TracerRef, Vec<TracerRef>), TraceError>,
+    {
+        let (mut carries, ys) = trace_scan(
+            &[self],
+            xs,
+            |carries, x| {
+                let (next_carry, y_outs) = body_fn(&carries[0], x)?;
+                Ok((vec![next_carry], y_outs))
+            },
+            reverse,
+        )?;
+        Ok((carries.remove(0), ys))
+    }
 }
 
 /// Build a nested trace-frame summary for a composed transform stack.
@@ -12075,6 +12655,240 @@ mod tests {
             .expect("f64 vec");
         // DC component of [1, 2, 3, 4] is 10.0
         assert!((rfft_re[0] - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_trace_cond_switch_while_loop_and_scan_with_sub_jaxprs() {
+        // 1. trace_cond (both branches evaluated via fj_interpreters::eval_jaxpr)
+        let cond_closed = crate::make_jaxpr_fallible(
+            |inputs| {
+                let x = &inputs[0];
+                let pred = x.gt(&TracerRef::literal(fj_core::Literal::from_f64(0.0))?)?;
+                let out = pred.cond(
+                    x,
+                    |v| Ok(v * 2.0_f64 + 1.0_f64),
+                    |v| Ok(v * -3.0_f64 - 1.0_f64),
+                )?;
+                Ok(vec![out])
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            }],
+        )
+        .expect("trace_cond should succeed");
+        cond_closed
+            .jaxpr
+            .validate_well_formed()
+            .expect("cond jaxpr well-formed");
+        assert_eq!(cond_closed.jaxpr.equations[1].primitive, Primitive::Cond);
+        assert_eq!(cond_closed.jaxpr.equations[1].sub_jaxprs.len(), 2);
+
+        let pos_out = fj_interpreters::eval_jaxpr(&cond_closed.jaxpr, &[Value::scalar_f64(4.0)])
+            .expect("eval cond positive");
+        assert_eq!(pos_out, vec![Value::scalar_f64(9.0)]);
+        let neg_out = fj_interpreters::eval_jaxpr(&cond_closed.jaxpr, &[Value::scalar_f64(-2.0)])
+            .expect("eval cond negative");
+        assert_eq!(neg_out, vec![Value::scalar_f64(5.0)]);
+
+        // 2. trace_switch (3 branches)
+        let switch_closed = crate::make_jaxpr_fallible(
+            |inputs| {
+                let idx = &inputs[0];
+                let x = &inputs[1];
+                type SwitchBranchFn = fn(&[TracerRef]) -> Result<Vec<TracerRef>, TraceError>;
+                let b0: SwitchBranchFn = |ops| Ok(vec![&ops[0] + 10.0_f64]);
+                let b1: SwitchBranchFn = |ops| Ok(vec![&ops[0] * 10.0_f64]);
+                let b2: SwitchBranchFn = |ops| Ok(vec![&ops[0] - 10.0_f64]);
+                crate::trace_switch(idx, &[x], [b0, b1, b2])
+            },
+            vec![
+                ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape::scalar(),
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::scalar(),
+                },
+            ],
+        )
+        .expect("trace_switch should succeed");
+        switch_closed
+            .jaxpr
+            .validate_well_formed()
+            .expect("switch jaxpr well-formed");
+        assert_eq!(
+            switch_closed.jaxpr.equations[0].primitive,
+            Primitive::Switch
+        );
+        assert_eq!(switch_closed.jaxpr.equations[0].sub_jaxprs.len(), 3);
+        assert_eq!(
+            fj_interpreters::eval_jaxpr(
+                &switch_closed.jaxpr,
+                &[Value::scalar_i64(0), Value::scalar_f64(3.0)]
+            )
+            .expect("switch 0"),
+            vec![Value::scalar_f64(13.0)]
+        );
+        assert_eq!(
+            fj_interpreters::eval_jaxpr(
+                &switch_closed.jaxpr,
+                &[Value::scalar_i64(1), Value::scalar_f64(3.0)]
+            )
+            .expect("switch 1"),
+            vec![Value::scalar_f64(30.0)]
+        );
+        assert_eq!(
+            fj_interpreters::eval_jaxpr(
+                &switch_closed.jaxpr,
+                &[Value::scalar_i64(2), Value::scalar_f64(3.0)]
+            )
+            .expect("switch 2"),
+            vec![Value::scalar_f64(-7.0)]
+        );
+
+        // 3. trace_while_loop (accumulate x = x + 3 while x < 10)
+        let while_closed = crate::make_jaxpr_fallible(
+            |inputs| {
+                let init = &inputs[0];
+                let out = init.while_loop(
+                    |carry| carry.lt(&TracerRef::literal(fj_core::Literal::from_f64(10.0))?),
+                    |carry| Ok(carry + 3.0_f64),
+                    Some(100),
+                )?;
+                Ok(vec![out])
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            }],
+        )
+        .expect("trace_while_loop should succeed");
+        while_closed
+            .jaxpr
+            .validate_well_formed()
+            .expect("while jaxpr well-formed");
+        assert_eq!(while_closed.jaxpr.equations[0].primitive, Primitive::While);
+        assert_eq!(while_closed.jaxpr.equations[0].sub_jaxprs.len(), 2);
+        let while_out = fj_interpreters::eval_jaxpr(&while_closed.jaxpr, &[Value::scalar_f64(1.0)])
+            .expect("eval while");
+        assert_eq!(while_out, vec![Value::scalar_f64(10.0)]);
+
+        // 4. trace_scan (running prefix sum and doubled elements)
+        let scan_closed = crate::make_jaxpr_fallible(
+            |inputs| {
+                let init = &inputs[0];
+                let xs = &inputs[1];
+                let (final_carry, ys) = init.scan(
+                    xs,
+                    |carry, x| {
+                        let next_carry = carry + x;
+                        let doubled = x * 2.0_f64;
+                        Ok((next_carry.clone(), vec![next_carry, doubled]))
+                    },
+                    false,
+                )?;
+                assert_eq!(
+                    final_carry.aval().clone(),
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape::scalar(),
+                    }
+                );
+                assert_eq!(
+                    ys.iter().map(|t| t.aval().clone()).collect::<Vec<_>>(),
+                    vec![
+                        ShapedArray {
+                            dtype: DType::F64,
+                            shape: Shape::vector(4),
+                        },
+                        ShapedArray {
+                            dtype: DType::F64,
+                            shape: Shape::vector(4),
+                        },
+                    ]
+                );
+                let mut outs = vec![final_carry];
+                outs.extend(ys);
+                Ok(outs)
+            },
+            vec![
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::scalar(),
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::vector(4),
+                },
+            ],
+        )
+        .expect("trace_scan should succeed");
+        scan_closed
+            .jaxpr
+            .validate_well_formed()
+            .expect("scan jaxpr well-formed");
+        assert_eq!(scan_closed.jaxpr.equations[0].primitive, Primitive::Scan);
+        assert_eq!(scan_closed.jaxpr.equations[0].sub_jaxprs.len(), 1);
+        assert_eq!(scan_closed.jaxpr.outvars.len(), 3);
+        let scan_out = fj_interpreters::eval_jaxpr(
+            &scan_closed.jaxpr,
+            &[
+                Value::scalar_f64(0.0),
+                Value::vector_f64(&[1.0, 2.0, 3.0, 4.0]).expect("xs"),
+            ],
+        )
+        .expect("eval scan");
+        assert_eq!(scan_out[0], Value::scalar_f64(10.0));
+        assert_eq!(
+            scan_out[1],
+            Value::vector_f64(&[1.0, 3.0, 6.0, 10.0]).expect("prefix sums")
+        );
+        assert_eq!(
+            scan_out[2],
+            Value::vector_f64(&[2.0, 4.0, 6.0, 8.0]).expect("doubled")
+        );
+
+        // 5. Negative tests: cond branch output mismatch & while carry mismatch
+        let cond_mismatch = crate::make_jaxpr_fallible(
+            |inputs| {
+                let pred = &inputs[0];
+                let x = &inputs[1];
+                let out = pred.cond(x, |v| v.broadcast(&[2]), |v| Ok(v.clone()))?;
+                Ok(vec![out])
+            },
+            vec![
+                ShapedArray {
+                    dtype: DType::Bool,
+                    shape: Shape::scalar(),
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::scalar(),
+                },
+            ],
+        )
+        .expect_err("cond branch shape mismatch must fail");
+        assert!(cond_mismatch.to_string().contains("mismatch"));
+
+        let while_mismatch = crate::make_jaxpr_fallible(
+            |inputs| {
+                let x = &inputs[0];
+                let out = x.while_loop(
+                    |c| c.lt(&TracerRef::literal(fj_core::Literal::from_f64(5.0))?),
+                    |c| c.broadcast(&[2]),
+                    None,
+                )?;
+                Ok(vec![out])
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            }],
+        )
+        .expect_err("while carry shape mismatch must fail");
+        assert!(while_mismatch.to_string().contains("carry"));
     }
 
     mod proptest_tests {

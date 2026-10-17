@@ -19,8 +19,751 @@ pub use transforms::{
     hessian, jacobian, jit, linear_transpose, linearize, pmap, value_and_grad, vmap,
 };
 
-// Re-export make_jaxpr tracing API from fj-trace
-pub use fj_trace::{TracerRef, make_jaxpr, make_jaxpr_fallible};
+// Re-export make_jaxpr and control-flow tracing API from fj-trace
+pub use fj_trace::{
+    TracerRef, make_jaxpr, make_jaxpr_fallible, trace_cond, trace_scan, trace_switch,
+    trace_while_loop,
+};
+
+/// Neural-network activations, normalizations, and loss helpers (`jax.nn` parity).
+///
+/// All functions on [`TracerRef`] lower into canonical `fj_core::Primitive` equations so they
+/// compose cleanly with [`jit`], [`grad`], and [`vmap`]. Eager `f64` reference helpers are also
+/// re-exported under [`nn::eager`].
+pub mod nn {
+    use fj_core::{DType, Literal};
+    use fj_trace::{TraceError, TracerRef};
+
+    /// Eager `f64` reference implementations from `fj_lax::nn`.
+    pub mod eager {
+        pub use fj_lax::nn::*;
+    }
+
+    fn lit_f64(val: f64) -> Result<TracerRef, TraceError> {
+        TracerRef::literal(Literal::from_f64(val))
+    }
+
+    fn normalize_axis(rank: usize, axis: isize) -> Result<usize, TraceError> {
+        let rank_isize = rank as isize;
+        let normalized = if axis < 0 { rank_isize + axis } else { axis };
+        if normalized < 0 || normalized >= rank_isize {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive: fj_core::Primitive::ReduceSum,
+                detail: format!("nn axis {axis} out of bounds for rank {rank}"),
+            });
+        }
+        Ok(normalized as usize)
+    }
+
+    fn reduce_keepdims_sum(x: &TracerRef, axis: usize) -> Result<TracerRef, TraceError> {
+        let rank = x.aval().shape.rank();
+        let sum = x.reduce_sum(Some(&[axis as i64]))?;
+        if rank == 0 {
+            return Ok(sum);
+        }
+        let mut kept_dims: Vec<u32> = x.aval().shape.dims.clone();
+        kept_dims[axis] = 1;
+        let broadcast_dims: Vec<usize> = (0..rank).filter(|&d| d != axis).collect();
+        sum.broadcast_in_dim(&kept_dims, &broadcast_dims)
+    }
+
+    fn reduce_keepdims_max(x: &TracerRef, axis: usize) -> Result<TracerRef, TraceError> {
+        let rank = x.aval().shape.rank();
+        let max_val = x.reduce_max(Some(&[axis as i64]))?;
+        if rank == 0 {
+            return Ok(max_val);
+        }
+        let mut kept_dims: Vec<u32> = x.aval().shape.dims.clone();
+        kept_dims[axis] = 1;
+        let broadcast_dims: Vec<usize> = (0..rank).filter(|&d| d != axis).collect();
+        max_val.broadcast_in_dim(&kept_dims, &broadcast_dims)
+    }
+
+    /// Rectified Linear Unit: `max(x, 0)`.
+    pub fn relu(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        x.max(&lit_f64(0.0)?)
+    }
+
+    /// Leaky ReLU: `select(x >= 0, x, negative_slope * x)`.
+    pub fn leaky_relu(x: &TracerRef, negative_slope: f64) -> Result<TracerRef, TraceError> {
+        let zero = lit_f64(0.0)?;
+        let cond = x.ge(&zero)?;
+        let scaled = x.mul_op(&lit_f64(negative_slope)?)?;
+        cond.select(x, &scaled)
+    }
+
+    /// ReLU6: `clamp(0, x, 6)`.
+    pub fn relu6(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        let zero = lit_f64(0.0)?;
+        let six = lit_f64(6.0)?;
+        x.clamp(&zero, &six)
+    }
+
+    /// Exponential Linear Unit: `select(x > 0, x, alpha * expm1(x))`.
+    pub fn elu(x: &TracerRef, alpha: f64) -> Result<TracerRef, TraceError> {
+        let zero = lit_f64(0.0)?;
+        let cond = x.gt(&zero)?;
+        let neg_branch = x.expm1()?.mul_op(&lit_f64(alpha)?)?;
+        cond.select(x, &neg_branch)
+    }
+
+    /// Scaled Exponential Linear Unit (SELU).
+    pub fn selu(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        const ALPHA: f64 = 1.673_263_242_354_377_2;
+        const SCALE: f64 = 1.050_700_987_355_480_5;
+        elu(x, ALPHA)?.mul_op(&lit_f64(SCALE)?)
+    }
+
+    /// Continuously Differentiable ELU: `max(0, x) + min(0, alpha * expm1(x / alpha))`.
+    pub fn celu(x: &TracerRef, alpha: f64) -> Result<TracerRef, TraceError> {
+        let zero = lit_f64(0.0)?;
+        let alpha_lit = lit_f64(alpha)?;
+        let pos = x.max(&zero)?;
+        let neg = x
+            .div_op(&alpha_lit)?
+            .expm1()?
+            .mul_op(&alpha_lit)?
+            .min(&zero)?;
+        pos.add_op(&neg)
+    }
+
+    /// Gaussian Error Linear Unit (GELU).
+    ///
+    /// When `approximate` is `false`, computes `0.5 * x * (1 + erf(x / sqrt(2)))`.
+    /// When `approximate` is `true`, computes `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))`.
+    pub fn gelu(x: &TracerRef, approximate: bool) -> Result<TracerRef, TraceError> {
+        let half = lit_f64(0.5)?;
+        let one = lit_f64(1.0)?;
+        if approximate {
+            let sqrt_2_over_pi = lit_f64((2.0_f64 / std::f64::consts::PI).sqrt())?;
+            let coeff = lit_f64(0.044_715)?;
+            let x2 = x.square()?;
+            let x3 = x2.mul_op(x)?;
+            let inner = x.add_op(&x3.mul_op(&coeff)?)?.mul_op(&sqrt_2_over_pi)?;
+            x.mul_op(&half)?.mul_op(&one.add_op(&inner.tanh()?)?)
+        } else {
+            let inv_sqrt2 = lit_f64(std::f64::consts::FRAC_1_SQRT_2)?;
+            let erf_part = x.mul_op(&inv_sqrt2)?.erf()?;
+            x.mul_op(&half)?.mul_op(&one.add_op(&erf_part)?)
+        }
+    }
+
+    /// Logistic sigmoid: `1 / (1 + exp(-x))`.
+    pub fn sigmoid(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        x.logistic()
+    }
+
+    /// Sigmoid Linear Unit (SiLU / Swish): `x * sigmoid(x)`.
+    pub fn silu(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        x.mul_op(&sigmoid(x)?)
+    }
+
+    /// Alias for [`silu`].
+    pub fn swish(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        silu(x)
+    }
+
+    /// Softplus: `log(1 + exp(x))`.
+    pub fn softplus(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        x.exp()?.log1p()
+    }
+
+    /// Mish: `x * tanh(softplus(x))`.
+    pub fn mish(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        x.mul_op(&softplus(x)?.tanh()?)
+    }
+
+    /// Softsign: `x / (1 + |x|)`.
+    pub fn soft_sign(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        let denom = x.abs()?.add_op(&lit_f64(1.0)?)?;
+        x.div_op(&denom)
+    }
+
+    /// Hard tanh: `clamp(-1, x, 1)`.
+    pub fn hard_tanh(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        x.clamp(&lit_f64(-1.0)?, &lit_f64(1.0)?)
+    }
+
+    /// Hard sigmoid: `relu6(x + 3) / 6`.
+    pub fn hard_sigmoid(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        let shifted = x.add_op(&lit_f64(3.0)?)?;
+        relu6(&shifted)?.div_op(&lit_f64(6.0)?)
+    }
+
+    /// Hard swish: `x * hard_sigmoid(x)`.
+    pub fn hard_swish(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        x.mul_op(&hard_sigmoid(x)?)
+    }
+
+    /// Alias for [`hard_swish`].
+    pub fn hard_silu(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        hard_swish(x)
+    }
+
+    /// Log-sigmoid: `-softplus(-x)`.
+    pub fn log_sigmoid(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        softplus(&x.neg_op()?)?.neg_op()
+    }
+
+    /// SwiGLU gated activation: `silu(gate) * up`.
+    pub fn swiglu(gate: &TracerRef, up: &TracerRef) -> Result<TracerRef, TraceError> {
+        silu(gate)?.mul_op(up)
+    }
+
+    /// GeGLU gated activation: `gelu(gate, approximate) * up`.
+    pub fn geglu(
+        gate: &TracerRef,
+        up: &TracerRef,
+        approximate: bool,
+    ) -> Result<TracerRef, TraceError> {
+        gelu(gate, approximate)?.mul_op(up)
+    }
+
+    /// Numerically stable log-sum-exp along `axis` (defaulting to the last axis via `-1`).
+    pub fn logsumexp(x: &TracerRef, axis: isize) -> Result<TracerRef, TraceError> {
+        let rank = x.aval().shape.rank();
+        if rank == 0 {
+            return Ok(x.clone());
+        }
+        let ax = normalize_axis(rank, axis)?;
+        let max_unreduced = x.reduce_max(Some(&[ax as i64]))?;
+        let max_keep = reduce_keepdims_max(x, ax)?;
+        let shifted_exp = x.sub_op(&max_keep)?.exp()?;
+        let sum_exp = shifted_exp.reduce_sum(Some(&[ax as i64]))?;
+        max_unreduced.add_op(&sum_exp.log()?)
+    }
+
+    /// Numerically stable softmax along `axis` (use `-1` for the last axis).
+    pub fn softmax(x: &TracerRef, axis: isize) -> Result<TracerRef, TraceError> {
+        let rank = x.aval().shape.rank();
+        if rank == 0 {
+            return lit_f64(1.0);
+        }
+        let ax = normalize_axis(rank, axis)?;
+        let max_keep = reduce_keepdims_max(x, ax)?;
+        let shifted_exp = x.sub_op(&max_keep)?.exp()?;
+        let sum_keep = reduce_keepdims_sum(&shifted_exp, ax)?;
+        shifted_exp.div_op(&sum_keep)
+    }
+
+    /// Numerically stable log-softmax along `axis` (use `-1` for the last axis).
+    pub fn log_softmax(x: &TracerRef, axis: isize) -> Result<TracerRef, TraceError> {
+        let rank = x.aval().shape.rank();
+        if rank == 0 {
+            return lit_f64(0.0);
+        }
+        let ax = normalize_axis(rank, axis)?;
+        let max_keep = reduce_keepdims_max(x, ax)?;
+        let shifted = x.sub_op(&max_keep)?;
+        let sum_exp_keep = reduce_keepdims_sum(&shifted.exp()?, ax)?;
+        shifted.sub_op(&sum_exp_keep.log()?)
+    }
+
+    /// Standardizes `x` along `axis` to zero mean and unit variance: `(x - mean) / sqrt(var + eps)`.
+    pub fn standardize(x: &TracerRef, axis: isize, eps: f64) -> Result<TracerRef, TraceError> {
+        let rank = x.aval().shape.rank();
+        if rank == 0 {
+            return lit_f64(0.0);
+        }
+        let ax = normalize_axis(rank, axis)?;
+        let n = x.aval().shape.dims[ax] as f64;
+        let inv_n = lit_f64(1.0 / n)?;
+        let mean_keep = reduce_keepdims_sum(x, ax)?.mul_op(&inv_n)?;
+        let centered = x.sub_op(&mean_keep)?;
+        let var_keep = reduce_keepdims_sum(&centered.square()?, ax)?.mul_op(&inv_n)?;
+        let std_keep = var_keep.add_op(&lit_f64(eps)?)?.sqrt()?;
+        centered.div_op(&std_keep)
+    }
+
+    /// Layer normalization along `axis` with optional affine `weight` and `bias`.
+    pub fn layer_norm(
+        x: &TracerRef,
+        axis: isize,
+        eps: f64,
+        weight: Option<&TracerRef>,
+        bias: Option<&TracerRef>,
+    ) -> Result<TracerRef, TraceError> {
+        let mut normed = standardize(x, axis, eps)?;
+        if let Some(w) = weight {
+            normed = normed.mul_op(w)?;
+        }
+        if let Some(b) = bias {
+            normed = normed.add_op(b)?;
+        }
+        Ok(normed)
+    }
+
+    /// Root-Mean-Square Layer Normalization (RMSNorm) along `axis`.
+    pub fn rms_norm(
+        x: &TracerRef,
+        axis: isize,
+        eps: f64,
+        weight: Option<&TracerRef>,
+    ) -> Result<TracerRef, TraceError> {
+        let rank = x.aval().shape.rank();
+        let ax = normalize_axis(rank, axis)?;
+        let n = x.aval().shape.dims[ax] as f64;
+        let inv_n = lit_f64(1.0 / n)?;
+        let ms_keep = reduce_keepdims_sum(&x.square()?, ax)?.mul_op(&inv_n)?;
+        let inv_rms = ms_keep.add_op(&lit_f64(eps)?)?.rsqrt()?;
+        let mut out = x.mul_op(&inv_rms)?;
+        if let Some(w) = weight {
+            out = out.mul_op(w)?;
+        }
+        Ok(out)
+    }
+
+    /// One-hot encoding wrapper on [`TracerRef`].
+    pub fn one_hot(
+        indices: &TracerRef,
+        num_classes: u32,
+        dtype: DType,
+    ) -> Result<TracerRef, TraceError> {
+        indices.one_hot(num_classes, dtype, None)
+    }
+
+    /// Half L2 loss: `0.5 * sum(x^2)`.
+    pub fn l2_loss(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        let sq = x.square()?;
+        let sum = sq.reduce_sum(None)?;
+        sum.mul_op(&lit_f64(0.5)?)
+    }
+}
+
+/// Deterministic counter-based PRNG and distributions (`jax.random` parity).
+///
+/// Wraps `fj_lax::threefry` with ergonomic [`Value`]-producing tensor samplers shaped to [`Shape`].
+pub mod random {
+    use crate::ApiError;
+    use fj_core::{DType, Literal, Shape, TensorValue, Value};
+
+    pub use fj_lax::threefry::{
+        CategoricalError, ChoiceError, PRNGKey, random_fold_in as fold_in, random_key as key,
+        random_split as split, random_split_n as split_n, threefry2x32,
+    };
+
+    fn shape_count(shape: &Shape) -> Result<usize, ApiError> {
+        shape
+            .element_count()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| ApiError::EvalError {
+                detail: format!("random shape {:?} element count overflow", shape.dims),
+            })
+    }
+
+    fn f64_vec_to_value(elements: Vec<f64>, shape: Shape) -> Result<Value, ApiError> {
+        if shape.rank() == 0 && elements.len() == 1 {
+            return Ok(Value::scalar_f64(elements[0]));
+        }
+        let lits: Vec<Literal> = elements.into_iter().map(Literal::from_f64).collect();
+        TensorValue::new(DType::F64, shape, lits)
+            .map(Value::Tensor)
+            .map_err(|e| ApiError::EvalError {
+                detail: e.to_string(),
+            })
+    }
+
+    fn i64_vec_to_value(elements: Vec<i64>, shape: Shape) -> Result<Value, ApiError> {
+        if shape.rank() == 0 && elements.len() == 1 {
+            return Ok(Value::scalar_i64(elements[0]));
+        }
+        let lits: Vec<Literal> = elements.into_iter().map(Literal::I64).collect();
+        TensorValue::new(DType::I64, shape, lits)
+            .map(Value::Tensor)
+            .map_err(|e| ApiError::EvalError {
+                detail: e.to_string(),
+            })
+    }
+
+    fn bool_vec_to_value(elements: Vec<bool>, shape: Shape) -> Result<Value, ApiError> {
+        if shape.rank() == 0 && elements.len() == 1 {
+            return Ok(Value::scalar_bool(elements[0]));
+        }
+        let lits: Vec<Literal> = elements.into_iter().map(Literal::Bool).collect();
+        TensorValue::new(DType::Bool, shape, lits)
+            .map(Value::Tensor)
+            .map_err(|e| ApiError::EvalError {
+                detail: e.to_string(),
+            })
+    }
+
+    /// Sample uniform `f64` values in `[minval, maxval)` with the given `shape`.
+    pub fn uniform(
+        key: PRNGKey,
+        shape: Shape,
+        minval: f64,
+        maxval: f64,
+    ) -> Result<Value, ApiError> {
+        let count = shape_count(&shape)?;
+        let vals = fj_lax::threefry::random_uniform(key, count, minval, maxval);
+        f64_vec_to_value(vals, shape)
+    }
+
+    /// Sample standard normal `N(0, 1)` `f64` values with the given `shape`.
+    pub fn normal(key: PRNGKey, shape: Shape) -> Result<Value, ApiError> {
+        let count = shape_count(&shape)?;
+        let vals = fj_lax::threefry::random_normal(key, count);
+        f64_vec_to_value(vals, shape)
+    }
+
+    /// Sample Bernoulli boolean values with success probability `p` and the given `shape`.
+    pub fn bernoulli(key: PRNGKey, p: f64, shape: Shape) -> Result<Value, ApiError> {
+        let count = shape_count(&shape)?;
+        let vals = fj_lax::threefry::random_bernoulli(key, count, p);
+        bool_vec_to_value(vals, shape)
+    }
+
+    /// Sample uniform integers in `[minval, maxval)` with the given `shape`.
+    pub fn randint(
+        key: PRNGKey,
+        shape: Shape,
+        minval: i64,
+        maxval: i64,
+    ) -> Result<Value, ApiError> {
+        if minval >= maxval {
+            return Err(ApiError::EvalError {
+                detail: format!("randint requires minval < maxval, got [{minval}, {maxval})"),
+            });
+        }
+        let count = shape_count(&shape)?;
+        let vals = fj_lax::threefry::random_randint(key, count, minval, maxval);
+        i64_vec_to_value(vals, shape)
+    }
+
+    /// Sample a single categorical index from unnormalized `logits`.
+    pub fn categorical(key: PRNGKey, logits: &[f64]) -> Result<usize, ApiError> {
+        let samples = fj_lax::threefry::random_categorical(key, logits, 1).map_err(|e| {
+            ApiError::EvalError {
+                detail: e.to_string(),
+            }
+        })?;
+        Ok(samples[0])
+    }
+
+    /// Generate a uniform random permutation of `0..n` as a 1-D `I64` tensor.
+    pub fn permutation(key: PRNGKey, n: usize) -> Result<Value, ApiError> {
+        let perm: Vec<i64> = fj_lax::threefry::random_permutation(key, n)
+            .into_iter()
+            .map(|idx| idx as i64)
+            .collect();
+        i64_vec_to_value(perm, Shape::vector(n as u32))
+    }
+
+    /// Sample standard Gumbel(0, 1) values with the given `shape`.
+    pub fn gumbel(key: PRNGKey, shape: Shape) -> Result<Value, ApiError> {
+        let count = shape_count(&shape)?;
+        let vals = fj_lax::threefry::random_gumbel(key, count, 0.0, 1.0);
+        f64_vec_to_value(vals, shape)
+    }
+
+    /// Sample standard Laplace(0, 1) values with the given `shape`.
+    pub fn laplace(key: PRNGKey, shape: Shape) -> Result<Value, ApiError> {
+        let count = shape_count(&shape)?;
+        let vals = fj_lax::threefry::random_laplace(key, count, 0.0, 1.0);
+        f64_vec_to_value(vals, shape)
+    }
+
+    /// Sample standard Exponential(1) values with the given `shape`.
+    pub fn exponential(key: PRNGKey, shape: Shape) -> Result<Value, ApiError> {
+        let count = shape_count(&shape)?;
+        let vals = fj_lax::threefry::random_exponential(key, count, 1.0);
+        f64_vec_to_value(vals, shape)
+    }
+
+    /// Sample standard Logistic(0, 1) values with the given `shape`.
+    pub fn logistic(key: PRNGKey, shape: Shape) -> Result<Value, ApiError> {
+        let count = shape_count(&shape)?;
+        let vals = fj_lax::threefry::random_logistic(key, count, 0.0, 1.0);
+        f64_vec_to_value(vals, shape)
+    }
+
+    /// Sample Gamma(`alpha`, 1) values with the given `shape` (`alpha > 0`).
+    pub fn gamma(key: PRNGKey, alpha: f64, shape: Shape) -> Result<Value, ApiError> {
+        if !(alpha.is_finite() && alpha > 0.0) {
+            return Err(ApiError::EvalError {
+                detail: format!("gamma requires finite alpha > 0, got {alpha}"),
+            });
+        }
+        let count = shape_count(&shape)?;
+        let vals = fj_lax::threefry::random_gamma(key, count, alpha);
+        f64_vec_to_value(vals, shape)
+    }
+}
+
+/// Generic PyTree flattening, unflattening, mapping, and tracing (`jax.tree_util` parity).
+///
+/// Unlike `fj_lax::tree_util::TreeNode` (which is specialized to `f64`), [`tree_util::TreeNode<T>`]
+/// is generic over any leaf type `T` (defaulting to [`Value`], and supporting [`TracerRef`],
+/// [`ShapedArray`], etc.) and returns `Result` on all structural mismatches instead of panicking.
+pub mod tree_util {
+    use fj_core::Value;
+    use fj_trace::{ClosedJaxpr, ShapedArray, TraceError, TracerRef, make_jaxpr_fallible};
+    use std::collections::BTreeMap;
+
+    /// A generic nested container tree (`PyTree`).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum TreeNode<T = Value> {
+        Leaf(T),
+        Tuple(Vec<TreeNode<T>>),
+        Dict(BTreeMap<String, TreeNode<T>>),
+        None,
+    }
+
+    /// Structural skeleton of a [`TreeNode`] with leaves stripped.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum TreeDef {
+        Leaf,
+        Tuple(Vec<TreeDef>),
+        Dict(Vec<(String, TreeDef)>),
+        None,
+    }
+
+    /// Errors returned by fallible PyTree operations.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum TreeError {
+        LeafCountMismatch { expected: usize, actual: usize },
+        StructureMismatch { expected: TreeDef, actual: TreeDef },
+    }
+
+    impl std::fmt::Display for TreeError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::LeafCountMismatch { expected, actual } => write!(
+                    f,
+                    "tree_unflatten leaf count mismatch: expected {expected} leaves, got {actual}"
+                ),
+                Self::StructureMismatch { .. } => {
+                    write!(f, "tree structure mismatch between arguments")
+                }
+            }
+        }
+    }
+
+    impl std::error::Error for TreeError {}
+
+    /// Flatten a [`TreeNode<T>`] into its ordered leaves and structural [`TreeDef`].
+    pub fn tree_flatten<T: Clone>(node: &TreeNode<T>) -> (Vec<T>, TreeDef) {
+        match node {
+            TreeNode::Leaf(v) => (vec![v.clone()], TreeDef::Leaf),
+            TreeNode::None => (vec![], TreeDef::None),
+            TreeNode::Tuple(children) => {
+                let mut leaves = Vec::new();
+                let mut defs = Vec::with_capacity(children.len());
+                for child in children {
+                    let (child_leaves, child_def) = tree_flatten(child);
+                    leaves.extend(child_leaves);
+                    defs.push(child_def);
+                }
+                (leaves, TreeDef::Tuple(defs))
+            }
+            TreeNode::Dict(map) => {
+                let mut leaves = Vec::new();
+                let mut defs = Vec::with_capacity(map.len());
+                for (k, child) in map {
+                    let (child_leaves, child_def) = tree_flatten(child);
+                    leaves.extend(child_leaves);
+                    defs.push((k.clone(), child_def));
+                }
+                (leaves, TreeDef::Dict(defs))
+            }
+        }
+    }
+
+    /// Count the number of leaves in a [`TreeDef`].
+    #[must_use]
+    pub fn tree_def_leaf_count(treedef: &TreeDef) -> usize {
+        match treedef {
+            TreeDef::Leaf => 1,
+            TreeDef::None => 0,
+            TreeDef::Tuple(children) => children.iter().map(tree_def_leaf_count).sum(),
+            TreeDef::Dict(entries) => entries.iter().map(|(_, d)| tree_def_leaf_count(d)).sum(),
+        }
+    }
+
+    /// Reconstruct a [`TreeNode<T>`] from a [`TreeDef`] and a slice of leaves.
+    pub fn tree_unflatten<T: Clone>(
+        treedef: &TreeDef,
+        leaves: &[T],
+    ) -> Result<TreeNode<T>, TreeError> {
+        let expected = tree_def_leaf_count(treedef);
+        if leaves.len() != expected {
+            return Err(TreeError::LeafCountMismatch {
+                expected,
+                actual: leaves.len(),
+            });
+        }
+        let mut cursor = 0;
+        Ok(unflatten_helper(treedef, leaves, &mut cursor))
+    }
+
+    fn unflatten_helper<T: Clone>(
+        treedef: &TreeDef,
+        leaves: &[T],
+        cursor: &mut usize,
+    ) -> TreeNode<T> {
+        match treedef {
+            TreeDef::Leaf => {
+                let val = leaves[*cursor].clone();
+                *cursor += 1;
+                TreeNode::Leaf(val)
+            }
+            TreeDef::None => TreeNode::None,
+            TreeDef::Tuple(children) => {
+                let nodes = children
+                    .iter()
+                    .map(|c| unflatten_helper(c, leaves, cursor))
+                    .collect();
+                TreeNode::Tuple(nodes)
+            }
+            TreeDef::Dict(entries) => {
+                let mut map = BTreeMap::new();
+                for (k, def) in entries {
+                    map.insert(k.clone(), unflatten_helper(def, leaves, cursor));
+                }
+                TreeNode::Dict(map)
+            }
+        }
+    }
+
+    /// Extract all leaves from a [`TreeNode<T>`] in deterministic traversal order.
+    pub fn tree_leaves<T: Clone>(node: &TreeNode<T>) -> Vec<T> {
+        tree_flatten(node).0
+    }
+
+    /// Extract the structural [`TreeDef`] from a [`TreeNode<T>`].
+    pub fn tree_structure<T>(node: &TreeNode<T>) -> TreeDef {
+        match node {
+            TreeNode::Leaf(_) => TreeDef::Leaf,
+            TreeNode::None => TreeDef::None,
+            TreeNode::Tuple(children) => {
+                TreeDef::Tuple(children.iter().map(tree_structure).collect())
+            }
+            TreeNode::Dict(map) => TreeDef::Dict(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), tree_structure(v)))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Count the number of leaves in a [`TreeNode<T>`].
+    pub fn tree_leaf_count<T>(node: &TreeNode<T>) -> usize {
+        match node {
+            TreeNode::Leaf(_) => 1,
+            TreeNode::None => 0,
+            TreeNode::Tuple(children) => children.iter().map(tree_leaf_count).sum(),
+            TreeNode::Dict(map) => map.values().map(tree_leaf_count).sum(),
+        }
+    }
+
+    /// Apply a function `f` to every leaf of a [`TreeNode<T>`], preserving structure.
+    pub fn tree_map<T, U, F>(node: &TreeNode<T>, mut f: F) -> TreeNode<U>
+    where
+        F: FnMut(&T) -> U,
+    {
+        tree_map_ref(node, &mut f)
+    }
+
+    fn tree_map_ref<T, U, F>(node: &TreeNode<T>, f: &mut F) -> TreeNode<U>
+    where
+        F: FnMut(&T) -> U,
+    {
+        match node {
+            TreeNode::Leaf(v) => TreeNode::Leaf(f(v)),
+            TreeNode::None => TreeNode::None,
+            TreeNode::Tuple(children) => {
+                TreeNode::Tuple(children.iter().map(|c| tree_map_ref(c, f)).collect())
+            }
+            TreeNode::Dict(map) => TreeNode::Dict(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), tree_map_ref(v, f)))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Apply a fallible function `f` to every leaf of a [`TreeNode<T>`], preserving structure.
+    pub fn tree_map_fallible<T, U, E, F>(node: &TreeNode<T>, mut f: F) -> Result<TreeNode<U>, E>
+    where
+        F: FnMut(&T) -> Result<U, E>,
+    {
+        tree_map_fallible_ref(node, &mut f)
+    }
+
+    fn tree_map_fallible_ref<T, U, E, F>(node: &TreeNode<T>, f: &mut F) -> Result<TreeNode<U>, E>
+    where
+        F: FnMut(&T) -> Result<U, E>,
+    {
+        match node {
+            TreeNode::Leaf(v) => Ok(TreeNode::Leaf(f(v)?)),
+            TreeNode::None => Ok(TreeNode::None),
+            TreeNode::Tuple(children) => {
+                let mut mapped = Vec::with_capacity(children.len());
+                for c in children {
+                    mapped.push(tree_map_fallible_ref(c, f)?);
+                }
+                Ok(TreeNode::Tuple(mapped))
+            }
+            TreeNode::Dict(map) => {
+                let mut mapped = BTreeMap::new();
+                for (k, v) in map {
+                    mapped.insert(k.clone(), tree_map_fallible_ref(v, f)?);
+                }
+                Ok(TreeNode::Dict(mapped))
+            }
+        }
+    }
+
+    /// Apply a binary function `f` to corresponding leaves of two identically structured trees.
+    pub fn tree_map2<A: Clone, B: Clone, C: Clone, F>(
+        a: &TreeNode<A>,
+        b: &TreeNode<B>,
+        mut f: F,
+    ) -> Result<TreeNode<C>, TreeError>
+    where
+        F: FnMut(&A, &B) -> C,
+    {
+        let (leaves_a, def_a) = tree_flatten(a);
+        let (leaves_b, def_b) = tree_flatten(b);
+        if def_a != def_b {
+            return Err(TreeError::StructureMismatch {
+                expected: def_a,
+                actual: def_b,
+            });
+        }
+        let leaves_c: Vec<C> = leaves_a
+            .iter()
+            .zip(leaves_b.iter())
+            .map(|(x, y)| f(x, y))
+            .collect();
+        tree_unflatten(&def_a, &leaves_c)
+    }
+
+    /// Trace a function over a [`TreeNode<TracerRef>`] and return `(ClosedJaxpr, out_treedef)`.
+    pub fn make_jaxpr_tree<F>(
+        f: F,
+        in_tree: &TreeNode<ShapedArray>,
+    ) -> Result<(ClosedJaxpr, TreeDef), TraceError>
+    where
+        F: FnOnce(TreeNode<TracerRef>) -> Result<TreeNode<TracerRef>, TraceError>,
+    {
+        let (in_avals, in_def) = tree_flatten(in_tree);
+        let mut out_def_slot: Option<TreeDef> = None;
+        let closed = make_jaxpr_fallible(
+            |flat_inputs| {
+                let tracer_tree = tree_unflatten(&in_def, flat_inputs)
+                    .map_err(|_| TraceError::CompositionViolation)?;
+                let out_tree = f(tracer_tree)?;
+                let (out_leaves, out_def) = tree_flatten(&out_tree);
+                out_def_slot = Some(out_def);
+                Ok(out_leaves)
+            },
+            in_avals,
+        )?;
+        let out_def = out_def_slot.ok_or(TraceError::CompositionViolation)?;
+        Ok((closed, out_def))
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1556,6 +2299,261 @@ mod tests {
             let vals = t.to_f64_vec().expect("f64 tensor");
             assert!(!vals.is_empty(), "hessian tensor should have values");
         }
+    }
+
+    #[test]
+    fn nn_activations_and_reductions_trace_jit_grad_vmap() {
+        // Test scalar activations with jit + grad
+        let closed = make_jaxpr_fallible(
+            |inputs| {
+                let x = &inputs[0];
+                let a = nn::relu(x)?;
+                let b = nn::leaky_relu(x, 0.1)?;
+                let c = nn::relu6(x)?;
+                let d = nn::elu(x, 1.0)?;
+                let e = nn::selu(x)?;
+                let f = nn::celu(x, 1.0)?;
+                let g = nn::gelu(x, false)?;
+                let h = nn::gelu(x, true)?;
+                let i = nn::silu(x)?;
+                let j = nn::mish(x)?;
+                let k = nn::softplus(x)?;
+                let l = nn::soft_sign(x)?;
+                let m = nn::sigmoid(x)?;
+                let n = nn::hard_sigmoid(x)?;
+                let o = nn::hard_swish(x)?;
+                let p = nn::hard_tanh(x)?;
+                let q = nn::log_sigmoid(x)?;
+                let r = nn::swiglu(x, &a)?;
+                let s = nn::geglu(x, &b, false)?;
+                let total = a
+                    .add_op(&b)?
+                    .add_op(&c)?
+                    .add_op(&d)?
+                    .add_op(&e)?
+                    .add_op(&f)?
+                    .add_op(&g)?
+                    .add_op(&h)?
+                    .add_op(&i)?
+                    .add_op(&j)?
+                    .add_op(&k)?
+                    .add_op(&l)?
+                    .add_op(&m)?
+                    .add_op(&n)?
+                    .add_op(&o)?
+                    .add_op(&p)?
+                    .add_op(&q)?
+                    .add_op(&r)?
+                    .add_op(&s)?;
+                Ok(vec![total])
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            }],
+        )
+        .expect("nn scalar activations should trace");
+
+        let out = jit(closed.jaxpr.clone())
+            .call(vec![Value::scalar_f64(0.5)])
+            .expect("jit on nn activations should succeed");
+        assert!(out[0].as_f64_scalar().unwrap().is_finite());
+
+        let g_out = grad(closed.jaxpr)
+            .call(vec![Value::scalar_f64(0.5)])
+            .expect("grad on nn activations should succeed");
+        assert!(g_out[0].as_f64_scalar().unwrap().is_finite());
+
+        // Test vector softmax, log_softmax, logsumexp, layer_norm, rms_norm, l2_loss
+        let vec_closed = make_jaxpr_fallible(
+            |inputs| {
+                let x = &inputs[0];
+                let sm = nn::softmax(x, -1)?;
+                let lsm = nn::log_softmax(x, -1)?;
+                let lse = nn::logsumexp(x, -1)?;
+                let ln = nn::layer_norm(x, -1, 1e-5, None, None)?;
+                let rn = nn::rms_norm(x, -1, 1e-5, None)?;
+                let loss = nn::l2_loss(&sm.add_op(&lsm)?.add_op(&ln)?.add_op(&rn)?)?;
+                Ok(vec![loss.add_op(&lse)?])
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::vector(4),
+            }],
+        )
+        .expect("nn vector reductions should trace");
+
+        let vec_in = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+        let vec_out = jit(vec_closed.jaxpr)
+            .call(vec![vec_in])
+            .expect("jit on nn vector ops should succeed");
+        assert!(vec_out[0].as_f64_scalar().unwrap().is_finite());
+    }
+
+    #[test]
+    fn random_distributions_and_prng_keys_work() {
+        let k0 = random::key(42);
+        let (k1, k2) = random::split(k0);
+        assert_ne!(k1, k2);
+        let keys = random::split_n(k0, 4);
+        assert_eq!(keys.len(), 4);
+        let k_folded = random::fold_in(k0, 7);
+        assert_ne!(k_folded, k0);
+
+        let shape = Shape { dims: vec![2, 3] };
+        let u = random::uniform(k1, shape.clone(), -1.0, 2.0).expect("uniform");
+        assert_eq!(u.as_tensor().unwrap().shape, shape);
+
+        let n = random::normal(k2, shape.clone()).expect("normal");
+        assert_eq!(n.as_tensor().unwrap().shape, shape);
+
+        let b = random::bernoulli(keys[0], 0.5, shape.clone()).expect("bernoulli");
+        assert_eq!(b.as_tensor().unwrap().dtype, DType::Bool);
+
+        let ri = random::randint(keys[1], shape.clone(), 0, 10).expect("randint");
+        assert_eq!(ri.as_tensor().unwrap().dtype, DType::I64);
+        assert!(random::randint(keys[1], shape.clone(), 10, 5).is_err());
+
+        let cat = random::categorical(keys[2], &[0.1, 2.0, 0.5]).expect("categorical");
+        assert!(cat < 3);
+
+        let perm = random::permutation(keys[3], 5).expect("permutation");
+        assert_eq!(perm.as_tensor().unwrap().shape, Shape::vector(5));
+
+        for dist_res in [
+            random::gumbel(k1, shape.clone()),
+            random::laplace(k1, shape.clone()),
+            random::exponential(k1, shape.clone()),
+            random::logistic(k1, shape.clone()),
+            random::gamma(k1, 2.5, shape.clone()),
+        ] {
+            let val = dist_res.expect("distribution should succeed");
+            assert_eq!(val.as_tensor().unwrap().shape, shape);
+        }
+        assert!(random::gamma(k1, -1.0, shape).is_err());
+    }
+
+    #[test]
+    fn tree_util_generic_flatten_unflatten_map_and_trace() {
+        use std::collections::BTreeMap;
+        use tree_util::{
+            TreeError, TreeNode, make_jaxpr_tree, tree_flatten, tree_leaf_count, tree_leaves,
+            tree_map, tree_map2, tree_structure, tree_unflatten,
+        };
+
+        let mut dict = BTreeMap::new();
+        dict.insert("a".to_owned(), TreeNode::Leaf(Value::scalar_f64(2.0)));
+        dict.insert(
+            "b".to_owned(),
+            TreeNode::Tuple(vec![
+                TreeNode::Leaf(Value::scalar_f64(3.0)),
+                TreeNode::None,
+                TreeNode::Leaf(Value::scalar_f64(5.0)),
+            ]),
+        );
+        let tree = TreeNode::Dict(dict);
+
+        assert_eq!(tree_leaf_count(&tree), 3);
+        let (leaves, treedef) = tree_flatten(&tree);
+        assert_eq!(leaves.len(), 3);
+        assert_eq!(tree_structure(&tree), treedef);
+        assert_eq!(tree_leaves(&tree), leaves);
+
+        let roundtrip = tree_unflatten(&treedef, &leaves).expect("unflatten should succeed");
+        assert_eq!(roundtrip, tree);
+
+        // Leaf count mismatch returns Err instead of panicking
+        let mismatch = tree_unflatten(&treedef, &leaves[..2]);
+        assert_eq!(
+            mismatch,
+            Err(TreeError::LeafCountMismatch {
+                expected: 3,
+                actual: 2
+            })
+        );
+
+        let doubled = tree_map(&tree, |v| {
+            Value::scalar_f64(v.as_f64_scalar().unwrap() * 2.0)
+        });
+        let sum_tree = tree_map2(&tree, &doubled, |x, y| {
+            Value::scalar_f64(x.as_f64_scalar().unwrap() + y.as_f64_scalar().unwrap())
+        })
+        .expect("tree_map2 should succeed");
+        let sum_leaves: Vec<f64> = tree_leaves(&sum_tree)
+            .into_iter()
+            .map(|v| v.as_f64_scalar().unwrap())
+            .collect();
+        assert_eq!(sum_leaves, vec![6.0, 9.0, 15.0]);
+
+        // Trace over a PyTree of ShapedArrays
+        let aval_tree = tree_map(&tree, |_| ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        });
+        let (closed, out_def) = make_jaxpr_tree(
+            |tracer_tree| {
+                tree_util::tree_map_fallible(&tracer_tree, |leaf| {
+                    leaf.mul_op(&TracerRef::literal(fj_core::Literal::from_f64(10.0))?)
+                })
+            },
+            &aval_tree,
+        )
+        .expect("make_jaxpr_tree should succeed");
+        assert_eq!(out_def, treedef);
+        let flat_out = jit(closed.jaxpr).call(leaves).expect("jit on tree jaxpr");
+        let out_tree = tree_unflatten(&out_def, &flat_out).expect("unflatten outputs");
+        let out_f64: Vec<f64> = tree_leaves(&out_tree)
+            .into_iter()
+            .map(|v| v.as_f64_scalar().unwrap())
+            .collect();
+        assert_eq!(out_f64, vec![20.0, 30.0, 50.0]);
+    }
+
+    #[test]
+    fn control_flow_trace_cond_switch_while_scan_via_fj_api() {
+        // Trace cond + while_loop through fj_api::make_jaxpr_fallible and execute via jit
+        let closed = make_jaxpr_fallible(
+            |inputs| {
+                let pred = &inputs[0];
+                let x = &inputs[1];
+                let branched = trace_cond(
+                    pred,
+                    &[x],
+                    |ops| Ok(vec![&ops[0] + 10.0_f64]),
+                    |ops| Ok(vec![&ops[0] * 2.0_f64]),
+                )?;
+                let b_refs: Vec<&TracerRef> = branched.iter().collect();
+                trace_while_loop(
+                    &b_refs,
+                    |state| state[0].lt(&TracerRef::literal(fj_core::Literal::from_f64(20.0))?),
+                    |state| Ok(vec![&state[0] + 3.0_f64]),
+                    Some(100),
+                )
+            },
+            vec![
+                ShapedArray {
+                    dtype: DType::Bool,
+                    shape: Shape::scalar(),
+                },
+                ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::scalar(),
+                },
+            ],
+        )
+        .expect("cond + while_loop trace should succeed");
+
+        let out_true = jit(closed.jaxpr.clone())
+            .call(vec![Value::scalar_bool(true), Value::scalar_f64(5.0)])
+            .expect("jit(cond+while) true");
+        // 5 + 10 = 15 -> +3 = 18 -> +3 = 21
+        assert_eq!(out_true, vec![Value::scalar_f64(21.0)]);
+
+        let out_false = jit(closed.jaxpr)
+            .call(vec![Value::scalar_bool(false), Value::scalar_f64(5.0)])
+            .expect("jit(cond+while) false");
+        // 5 * 2 = 10 -> 13 -> 16 -> 19 -> 22
+        assert_eq!(out_false, vec![Value::scalar_f64(22.0)]);
     }
 
     mod proptest_tests {

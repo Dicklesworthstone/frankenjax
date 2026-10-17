@@ -13,6 +13,7 @@ fj-ad = { path = "../fj-ad" }
 fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
 fj-dispatch = { path = "../fj-dispatch" }
 fj-interpreters = { path = "../fj-interpreters" }
+fj-lax = { package = "frankenjax-lax", version = "=0.1.0", path = "../fj-lax" }
 fj-trace = { path = "../fj-trace" }
 
 [dev-dependencies]
