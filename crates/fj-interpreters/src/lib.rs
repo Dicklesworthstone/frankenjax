@@ -6490,6 +6490,11 @@ enum CheapOp {
     RoundAway,
     RoundNearest,
     Sign,
+    Sqrt,
+    Rsqrt,
+    Exp,
+    Log,
+    Tanh,
 }
 
 impl CheapOp {
@@ -6506,6 +6511,11 @@ impl CheapOp {
                 | CheapOp::RoundAway
                 | CheapOp::RoundNearest
                 | CheapOp::Sign
+                | CheapOp::Sqrt
+                | CheapOp::Rsqrt
+                | CheapOp::Exp
+                | CheapOp::Log
+                | CheapOp::Tanh
         )
     }
 }
@@ -6541,6 +6551,11 @@ fn f64_fused_unary(op: CheapOp, value: f64) -> f64 {
         CheapOp::RoundAway => value.round(),
         CheapOp::RoundNearest => value.round_ties_even(),
         CheapOp::Sign => scalar_f64_sign(value),
+        CheapOp::Sqrt => value.sqrt(),
+        CheapOp::Rsqrt => 1.0 / value.sqrt(),
+        CheapOp::Exp => value.exp(),
+        CheapOp::Log => value.ln(),
+        CheapOp::Tanh => value.tanh(),
         CheapOp::Add | CheapOp::Sub | CheapOp::Mul | CheapOp::Div | CheapOp::Max | CheapOp::Min => {
             value
         }
@@ -6588,6 +6603,11 @@ fn cheap_float_op(
         Primitive::Ceil => Some(CheapOp::Ceil),
         Primitive::Trunc => Some(CheapOp::Trunc),
         Primitive::Sign => Some(CheapOp::Sign),
+        Primitive::Sqrt => Some(CheapOp::Sqrt),
+        Primitive::Rsqrt => Some(CheapOp::Rsqrt),
+        Primitive::Exp => Some(CheapOp::Exp),
+        Primitive::Log => Some(CheapOp::Log),
+        Primitive::Tanh => Some(CheapOp::Tanh),
         _ => cheap_op(primitive),
     }
 }
@@ -6850,7 +6870,12 @@ fn f64_fused_binary(op: CheapOp, left: f64, right: f64) -> f64 {
         | CheapOp::Trunc
         | CheapOp::RoundAway
         | CheapOp::RoundNearest
-        | CheapOp::Sign => left,
+        | CheapOp::Sign
+        | CheapOp::Sqrt
+        | CheapOp::Rsqrt
+        | CheapOp::Exp
+        | CheapOp::Log
+        | CheapOp::Tanh => left,
     }
 }
 
@@ -6982,7 +7007,12 @@ fn apply_fusion_other(
                 | CheapOp::Trunc
                 | CheapOp::RoundAway
                 | CheapOp::RoundNearest
-                | CheapOp::Sign,
+                | CheapOp::Sign
+                | CheapOp::Sqrt
+                | CheapOp::Rsqrt
+                | CheapOp::Exp
+                | CheapOp::Log
+                | CheapOp::Tanh,
                 _,
             ) => {}
         },
@@ -7011,7 +7041,12 @@ fn apply_fusion_other(
                     | CheapOp::Trunc
                     | CheapOp::RoundAway
                     | CheapOp::RoundNearest
-                    | CheapOp::Sign,
+                    | CheapOp::Sign
+                    | CheapOp::Sqrt
+                    | CheapOp::Rsqrt
+                    | CheapOp::Exp
+                    | CheapOp::Log
+                    | CheapOp::Tanh,
                     _,
                 ) => {}
             }
@@ -7027,14 +7062,10 @@ fn apply_fusion_other(
 }
 
 /// Apply a unary `CheapOp` across `out` with the op-match hoisted ABOVE the element
-/// loop, so each arm is a monomorphic, vectorizable pass. Bit-identical to
-/// `out.iter_mut().for_each(|o| *o = f64_fused_unary(op, *o))`: same per-element op,
-/// same order. The in-loop form leaves the enum branch inside the loop body, which
-/// blocks autovectorization of the rounding ops (floor/ceil/trunc/round/sign) — the
-/// dominant cost of a fused unary chain (measured ~6-12x slower per pass than the
-/// statically-typed kernel). Hoisting recovers the SIMD `roundpd` form per arm.
+/// loop, so each arm is a monomorphic, vectorizable pass. Bit-identical to the
+/// per-op dispatcher (including `Log` and `Tanh` SIMD chunk alignment via `(base, total_len)`).
 #[inline]
-fn apply_f64_unary_chunk(out: &mut [f64], op: CheapOp) {
+fn apply_f64_unary_chunk(out: &mut [f64], op: CheapOp, base: usize, total_len: usize) {
     match op {
         CheapOp::Neg => out.iter_mut().for_each(|o| *o = -*o),
         CheapOp::Abs => out.iter_mut().for_each(|o| *o = o.abs()),
@@ -7044,6 +7075,11 @@ fn apply_f64_unary_chunk(out: &mut [f64], op: CheapOp) {
         CheapOp::RoundAway => out.iter_mut().for_each(|o| *o = o.round()),
         CheapOp::RoundNearest => out.iter_mut().for_each(|o| *o = o.round_ties_even()),
         CheapOp::Sign => out.iter_mut().for_each(|o| *o = scalar_f64_sign(*o)),
+        CheapOp::Sqrt => out.iter_mut().for_each(|o| *o = o.sqrt()),
+        CheapOp::Rsqrt => out.iter_mut().for_each(|o| *o = 1.0 / o.sqrt()),
+        CheapOp::Exp => out.iter_mut().for_each(|o| *o = o.exp()),
+        CheapOp::Log => fj_lax::arithmetic::apply_fused_log_f64_chunk(out, base, total_len),
+        CheapOp::Tanh => fj_lax::arithmetic::apply_fused_tanh_f64_chunk(out, base, total_len),
         // Binary ops never reach the unary path (callers guard on op.is_unary());
         // mirror f64_fused_unary's binary arm (identity no-op) for exhaustiveness.
         CheapOp::Add | CheapOp::Sub | CheapOp::Mul | CheapOp::Div | CheapOp::Max | CheapOp::Min => {
@@ -7055,6 +7091,7 @@ fn apply_f64_unary_chunk(out: &mut [f64], op: CheapOp) {
 enum InplaceF64Unary {
     Cheap(CheapOp),
     Reciprocal,
+    Square,
 }
 
 fn inplace_f64_unary(
@@ -7064,49 +7101,112 @@ fn inplace_f64_unary(
     if primitive == Primitive::Reciprocal && params.is_empty() {
         return Some(InplaceF64Unary::Reciprocal);
     }
+    if (primitive == Primitive::Square && params.is_empty()) || is_integer_pow_2(primitive, params)
+    {
+        return Some(InplaceF64Unary::Square);
+    }
     let op = cheap_float_op(primitive, params)?;
     op.is_unary().then_some(InplaceF64Unary::Cheap(op))
 }
 
 #[inline]
-fn apply_inplace_f64_unary_chunk(out: &mut [f64], op: InplaceF64Unary) {
+fn apply_inplace_f64_unary_chunk(
+    out: &mut [f64],
+    op: InplaceF64Unary,
+    base: usize,
+    total_len: usize,
+) {
     match op {
-        InplaceF64Unary::Cheap(op) => apply_f64_unary_chunk(out, op),
+        InplaceF64Unary::Cheap(op) => apply_f64_unary_chunk(out, op, base, total_len),
         InplaceF64Unary::Reciprocal => out.iter_mut().for_each(|o| *o = 1.0 / *o),
+        InplaceF64Unary::Square => out.iter_mut().for_each(|o| *o = *o * *o),
     }
+}
+
+#[derive(Clone, Copy)]
+enum InplaceF32Unary {
+    Cheap(CheapOp),
+    Reciprocal,
+    Square,
 }
 
 fn inplace_f32_unary(
     primitive: Primitive,
     params: &std::collections::BTreeMap<String, String>,
-) -> Option<ScalarF64BinaryOp> {
+) -> Option<InplaceF32Unary> {
     if primitive == Primitive::Reciprocal && params.is_empty() {
-        Some(ScalarF64BinaryOp::Reciprocal)
-    } else {
-        None
+        return Some(InplaceF32Unary::Reciprocal);
     }
+    if (primitive == Primitive::Square && params.is_empty()) || is_integer_pow_2(primitive, params)
+    {
+        return Some(InplaceF32Unary::Square);
+    }
+    let op = cheap_float_op(primitive, params)?;
+    op.is_unary().then_some(InplaceF32Unary::Cheap(op))
 }
 
 #[inline]
-fn apply_inplace_f32_unary_chunk(out: &mut [f32], op: ScalarF64BinaryOp) {
-    out.iter_mut()
-        .for_each(|o| *o = apply_scalar_f32_binary(op, *o, *o));
+fn apply_inplace_f32_unary_chunk(
+    out: &mut [f32],
+    op: InplaceF32Unary,
+    base: usize,
+    total_len: usize,
+) {
+    match op {
+        InplaceF32Unary::Cheap(op) => apply_f32_unary_chunk(out, op, base, total_len),
+        InplaceF32Unary::Reciprocal => out
+            .iter_mut()
+            .for_each(|o| *o = (1.0 / f64::from(*o)) as f32),
+        InplaceF32Unary::Square => out
+            .iter_mut()
+            .for_each(|o| *o = (f64::from(*o) * f64::from(*o)) as f32),
+    }
 }
 
 /// Evaluate the fused run over one chunk `out` (already sized to the chunk length).
-fn apply_fusion_first_seeded(out: &mut [f64], step: &FStep, ext: &[&[f64]], base: usize) {
+fn apply_fusion_first_seeded(
+    out: &mut [f64],
+    step: &FStep,
+    ext: &[&[f64]],
+    base: usize,
+    total_len: usize,
+) {
     match step.op {
-        op if op.is_unary() => apply_f64_unary_chunk(out, op),
-        _ => apply_fusion_other(out, step.op, true, step.b, ext, base),
+        op if op.is_unary() => apply_f64_unary_chunk(out, op, base, total_len),
+        _ => match (step.a, step.b) {
+            // Square(x) / IntegerPow[2](x) duplicates `a` into `(Mul, Ext(0), Ext(0))`;
+            // when `out` is already seeded with `a`, multiplying by `out` in-place avoids
+            // reading `ext[0]` (which may have been donated to seed `out`).
+            (FOperand::Ext(ia), FOperand::Ext(ib)) if ia == ib => {
+                apply_fusion_tail(
+                    out,
+                    &[FStep {
+                        op: step.op,
+                        a: FOperand::Chain,
+                        b: FOperand::Chain,
+                    }],
+                    ext,
+                    base,
+                    total_len,
+                );
+            }
+            _ => apply_fusion_other(out, step.op, true, step.b, ext, base),
+        },
     }
 }
 
 #[allow(clippy::eq_op)] // Chain/Chain must execute x-x and x/x to preserve NaN behavior.
-fn apply_fusion_tail(out: &mut [f64], steps: &[FStep], ext: &[&[f64]], base: usize) {
+fn apply_fusion_tail(
+    out: &mut [f64],
+    steps: &[FStep],
+    ext: &[&[f64]],
+    base: usize,
+    total_len: usize,
+) {
     for step in steps {
         match step.op {
             op if op.is_unary() => {
-                apply_f64_unary_chunk(out, op);
+                apply_f64_unary_chunk(out, op, base, total_len);
                 continue;
             }
             _ => {}
@@ -7126,7 +7226,12 @@ fn apply_fusion_tail(out: &mut [f64], steps: &[FStep], ext: &[&[f64]], base: usi
                 | CheapOp::Trunc
                 | CheapOp::RoundAway
                 | CheapOp::RoundNearest
-                | CheapOp::Sign => {}
+                | CheapOp::Sign
+                | CheapOp::Sqrt
+                | CheapOp::Rsqrt
+                | CheapOp::Exp
+                | CheapOp::Log
+                | CheapOp::Tanh => {}
             },
             (FOperand::Chain, other) => apply_fusion_other(out, step.op, true, other, ext, base),
             (other, FOperand::Chain) => apply_fusion_other(out, step.op, false, other, ext, base),
@@ -7136,7 +7241,13 @@ fn apply_fusion_tail(out: &mut [f64], steps: &[FStep], ext: &[&[f64]], base: usi
 }
 
 /// Evaluate the fused run over one chunk `out` (already sized to the chunk length).
-fn apply_fusion_chunk(out: &mut [f64], tape: &[FStep], ext: &[&[f64]], base: usize) {
+fn apply_fusion_chunk(
+    out: &mut [f64],
+    tape: &[FStep],
+    ext: &[&[f64]],
+    base: usize,
+    total_len: usize,
+) {
     // Step 0 has no chain operand: seed `out` from operand `a`, then apply `b`.
     let s0 = &tape[0];
     match s0.a {
@@ -7146,8 +7257,8 @@ fn apply_fusion_chunk(out: &mut [f64], tape: &[FStep], ext: &[&[f64]], base: usi
         FOperand::Scalar(v) => out.fill(v),
         FOperand::Chain => {}
     }
-    apply_fusion_first_seeded(out, s0, ext, base);
-    apply_fusion_tail(out, &tape[1..], ext, base);
+    apply_fusion_first_seeded(out, s0, ext, base, total_len);
+    apply_fusion_tail(out, &tape[1..], ext, base, total_len);
 }
 
 fn seeded_fusion_values(tape: &[FStep], ext: &[&[f64]], n: usize) -> Option<Vec<f64>> {
@@ -7158,9 +7269,15 @@ fn seeded_fusion_values(tape: &[FStep], ext: &[&[f64]], n: usize) -> Option<Vec<
     }
 }
 
-fn apply_seeded_fusion_chunk(out: &mut [f64], tape: &[FStep], ext: &[&[f64]], base: usize) {
-    apply_fusion_first_seeded(out, &tape[0], ext, base);
-    apply_fusion_tail(out, &tape[1..], ext, base);
+fn apply_seeded_fusion_chunk(
+    out: &mut [f64],
+    tape: &[FStep],
+    ext: &[&[f64]],
+    base: usize,
+    total_len: usize,
+) {
+    apply_fusion_first_seeded(out, &tape[0], ext, base, total_len);
+    apply_fusion_tail(out, &tape[1..], ext, base, total_len);
 }
 
 fn f64_scalar_add_chain_input_and_literals<'a>(
@@ -7214,6 +7331,49 @@ fn run_f64_scalar_add_chain_simd(input: &[f64], adds: &[f64]) -> Vec<f64> {
     values
 }
 
+/// Try to extract a uniquely-owned `Vec<f64>` from `env[v]` without cloning when
+/// `v` is at its last use within the fused run and not referenced by any other
+/// external operand slot.
+fn try_donate_f64_seed_from_env(
+    v: VarId,
+    run_end: usize,
+    ext_vars: &[VarId],
+    env: &mut [Option<Value>],
+    last_use: &[usize],
+) -> Option<Vec<f64>> {
+    if DENSE_F64_DONATION_DISABLE.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        return None;
+    }
+    let slot = v.0 as usize;
+    if last_use.get(slot).copied()? > run_end {
+        return None;
+    }
+    if ext_vars.get(1..).is_some_and(|rest| rest.contains(&v)) {
+        return None;
+    }
+    let value = env.get_mut(slot)?.take()?;
+    let Value::Tensor(tensor) = value else {
+        env[slot] = Some(value);
+        return None;
+    };
+    let TensorValue {
+        dtype,
+        shape,
+        elements,
+    } = tensor;
+    match elements.try_into_f64_values() {
+        Ok(values) => Some(values),
+        Err(elements) => {
+            env[slot] = Some(Value::Tensor(TensorValue {
+                dtype,
+                shape,
+                elements,
+            }));
+            None
+        }
+    }
+}
+
 /// Try to fuse a maximal cheap-elementwise run starting at `start`. Returns the
 /// owned fused result (no borrow of `env`) or `None` to fall through to the normal
 /// per-equation path. Opt-in: any non-matching condition bails with zero effect.
@@ -7221,138 +7381,154 @@ fn run_f64_scalar_add_chain_simd(input: &[f64], adds: &[f64]) -> Vec<f64> {
 fn try_fuse_elementwise_chain_f64(
     jaxpr: &Jaxpr,
     start: usize,
-    env: &[Option<Value>],
+    env: &mut [Option<Value>],
     last_use: &[usize],
 ) -> Option<FusedRun> {
-    let eqns = &jaxpr.equations;
-    let mut ext: Vec<&[f64]> = Vec::new();
-    let mut ext_vars: Vec<VarId> = Vec::new();
-    let mut tape: Vec<FStep> = Vec::new();
-    let mut shape: Option<Shape> = None;
-    let mut chain_var: Option<VarId> = None;
-    let mut run_out: Option<VarId> = None;
-    let mut run_end = start;
+    let (tape, shape, n, out_var, ext_vars, run_end) = {
+        let eqns = &jaxpr.equations;
+        let mut ext: Vec<&[f64]> = Vec::new();
+        let mut ext_vars: Vec<VarId> = Vec::new();
+        let mut tape: Vec<FStep> = Vec::new();
+        let mut shape: Option<Shape> = None;
+        let mut chain_var: Option<VarId> = None;
+        let mut run_out: Option<VarId> = None;
+        let mut run_end = start;
 
-    let mut k = start;
-    loop {
-        let Some(eqn) = eqns.get(k) else { break };
-        if !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
-            break;
-        }
-        let ext_mark = ext.len();
-        let vars_mark = ext_vars.len();
-        // Square(x) is fused as Mul(x, x): eval_square's float_op is `|x| x*x` and its
-        // int_op `wrapping_mul(x, x)` — exactly eval_mul — so duplicating the single
-        // operand into a Mul step is bit-identical and reuses the proven Mul machinery
-        // (no new CheapOp / apply arm). Lets variance/L2/MSE chains (mean((x-mu)^2))
-        // fuse instead of breaking the run on the Square primitive.
-        let (op, a, b) = if eqn.primitive == Primitive::Square && eqn.params.is_empty()
-            || is_integer_pow_2(eqn.primitive, &eqn.params)
-        {
-            if eqn.inputs.len() != 1 {
+        let mut k = start;
+        loop {
+            let Some(eqn) = eqns.get(k) else { break };
+            if !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
                 break;
             }
-            let Some(a) = classify_fusion_operand(
-                &eqn.inputs[0],
-                chain_var,
-                env,
-                &mut ext,
-                &mut ext_vars,
-                &mut shape,
-            ) else {
-                ext.truncate(ext_mark);
-                ext_vars.truncate(vars_mark);
-                break;
-            };
-            (CheapOp::Mul, a, a)
-        } else if eqn.primitive == Primitive::Reciprocal && eqn.params.is_empty() {
-            // Reciprocal(x) == Div(1, x): eval_reciprocal is eval_unary_elementwise(|x| 1.0/x),
-            // and the f64 fused Div computes 1.0/x identically — so emit Div(Scalar(1.0), x),
-            // reusing the proven Div machinery. The classify guard requires a dense-f64 input,
-            // so an i64/other input (whose eval_reciprocal widens to f64) bails to generic.
-            if eqn.inputs.len() != 1 {
-                break;
-            }
-            let Some(b) = classify_fusion_operand(
-                &eqn.inputs[0],
-                chain_var,
-                env,
-                &mut ext,
-                &mut ext_vars,
-                &mut shape,
-            ) else {
-                ext.truncate(ext_mark);
-                ext_vars.truncate(vars_mark);
-                break;
-            };
-            (CheapOp::Div, FOperand::Scalar(1.0), b)
-        } else {
-            let Some(op) = cheap_float_op(eqn.primitive, &eqn.params) else {
-                break;
-            };
-            let needed = if op.is_unary() { 1 } else { 2 };
-            if eqn.inputs.len() != needed {
-                break;
-            }
-            let a = classify_fusion_operand(
-                &eqn.inputs[0],
-                chain_var,
-                env,
-                &mut ext,
-                &mut ext_vars,
-                &mut shape,
-            );
-            let b = if op.is_unary() {
-                Some(FOperand::Scalar(0.0))
-            } else {
-                classify_fusion_operand(
-                    &eqn.inputs[1],
+            let ext_mark = ext.len();
+            let vars_mark = ext_vars.len();
+            let (op, a, b) = if eqn.primitive == Primitive::Square && eqn.params.is_empty()
+                || is_integer_pow_2(eqn.primitive, &eqn.params)
+            {
+                if eqn.inputs.len() != 1 {
+                    break;
+                }
+                let Some(a) = classify_fusion_operand(
+                    &eqn.inputs[0],
                     chain_var,
                     env,
                     &mut ext,
                     &mut ext_vars,
                     &mut shape,
-                )
+                ) else {
+                    ext.truncate(ext_mark);
+                    ext_vars.truncate(vars_mark);
+                    break;
+                };
+                (CheapOp::Mul, a, a)
+            } else if eqn.primitive == Primitive::Reciprocal && eqn.params.is_empty() {
+                if eqn.inputs.len() != 1 {
+                    break;
+                }
+                let Some(b) = classify_fusion_operand(
+                    &eqn.inputs[0],
+                    chain_var,
+                    env,
+                    &mut ext,
+                    &mut ext_vars,
+                    &mut shape,
+                ) else {
+                    ext.truncate(ext_mark);
+                    ext_vars.truncate(vars_mark);
+                    break;
+                };
+                (CheapOp::Div, FOperand::Scalar(1.0), b)
+            } else {
+                let Some(op) = cheap_float_op(eqn.primitive, &eqn.params) else {
+                    break;
+                };
+                let needed = if op.is_unary() { 1 } else { 2 };
+                if eqn.inputs.len() != needed {
+                    break;
+                }
+                let a = classify_fusion_operand(
+                    &eqn.inputs[0],
+                    chain_var,
+                    env,
+                    &mut ext,
+                    &mut ext_vars,
+                    &mut shape,
+                );
+                let b = if op.is_unary() {
+                    Some(FOperand::Scalar(0.0))
+                } else {
+                    classify_fusion_operand(
+                        &eqn.inputs[1],
+                        chain_var,
+                        env,
+                        &mut ext,
+                        &mut ext_vars,
+                        &mut shape,
+                    )
+                };
+                let (Some(a), Some(b)) = (a, b) else {
+                    ext.truncate(ext_mark);
+                    ext_vars.truncate(vars_mark);
+                    break;
+                };
+                (op, a, b)
             };
-            let (Some(a), Some(b)) = (a, b) else {
+            if chain_var.is_some() && !matches!(a, FOperand::Chain) && !matches!(b, FOperand::Chain)
+            {
                 ext.truncate(ext_mark);
                 ext_vars.truncate(vars_mark);
                 break;
-            };
-            (op, a, b)
-        };
-        // Steps after the first MUST thread the chain (one operand == Chain). The
-        // last_use==k guarantee ensures eqn k uses chain_var, but stay defensive.
-        if chain_var.is_some() && !matches!(a, FOperand::Chain) && !matches!(b, FOperand::Chain) {
-            ext.truncate(ext_mark);
-            ext_vars.truncate(vars_mark);
-            break;
+            }
+            tape.push(FStep { op, a, b });
+            run_out = Some(eqn.outputs[0]);
+            run_end = k;
+            let out_idx = eqn.outputs[0].0 as usize;
+            if k + 1 < eqns.len() && last_use.get(out_idx).copied() == Some(k + 1) {
+                chain_var = Some(eqn.outputs[0]);
+                k += 1;
+            } else {
+                break;
+            }
         }
-        tape.push(FStep { op, a, b });
-        run_out = Some(eqn.outputs[0]);
-        run_end = k;
-        let out_idx = eqn.outputs[0].0 as usize;
-        if k + 1 < eqns.len() && last_use.get(out_idx).copied() == Some(k + 1) {
-            chain_var = Some(eqn.outputs[0]);
-            k += 1;
+
+        if tape.len() < FUSION_MIN_RUN {
+            return None;
+        }
+        let shape = shape?;
+        let n = shape.element_count()? as usize;
+        if n < FUSION_MIN_ELEMS {
+            return None;
+        }
+        let out_var = run_out?;
+        (tape, shape, n, out_var, ext_vars, run_end)
+    };
+
+    // Try donating ext_vars[0] if tape[0].a == Ext(0) and its buffer is uniquely owned.
+    let donated_seed = if matches!(tape.first().map(|s| s.a), Some(FOperand::Ext(0)))
+        && let Some(&v0) = ext_vars.first()
+    {
+        try_donate_f64_seed_from_env(v0, run_end, &ext_vars, env, last_use)
+    } else {
+        None
+    };
+
+    // Re-gather borrows for remaining external tensors in `ext_vars`.
+    let mut ext: Vec<&[f64]> = Vec::with_capacity(ext_vars.len());
+    for (idx, &v) in ext_vars.iter().enumerate() {
+        if idx == 0 && donated_seed.is_some() {
+            ext.push(&[]);
         } else {
-            break;
+            let slice = env
+                .get(v.0 as usize)
+                .and_then(|s| s.as_ref())
+                .and_then(|val| val.as_tensor())
+                .and_then(|t| t.elements.as_f64_slice())?;
+            ext.push(slice);
         }
     }
 
-    if tape.len() < FUSION_MIN_RUN {
-        return None;
-    }
-    let shape = shape?;
-    let n = shape.element_count()? as usize;
-    if n < FUSION_MIN_ELEMS {
-        return None;
-    }
-    let out_var = run_out?;
-
-    // The single-pass register kernel wins in the medium band, but loses once
-    // the existing chunk driver starts threading, so keep the gate below that.
-    if (INPLACE_CHAIN_MAX_ELEMS..FUSION_THREAD_MIN_ELEMS).contains(&n)
+    if donated_seed.is_none()
+        && (INPLACE_CHAIN_MAX_ELEMS..FUSION_THREAD_MIN_ELEMS).contains(&n)
         && let Some((input, adds)) = f64_scalar_add_chain_input_and_literals(&tape, &ext)
     {
         return Some(FusedRun {
@@ -7364,17 +7540,22 @@ fn try_fuse_elementwise_chain_f64(
         });
     }
 
-    let values = if n < FUSION_THREAD_MIN_ELEMS
+    let values = if let Some(mut donated) = donated_seed {
+        drive_fusion_chunks(&mut donated, |chunk, base| {
+            apply_seeded_fusion_chunk(chunk, &tape, &ext, base, n)
+        });
+        donated
+    } else if n < FUSION_THREAD_MIN_ELEMS
         && let Some(mut seeded) = seeded_fusion_values(&tape, &ext, n)
     {
         drive_fusion_chunks(&mut seeded, |chunk, base| {
-            apply_seeded_fusion_chunk(chunk, &tape, &ext, base)
+            apply_seeded_fusion_chunk(chunk, &tape, &ext, base, n)
         });
         seeded
     } else {
         let mut values = vec![0.0_f64; n];
         drive_fusion_chunks(&mut values, |chunk, base| {
-            apply_fusion_chunk(chunk, &tape, &ext, base)
+            apply_fusion_chunk(chunk, &tape, &ext, base, n)
         });
         values
     };
