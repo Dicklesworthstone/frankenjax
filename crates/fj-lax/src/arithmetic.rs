@@ -12227,7 +12227,8 @@ pub(crate) fn erfc_approx(x: f64) -> f64 {
 }
 
 #[inline]
-pub(crate) fn fast_cbrt_f64(x: f64) -> f64 {
+#[must_use]
+pub fn fast_cbrt_f64(x: f64) -> f64 {
     if x == 0.0 || !x.is_finite() {
         return x.cbrt();
     }
@@ -14774,19 +14775,18 @@ pub(crate) fn eval_rsqrt(primitive: Primitive, inputs: &[Value]) -> Result<Value
 }
 
 fn apply_simd_f64_chunk_matching_threads(
-    dst: &mut [f64],
-    src: &[f64],
+    chunk: &mut [f64],
     chunk_offset: usize,
     total_len: usize,
     simd_kernel: impl Fn(std::simd::Simd<f64, 8>) -> std::simd::Simd<f64, 8>,
     scalar: fn(f64) -> f64,
 ) {
     use std::simd::Simd;
-    let len = dst.len();
+    let len = chunk.len();
     let threads = dense_unary_threads(total_len);
     if threads <= 1 {
-        for j in 0..len {
-            dst[j] = scalar(src[j]);
+        for x in chunk.iter_mut() {
+            *x = scalar(*x);
         }
         return;
     }
@@ -14808,16 +14808,16 @@ fn apply_simd_f64_chunk_matching_threads(
             let n8 = simd_avail - simd_avail % 8;
             let mut i = 0usize;
             while i < n8 {
-                let x = Simd::<f64, 8>::from_slice(&src[pos + i..pos + i + 8]);
-                simd_kernel(x).copy_to_slice(&mut dst[pos + i..pos + i + 8]);
+                let x = Simd::<f64, 8>::from_slice(&chunk[pos + i..pos + i + 8]);
+                simd_kernel(x).copy_to_slice(&mut chunk[pos + i..pos + i + 8]);
                 i += 8;
             }
             for j in i..seg_len {
-                dst[pos + j] = scalar(src[pos + j]);
+                chunk[pos + j] = scalar(chunk[pos + j]);
             }
         } else {
             for j in 0..seg_len {
-                dst[pos + j] = scalar(src[pos + j]);
+                chunk[pos + j] = scalar(chunk[pos + j]);
             }
         }
         pos += seg_len;
@@ -14825,8 +14825,7 @@ fn apply_simd_f64_chunk_matching_threads(
 }
 
 fn apply_simd_f32_chunk_matching_threads(
-    dst: &mut [f32],
-    src: &[f32],
+    chunk: &mut [f32],
     chunk_offset: usize,
     total_len: usize,
     simd_kernel: impl Fn(std::simd::Simd<f32, 8>) -> std::simd::Simd<f32, 8>,
@@ -14834,11 +14833,11 @@ fn apply_simd_f32_chunk_matching_threads(
     scalar_subthreshold: fn(f32) -> f32,
 ) {
     use std::simd::Simd;
-    let len = dst.len();
+    let len = chunk.len();
     let threads = dense_unary_threads(total_len);
     if threads <= 1 {
-        for j in 0..len {
-            dst[j] = scalar_subthreshold(src[j]);
+        for x in chunk.iter_mut() {
+            *x = scalar_subthreshold(*x);
         }
         return;
     }
@@ -14860,16 +14859,16 @@ fn apply_simd_f32_chunk_matching_threads(
             let n8 = simd_avail - simd_avail % 8;
             let mut i = 0usize;
             while i < n8 {
-                let x = Simd::<f32, 8>::from_slice(&src[pos + i..pos + i + 8]);
-                simd_kernel(x).copy_to_slice(&mut dst[pos + i..pos + i + 8]);
+                let x = Simd::<f32, 8>::from_slice(&chunk[pos + i..pos + i + 8]);
+                simd_kernel(x).copy_to_slice(&mut chunk[pos + i..pos + i + 8]);
                 i += 8;
             }
             for j in i..seg_len {
-                dst[pos + j] = scalar_threaded(src[pos + j]);
+                chunk[pos + j] = scalar_threaded(chunk[pos + j]);
             }
         } else {
             for j in 0..seg_len {
-                dst[pos + j] = scalar_threaded(src[pos + j]);
+                chunk[pos + j] = scalar_threaded(chunk[pos + j]);
             }
         }
         pos += seg_len;
@@ -14877,53 +14876,37 @@ fn apply_simd_f32_chunk_matching_threads(
 }
 
 /// Bit-exact chunk evaluator for fused `Log` over dense `f64` slices.
-pub fn apply_fused_log_f64_chunk(
-    dst: &mut [f64],
-    src: &[f64],
-    chunk_offset: usize,
-    total_len: usize,
-) {
+pub fn apply_fused_log_f64_chunk(chunk: &mut [f64], chunk_offset: usize, total_len: usize) {
     if std::env::var_os("FJ_LOG_SCALAR").is_some() {
-        for (d, &s) in dst.iter_mut().zip(src.iter()) {
-            *d = s.ln();
+        for x in chunk.iter_mut() {
+            *x = x.ln();
         }
         return;
     }
-    apply_simd_f64_chunk_matching_threads(dst, src, chunk_offset, total_len, log_f64x8, f64::ln);
+    apply_simd_f64_chunk_matching_threads(chunk, chunk_offset, total_len, log_f64x8, f64::ln);
 }
 
 /// Bit-exact chunk evaluator for fused `Tanh` over dense `f64` slices.
-pub fn apply_fused_tanh_f64_chunk(
-    dst: &mut [f64],
-    src: &[f64],
-    chunk_offset: usize,
-    total_len: usize,
-) {
+pub fn apply_fused_tanh_f64_chunk(chunk: &mut [f64], chunk_offset: usize, total_len: usize) {
     if std::env::var_os("FJ_TANH_SCALAR").is_some() {
-        for (d, &s) in dst.iter_mut().zip(src.iter()) {
-            *d = s.tanh();
+        for x in chunk.iter_mut() {
+            *x = x.tanh();
         }
         return;
     }
-    apply_simd_f64_chunk_matching_threads(dst, src, chunk_offset, total_len, tanh_f64x8, f64::tanh);
+    apply_simd_f64_chunk_matching_threads(chunk, chunk_offset, total_len, tanh_f64x8, f64::tanh);
 }
 
 /// Bit-exact chunk evaluator for fused `Log` over dense `f32` slices.
-pub fn apply_fused_log_f32_chunk(
-    dst: &mut [f32],
-    src: &[f32],
-    chunk_offset: usize,
-    total_len: usize,
-) {
+pub fn apply_fused_log_f32_chunk(chunk: &mut [f32], chunk_offset: usize, total_len: usize) {
     if std::env::var_os("FJ_LOG_SCALAR").is_some() {
-        for (d, &s) in dst.iter_mut().zip(src.iter()) {
-            *d = (s as f64).ln() as f32;
+        for x in chunk.iter_mut() {
+            *x = (*x as f64).ln() as f32;
         }
         return;
     }
     apply_simd_f32_chunk_matching_threads(
-        dst,
-        src,
+        chunk,
         chunk_offset,
         total_len,
         log_f32x8,
@@ -14933,21 +14916,15 @@ pub fn apply_fused_log_f32_chunk(
 }
 
 /// Bit-exact chunk evaluator for fused `Tanh` over dense `f32` slices.
-pub fn apply_fused_tanh_f32_chunk(
-    dst: &mut [f32],
-    src: &[f32],
-    chunk_offset: usize,
-    total_len: usize,
-) {
+pub fn apply_fused_tanh_f32_chunk(chunk: &mut [f32], chunk_offset: usize, total_len: usize) {
     if std::env::var_os("FJ_TANH_SCALAR").is_some() {
-        for (d, &s) in dst.iter_mut().zip(src.iter()) {
-            *d = (s as f64).tanh() as f32;
+        for x in chunk.iter_mut() {
+            *x = (*x as f64).tanh() as f32;
         }
         return;
     }
     apply_simd_f32_chunk_matching_threads(
-        dst,
-        src,
+        chunk,
         chunk_offset,
         total_len,
         tanh_f32x8,
@@ -14957,21 +14934,15 @@ pub fn apply_fused_tanh_f32_chunk(
 }
 
 /// Bit-exact chunk evaluator for fused `Rsqrt` over dense `f32` slices.
-pub fn apply_fused_rsqrt_f32_chunk(
-    dst: &mut [f32],
-    src: &[f32],
-    chunk_offset: usize,
-    total_len: usize,
-) {
+pub fn apply_fused_rsqrt_f32_chunk(chunk: &mut [f32], chunk_offset: usize, total_len: usize) {
     if std::env::var_os("FJ_RSQRT_SCALAR").is_some() {
-        for (d, &s) in dst.iter_mut().zip(src.iter()) {
-            *d = (1.0 / (s as f64).sqrt()) as f32;
+        for x in chunk.iter_mut() {
+            *x = (1.0 / (*x as f64).sqrt()) as f32;
         }
         return;
     }
     apply_simd_f32_chunk_matching_threads(
-        dst,
-        src,
+        chunk,
         chunk_offset,
         total_len,
         rsqrt_f32x8,
