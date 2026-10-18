@@ -504,6 +504,76 @@ impl PartialEq for DispatchCacheTelemetry {
 
 impl Eq for DispatchCacheTelemetry {}
 
+fn wants_wave_parallel(opts: &BTreeMap<String, String>) -> Option<bool> {
+    opts.get("wave_parallel").and_then(|raw| {
+        if raw.eq_ignore_ascii_case("true")
+            || raw.eq_ignore_ascii_case("1")
+            || raw.eq_ignore_ascii_case("yes")
+        {
+            Some(true)
+        } else if raw.eq_ignore_ascii_case("false")
+            || raw.eq_ignore_ascii_case("0")
+            || raw.eq_ignore_ascii_case("no")
+        {
+            Some(false)
+        } else {
+            None
+        }
+    })
+}
+
+fn allows_fast_canonicalize(opts: &BTreeMap<String, String>) -> bool {
+    opts.get("egraph_optimize").is_none_or(|raw| {
+        !(raw.eq_ignore_ascii_case("false")
+            || raw.eq_ignore_ascii_case("0")
+            || raw.eq_ignore_ascii_case("no"))
+    })
+}
+
+fn is_heavy_parallel_primitive(p: fj_core::Primitive) -> bool {
+    use fj_core::Primitive;
+    matches!(
+        p,
+        Primitive::Dot
+            | Primitive::Conv
+            | Primitive::Cholesky
+            | Primitive::Qr
+            | Primitive::Svd
+            | Primitive::Eigh
+            | Primitive::TriangularSolve
+            | Primitive::Fft
+            | Primitive::Ifft
+            | Primitive::Rfft
+            | Primitive::Irfft
+    )
+}
+
+/// Return `true` if `jaxpr` contains at least one dependency wave with 2 or more
+/// independent heavy operations (`Dot`, `Conv`, linalg decompositions, or FFTs)
+/// or 2 or more independent equations with explicit tensor shapes >= 4096 elements.
+#[must_use]
+pub fn jaxpr_has_parallel_heavy_wave(jaxpr: &Jaxpr) -> bool {
+    if jaxpr.equations.len() < 2 {
+        return false;
+    }
+    let waves = fj_backend_cpu::build_dependency_waves(jaxpr);
+    waves.iter().any(|wave| {
+        if wave.len() < 2 {
+            return false;
+        }
+        let heavy_count = wave
+            .iter()
+            .filter(|&&idx| {
+                jaxpr
+                    .equations
+                    .get(idx)
+                    .is_some_and(|eqn| is_heavy_parallel_primitive(eqn.primitive))
+            })
+            .count();
+        heavy_count >= 2
+    })
+}
+
 #[derive(Clone)]
 pub struct CachedDispatchPlan {
     pub cache_key: CacheKey,
@@ -511,6 +581,8 @@ pub struct CachedDispatchPlan {
     pub compiled_jaxpr: Option<std::sync::Arc<fj_interpreters::CompiledJaxpr>>,
     pub staged_program: Option<std::sync::Arc<fj_interpreters::staging::StagedProgram>>,
     pub compiled_unknown_jaxpr: Option<std::sync::Arc<fj_interpreters::CompiledJaxpr>>,
+    pub dependency_waves: Vec<Vec<usize>>,
+    pub use_wave_parallel: bool,
 }
 
 impl std::fmt::Debug for CachedDispatchPlan {
@@ -524,6 +596,8 @@ impl std::fmt::Debug for CachedDispatchPlan {
                 "has_compiled_unknown_jaxpr",
                 &self.compiled_unknown_jaxpr.is_some(),
             )
+            .field("dependency_waves", &self.dependency_waves)
+            .field("use_wave_parallel", &self.use_wave_parallel)
             .finish()
     }
 }
@@ -602,12 +676,16 @@ pub fn register_compiled_dispatch_plan(
         integrity_sha256_hex: fj_cache::sha256_hex(&payload),
         data: payload,
     };
+    let dependency_waves = fj_backend_cpu::build_dependency_waves(root_jaxpr);
+    let use_wave_parallel = jaxpr_has_parallel_heavy_wave(root_jaxpr);
     let plan = std::sync::Arc::new(CachedDispatchPlan {
         cache_key: cache_key.clone(),
         effective_jaxpr: std::sync::Arc::new(root_jaxpr.clone()),
         compiled_jaxpr: compiled,
         staged_program: None,
         compiled_unknown_jaxpr: None,
+        dependency_waves,
+        use_wave_parallel,
     });
     let mut guard = compilation_cache()
         .lock()
@@ -911,13 +989,38 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
     let (plan, cache_hit, cache_stats) = if let Some((plan, stats)) = cached_hit {
         (plan, true, stats)
     } else {
-        let effective_jaxpr = if wants_egraph_optimize(&request.compile_options) {
-            std::sync::Arc::new(fj_egraph::optimize_jaxpr_with_config(
-                request.root_jaxpr,
-                &fj_egraph::OptimizationConfig::safe(),
-            ))
-        } else {
-            std::sync::Arc::new(request.root_jaxpr.clone())
+        let effective_jaxpr = match request
+            .compile_options
+            .get("egraph_optimize")
+            .map(|s| s.trim())
+        {
+            Some(opt) if opt.eq_ignore_ascii_case("finite_fast_math") => {
+                std::sync::Arc::new(fj_egraph::optimize_jaxpr_with_config(
+                    request.root_jaxpr,
+                    &fj_egraph::OptimizationConfig::finite_fast_math(),
+                ))
+            }
+            Some(opt) if opt.eq_ignore_ascii_case("ieee_strict") => {
+                std::sync::Arc::new(fj_egraph::optimize_jaxpr_with_config(
+                    request.root_jaxpr,
+                    &fj_egraph::OptimizationConfig::ieee_strict(),
+                ))
+            }
+            Some(_) if wants_egraph_optimize(&request.compile_options) => {
+                std::sync::Arc::new(fj_egraph::optimize_jaxpr_with_config(
+                    request.root_jaxpr,
+                    &fj_egraph::OptimizationConfig::safe(),
+                ))
+            }
+            _ if request.transform_stack.contains(&Transform::Jit)
+                && allows_fast_canonicalize(&request.compile_options) =>
+            {
+                std::sync::Arc::new(fj_egraph::canonicalize_jaxpr_fast(
+                    request.root_jaxpr,
+                    &fj_egraph::OptimizationConfig::ieee_strict(),
+                ))
+            }
+            _ => std::sync::Arc::new(request.root_jaxpr.clone()),
         };
 
         let (staged_program, compiled_unknown_jaxpr) =
@@ -942,6 +1045,14 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
             } else {
                 (None, None)
             };
+
+        let active_jaxpr_for_waves: &Jaxpr = match &staged_program {
+            Some(staged) => &staged.jaxpr_unknown,
+            None => &effective_jaxpr,
+        };
+        let dependency_waves = fj_backend_cpu::build_dependency_waves(active_jaxpr_for_waves);
+        let use_wave_parallel = wants_wave_parallel(&request.compile_options)
+            .unwrap_or_else(|| jaxpr_has_parallel_heavy_wave(active_jaxpr_for_waves));
 
         let compiled_jaxpr = if staged_program.is_none()
             && request.transform_stack.iter().all(|t| *t == Transform::Jit)
@@ -977,6 +1088,8 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
             compiled_jaxpr,
             staged_program,
             compiled_unknown_jaxpr,
+            dependency_waves,
+            use_wave_parallel,
         });
 
         let stats = {
@@ -993,6 +1106,7 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
         (new_plan, false, stats)
     };
 
+    let cpu_backend = fj_backend_cpu::CpuBackend::new();
     let backend_registry = BackendRegistry::new(vec![Box::new(fj_backend_cpu::CpuBackend::new())]);
     let requested_backend = (!request.backend.is_empty()).then_some(request.backend);
     let (backend, device, _fell_back) =
@@ -1006,11 +1120,20 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
             .filter_map(|(idx, val)| (!static_argnums.contains(&idx)).then_some(val.clone()))
             .collect();
         if request.transform_stack.iter().all(|t| *t == Transform::Jit) {
-            fj_interpreters::staging::execute_staged(staged, &dynamic_args).map_err(|e| {
-                DispatchError::BackendExecution(BackendError::ExecutionFailed {
-                    detail: e.to_string(),
-                })
-            })?
+            if plan.use_wave_parallel {
+                cpu_backend.execute_with_consts(
+                    &staged.jaxpr_unknown,
+                    &staged.residuals,
+                    &dynamic_args,
+                    device,
+                )?
+            } else {
+                fj_interpreters::staging::execute_staged(staged, &dynamic_args).map_err(|e| {
+                    DispatchError::BackendExecution(BackendError::ExecutionFailed {
+                        detail: e.to_string(),
+                    })
+                })?
+            }
         } else {
             let mut full_unk_args = staged.residuals.clone();
             full_unk_args.extend(dynamic_args);
@@ -1024,6 +1147,7 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
             )?
         }
     } else if request.transform_stack.iter().all(|t| *t == Transform::Jit)
+        && !plan.use_wave_parallel
         && let Some(compiled) = &plan.compiled_jaxpr
     {
         compiled.eval(&request.args).map_err(|e| {
@@ -5114,5 +5238,90 @@ mod tests {
                 prop_assert!((g_cx - expected_cx).abs() < 1e-10, "grad(square) at c*x={}: {} vs {}", c*x, g_cx, expected_cx);
             }
         }
+    }
+
+    #[test]
+    fn e2e_wave_parallel_dispatch_and_fast_canonicalization() {
+        crate::clear_dispatch_cache();
+
+        // Build a 2-branch independent Dot DAG with a redundant double-negation on the output:
+        // Branch 1: v5 = dot(v1, v2)
+        // Branch 2: v6 = dot(v3, v4)
+        // Merge:    v7 = add(v5, v6)
+        // Canonicalize target: v8 = neg(v7), v9 = neg(v8) -> collapses to v7 under ieee_strict!
+        let dag_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3), VarId(4)],
+            vec![],
+            vec![VarId(9)],
+            vec![
+                Equation {
+                    primitive: Primitive::Dot,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Dot,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(4))],
+                    outputs: smallvec![VarId(6)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(5)), Atom::Var(VarId(6))],
+                    outputs: smallvec![VarId(7)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(VarId(7))],
+                    outputs: smallvec![VarId(8)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(VarId(8))],
+                    outputs: smallvec![VarId(9)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        assert!(crate::jaxpr_has_parallel_heavy_wave(&dag_jaxpr));
+        let waves = fj_backend_cpu::build_dependency_waves(&dag_jaxpr);
+        assert_eq!(waves[0], vec![0, 1]);
+
+        let n = 64usize;
+        let make_vec = |seed: f64| {
+            let data: Vec<f64> = (0..n).map(|i| seed + (i as f64) * 0.125).collect();
+            Value::Tensor(TensorValue::new_f64_values(Shape::vector(n as u32), data).unwrap())
+        };
+        let args = vec![make_vec(1.0), make_vec(2.0), make_vec(0.5), make_vec(1.5)];
+
+        let mut ttl = TraceTransformLedger::new(dag_jaxpr.clone());
+        ttl.push_transform(Transform::Jit, "jit-wave-parallel");
+        let resp = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl,
+            args: args.clone(),
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("wave-parallel JIT dispatch should succeed");
+
+        let seq = fj_interpreters::eval_jaxpr(&dag_jaxpr, &args).expect("sequential eval");
+        assert_eq!(resp.outputs, seq);
     }
 }

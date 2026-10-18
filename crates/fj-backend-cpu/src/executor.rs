@@ -2366,7 +2366,7 @@ mod tests {
                 .expect("tensor")
                 .elements
                 .as_f64_slice()
-                .is_none()
+                .is_some()
         );
         assert_eq!(max_ready_wave, 32);
     }

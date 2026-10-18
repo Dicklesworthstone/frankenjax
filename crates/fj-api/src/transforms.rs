@@ -946,7 +946,10 @@ impl JitWrapped {
         &self,
         args: &[Value],
     ) -> Result<Option<Vec<Value>>, ApiError> {
-        if self.backend.as_ref() != DEFAULT_BACKEND || !self.static_argnums.is_empty() {
+        if self.backend.as_ref() != DEFAULT_BACKEND
+            || !self.static_argnums.is_empty()
+            || fj_dispatch::jaxpr_has_parallel_heavy_wave(&self.jaxpr)
+        {
             return Ok(None);
         }
         let was_initialized = self.compiled_cache.plan.get().is_some();
