@@ -146,6 +146,105 @@ fn atom_tensor_element_count(atom: &Atom, env: &HashMap<VarId, Value>) -> Option
     }
 }
 
+fn equation_estimated_work(equation: &Equation, env: &HashMap<VarId, Value>) -> usize {
+    let max_elem = equation
+        .inputs
+        .iter()
+        .filter_map(|atom| atom_tensor_element_count(atom, env))
+        .max()
+        .unwrap_or(0);
+    if max_elem == 0 {
+        return 0;
+    }
+    match equation.primitive {
+        Primitive::Dot | Primitive::DotGeneral => {
+            if equation.inputs.len() >= 2
+                && let (Atom::Var(lhs_v), Atom::Var(rhs_v)) =
+                    (&equation.inputs[0], &equation.inputs[1])
+                && let (Some(Value::Tensor(lhs_t)), Some(Value::Tensor(rhs_t))) =
+                    (env.get(lhs_v), env.get(rhs_v))
+            {
+                let lhs_dims = &lhs_t.shape.dims;
+                let rhs_dims = &rhs_t.shape.dims;
+                if lhs_dims.len() >= 2 && rhs_dims.len() >= 2 {
+                    let m = lhs_dims[lhs_dims.len() - 2] as usize;
+                    let k = lhs_dims[lhs_dims.len() - 1] as usize;
+                    let n = rhs_dims[rhs_dims.len() - 1] as usize;
+                    return m.saturating_mul(k).saturating_mul(n).saturating_mul(2).max(max_elem);
+                }
+            }
+            max_elem.saturating_mul(32)
+        }
+        Primitive::Fft | Primitive::Ifft | Primitive::Rfft | Primitive::Irfft => {
+            let log_n = (max_elem.ilog2().max(1) as usize).saturating_mul(8);
+            max_elem.saturating_mul(log_n)
+        }
+        Primitive::Cholesky
+        | Primitive::Qr
+        | Primitive::Svd
+        | Primitive::Lu
+        | Primitive::Solve
+        | Primitive::TriangularSolve
+        | Primitive::Eigh
+        | Primitive::Eig => max_elem.saturating_mul(64),
+        _ => max_elem,
+    }
+}
+
+/// Partition a `Jaxpr`'s equations into topological dependency waves (`Vec<Vec<usize>>`).
+///
+/// Equations within the same wave have no data dependencies on each other and
+/// are pure single-output operations that can execute concurrently. Barrier
+/// equations (control flow, effectful ops, or multi-output ops) are placed in
+/// singleton waves to preserve strict sequential ordering.
+#[must_use]
+pub fn build_dependency_waves(jaxpr: &Jaxpr) -> Vec<Vec<usize>> {
+    if jaxpr.equations.is_empty() {
+        return Vec::new();
+    }
+    let mut wave_of_var: HashMap<VarId, usize> = HashMap::with_capacity_and_hasher(
+        jaxpr.invars.len() + jaxpr.constvars.len() + jaxpr.equations.len(),
+        Default::default(),
+    );
+    for var in jaxpr.invars.iter().chain(jaxpr.constvars.iter()) {
+        wave_of_var.insert(*var, 0);
+    }
+
+    let mut waves: Vec<Vec<usize>> = Vec::new();
+    let mut min_wave_floor = 0_usize;
+
+    for (eqn_idx, eqn) in jaxpr.equations.iter().enumerate() {
+        if is_scheduler_barrier(eqn) {
+            let barrier_wave = waves.len();
+            waves.push(vec![eqn_idx]);
+            for out_var in &eqn.outputs {
+                wave_of_var.insert(*out_var, barrier_wave + 1);
+            }
+            min_wave_floor = barrier_wave + 1;
+            continue;
+        }
+
+        let mut target_wave = min_wave_floor;
+        for atom in &eqn.inputs {
+            if let Atom::Var(var) = atom
+                && let Some(&ready_at) = wave_of_var.get(var)
+            {
+                target_wave = target_wave.max(ready_at);
+            }
+        }
+        while waves.len() <= target_wave {
+            waves.push(Vec::new());
+        }
+        waves[target_wave].push(eqn_idx);
+        for out_var in &eqn.outputs {
+            wave_of_var.insert(*out_var, target_wave + 1);
+        }
+    }
+
+    waves.retain(|w| !w.is_empty());
+    waves
+}
+
 fn ready_wave_cost(
     jaxpr: &Jaxpr,
     env: &HashMap<VarId, Value>,
@@ -154,12 +253,7 @@ fn ready_wave_cost(
     ready_indices
         .iter()
         .fold(ReadyWaveCost::default(), |mut cost, idx| {
-            let equation_work = jaxpr.equations[*idx]
-                .inputs
-                .iter()
-                .filter_map(|atom| atom_tensor_element_count(atom, env))
-                .max()
-                .unwrap_or(0);
+            let equation_work = equation_estimated_work(&jaxpr.equations[*idx], env);
             cost.tensor_element_work = cost.tensor_element_work.saturating_add(equation_work);
             cost.max_tensor_elements = cost.max_tensor_elements.max(equation_work);
             cost
@@ -1216,10 +1310,26 @@ fn evaluate_jaxpr_parallel_inner_with_options(
     max_ready_wave: &mut usize,
     enable_exact_affine_f64_tensor_add: bool,
 ) -> Result<Vec<Value>, InterpreterError> {
-    if !jaxpr.constvars.is_empty() {
+    evaluate_jaxpr_parallel_inner_with_consts_and_options(
+        jaxpr,
+        &[],
+        args,
+        max_ready_wave,
+        enable_exact_affine_f64_tensor_add,
+    )
+}
+
+fn evaluate_jaxpr_parallel_inner_with_consts_and_options(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+    max_ready_wave: &mut usize,
+    enable_exact_affine_f64_tensor_add: bool,
+) -> Result<Vec<Value>, InterpreterError> {
+    if const_values.len() != jaxpr.constvars.len() {
         return Err(InterpreterError::ConstArity {
             expected: jaxpr.constvars.len(),
-            actual: 0,
+            actual: const_values.len(),
         });
     }
     if args.len() != jaxpr.invars.len() {
@@ -1231,9 +1341,12 @@ fn evaluate_jaxpr_parallel_inner_with_options(
     validate_scheduler_bindings(jaxpr)?;
 
     let mut env: HashMap<VarId, Value> = HashMap::with_capacity_and_hasher(
-        jaxpr.invars.len() + jaxpr.equations.len(),
+        jaxpr.constvars.len() + jaxpr.invars.len() + jaxpr.equations.len(),
         Default::default(),
     );
+    for (index, var) in jaxpr.constvars.iter().enumerate() {
+        env.insert(*var, const_values[index].clone());
+    }
     for (index, var) in jaxpr.invars.iter().enumerate() {
         env.insert(*var, args[index].clone());
     }
@@ -1445,6 +1558,42 @@ impl CpuBackend {
             enable_exact_affine_f64_tensor_add: false,
             ..Self::new()
         }
+    }
+
+    /// Execute a `Jaxpr` with explicit `const_values` and `args` using dependency-wave parallel scheduling.
+    pub fn execute_with_consts(
+        &self,
+        jaxpr: &Jaxpr,
+        const_values: &[Value],
+        args: &[Value],
+        device: DeviceId,
+    ) -> Result<Vec<Value>, BackendError> {
+        if device.0 >= self.device_count {
+            return Err(BackendError::ExecutionFailed {
+                detail: format!(
+                    "device {} not available (have {})",
+                    device.0, self.device_count
+                ),
+            });
+        }
+        if const_values.is_empty()
+            && let Some(result) = try_execute_single_equation_scalar_jaxpr(jaxpr, args)
+        {
+            return result.map_err(|e| BackendError::ExecutionFailed {
+                detail: e.to_string(),
+            });
+        }
+        let mut ignored_max_ready_wave = 0_usize;
+        evaluate_jaxpr_parallel_inner_with_consts_and_options(
+            jaxpr,
+            const_values,
+            args,
+            &mut ignored_max_ready_wave,
+            self.enable_exact_affine_f64_tensor_add,
+        )
+        .map_err(|e| BackendError::ExecutionFailed {
+            detail: e.to_string(),
+        })
     }
 }
 

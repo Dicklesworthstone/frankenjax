@@ -10,4 +10,4 @@
 
 mod executor;
 
-pub use executor::CpuBackend;
+pub use executor::{CpuBackend, build_dependency_waves};
