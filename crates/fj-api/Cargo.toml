@@ -14,6 +14,8 @@ fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core"
 fj-dispatch = { path = "../fj-dispatch" }
 fj-interpreters = { path = "../fj-interpreters" }
 fj-lax = { package = "frankenjax-lax", version = "=0.1.0", path = "../fj-lax" }
+fj-ledger = { path = "../fj-ledger" }
+fj-runtime = { path = "../fj-runtime" }
 fj-trace = { path = "../fj-trace" }
 
 [dev-dependencies]

@@ -1085,6 +1085,7 @@ fn classify_dispatch_error(err: &DispatchError) -> String {
         DispatchError::Cache(_) => "dispatch.cache_error".to_owned(),
         DispatchError::Interpreter(_) => "dispatch.interpreter_error".to_owned(),
         DispatchError::BackendExecution(_) => "dispatch.backend_execution_error".to_owned(),
+        DispatchError::AdmissionRejected(_) => "dispatch.admission_rejected".to_owned(),
     }
 }
 

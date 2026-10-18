@@ -8,7 +8,14 @@ pub use fj_ad::{
     AdError, JvpResult, clear_custom_derivative_rules, grad_jaxpr_with_cotangent,
     register_custom_jaxpr_jvp, register_custom_jaxpr_vjp, register_custom_jvp, register_custom_vjp,
 };
-pub use fj_core::{DType, Shape, Value};
+pub use fj_core::{DType, Shape, TransformCompositionProof, Value};
+pub use fj_dispatch::{
+    DispatchGovernanceSnapshot, DispatchResponse, dispatch_cancellation_token,
+    dispatch_governance_stats, observe_dispatch_drift_likelihood_ratio, reset_dispatch_governance,
+    set_dispatch_memory_budget,
+};
+pub use fj_ledger::EvidenceLedger;
+pub use fj_runtime::{AdmissionRejection, CancellationToken, ExecutionRegime, MemoryBudget};
 pub use transforms::{
     CheckpointWrapped, ComposedTransform, CustomJvpWrapped, CustomVjpWrapped, GradWrapped,
     HessianWrapped, JacobianWrapped, JitWrapped, LinearizeResult, LinearizedFunction, PmapWrapped,
@@ -2554,6 +2561,133 @@ mod tests {
             .expect("jit(cond+while) false");
         // 5 * 2 = 10 -> 13 -> 16 -> 19 -> 22
         assert_eq!(out_false, vec![Value::scalar_f64(22.0)]);
+    }
+
+    #[test]
+    fn test_rc26_14_api_evidence_proof_and_admission_governance() {
+        reset_dispatch_governance();
+        let jaxpr = build_program(ProgramSpec::Square);
+
+        // 1. JitWrapped: call_with_evidence + last_evidence_ledger + last_composition_proof
+        let jit_wrapped = jit(jaxpr.clone());
+        assert!(jit_wrapped.last_evidence_ledger().is_none());
+        assert!(jit_wrapped.last_composition_proof().is_none());
+
+        let jit_resp = jit_wrapped
+            .call_with_evidence(vec![Value::scalar_f64(4.0)])
+            .expect("jit call_with_evidence should succeed");
+        assert_eq!(jit_resp.outputs, vec![Value::scalar_f64(16.0)]);
+        assert_eq!(jit_resp.evidence_ledger.len(), 1);
+        assert!(jit_resp.composition_proof.verify().is_ok());
+        assert_eq!(
+            jit_wrapped
+                .last_evidence_ledger()
+                .expect("jit last_evidence_ledger")
+                .len(),
+            1
+        );
+        assert!(
+            jit_wrapped
+                .last_composition_proof()
+                .expect("jit last_composition_proof")
+                .verify()
+                .is_ok()
+        );
+
+        // 2. GradWrapped: call_with_evidence + last_evidence_ledger + last_composition_proof
+        let grad_wrapped = grad(jaxpr.clone());
+        let grad_resp = grad_wrapped
+            .call_with_evidence(vec![Value::scalar_f64(5.0)])
+            .expect("grad call_with_evidence should succeed");
+        assert_eq!(grad_resp.outputs, vec![Value::scalar_f64(10.0)]);
+        assert_eq!(
+            grad_wrapped
+                .last_evidence_ledger()
+                .expect("grad last_evidence_ledger")
+                .len(),
+            1
+        );
+        assert!(
+            grad_wrapped
+                .last_composition_proof()
+                .expect("grad last_composition_proof")
+                .verify()
+                .is_ok()
+        );
+
+        // 3. ValueAndGradWrapped: call_with_evidence + last_evidence_ledger + last_composition_proof
+        let vg_wrapped = value_and_grad(jaxpr.clone());
+        let ((vals, grads), vg_resp) = vg_wrapped
+            .call_with_evidence(vec![Value::scalar_f64(3.0)])
+            .expect("value_and_grad call_with_evidence should succeed");
+        assert_eq!(vals, vec![Value::scalar_f64(9.0)]);
+        assert_eq!(grads, vec![Value::scalar_f64(6.0)]);
+        assert_eq!(vg_resp.evidence_ledger.len(), 1);
+        assert!(
+            vg_wrapped
+                .last_composition_proof()
+                .expect("vg last_composition_proof")
+                .verify()
+                .is_ok()
+        );
+
+        // 4. VmapWrapped & ComposedTransform: call_with_evidence + last_composition_proof
+        let vmap_wrapped = vmap(jaxpr.clone());
+        let batch_arg = Value::vector_f64(&[2.0, 3.0]).expect("vector");
+        let vmap_resp = vmap_wrapped
+            .call_with_evidence(vec![batch_arg.clone()])
+            .expect("vmap call_with_evidence should succeed");
+        assert_eq!(
+            vmap_resp.outputs,
+            vec![Value::vector_f64(&[4.0, 9.0]).expect("vector")]
+        );
+        assert!(
+            vmap_wrapped
+                .last_composition_proof()
+                .expect("vmap last_composition_proof")
+                .verify()
+                .is_ok()
+        );
+
+        let composed = jit(jaxpr.clone()).compose_grad();
+        let comp_resp = composed
+            .call_with_evidence(vec![Value::scalar_f64(6.0)])
+            .expect("composed call_with_evidence should succeed");
+        assert_eq!(comp_resp.outputs, vec![Value::scalar_f64(12.0)]);
+        assert!(
+            composed
+                .last_composition_proof()
+                .expect("composed last_composition_proof")
+                .verify()
+                .is_ok()
+        );
+
+        // 5. Pre-execution admission rejection through fj-api fast paths (CancellationToken + MemoryBudget)
+        let token = dispatch_cancellation_token();
+        token.cancel("api test cancellation");
+        let cancelled_err = jit_wrapped
+            .call(vec![Value::scalar_f64(2.0)])
+            .expect_err("cancelled jit call must fail closed before execution");
+        assert!(
+            cancelled_err.to_string().contains("cancelled"),
+            "unexpected error: {cancelled_err}"
+        );
+        token.reset();
+
+        set_dispatch_memory_budget(MemoryBudget {
+            max_working_set_bytes: 1,
+            max_equation_count: 100,
+            max_transform_depth: 10,
+        });
+        let budget_err = grad_wrapped
+            .call(vec![Value::scalar_f64(2.0)])
+            .expect_err("over-budget grad call must fail closed before execution");
+        assert!(
+            budget_err.to_string().contains("exceeds budget"),
+            "unexpected error: {budget_err}"
+        );
+
+        reset_dispatch_governance();
     }
 
     mod proptest_tests {

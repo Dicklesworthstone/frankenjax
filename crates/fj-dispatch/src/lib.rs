@@ -12,10 +12,14 @@ use fj_core::{
 };
 use fj_interpreters::InterpreterError;
 use fj_ledger::{
-    ConformalPredictor, DecisionRecord, EvidenceLedger, EvidenceSignal, LedgerEntry, LossMatrix,
+    CalibratedEstimate, CalibrationReport, ConformalPredictor, EProcess, EvidenceLedger,
+    EvidenceSignal, LedgerEntry, LogDomainPosterior,
 };
 use fj_runtime::backend::{Backend, BackendError, BackendRegistry};
 use fj_runtime::device::{DeviceId, DevicePlacement};
+use fj_runtime::{
+    AdmissionRejection, CancellationToken, ExecutionRegime, MemoryBudget, RuntimeAdmissionModel,
+};
 use fj_trace::simulate_nested_trace_contexts;
 use std::collections::BTreeMap;
 
@@ -485,17 +489,43 @@ fn transform_tail_summary(tail: &[Transform]) -> String {
         .join(">")
 }
 
-/// Telemetry from the `fj-cache` compilation cache and `fj-interpreters::staging`
-/// pipeline attached to a [`DispatchResponse`].
+/// Telemetry from the `fj-cache` compilation cache, `fj-interpreters::staging`,
+/// and `fj-runtime` / `fj-ledger` pre-execution governance attached to a [`DispatchResponse`].
 ///
 /// Excluded from [`PartialEq`] comparisons so memoized warm calls remain
-/// logically equal to cold calls while still exposing hit/miss and staging
-/// metadata to callers and tests.
-#[derive(Debug, Clone, Default)]
+/// logically equal to cold calls while still exposing hit/miss, staging, and
+/// governance metadata to callers and tests.
+#[derive(Debug, Clone)]
 pub struct DispatchCacheTelemetry {
     pub cache_hit: bool,
     pub cache_stats: fj_cache::backend::CacheStats,
     pub staged_program: Option<std::sync::Arc<fj_interpreters::staging::StagedProgram>>,
+    pub execution_regime: ExecutionRegime,
+    pub estimated_working_set_bytes: usize,
+    pub calibrated_posterior: CalibratedEstimate,
+    pub e_value: f64,
+    pub ece: f64,
+}
+
+impl Default for DispatchCacheTelemetry {
+    fn default() -> Self {
+        Self {
+            cache_hit: false,
+            cache_stats: fj_cache::backend::CacheStats::default(),
+            staged_program: None,
+            execution_regime: ExecutionRegime::CompiledSlotFastPath,
+            estimated_working_set_bytes: 0,
+            calibrated_posterior: CalibratedEstimate {
+                point: 0.05,
+                lower: 0.025,
+                upper: 0.075,
+                coverage: 0.0,
+                used_conformal: false,
+            },
+            e_value: 1.0,
+            ece: 0.0,
+        }
+    }
 }
 
 impl PartialEq for DispatchCacheTelemetry {
@@ -712,6 +742,172 @@ pub fn record_dispatch_cache_hit(cache_key: &CacheKey) {
     }
 }
 
+/// Snapshot of the process-wide pre-execution statistical governance state
+/// (`ConformalPredictor`, `CalibrationReport`, `EProcess`, `MemoryBudget`).
+#[derive(Debug, Clone)]
+pub struct DispatchGovernanceSnapshot {
+    pub calibration_size: usize,
+    pub is_calibrated: bool,
+    pub prediction_threshold: Option<f64>,
+    pub ece: f64,
+    pub e_value: f64,
+    pub e_process_observations: usize,
+    pub e_process_rejected: bool,
+    pub memory_budget: MemoryBudget,
+    pub total_admissions: u64,
+    pub total_rejections: u64,
+}
+
+struct DispatchGovernanceState {
+    conformal: ConformalPredictor,
+    calibration: CalibrationReport,
+    e_process: EProcess,
+    memory_budget: MemoryBudget,
+    cancellation_token: CancellationToken,
+    total_admissions: u64,
+    total_rejections: u64,
+}
+
+static GLOBAL_CANCELLATION_TOKEN: std::sync::OnceLock<CancellationToken> =
+    std::sync::OnceLock::new();
+static GOVERNANCE_NONDEFAULT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static FAST_PATH_ADMISSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn global_cancellation_token() -> &'static CancellationToken {
+    GLOBAL_CANCELLATION_TOKEN.get_or_init(CancellationToken::new)
+}
+
+impl DispatchGovernanceState {
+    fn new() -> Self {
+        Self {
+            conformal: ConformalPredictor::new(0.9, 5),
+            calibration: CalibrationReport::new(10),
+            e_process: EProcess::new(20.0),
+            memory_budget: MemoryBudget::default(),
+            cancellation_token: global_cancellation_token().clone(),
+            total_admissions: 0,
+            total_rejections: 0,
+        }
+    }
+
+    fn snapshot(&self) -> DispatchGovernanceSnapshot {
+        DispatchGovernanceSnapshot {
+            calibration_size: self.conformal.calibration_size(),
+            is_calibrated: self.conformal.is_calibrated(),
+            prediction_threshold: self.conformal.prediction_threshold(),
+            ece: self.calibration.compute_ece(),
+            e_value: self.e_process.e_value(),
+            e_process_observations: self.e_process.observations(),
+            e_process_rejected: self.e_process.rejected(),
+            memory_budget: self.memory_budget,
+            total_admissions: self.total_admissions
+                + FAST_PATH_ADMISSIONS.load(std::sync::atomic::Ordering::Relaxed),
+            total_rejections: self.total_rejections,
+        }
+    }
+}
+
+static DISPATCH_GOVERNANCE_STATE: std::sync::OnceLock<std::sync::Mutex<DispatchGovernanceState>> =
+    std::sync::OnceLock::new();
+
+fn governance_state() -> &'static std::sync::Mutex<DispatchGovernanceState> {
+    DISPATCH_GOVERNANCE_STATE.get_or_init(|| std::sync::Mutex::new(DispatchGovernanceState::new()))
+}
+
+/// Return a snapshot of the process-wide `fj-ledger` + `fj-runtime` governance state.
+#[must_use]
+pub fn dispatch_governance_stats() -> DispatchGovernanceSnapshot {
+    let guard = governance_state().lock().unwrap_or_else(|e| e.into_inner());
+    guard.snapshot()
+}
+
+/// Reset the process-wide `ConformalPredictor`, `CalibrationReport`, `EProcess`,
+/// `MemoryBudget`, and `CancellationToken` to their clean initial state.
+pub fn reset_dispatch_governance() {
+    global_cancellation_token().reset();
+    GOVERNANCE_NONDEFAULT.store(false, std::sync::atomic::Ordering::SeqCst);
+    FAST_PATH_ADMISSIONS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let mut guard = governance_state().lock().unwrap_or_else(|e| e.into_inner());
+    *guard = DispatchGovernanceState::new();
+}
+
+/// Override the process-wide [`MemoryBudget`] enforced before dispatch execution.
+pub fn set_dispatch_memory_budget(budget: MemoryBudget) {
+    let mut guard = governance_state().lock().unwrap_or_else(|e| e.into_inner());
+    guard.memory_budget = budget;
+    GOVERNANCE_NONDEFAULT.store(
+        budget != MemoryBudget::default() || guard.e_process.rejected(),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
+
+/// Feed a likelihood ratio observation into the process-wide sequential drift [`EProcess`].
+pub fn observe_dispatch_drift_likelihood_ratio(likelihood_ratio: f64) {
+    let mut guard = governance_state().lock().unwrap_or_else(|e| e.into_inner());
+    guard.e_process.update(likelihood_ratio);
+    if guard.e_process.rejected() {
+        GOVERNANCE_NONDEFAULT.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Return a handle to the process-wide [`CancellationToken`] checked before dispatch execution.
+#[must_use]
+pub fn dispatch_cancellation_token() -> CancellationToken {
+    global_cancellation_token().clone()
+}
+
+/// Evaluate pre-execution admission for fast-path callers (`JitWrapped` / `GradWrapped` /
+/// `ValueAndGradWrapped`) so that `MemoryBudget`, `CancellationToken`, and `EProcess`
+/// sequential rejection are enforced before any fast-path evaluation runs.
+pub fn check_fast_path_admission(
+    jaxpr: &Jaxpr,
+    transform_stack: &[Transform],
+    args: &[Value],
+    mode: CompatibilityMode,
+) -> Result<(), DispatchError> {
+    if mode == CompatibilityMode::Strict
+        && !GOVERNANCE_NONDEFAULT.load(std::sync::atomic::Ordering::Relaxed)
+        && !global_cancellation_token().is_cancelled()
+        && jaxpr.equations.len() <= 256
+        && transform_stack.len() <= 16
+        && args.iter().all(|v| match v {
+            Value::Scalar(_) => true,
+            Value::Tensor(t) => t.elements.len() <= 4096,
+        })
+    {
+        FAST_PATH_ADMISSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return Ok(());
+    }
+
+    let posterior_abandoned = heuristic_posterior_abandoned_parts(jaxpr, transform_stack);
+    let has_parallel_wave = jaxpr_has_parallel_heavy_wave(jaxpr);
+    let model = RuntimeAdmissionModel::new(mode);
+    let mut guard = governance_state().lock().unwrap_or_else(|e| e.into_inner());
+    match model.evaluate_admission(
+        jaxpr,
+        args,
+        transform_stack.len(),
+        posterior_abandoned,
+        &guard.memory_budget,
+        Some(&guard.cancellation_token),
+        &guard.conformal,
+        &guard.e_process,
+        has_parallel_wave,
+        false,
+        false,
+    ) {
+        Ok(_decision) => {
+            guard.total_admissions += 1;
+            Ok(())
+        }
+        Err(rejection) => {
+            guard.total_rejections += 1;
+            Err(DispatchError::AdmissionRejected(rejection))
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DispatchResponse {
     pub outputs: Vec<Value>,
@@ -758,6 +954,31 @@ impl DispatchResponse {
     #[must_use]
     pub fn staged_program(&self) -> Option<&fj_interpreters::staging::StagedProgram> {
         self.telemetry.staged_program.as_deref()
+    }
+
+    #[must_use]
+    pub fn execution_regime(&self) -> ExecutionRegime {
+        self.telemetry.execution_regime
+    }
+
+    #[must_use]
+    pub fn estimated_working_set_bytes(&self) -> usize {
+        self.telemetry.estimated_working_set_bytes
+    }
+
+    #[must_use]
+    pub fn calibrated_posterior(&self) -> &CalibratedEstimate {
+        &self.telemetry.calibrated_posterior
+    }
+
+    #[must_use]
+    pub fn e_value(&self) -> f64 {
+        self.telemetry.e_value
+    }
+
+    #[must_use]
+    pub fn calibration_ece(&self) -> f64 {
+        self.telemetry.ece
     }
 }
 
@@ -859,6 +1080,7 @@ pub enum DispatchError {
     BackendExecution(BackendError),
     TransformInvariant(TransformCompositionError),
     TransformExecution(TransformExecutionError),
+    AdmissionRejected(AdmissionRejection),
 }
 
 impl std::fmt::Display for DispatchError {
@@ -869,6 +1091,7 @@ impl std::fmt::Display for DispatchError {
             Self::BackendExecution(err) => write!(f, "backend execution error: {err}"),
             Self::TransformInvariant(err) => write!(f, "transform invariant error: {err}"),
             Self::TransformExecution(err) => write!(f, "transform execution error: {err}"),
+            Self::AdmissionRejected(err) => write!(f, "admission rejected: {err}"),
         }
     }
 }
@@ -902,6 +1125,12 @@ impl From<TransformCompositionError> for DispatchError {
 impl From<TransformExecutionError> for DispatchError {
     fn from(value: TransformExecutionError) -> Self {
         Self::TransformExecution(value)
+    }
+}
+
+impl From<AdmissionRejection> for DispatchError {
+    fn from(value: AdmissionRejection) -> Self {
+        Self::AdmissionRejected(value)
     }
 }
 
@@ -1009,6 +1238,133 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
     // Thread effect context through Jaxpr/equation effect ordering.
     let mut effect_ctx = EffectContext::new();
     thread_jaxpr_effect_tokens(&mut effect_ctx, request.root_jaxpr);
+    let effect_tokens = effect_ctx.finalize();
+    let effect_count = effect_tokens.len();
+    let effect_trace = effect_tokens
+        .iter()
+        .map(|token| format!("{}:{}", token.sequence_number, token.effect_name))
+        .collect::<Vec<_>>()
+        .join(",");
+    let nested_trace_frame_trace = nested_trace_summary
+        .frames
+        .iter()
+        .map(|frame| {
+            format!(
+                "{}:{}@{}",
+                frame.transform.as_str(),
+                frame.trace_id,
+                frame.depth
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // ── Pre-Execution Governance (`fj-ledger` + `fj-runtime`) ──────
+    let signals = vec![
+        EvidenceSignal {
+            signal_name: "eqn_count".to_owned(),
+            log_likelihood_delta: (request.root_jaxpr.equations.len() as f64 + 1.0).ln(),
+            detail: format!("eqn_count={}", request.root_jaxpr.equations.len()),
+        },
+        EvidenceSignal {
+            signal_name: "transform_depth".to_owned(),
+            log_likelihood_delta: request.transform_stack.len() as f64 * 0.1,
+            detail: format!("transform_depth={}", request.transform_stack.len()),
+        },
+        EvidenceSignal {
+            signal_name: "transform_stack_hash".to_owned(),
+            log_likelihood_delta: (composition_proof.transform_count as f64 + 1.0).ln(),
+            detail: composition_proof.stack_hash_hex.clone(),
+        },
+        EvidenceSignal {
+            signal_name: "nested_trace_depth".to_owned(),
+            log_likelihood_delta: nested_trace_summary.max_depth as f64 * 0.05,
+            detail: format!(
+                "max_depth={},frames={}",
+                nested_trace_summary.max_depth, nested_trace_frame_trace
+            ),
+        },
+        EvidenceSignal {
+            signal_name: "effect_token_count".to_owned(),
+            log_likelihood_delta: (effect_count as f64 + 1.0).ln(),
+            detail: format!("effect_tokens={effect_count}"),
+        },
+        EvidenceSignal {
+            signal_name: "effect_token_trace".to_owned(),
+            log_likelihood_delta: (effect_count as f64 + 1.0).ln() * 0.1,
+            detail: format!("effect_tokens=[{effect_trace}]"),
+        },
+    ];
+
+    let posterior_abandoned = compute_posterior_abandoned_with_signals(
+        request.root_jaxpr,
+        request.transform_stack,
+        &request.compile_options,
+        &signals,
+    );
+    let has_parallel_heavy_wave = wants_wave_parallel(&request.compile_options)
+        .unwrap_or_else(|| jaxpr_has_parallel_heavy_wave(request.root_jaxpr));
+    let wants_egraph = wants_egraph_optimize(&request.compile_options);
+    let reject_on_kill = request
+        .compile_options
+        .get("reject_on_kill")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
+
+    let admission_decision = {
+        let mut gov = governance_state().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(raw_lr) = request.compile_options.get("drift_likelihood_ratio")
+            && let Ok(lr) = raw_lr.trim().parse::<f64>()
+        {
+            gov.e_process.update(lr);
+        }
+        let mut effective_budget = gov.memory_budget;
+        if let Some(raw_bytes) = request.compile_options.get("max_working_set_bytes")
+            && let Ok(bytes) = raw_bytes.trim().parse::<usize>()
+        {
+            effective_budget.max_working_set_bytes = bytes;
+        }
+        if let Some(raw_eqns) = request.compile_options.get("max_equation_count")
+            && let Ok(eqns) = raw_eqns.trim().parse::<usize>()
+        {
+            effective_budget.max_equation_count = eqns;
+        }
+        if let Some(raw_depth) = request.compile_options.get("max_transform_depth")
+            && let Ok(depth) = raw_depth.trim().parse::<usize>()
+        {
+            effective_budget.max_transform_depth = depth;
+        }
+
+        let admission_model = RuntimeAdmissionModel::new(request.mode);
+        match admission_model.evaluate_admission(
+            request.root_jaxpr,
+            &request.args,
+            request.transform_stack.len(),
+            posterior_abandoned,
+            &effective_budget,
+            Some(&gov.cancellation_token),
+            &gov.conformal,
+            &gov.e_process,
+            has_parallel_heavy_wave,
+            wants_egraph,
+            reject_on_kill,
+        ) {
+            Ok(decision) => {
+                gov.total_admissions += 1;
+                decision
+            }
+            Err(rejection) => {
+                gov.total_rejections += 1;
+                return Err(DispatchError::AdmissionRejected(rejection));
+            }
+        }
+    };
+
+    let mut evidence_ledger = EvidenceLedger::new();
+    evidence_ledger.append(LedgerEntry {
+        decision_id: cache_key.as_string(),
+        record: admission_decision.record.clone(),
+        signals,
+    });
 
     // Look up or compile the execution plan in the LruCache-backed compilation cache.
     let cached_hit = {
@@ -1046,10 +1402,16 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
                     &fj_egraph::OptimizationConfig::ieee_strict(),
                 ))
             }
-            Some(_) if wants_egraph_optimize(&request.compile_options) => {
+            Some(_) if wants_egraph => std::sync::Arc::new(fj_egraph::optimize_jaxpr_with_config(
+                request.root_jaxpr,
+                &fj_egraph::OptimizationConfig::safe(),
+            )),
+            _ if admission_decision.regime == ExecutionRegime::EGraphSaturatedCompile
+                && allows_fast_canonicalize(&request.compile_options) =>
+            {
                 std::sync::Arc::new(fj_egraph::optimize_jaxpr_with_config(
                     request.root_jaxpr,
-                    &fj_egraph::OptimizationConfig::safe(),
+                    &fj_egraph::OptimizationConfig::ieee_strict(),
                 ))
             }
             _ if request.transform_stack.contains(&Transform::Jit)
@@ -1152,6 +1514,7 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
     let (backend, device, _fell_back) =
         backend_registry.resolve_with_fallback(&DevicePlacement::Default, requested_backend)?;
 
+    let exec_start = std::time::Instant::now();
     let outputs = if let Some(staged) = &plan.staged_program {
         let dynamic_args: Vec<Value> = request
             .args
@@ -1205,73 +1568,26 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
             &request.compile_options,
         )?
     };
+    let exec_elapsed_secs = exec_start.elapsed().as_secs_f64();
 
-    let effect_tokens = effect_ctx.finalize();
-    let effect_count = effect_tokens.len();
-    let effect_trace = effect_tokens
-        .iter()
-        .map(|token| format!("{}:{}", token.sequence_number, token.effect_name))
-        .collect::<Vec<_>>()
-        .join(",");
-    let nested_trace_frame_trace = nested_trace_summary
-        .frames
-        .iter()
-        .map(|frame| {
-            format!(
-                "{}:{}@{}",
-                frame.transform.as_str(),
-                frame.trace_id,
-                frame.depth
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-
-    let mut evidence_ledger = EvidenceLedger::new();
-    let posterior_abandoned =
-        heuristic_posterior_abandoned_parts(request.root_jaxpr, request.transform_stack);
-    let matrix = LossMatrix::default();
-    let record = DecisionRecord::from_posterior(request.mode, posterior_abandoned, &matrix);
-
-    evidence_ledger.append(LedgerEntry {
-        decision_id: cache_key.as_string(),
-        record,
-        signals: vec![
-            EvidenceSignal {
-                signal_name: "eqn_count".to_owned(),
-                log_likelihood_delta: (request.root_jaxpr.equations.len() as f64 + 1.0).ln(),
-                detail: format!("eqn_count={}", request.root_jaxpr.equations.len()),
-            },
-            EvidenceSignal {
-                signal_name: "transform_depth".to_owned(),
-                log_likelihood_delta: request.transform_stack.len() as f64 * 0.1,
-                detail: format!("transform_depth={}", request.transform_stack.len()),
-            },
-            EvidenceSignal {
-                signal_name: "transform_stack_hash".to_owned(),
-                log_likelihood_delta: (composition_proof.transform_count as f64 + 1.0).ln(),
-                detail: composition_proof.stack_hash_hex.clone(),
-            },
-            EvidenceSignal {
-                signal_name: "nested_trace_depth".to_owned(),
-                log_likelihood_delta: nested_trace_summary.max_depth as f64 * 0.05,
-                detail: format!(
-                    "max_depth={},frames={}",
-                    nested_trace_summary.max_depth, nested_trace_frame_trace
-                ),
-            },
-            EvidenceSignal {
-                signal_name: "effect_token_count".to_owned(),
-                log_likelihood_delta: (effect_count as f64 + 1.0).ln(),
-                detail: format!("effect_tokens={effect_count}"),
-            },
-            EvidenceSignal {
-                signal_name: "effect_token_trace".to_owned(),
-                log_likelihood_delta: (effect_count as f64 + 1.0).ln() * 0.1,
-                detail: format!("effect_tokens=[{effect_trace}]"),
-            },
-        ],
-    });
+    // Post-execution calibration feedback into ConformalPredictor and CalibrationReport.
+    let (post_e_value, post_ece) = {
+        let mut gov = governance_state().lock().unwrap_or_else(|e| e.into_inner());
+        let observed_latency_ratio = (exec_elapsed_secs / 0.05).clamp(0.0, 1.0);
+        let nonconformity = (posterior_abandoned - observed_latency_ratio).abs();
+        gov.conformal.observe(nonconformity);
+        let observed_abandoned = exec_elapsed_secs >= 0.05;
+        gov.calibration
+            .observe(posterior_abandoned, observed_abandoned);
+        if !request
+            .compile_options
+            .contains_key("drift_likelihood_ratio")
+        {
+            let benign_lr = if cache_hit { 0.95 } else { 0.99 };
+            gov.e_process.update(benign_lr);
+        }
+        (gov.e_process.e_value(), gov.calibration.compute_ece())
+    };
 
     let lowered_proof = build_lowered_composition_proof(&request, &plan, &static_argnums, &outputs)
         .unwrap_or_else(|| composition_proof.into_owned());
@@ -1285,6 +1601,15 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
             cache_hit,
             cache_stats,
             staged_program: plan.staged_program.clone(),
+            execution_regime: if plan.use_wave_parallel {
+                ExecutionRegime::WaveParallelCpu
+            } else {
+                admission_decision.regime
+            },
+            estimated_working_set_bytes: admission_decision.estimated_working_set_bytes,
+            calibrated_posterior: admission_decision.calibrated_posterior,
+            e_value: post_e_value,
+            ece: post_ece,
         },
     })
 }
@@ -2827,8 +3152,28 @@ fn heuristic_posterior_abandoned(ledger: &TraceTransformLedger) -> f64 {
 fn heuristic_posterior_abandoned_parts(root_jaxpr: &Jaxpr, transform_stack: &[Transform]) -> f64 {
     let eqn_factor = root_jaxpr.equations.len() as f64;
     let depth_factor = transform_stack.len() as f64;
-    let score = (eqn_factor + 2.0 * depth_factor) / (eqn_factor + 2.0 * depth_factor + 20.0);
-    score.clamp(0.05, 0.95)
+    let workload_odds = (eqn_factor + 2.0 * depth_factor).max(1e-9);
+    let mut posterior = LogDomainPosterior::new(1.0 / 21.0);
+    posterior.update(workload_odds.ln());
+    posterior.posterior_abandoned().clamp(0.05, 0.95)
+}
+
+fn compute_posterior_abandoned_with_signals(
+    root_jaxpr: &Jaxpr,
+    transform_stack: &[Transform],
+    compile_options: &BTreeMap<String, String>,
+    signals: &[EvidenceSignal],
+) -> f64 {
+    if let Some(raw_prior) = compile_options.get("prior_abandoned")
+        && let Ok(prior) = raw_prior.trim().parse::<f64>()
+    {
+        let mut posterior = LogDomainPosterior::new(prior);
+        for signal in signals {
+            posterior.update(signal.log_likelihood_delta);
+        }
+        return posterior.posterior_abandoned().clamp(0.05, 0.99);
+    }
+    heuristic_posterior_abandoned_parts(root_jaxpr, transform_stack)
 }
 
 /// Compute posterior with conformal calibration when available.
@@ -5819,5 +6164,133 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn e2e_rc26_14_pre_execution_admission_and_ledger_governance() {
+        use fj_runtime::{AdmissionRejection, ExecutionRegime};
+
+        super::reset_dispatch_governance();
+
+        // Use a well-typedJaxpr (`Square`, 1 input) but pass 2 runtime `args` so that if
+        // `eval_jaxpr` were ever reached it would fail with `InterpreterError::InputArityMismatch`.
+        // Pre-execution admission must reject with `DispatchError::AdmissionRejected` BEFORE
+        // compilation or `eval_jaxpr` runs.
+        let trap_ttl = ledger(ProgramSpec::Square, &[Transform::Jit]);
+        let trap_args = vec![Value::scalar_f64(1.0), Value::scalar_f64(2.0)];
+
+        // 1. MemoryBudget rejection blocks BEFORE eval_jaxpr runs.
+        let mut tight_mem_opts = BTreeMap::new();
+        tight_mem_opts.insert("max_working_set_bytes".to_owned(), "4".to_owned());
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Hardened,
+            ledger: trap_ttl.clone(),
+            args: trap_args.clone(),
+            backend: "cpu".to_owned(),
+            compile_options: tight_mem_opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("oversized working set must be rejected before eval_jaxpr");
+        assert!(
+            matches!(
+                err,
+                DispatchError::AdmissionRejected(AdmissionRejection::MemoryBudgetExceeded { .. })
+            ),
+            "expected MemoryBudgetExceeded, got {err:?}"
+        );
+
+        // 2. EquationCountExceeded rejection blocks BEFORE eval_jaxpr runs.
+        let mut tight_eqn_opts = BTreeMap::new();
+        tight_eqn_opts.insert("max_equation_count".to_owned(), "0".to_owned());
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Hardened,
+            ledger: trap_ttl.clone(),
+            args: trap_args.clone(),
+            backend: "cpu".to_owned(),
+            compile_options: tight_eqn_opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("equation budget overflow must be rejected before eval_jaxpr");
+        assert!(
+            matches!(
+                err,
+                DispatchError::AdmissionRejected(AdmissionRejection::EquationCountExceeded { .. })
+            ),
+            "expected EquationCountExceeded, got {err:?}"
+        );
+
+        // 3. Hardened loss-matrix Kill rejection on high prior_abandoned blocks BEFORE eval_jaxpr runs.
+        let mut kill_opts = BTreeMap::new();
+        kill_opts.insert("prior_abandoned".to_owned(), "0.95".to_owned());
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Hardened,
+            ledger: trap_ttl.clone(),
+            args: trap_args.clone(),
+            backend: "cpu".to_owned(),
+            compile_options: kill_opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("hardened Kill decision must reject before eval_jaxpr");
+        assert!(
+            matches!(
+                err,
+                DispatchError::AdmissionRejected(AdmissionRejection::AbandonedWorkKilled { .. })
+            ),
+            "expected AbandonedWorkKilled, got {err:?}"
+        );
+
+        // 4. Sequential EProcess drift rejection blocks BEFORE eval_jaxpr runs, and reset restores admission.
+        super::reset_dispatch_governance();
+        let mut drift_opts = BTreeMap::new();
+        drift_opts.insert("drift_likelihood_ratio".to_owned(), "25.0".to_owned());
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Hardened,
+            ledger: trap_ttl,
+            args: trap_args,
+            backend: "cpu".to_owned(),
+            compile_options: drift_opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("sequential EProcess drift must reject before eval_jaxpr");
+        assert!(
+            matches!(
+                err,
+                DispatchError::AdmissionRejected(
+                    AdmissionRejection::SequentialDriftRejected { .. }
+                )
+            ),
+            "expected SequentialDriftRejected, got {err:?}"
+        );
+        super::reset_dispatch_governance();
+
+        // 5. Normal executions calibrate ConformalPredictor and populate telemetry.
+        for i in 1..=6 {
+            let resp = dispatch(DispatchRequest {
+                mode: CompatibilityMode::Strict,
+                ledger: ledger(ProgramSpec::Square, &[Transform::Jit]),
+                args: vec![Value::scalar_f64(i as f64)],
+                backend: "cpu".to_owned(),
+                compile_options: BTreeMap::new(),
+                custom_hook: None,
+                unknown_incompatible_features: vec![],
+            })
+            .expect("normal dispatch should succeed");
+            assert_eq!(
+                resp.execution_regime(),
+                ExecutionRegime::CompiledSlotFastPath
+            );
+            assert!(resp.estimated_working_set_bytes() >= 16);
+            if i >= 6 {
+                assert!(resp.calibrated_posterior().used_conformal);
+            }
+        }
+        let stats = super::dispatch_governance_stats();
+        assert!(stats.is_calibrated);
+        assert!(stats.calibration_size >= 5);
+        assert!(stats.ece.is_finite());
     }
 }

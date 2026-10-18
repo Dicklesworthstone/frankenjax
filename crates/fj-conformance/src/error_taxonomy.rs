@@ -1248,6 +1248,12 @@ fn classify_dispatch_error(err: &DispatchError) -> ObservedOutcome {
         DispatchError::TransformExecution(transform_err) => {
             classify_transform_execution_error(transform_err)
         }
+        DispatchError::AdmissionRejected(_) => observed(
+            "dispatch.admission_rejected",
+            "DispatchError::AdmissionRejected",
+            "admission rejected: {detail}",
+            err.to_string(),
+        ),
     }
 }
 

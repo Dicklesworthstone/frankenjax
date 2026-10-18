@@ -2136,6 +2136,7 @@ fn dispatch_error_class(err: &DispatchError) -> String {
         DispatchError::Interpreter(_) => "interpreter".to_owned(),
         DispatchError::BackendExecution(_) => "backend_execution".to_owned(),
         DispatchError::TransformInvariant(_) => "transform_invariant".to_owned(),
+        DispatchError::AdmissionRejected(_) => "admission_rejected".to_owned(),
     }
 }
 

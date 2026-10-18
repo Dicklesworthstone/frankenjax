@@ -7,8 +7,12 @@ use std::sync::{Arc, OnceLock};
 
 #[cfg(test)]
 use fj_core::TraceTransformLedger;
-use fj_core::{CompatibilityMode, Jaxpr, Transform, Value};
-use fj_dispatch::{DispatchRequestRef, PreparedDispatchMeta, dispatch_ref, prepare_dispatch_meta};
+use fj_core::{CompatibilityMode, Jaxpr, Transform, TransformCompositionProof, Value};
+use fj_dispatch::{
+    DispatchRequestRef, DispatchResponse, PreparedDispatchMeta, check_fast_path_admission,
+    dispatch_ref, prepare_dispatch_meta,
+};
+use fj_ledger::{DecisionRecord, EvidenceLedger, EvidenceSignal, LedgerEntry, LossMatrix};
 pub use fj_trace::ShapedArray;
 
 use crate::errors::ApiError;
@@ -33,6 +37,7 @@ pub struct JitWrapped {
     /// calls. Excluded from equality/Debug for the same reason as
     /// `meta_cache`: it is a pure memo of `jaxpr`.
     compiled_cache: CompiledEvalCache,
+    last_evidence: LastEvidenceCache,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +54,7 @@ pub struct GradWrapped {
     /// Lazily-compiled scalar-F64 reverse plan for repeated default-CPU AD
     /// calls. Excluded from equality/Debug because it is a pure memo of `jaxpr`.
     compiled_ad_cache: CompiledAdCache,
+    last_evidence: LastEvidenceCache,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +69,7 @@ pub struct VmapWrapped {
     /// and [`GradWrapped`]. Excluded from equality/Debug. Any builder that mutates
     /// a cache-key input (backend/mode/in_axes/out_axes) must reset it.
     meta_cache: DispatchMetaCache,
+    last_evidence: LastEvidenceCache,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,6 +86,7 @@ pub struct ValueAndGradWrapped {
     /// value-and-grad calls. Excluded from equality/Debug because it is a pure
     /// memo of `jaxpr`.
     compiled_ad_cache: CompiledAdCache,
+    last_evidence: LastEvidenceCache,
 }
 
 /// Process-lifetime cache for the args-independent dispatch metadata of a
@@ -132,6 +140,45 @@ impl PartialEq for CompiledAdCache {
 impl std::fmt::Debug for CompiledAdCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("CompiledAdCache(..)")
+    }
+}
+
+#[derive(Clone, Default)]
+struct LastEvidenceCache(
+    Arc<std::sync::Mutex<Option<(EvidenceLedger, TransformCompositionProof)>>>,
+);
+
+impl PartialEq for LastEvidenceCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for LastEvidenceCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LastEvidenceCache(..)")
+    }
+}
+
+impl LastEvidenceCache {
+    fn store(&self, ledger: EvidenceLedger, proof: TransformCompositionProof) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = Some((ledger, proof));
+        }
+    }
+
+    fn ledger(&self) -> Option<EvidenceLedger> {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|(l, _)| l.clone()))
+    }
+
+    fn proof(&self) -> Option<TransformCompositionProof> {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|(_, p)| p.clone()))
     }
 }
 
@@ -222,6 +269,7 @@ pub struct ComposedTransform {
     mode: CompatibilityMode,
     compile_options: BTreeMap<String, String>,
     custom_vjp_rule_key: Option<String>,
+    last_evidence: LastEvidenceCache,
 }
 
 #[must_use]
@@ -233,6 +281,7 @@ pub fn jit(jaxpr: Jaxpr) -> JitWrapped {
         static_argnums: Vec::new(),
         meta_cache: DispatchMetaCache::default(),
         compiled_cache: CompiledEvalCache::default(),
+        last_evidence: LastEvidenceCache::default(),
     }
 }
 
@@ -245,6 +294,7 @@ pub fn grad(jaxpr: Jaxpr) -> GradWrapped {
         custom_vjp_rule_key: None,
         meta_cache: DispatchMetaCache::default(),
         compiled_ad_cache: CompiledAdCache::default(),
+        last_evidence: LastEvidenceCache::default(),
     }
 }
 
@@ -257,6 +307,7 @@ pub fn vmap(jaxpr: Jaxpr) -> VmapWrapped {
         in_axes: None,
         out_axes: None,
         meta_cache: DispatchMetaCache::default(),
+        last_evidence: LastEvidenceCache::default(),
     }
 }
 
@@ -269,6 +320,7 @@ pub fn value_and_grad(jaxpr: Jaxpr) -> ValueAndGradWrapped {
         custom_vjp_rule_key: None,
         meta_cache: DispatchMetaCache::default(),
         compiled_ad_cache: CompiledAdCache::default(),
+        last_evidence: LastEvidenceCache::default(),
     }
 }
 
@@ -914,6 +966,71 @@ fn dispatch_with(
     dispatch_with_options(jaxpr, transforms, args, backend, mode, BTreeMap::new())
 }
 
+fn synthesize_fast_path_proof(
+    jaxpr: &Jaxpr,
+    transforms: &[Transform],
+    mode: CompatibilityMode,
+    backend: &str,
+    compile_options: &BTreeMap<String, String>,
+) -> Option<TransformCompositionProof> {
+    let evidence = transform_evidence(transforms);
+    prepare_dispatch_meta(
+        mode,
+        jaxpr,
+        transforms,
+        &evidence,
+        backend,
+        compile_options,
+        None,
+        &[],
+    )
+    .ok()
+    .map(|meta| meta.composition_proof)
+}
+
+fn synthesize_fast_path_ledger(
+    jaxpr: &Jaxpr,
+    transforms: &[Transform],
+    mode: CompatibilityMode,
+    backend: &str,
+    compile_options: &BTreeMap<String, String>,
+) -> Option<EvidenceLedger> {
+    let evidence = transform_evidence(transforms);
+    let meta = prepare_dispatch_meta(
+        mode,
+        jaxpr,
+        transforms,
+        &evidence,
+        backend,
+        compile_options,
+        None,
+        &[],
+    )
+    .ok()?;
+    let eqn_count = jaxpr.equations.len() as f64;
+    let depth = transforms.len() as f64;
+    let signals = vec![
+        EvidenceSignal {
+            signal_name: "eqn_count".to_owned(),
+            log_likelihood_delta: (eqn_count + 1.0).ln(),
+            detail: format!("jaxpr_equations={}", jaxpr.equations.len()),
+        },
+        EvidenceSignal {
+            signal_name: "transform_depth".to_owned(),
+            log_likelihood_delta: depth * 0.25,
+            detail: format!("stack_len={}", transforms.len()),
+        },
+    ];
+    let record = DecisionRecord::from_posterior(mode, 0.05, &LossMatrix::default());
+    let mut ledger = EvidenceLedger::new();
+    ledger.append(LedgerEntry {
+        decision_id: meta.cache_key.as_string(),
+        record,
+        signals,
+    });
+    Some(ledger)
+}
+
 /// Compose transforms: `jit(grad(f))` becomes `jit(jaxpr).compose_grad()`.
 #[must_use]
 pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
@@ -924,6 +1041,7 @@ pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
         mode: CompatibilityMode::Strict,
         compile_options: BTreeMap::new(),
         custom_vjp_rule_key: None,
+        last_evidence: LastEvidenceCache::default(),
     }
 }
 
@@ -952,6 +1070,7 @@ impl JitWrapped {
         {
             return Ok(None);
         }
+        check_fast_path_admission(&self.jaxpr, &[Transform::Jit], args, self.mode)?;
         let was_initialized = self.compiled_cache.plan.get().is_some();
         let Some(compiled) = self
             .compiled_cache
@@ -1006,6 +1125,7 @@ impl JitWrapped {
         // Backend feeds the cache key — invalidate any memoized metadata.
         self.meta_cache = DispatchMetaCache::default();
         self.compiled_cache = CompiledEvalCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -1015,6 +1135,7 @@ impl JitWrapped {
         // Mode feeds the cache key — invalidate any memoized metadata.
         self.meta_cache = DispatchMetaCache::default();
         self.compiled_cache = CompiledEvalCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -1025,6 +1146,7 @@ impl JitWrapped {
         self.static_argnums = argnums.to_vec();
         self.meta_cache = DispatchMetaCache::default();
         self.compiled_cache = CompiledEvalCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -1082,7 +1204,53 @@ impl JitWrapped {
             unknown_incompatible_features: &[],
             prepared,
         })?;
+        self.last_evidence.store(
+            response.evidence_ledger.clone(),
+            response.composition_proof.clone(),
+        );
         Ok(response)
+    }
+
+    /// Execute through the full dispatch + ledger + proof spine and return the
+    /// complete [`DispatchResponse`] including `evidence_ledger` and `composition_proof`.
+    pub fn call_with_evidence(&self, args: Vec<Value>) -> Result<DispatchResponse, ApiError> {
+        self.call_with_dispatch(args)
+    }
+
+    /// Return the [`EvidenceLedger`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_evidence_ledger(&self) -> Option<EvidenceLedger> {
+        self.last_evidence.ledger().or_else(|| {
+            if self.compiled_cache.plan.get().is_some() {
+                synthesize_fast_path_ledger(
+                    &self.jaxpr,
+                    &[Transform::Jit],
+                    self.mode,
+                    self.backend.as_ref(),
+                    &self.build_compile_options(),
+                )
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Return the [`TransformCompositionProof`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_composition_proof(&self) -> Option<TransformCompositionProof> {
+        self.last_evidence.proof().or_else(|| {
+            if self.compiled_cache.plan.get().is_some() {
+                synthesize_fast_path_proof(
+                    &self.jaxpr,
+                    &[Transform::Jit],
+                    self.mode,
+                    self.backend.as_ref(),
+                    &self.build_compile_options(),
+                )
+            } else {
+                None
+            }
+        })
     }
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
@@ -1103,6 +1271,7 @@ impl JitWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: None,
+            last_evidence: LastEvidenceCache::default(),
         }
     }
 
@@ -1117,15 +1286,25 @@ impl JitWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: None,
+            last_evidence: LastEvidenceCache::default(),
         }
     }
 }
 
 impl GradWrapped {
+    fn build_compile_options(&self) -> BTreeMap<String, String> {
+        let mut compile_options = BTreeMap::new();
+        if let Some(rule_key) = &self.custom_vjp_rule_key {
+            compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
+        }
+        compile_options
+    }
+
     fn try_default_cpu_compiled_grad(&self, args: &[Value]) -> Result<Option<Value>, ApiError> {
         if self.custom_vjp_rule_key.is_some() || self.backend.as_ref() != DEFAULT_BACKEND {
             return Ok(None);
         }
+        check_fast_path_admission(&self.jaxpr, &[Transform::Grad], args, self.mode)?;
         let Some(compiled) = self
             .compiled_ad_cache
             .0
@@ -1146,6 +1325,7 @@ impl GradWrapped {
         // Backend feeds the cache key — invalidate any memoized metadata.
         self.meta_cache = DispatchMetaCache::default();
         self.compiled_ad_cache = CompiledAdCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -1154,23 +1334,16 @@ impl GradWrapped {
         self.mode = mode;
         self.meta_cache = DispatchMetaCache::default();
         self.compiled_ad_cache = CompiledAdCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
-    pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        if let Some(first_grad) = self.try_default_cpu_compiled_grad(&args)? {
-            return Ok(vec![first_grad]);
-        }
-        let mut compile_options = BTreeMap::new();
-        if let Some(rule_key) = &self.custom_vjp_rule_key {
-            compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
-        }
+    /// Execute through the full dispatch + ledger + proof spine and return the
+    /// complete [`DispatchResponse`] including `evidence_ledger` and `composition_proof`.
+    pub fn call_with_evidence(&self, args: Vec<Value>) -> Result<DispatchResponse, ApiError> {
+        let compile_options = self.build_compile_options();
         let transforms = [Transform::Grad];
         let evidence = transform_evidence(&transforms);
-        // Memoize the args-independent composition proof + cache key so repeated
-        // calls skip re-hashing the canonical Jaxpr fingerprint (mirrors
-        // `ValueAndGradWrapped::call`). The AD pass itself is value-dependent and
-        // still runs per call.
         let prepared = self
             .meta_cache
             .0
@@ -1188,25 +1361,87 @@ impl GradWrapped {
                 .ok()
             })
             .as_ref();
-        dispatch_with_options_prepared(
-            &self.jaxpr,
-            &transforms,
-            &evidence,
+        let response = dispatch_ref(DispatchRequestRef {
+            mode: self.mode,
+            root_jaxpr: &self.jaxpr,
+            transform_stack: &transforms,
+            transform_evidence: &evidence,
             args,
-            self.backend.as_ref(),
-            self.mode,
+            backend: self.backend.as_ref(),
             compile_options,
+            custom_hook: None,
+            unknown_incompatible_features: &[],
             prepared,
-        )
+        })?;
+        self.last_evidence.store(
+            response.evidence_ledger.clone(),
+            response.composition_proof.clone(),
+        );
+        Ok(response)
+    }
+
+    /// Return the [`EvidenceLedger`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_evidence_ledger(&self) -> Option<EvidenceLedger> {
+        self.last_evidence.ledger().or_else(|| {
+            if self.compiled_ad_cache.0.get().is_some() {
+                synthesize_fast_path_ledger(
+                    &self.jaxpr,
+                    &[Transform::Grad],
+                    self.mode,
+                    self.backend.as_ref(),
+                    &self.build_compile_options(),
+                )
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Return the [`TransformCompositionProof`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_composition_proof(&self) -> Option<TransformCompositionProof> {
+        self.last_evidence.proof().or_else(|| {
+            if self.compiled_ad_cache.0.get().is_some() {
+                synthesize_fast_path_proof(
+                    &self.jaxpr,
+                    &[Transform::Grad],
+                    self.mode,
+                    self.backend.as_ref(),
+                    &self.build_compile_options(),
+                )
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+        if let Some(first_grad) = self.try_default_cpu_compiled_grad(&args)? {
+            return Ok(vec![first_grad]);
+        }
+        Ok(self.call_with_evidence(args)?.outputs)
     }
 }
 
 impl VmapWrapped {
+    fn build_compile_options(&self) -> BTreeMap<String, String> {
+        let mut compile_options = BTreeMap::new();
+        if let Some(ref in_axes) = self.in_axes {
+            compile_options.insert("vmap_in_axes".to_owned(), in_axes.clone());
+        }
+        if let Some(ref out_axes) = self.out_axes {
+            compile_options.insert("vmap_out_axes".to_owned(), out_axes.clone());
+        }
+        compile_options
+    }
+
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
         self.backend = Cow::Owned(backend.to_owned());
         // Backend feeds the cache key — invalidate any memoized metadata.
         self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -1214,6 +1449,7 @@ impl VmapWrapped {
     pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
         self.mode = mode;
         self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -1225,6 +1461,7 @@ impl VmapWrapped {
         self.in_axes = Some(in_axes.to_owned());
         // in_axes feeds compile_options, a cache-key input — invalidate the memo.
         self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -1236,24 +1473,16 @@ impl VmapWrapped {
         self.out_axes = Some(out_axes.to_owned());
         // out_axes feeds compile_options, a cache-key input — invalidate the memo.
         self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
-    pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        let mut compile_options = BTreeMap::new();
-        if let Some(ref in_axes) = self.in_axes {
-            compile_options.insert("vmap_in_axes".to_owned(), in_axes.clone());
-        }
-        if let Some(ref out_axes) = self.out_axes {
-            compile_options.insert("vmap_out_axes".to_owned(), out_axes.clone());
-        }
-
+    /// Execute through the full dispatch + ledger + proof spine and return the
+    /// complete [`DispatchResponse`] including `evidence_ledger` and `composition_proof`.
+    pub fn call_with_evidence(&self, args: Vec<Value>) -> Result<DispatchResponse, ApiError> {
+        let compile_options = self.build_compile_options();
         let transforms = [Transform::Vmap];
         let evidence = transform_evidence(&transforms);
-        // Memoize the args-independent composition proof + cache key so repeated
-        // calls skip re-hashing the canonical Jaxpr fingerprint (mirrors
-        // `GradWrapped` / `ValueAndGradWrapped`). The batch-trace evaluation
-        // itself is value-dependent and still runs per call.
         let prepared = self
             .meta_cache
             .0
@@ -1271,16 +1500,39 @@ impl VmapWrapped {
                 .ok()
             })
             .as_ref();
-        dispatch_with_options_prepared(
-            &self.jaxpr,
-            &transforms,
-            &evidence,
+        let response = dispatch_ref(DispatchRequestRef {
+            mode: self.mode,
+            root_jaxpr: &self.jaxpr,
+            transform_stack: &transforms,
+            transform_evidence: &evidence,
             args,
-            self.backend.as_ref(),
-            self.mode,
+            backend: self.backend.as_ref(),
             compile_options,
+            custom_hook: None,
+            unknown_incompatible_features: &[],
             prepared,
-        )
+        })?;
+        self.last_evidence.store(
+            response.evidence_ledger.clone(),
+            response.composition_proof.clone(),
+        );
+        Ok(response)
+    }
+
+    /// Return the [`EvidenceLedger`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_evidence_ledger(&self) -> Option<EvidenceLedger> {
+        self.last_evidence.ledger()
+    }
+
+    /// Return the [`TransformCompositionProof`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_composition_proof(&self) -> Option<TransformCompositionProof> {
+        self.last_evidence.proof()
+    }
+
+    pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+        Ok(self.call_with_evidence(args)?.outputs)
     }
 
     /// Compose: `vmap(grad(f))`.
@@ -1300,6 +1552,7 @@ impl VmapWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: None,
+            last_evidence: LastEvidenceCache::default(),
         }
     }
 }
@@ -1308,12 +1561,14 @@ impl ComposedTransform {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
         self.backend = Cow::Owned(backend.to_owned());
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
     #[must_use]
     pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
         self.mode = mode;
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -1321,6 +1576,7 @@ impl ComposedTransform {
     pub fn with_compile_option(mut self, key: &str, value: &str) -> Self {
         self.compile_options
             .insert(key.to_owned(), value.to_owned());
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -1351,20 +1607,48 @@ impl ComposedTransform {
         self.with_compile_option("egraph_optimize", if enabled { "true" } else { "false" })
     }
 
-    pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+    /// Execute through the full dispatch + ledger + proof spine and return the
+    /// complete [`DispatchResponse`] including `evidence_ledger` and `composition_proof`.
+    pub fn call_with_evidence(&self, args: Vec<Value>) -> Result<DispatchResponse, ApiError> {
         let mut compile_options = self.compile_options.clone();
         compile_options.remove(CUSTOM_VJP_RULE_KEY_OPTION);
         if let Some(rule_key) = &self.custom_vjp_rule_key {
             compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
         }
-        dispatch_with_options(
-            &self.jaxpr,
-            &self.transforms,
+        let evidence = transform_evidence(&self.transforms);
+        let response = dispatch_ref(DispatchRequestRef {
+            mode: self.mode,
+            root_jaxpr: &self.jaxpr,
+            transform_stack: &self.transforms,
+            transform_evidence: &evidence,
             args,
-            self.backend.as_ref(),
-            self.mode,
+            backend: self.backend.as_ref(),
             compile_options,
-        )
+            custom_hook: None,
+            unknown_incompatible_features: &[],
+            prepared: None,
+        })?;
+        self.last_evidence.store(
+            response.evidence_ledger.clone(),
+            response.composition_proof.clone(),
+        );
+        Ok(response)
+    }
+
+    /// Return the [`DecisionLedger`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_evidence_ledger(&self) -> Option<EvidenceLedger> {
+        self.last_evidence.ledger()
+    }
+
+    /// Return the [`TransformCompositionProof`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_composition_proof(&self) -> Option<TransformCompositionProof> {
+        self.last_evidence.proof()
+    }
+
+    pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+        Ok(self.call_with_evidence(args)?.outputs)
     }
 }
 
@@ -1376,6 +1660,7 @@ impl ValueAndGradWrapped {
         if self.custom_vjp_rule_key.is_some() || self.backend.as_ref() != DEFAULT_BACKEND {
             return Ok(None);
         }
+        check_fast_path_admission(&self.jaxpr, &[Transform::Grad], args, self.mode)?;
         let Some(compiled) = self
             .compiled_ad_cache
             .0
@@ -1393,6 +1678,7 @@ impl ValueAndGradWrapped {
         // Backend feeds the cache key — invalidate any memoized metadata.
         self.meta_cache = DispatchMetaCache::default();
         self.compiled_ad_cache = CompiledAdCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -1402,6 +1688,7 @@ impl ValueAndGradWrapped {
         // Mode feeds the cache key — invalidate any memoized metadata.
         self.meta_cache = DispatchMetaCache::default();
         self.compiled_ad_cache = CompiledAdCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -1416,15 +1703,15 @@ impl ValueAndGradWrapped {
         compile_options
     }
 
-    pub fn call(&self, args: Vec<Value>) -> Result<(Vec<Value>, Vec<Value>), ApiError> {
-        if let Some(result) = self.try_default_cpu_compiled_value_and_grad(&args)? {
-            return Ok(result);
-        }
+    /// Execute through the full dispatch + ledger + proof spine and return
+    /// `((values, gradients), DispatchResponse)`.
+    pub fn call_with_evidence(
+        &self,
+        args: Vec<Value>,
+    ) -> Result<(ValueAndGradOutputs, DispatchResponse), ApiError> {
         let compile_options = self.compile_options();
         let transforms = [Transform::Grad];
         let evidence = transform_evidence(&transforms);
-        // Memoize the args-independent composition proof + cache key so repeated
-        // calls skip re-hashing the canonical Jaxpr fingerprint.
         let prepared = self
             .meta_cache
             .0
@@ -1442,30 +1729,79 @@ impl ValueAndGradWrapped {
                 .ok()
             })
             .as_ref();
-        let outputs = dispatch_with_options_prepared(
-            &self.jaxpr,
-            &transforms,
-            &evidence,
+        let response = dispatch_ref(DispatchRequestRef {
+            mode: self.mode,
+            root_jaxpr: &self.jaxpr,
+            transform_stack: &transforms,
+            transform_evidence: &evidence,
             args,
-            self.backend.as_ref(),
-            self.mode,
+            backend: self.backend.as_ref(),
             compile_options,
+            custom_hook: None,
+            unknown_incompatible_features: &[],
             prepared,
-        )?;
+        })?;
+        self.last_evidence.store(
+            response.evidence_ledger.clone(),
+            response.composition_proof.clone(),
+        );
         let value_len = self.jaxpr.outvars.len();
-        if outputs.len() < value_len + 1 {
+        if response.outputs.len() < value_len + 1 {
             return Err(ApiError::EvalError {
                 detail: format!(
                     "value_and_grad expected at least {} outputs, got {}",
                     value_len + 1,
-                    outputs.len()
+                    response.outputs.len()
                 ),
             });
         }
 
-        let values = outputs[..value_len].to_vec();
-        let gradients = outputs[value_len..].to_vec();
-        Ok((values, gradients))
+        let values = response.outputs[..value_len].to_vec();
+        let gradients = response.outputs[value_len..].to_vec();
+        Ok(((values, gradients), response))
+    }
+
+    /// Return the [`EvidenceLedger`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_evidence_ledger(&self) -> Option<EvidenceLedger> {
+        self.last_evidence.ledger().or_else(|| {
+            if self.compiled_ad_cache.0.get().is_some() {
+                synthesize_fast_path_ledger(
+                    &self.jaxpr,
+                    &[Transform::Grad],
+                    self.mode,
+                    self.backend.as_ref(),
+                    &self.compile_options(),
+                )
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Return the [`TransformCompositionProof`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_composition_proof(&self) -> Option<TransformCompositionProof> {
+        self.last_evidence.proof().or_else(|| {
+            if self.compiled_ad_cache.0.get().is_some() {
+                synthesize_fast_path_proof(
+                    &self.jaxpr,
+                    &[Transform::Grad],
+                    self.mode,
+                    self.backend.as_ref(),
+                    &self.compile_options(),
+                )
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn call(&self, args: Vec<Value>) -> Result<(Vec<Value>, Vec<Value>), ApiError> {
+        if let Some(result) = self.try_default_cpu_compiled_value_and_grad(&args)? {
+            return Ok(result);
+        }
+        Ok(self.call_with_evidence(args)?.0)
     }
 }
 
@@ -1495,6 +1831,7 @@ impl CustomVjpWrapped {
             custom_vjp_rule_key: Some(self.rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
             compiled_ad_cache: CompiledAdCache::default(),
+            last_evidence: LastEvidenceCache::default(),
         }
     }
 
@@ -1507,6 +1844,7 @@ impl CustomVjpWrapped {
             custom_vjp_rule_key: Some(self.rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
             compiled_ad_cache: CompiledAdCache::default(),
+            last_evidence: LastEvidenceCache::default(),
         }
     }
 
@@ -1520,6 +1858,7 @@ impl CustomVjpWrapped {
             mode: self.mode,
             compile_options: BTreeMap::new(),
             custom_vjp_rule_key: Some(self.rule_key.clone()),
+            last_evidence: LastEvidenceCache::default(),
         }
     }
 }
@@ -1606,6 +1945,7 @@ impl CheckpointWrapped {
             custom_vjp_rule_key: Some(self.custom_vjp_rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
             compiled_ad_cache: CompiledAdCache::default(),
+            last_evidence: LastEvidenceCache::default(),
         }
     }
 
@@ -1618,6 +1958,7 @@ impl CheckpointWrapped {
             custom_vjp_rule_key: Some(self.custom_vjp_rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
             compiled_ad_cache: CompiledAdCache::default(),
+            last_evidence: LastEvidenceCache::default(),
         }
     }
 
