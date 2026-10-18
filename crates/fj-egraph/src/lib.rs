@@ -338,18 +338,33 @@ pub struct OptimizationConfig {
 impl OptimizationConfig {
     /// Create a config with numerical safety mode enabled.
     #[must_use]
-    pub fn safe() -> Self {
+    pub const fn safe() -> Self {
         Self {
             numerical_safety_mode: true,
         }
     }
 
+    /// Strict IEEE-754 floating-point mode: disables rewrites that alter NaN,
+    /// Inf, signed zero, or rounding order near domain boundaries.
+    #[must_use]
+    pub const fn ieee_strict() -> Self {
+        Self::safe()
+    }
+
     /// Create a config with all optimizations enabled.
     #[must_use]
-    pub fn aggressive() -> Self {
+    pub const fn aggressive() -> Self {
         Self {
             numerical_safety_mode: false,
         }
+    }
+
+    /// Finite fast-math mode: enables algebraic identities (`x + 0 -> x`,
+    /// `x * 1 -> x`, `x - x -> 0`, factoring, inverse cancellation) assuming
+    /// finite inputs.
+    #[must_use]
+    pub const fn finite_fast_math() -> Self {
+        Self::aggressive()
     }
 }
 
@@ -2750,6 +2765,186 @@ pub fn optimize_jaxpr_with_config(jaxpr: &Jaxpr, config: &OptimizationConfig) ->
     );
     optimized.effects = jaxpr.effects.clone();
     optimized
+}
+
+fn is_numeric_zero_lit(lit: &Literal) -> bool {
+    match lit {
+        Literal::I64(v) => *v == 0,
+        Literal::I32(v) => *v == 0,
+        Literal::I16(v) => *v == 0,
+        Literal::I8(v) => *v == 0,
+        Literal::U64(v) => *v == 0,
+        Literal::U32(v) => *v == 0,
+        Literal::U16(v) => *v == 0,
+        Literal::U8(v) => *v == 0,
+        Literal::F64Bits(bits) => f64::from_bits(*bits) == 0.0,
+        Literal::F32Bits(bits) => f32::from_bits(*bits) == 0.0,
+        _ => false,
+    }
+}
+
+fn is_numeric_one_lit(lit: &Literal) -> bool {
+    match lit {
+        Literal::I64(v) => *v == 1,
+        Literal::I32(v) => *v == 1,
+        Literal::I16(v) => *v == 1,
+        Literal::I8(v) => *v == 1,
+        Literal::U64(v) => *v == 1,
+        Literal::U32(v) => *v == 1,
+        Literal::U16(v) => *v == 1,
+        Literal::U8(v) => *v == 1,
+        Literal::F64Bits(bits) => f64::from_bits(*bits) == 1.0,
+        Literal::F32Bits(bits) => f32::from_bits(*bits) == 1.0,
+        _ => false,
+    }
+}
+
+/// Fast O(N) non-saturating canonicalization pass for the hot JIT compilation path.
+///
+/// Performs shape-chain cancellation/fusion, local algebraic peephole rewrites
+/// (gated by `config.numerical_safety_mode`), common subexpression elimination,
+/// and dead-equation pruning without constructing an `egg::EGraph`.
+#[must_use]
+pub fn canonicalize_jaxpr_fast(jaxpr: &Jaxpr, config: &OptimizationConfig) -> Jaxpr {
+    let shaped = optimize_shape_parametric_chains(jaxpr);
+    let mut aliases: BTreeMap<VarId, VarId> = BTreeMap::new();
+    let mut producer_by_var: BTreeMap<VarId, (Primitive, SmallVec<[Atom; 4]>)> = BTreeMap::new();
+    let mut equations: Vec<Equation> = Vec::with_capacity(shaped.equations.len());
+
+    for equation in &shaped.equations {
+        let mut rewritten = equation.clone();
+        for input in &mut rewritten.inputs {
+            if let Atom::Var(var) = input {
+                *var = resolve_var_alias(*var, &aliases);
+            }
+        }
+        if !rewritten.sub_jaxprs.is_empty() {
+            rewritten.sub_jaxprs = rewritten
+                .sub_jaxprs
+                .iter()
+                .map(|sub| canonicalize_jaxpr_fast(sub, config))
+                .collect();
+        }
+
+        if rewritten.outputs.len() == 1
+            && rewritten.effects.is_empty()
+            && rewritten.sub_jaxprs.is_empty()
+            && rewritten.params.is_empty()
+        {
+            let out_var = rewritten.outputs[0];
+
+            // Copy(v) -> v
+            if rewritten.primitive == Primitive::Copy
+                && rewritten.inputs.len() == 1
+                && let Atom::Var(src) = rewritten.inputs[0]
+            {
+                aliases.insert(out_var, src);
+                continue;
+            }
+
+            // Binary self-idempotence (safe in IEEE-754 for identical bit patterns)
+            if matches!(
+                rewritten.primitive,
+                Primitive::Max | Primitive::Min | Primitive::BitwiseAnd | Primitive::BitwiseOr
+            ) && rewritten.inputs.len() == 2
+                && let (Atom::Var(lhs), Atom::Var(rhs)) =
+                    (&rewritten.inputs[0], &rewritten.inputs[1])
+                && lhs == rhs
+            {
+                aliases.insert(out_var, *lhs);
+                continue;
+            }
+
+            // Unary idempotence & even-function sign absorption
+            if rewritten.inputs.len() == 1
+                && let Atom::Var(in_var) = rewritten.inputs[0]
+                && let Some((prev_prim, prev_inputs)) = producer_by_var.get(&in_var).cloned()
+            {
+                match (prev_prim, rewritten.primitive) {
+                    (Primitive::Abs, Primitive::Abs)
+                    | (Primitive::Floor, Primitive::Floor)
+                    | (Primitive::Ceil, Primitive::Ceil)
+                    | (Primitive::Round, Primitive::Round) => {
+                        aliases.insert(out_var, in_var);
+                        continue;
+                    }
+                    (Primitive::Neg, Primitive::Abs)
+                    | (Primitive::Neg, Primitive::Cos)
+                    | (Primitive::Neg, Primitive::Cosh)
+                        if prev_inputs.len() == 1 =>
+                    {
+                        rewritten.inputs[0] = prev_inputs[0].clone();
+                    }
+                    (Primitive::Neg, Primitive::Neg)
+                    | (Primitive::Conj, Primitive::Conj)
+                    | (Primitive::BitwiseNot, Primitive::BitwiseNot)
+                        if !config.numerical_safety_mode && prev_inputs.len() == 1 =>
+                    {
+                        if let Atom::Var(orig_var) = prev_inputs[0] {
+                            aliases.insert(out_var, orig_var);
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Finite fast-math identities (x + 0 -> x, x - 0 -> x, x * 1 -> x, x / 1 -> x)
+            if !config.numerical_safety_mode && rewritten.inputs.len() == 2 {
+                let alias_target = match (
+                    rewritten.primitive,
+                    &rewritten.inputs[0],
+                    &rewritten.inputs[1],
+                ) {
+                    (Primitive::Add, Atom::Var(v), Atom::Lit(lit))
+                    | (Primitive::Add, Atom::Lit(lit), Atom::Var(v))
+                    | (Primitive::Sub, Atom::Var(v), Atom::Lit(lit))
+                        if is_numeric_zero_lit(lit) =>
+                    {
+                        Some(*v)
+                    }
+                    (Primitive::Mul, Atom::Var(v), Atom::Lit(lit))
+                    | (Primitive::Mul, Atom::Lit(lit), Atom::Var(v))
+                    | (Primitive::Div, Atom::Var(v), Atom::Lit(lit))
+                        if is_numeric_one_lit(lit) =>
+                    {
+                        Some(*v)
+                    }
+                    _ => None,
+                };
+                if let Some(target_var) = alias_target {
+                    aliases.insert(out_var, target_var);
+                    continue;
+                }
+            }
+
+            producer_by_var.insert(out_var, (rewritten.primitive, rewritten.inputs.clone()));
+        }
+
+        equations.push(rewritten);
+    }
+
+    let protected_outputs: BTreeSet<VarId> = BTreeSet::new();
+    let (deduped_equations, cse_aliases) =
+        dedupe_identical_extracted_equations(equations, &protected_outputs);
+
+    let outvars = shaped
+        .outvars
+        .iter()
+        .map(|outvar| {
+            let after_peephole = resolve_var_alias(*outvar, &aliases);
+            resolve_var_alias(after_peephole, &cse_aliases)
+        })
+        .collect();
+
+    let mut canonical = Jaxpr::new(
+        shaped.invars.clone(),
+        shaped.constvars.clone(),
+        outvars,
+        deduped_equations,
+    );
+    canonical.effects = shaped.effects.clone();
+    prune_dead_single_output_equations(&canonical)
 }
 
 fn prune_dead_single_output_equations(jaxpr: &Jaxpr) -> Jaxpr {
