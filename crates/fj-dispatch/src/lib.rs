@@ -710,12 +710,34 @@ pub fn record_dispatch_cache_hit(cache_key: &CacheKey) {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct DispatchResponse {
     pub outputs: Vec<Value>,
     pub cache_key: String,
     pub evidence_ledger: EvidenceLedger,
     pub telemetry: DispatchCacheTelemetry,
+}
+
+impl PartialEq for DispatchResponse {
+    fn eq(&self, other: &Self) -> bool {
+        self.outputs == other.outputs
+            && self.cache_key == other.cache_key
+            && self.evidence_ledger.entries().len() == other.evidence_ledger.entries().len()
+            && self
+                .evidence_ledger
+                .entries()
+                .iter()
+                .zip(other.evidence_ledger.entries().iter())
+                .all(|(a, b)| {
+                    a.decision_id == b.decision_id
+                        && a.signals == b.signals
+                        && a.record.mode == b.record.mode
+                        && a.record.posterior_abandoned == b.record.posterior_abandoned
+                        && a.record.expected_loss_keep == b.record.expected_loss_keep
+                        && a.record.expected_loss_kill == b.record.expected_loss_kill
+                        && a.record.action == b.record.action
+                })
+    }
 }
 
 impl DispatchResponse {

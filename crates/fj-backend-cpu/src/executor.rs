@@ -170,7 +170,11 @@ fn equation_estimated_work(equation: &Equation, env: &HashMap<VarId, Value>) -> 
                     let m = lhs_dims[lhs_dims.len() - 2] as usize;
                     let k = lhs_dims[lhs_dims.len() - 1] as usize;
                     let n = rhs_dims[rhs_dims.len() - 1] as usize;
-                    return m.saturating_mul(k).saturating_mul(n).saturating_mul(2).max(max_elem);
+                    return m
+                        .saturating_mul(k)
+                        .saturating_mul(n)
+                        .saturating_mul(2)
+                        .max(max_elem);
                 }
             }
             max_elem.saturating_mul(32)

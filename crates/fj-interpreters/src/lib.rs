@@ -15298,12 +15298,12 @@ fn try_eval_donated_dense_f64_binary(
             }
             Primitive::Max => {
                 for x in chunk.iter_mut() {
-                    *x = x.max(*x);
+                    *x = fused_jax_max(*x, *x);
                 }
             }
             Primitive::Min => {
                 for x in chunk.iter_mut() {
-                    *x = x.min(*x);
+                    *x = fused_jax_min(*x, *x);
                 }
             }
             _ => {}
@@ -15359,8 +15359,7 @@ fn try_eval_donated_dense_f64_binary(
                 match env.get(other_slot).and_then(|s| s.as_ref()) {
                     Some(Value::Scalar(lit)) => lit.as_f64().map(OtherOperand::Scalar),
                     Some(Value::Tensor(other_t))
-                        if other_t.dtype == DType::F64
-                            && other_t.shape == donate_tensor.shape =>
+                        if other_t.dtype == DType::F64 && other_t.shape == donate_tensor.shape =>
                     {
                         other_t.elements.as_f64_slice().map(OtherOperand::Slice)
                     }
@@ -15424,12 +15423,12 @@ fn try_eval_donated_dense_f64_binary(
                     }
                     (Primitive::Max, _) => {
                         for x in chunk.iter_mut() {
-                            *x = x.max(s);
+                            *x = fused_jax_max(*x, s);
                         }
                     }
                     (Primitive::Min, _) => {
                         for x in chunk.iter_mut() {
-                            *x = x.min(s);
+                            *x = fused_jax_min(*x, s);
                         }
                     }
                     _ => {}
@@ -15471,12 +15470,12 @@ fn try_eval_donated_dense_f64_binary(
                         }
                         (Primitive::Max, _) => {
                             for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
-                                *x = x.max(y);
+                                *x = fused_jax_max(*x, y);
                             }
                         }
                         (Primitive::Min, _) => {
                             for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
-                                *x = x.min(y);
+                                *x = fused_jax_min(*x, y);
                             }
                         }
                         _ => {}
@@ -15506,6 +15505,7 @@ fn try_eval_donated_dense_f64_binary(
     None
 }
 
+#[allow(clippy::eq_op)]
 fn try_eval_donated_dense_f32_binary(
     eqn: &Equation,
     eqn_index: usize,
@@ -15584,32 +15584,38 @@ fn try_eval_donated_dense_f32_binary(
         drive_fusion_chunks(&mut values, |chunk, _base| match prim {
             Primitive::Add => {
                 for x in chunk.iter_mut() {
-                    *x += *x;
+                    let w = f64::from(*x);
+                    *x = (w + w) as f32;
                 }
             }
             Primitive::Sub => {
                 for x in chunk.iter_mut() {
-                    *x -= *x;
+                    let w = f64::from(*x);
+                    *x = (w - w) as f32;
                 }
             }
             Primitive::Mul => {
                 for x in chunk.iter_mut() {
-                    *x *= *x;
+                    let w = f64::from(*x);
+                    *x = (w * w) as f32;
                 }
             }
             Primitive::Div => {
                 for x in chunk.iter_mut() {
-                    *x /= *x;
+                    let w = f64::from(*x);
+                    *x = (w / w) as f32;
                 }
             }
             Primitive::Max => {
                 for x in chunk.iter_mut() {
-                    *x = x.max(*x);
+                    let w = f64::from(*x);
+                    *x = fused_jax_max(w, w) as f32;
                 }
             }
             Primitive::Min => {
                 for x in chunk.iter_mut() {
-                    *x = x.min(*x);
+                    let w = f64::from(*x);
+                    *x = fused_jax_min(w, w) as f32;
                 }
             }
             _ => {}
@@ -15664,8 +15670,7 @@ fn try_eval_donated_dense_f32_binary(
                         Some(OtherOperandF32::Scalar(f32::from_bits(*b)))
                     }
                     Some(Value::Tensor(other_t))
-                        if other_t.dtype == DType::F32
-                            && other_t.shape == donate_tensor.shape =>
+                        if other_t.dtype == DType::F32 && other_t.shape == donate_tensor.shape =>
                     {
                         other_t.elements.as_f32_slice().map(OtherOperandF32::Slice)
                     }
@@ -15697,45 +15702,46 @@ fn try_eval_donated_dense_f32_binary(
         let prim = eqn.primitive;
         match other_op {
             OtherOperandF32::Scalar(s) => {
+                let s = f64::from(s);
                 drive_fusion_chunks(&mut values, |chunk, _base| match (prim, donate_lhs) {
                     (Primitive::Add, _) => {
                         for x in chunk.iter_mut() {
-                            *x += s;
+                            *x = (f64::from(*x) + s) as f32;
                         }
                     }
                     (Primitive::Sub, true) => {
                         for x in chunk.iter_mut() {
-                            *x -= s;
+                            *x = (f64::from(*x) - s) as f32;
                         }
                     }
                     (Primitive::Sub, false) => {
                         for x in chunk.iter_mut() {
-                            *x = s - *x;
+                            *x = (s - f64::from(*x)) as f32;
                         }
                     }
                     (Primitive::Mul, _) => {
                         for x in chunk.iter_mut() {
-                            *x *= s;
+                            *x = (f64::from(*x) * s) as f32;
                         }
                     }
                     (Primitive::Div, true) => {
                         for x in chunk.iter_mut() {
-                            *x /= s;
+                            *x = (f64::from(*x) / s) as f32;
                         }
                     }
                     (Primitive::Div, false) => {
                         for x in chunk.iter_mut() {
-                            *x = s / *x;
+                            *x = (s / f64::from(*x)) as f32;
                         }
                     }
                     (Primitive::Max, _) => {
                         for x in chunk.iter_mut() {
-                            *x = x.max(s);
+                            *x = fused_jax_max(f64::from(*x), s) as f32;
                         }
                     }
                     (Primitive::Min, _) => {
                         for x in chunk.iter_mut() {
-                            *x = x.min(s);
+                            *x = fused_jax_min(f64::from(*x), s) as f32;
                         }
                     }
                     _ => {}
@@ -15747,42 +15753,42 @@ fn try_eval_donated_dense_f32_binary(
                     match (prim, donate_lhs) {
                         (Primitive::Add, _) => {
                             for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
-                                *x += y;
+                                *x = (f64::from(*x) + f64::from(y)) as f32;
                             }
                         }
                         (Primitive::Sub, true) => {
                             for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
-                                *x -= y;
+                                *x = (f64::from(*x) - f64::from(y)) as f32;
                             }
                         }
                         (Primitive::Sub, false) => {
                             for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
-                                *x = y - *x;
+                                *x = (f64::from(y) - f64::from(*x)) as f32;
                             }
                         }
                         (Primitive::Mul, _) => {
                             for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
-                                *x *= y;
+                                *x = (f64::from(*x) * f64::from(y)) as f32;
                             }
                         }
                         (Primitive::Div, true) => {
                             for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
-                                *x /= y;
+                                *x = (f64::from(*x) / f64::from(y)) as f32;
                             }
                         }
                         (Primitive::Div, false) => {
                             for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
-                                *x = y / *x;
+                                *x = (f64::from(y) / f64::from(*x)) as f32;
                             }
                         }
                         (Primitive::Max, _) => {
                             for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
-                                *x = x.max(y);
+                                *x = fused_jax_max(f64::from(*x), f64::from(y)) as f32;
                             }
                         }
                         (Primitive::Min, _) => {
                             for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
-                                *x = x.min(y);
+                                *x = fused_jax_min(f64::from(*x), f64::from(y)) as f32;
                             }
                         }
                         _ => {}
@@ -30406,7 +30412,9 @@ mod tests {
 
     #[test]
     fn e2e_buffer_donation_arc_cow_and_binary_reuse() {
-        use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
+        use fj_core::{
+            Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId,
+        };
         use smallvec::smallvec;
         use std::collections::BTreeMap;
 
@@ -30488,7 +30496,9 @@ mod tests {
 
     #[test]
     fn e2e_expanded_elementwise_fusion_transcendental_chain() {
-        use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
+        use fj_core::{
+            Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId,
+        };
         use smallvec::smallvec;
         use std::collections::BTreeMap;
 
@@ -30557,7 +30567,8 @@ mod tests {
 
         let n = 65_536usize;
         let data: Vec<f64> = (0..n).map(|i| ((i % 256) as f64) * 0.01 - 1.0).collect();
-        let arg = Value::Tensor(TensorValue::new_f64_values(Shape::vector(n as u32), data).unwrap());
+        let arg =
+            Value::Tensor(TensorValue::new_f64_values(Shape::vector(n as u32), data).unwrap());
 
         let fused_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&arg)).unwrap();
         let unfused_out =
