@@ -7752,7 +7752,12 @@ fn apply_f32_row_broadcast_other(
                 | CheapOp::Trunc
                 | CheapOp::RoundAway
                 | CheapOp::RoundNearest
-                | CheapOp::Sign,
+                | CheapOp::Sign
+                | CheapOp::Sqrt
+                | CheapOp::Rsqrt
+                | CheapOp::Exp
+                | CheapOp::Log
+                | CheapOp::Tanh,
                 _,
             ) => {}
         }
@@ -7826,7 +7831,12 @@ fn apply_f32_col_broadcast_other(
                 | CheapOp::Trunc
                 | CheapOp::RoundAway
                 | CheapOp::RoundNearest
-                | CheapOp::Sign,
+                | CheapOp::Sign
+                | CheapOp::Sqrt
+                | CheapOp::Rsqrt
+                | CheapOp::Exp
+                | CheapOp::Log
+                | CheapOp::Tanh,
                 _,
             ) => {}
         }
@@ -7878,7 +7888,12 @@ fn apply_f32_fusion_other(
                     | CheapOp::Trunc
                     | CheapOp::RoundAway
                     | CheapOp::RoundNearest
-                    | CheapOp::Sign,
+                    | CheapOp::Sign
+                    | CheapOp::Sqrt
+                    | CheapOp::Rsqrt
+                    | CheapOp::Exp
+                    | CheapOp::Log
+                    | CheapOp::Tanh,
                     _,
                 ) => {}
             }
@@ -7926,7 +7941,12 @@ fn apply_f32_fusion_other(
                     | CheapOp::Trunc
                     | CheapOp::RoundAway
                     | CheapOp::RoundNearest
-                    | CheapOp::Sign,
+                    | CheapOp::Sign
+                    | CheapOp::Sqrt
+                    | CheapOp::Rsqrt
+                    | CheapOp::Exp
+                    | CheapOp::Log
+                    | CheapOp::Tanh,
                     _,
                 ) => {}
             }
@@ -7944,12 +7964,9 @@ fn apply_f32_fusion_other(
 }
 
 /// f32 sibling of [`apply_f64_unary_chunk`]: hoists the unary op-match above the
-/// element loop. Preserves the production widen-to-f64 contract
-/// (`f64_fused_unary(op, f64::from(v)) as f32`), so it is bit-identical to
-/// `out.iter_mut().for_each(|o| *o = f32_fused_unary(op, *o))` while letting each arm
-/// vectorize (widen → `roundpd` → narrow) instead of branching per element.
+/// element loop. Preserves the production widen-to-f64 / SIMD contract.
 #[inline]
-fn apply_f32_unary_chunk(out: &mut [f32], op: CheapOp) {
+fn apply_f32_unary_chunk(out: &mut [f32], op: CheapOp, base: usize, total_len: usize) {
     match op {
         CheapOp::Neg => out.iter_mut().for_each(|o| *o = (-f64::from(*o)) as f32),
         CheapOp::Abs => out.iter_mut().for_each(|o| *o = f64::from(*o).abs() as f32),
@@ -7971,38 +7988,31 @@ fn apply_f32_unary_chunk(out: &mut [f32], op: CheapOp) {
         CheapOp::Sign => out
             .iter_mut()
             .for_each(|o| *o = scalar_f64_sign(f64::from(*o)) as f32),
+        CheapOp::Sqrt => out
+            .iter_mut()
+            .for_each(|o| *o = f64::from(*o).sqrt() as f32),
+        CheapOp::Rsqrt => fj_lax::arithmetic::apply_fused_rsqrt_f32_chunk(out, base, total_len),
+        CheapOp::Exp => out.iter_mut().for_each(|o| *o = f64::from(*o).exp() as f32),
+        CheapOp::Log => fj_lax::arithmetic::apply_fused_log_f32_chunk(out, base, total_len),
+        CheapOp::Tanh => fj_lax::arithmetic::apply_fused_tanh_f32_chunk(out, base, total_len),
         // Binary ops never reach the unary path (callers guard on op.is_unary()).
         CheapOp::Add | CheapOp::Sub | CheapOp::Mul | CheapOp::Div | CheapOp::Max | CheapOp::Min => {
         }
     }
 }
 
-/// Evaluate the fused f32 run over one chunk `out` (already sized to the chunk length).
 #[allow(clippy::eq_op)] // Chain/Chain must execute x-x and x/x to preserve NaN behavior.
-fn apply_f32_fusion_chunk(out: &mut [f32], tape: &[F32Step], ext: &[&[f32]], base: usize) {
-    // Step 0 has no chain operand: seed `out` from operand `a`, then apply `b`.
-    let s0 = &tape[0];
-    match s0.a {
-        F32Operand::Ext(i) => out.copy_from_slice(&ext[i][base..base + out.len()]),
-        F32Operand::RowBroadcast(i) => {
-            let row = ext[i];
-            seed_f32_row_broadcast(out, row, base);
-        }
-        F32Operand::ColBroadcast { idx, cols } => {
-            let col = ext[idx];
-            seed_f32_col_broadcast(out, col, cols, base);
-        }
-        F32Operand::Scalar(v) => out.fill(v),
-        F32Operand::Chain => {}
-    }
-    match s0.op {
-        op if op.is_unary() => apply_f32_unary_chunk(out, op),
-        _ => apply_f32_fusion_other(out, s0.op, true, s0.b, ext, base),
-    }
-    for step in &tape[1..] {
+fn apply_f32_fusion_tail(
+    out: &mut [f32],
+    steps: &[F32Step],
+    ext: &[&[f32]],
+    base: usize,
+    total_len: usize,
+) {
+    for step in steps {
         match step.op {
             op if op.is_unary() => {
-                apply_f32_unary_chunk(out, op);
+                apply_f32_unary_chunk(out, op, base, total_len);
                 continue;
             }
             _ => {}
@@ -8029,7 +8039,12 @@ fn apply_f32_fusion_chunk(out: &mut [f32], tape: &[F32Step], ext: &[&[f32]], bas
                 | CheapOp::Trunc
                 | CheapOp::RoundAway
                 | CheapOp::RoundNearest
-                | CheapOp::Sign => {}
+                | CheapOp::Sign
+                | CheapOp::Sqrt
+                | CheapOp::Rsqrt
+                | CheapOp::Exp
+                | CheapOp::Log
+                | CheapOp::Tanh => {}
             },
             (F32Operand::Chain, other) => {
                 apply_f32_fusion_other(out, step.op, true, other, ext, base);
@@ -8042,139 +8057,274 @@ fn apply_f32_fusion_chunk(out: &mut [f32], tape: &[F32Step], ext: &[&[f32]], bas
     }
 }
 
+fn apply_f32_fusion_first_seeded(
+    out: &mut [f32],
+    step: &F32Step,
+    ext: &[&[f32]],
+    base: usize,
+    total_len: usize,
+) {
+    match step.op {
+        op if op.is_unary() => apply_f32_unary_chunk(out, op, base, total_len),
+        _ => match (step.a, step.b) {
+            (F32Operand::Ext(ia), F32Operand::Ext(ib)) if ia == ib => {
+                apply_f32_fusion_tail(
+                    out,
+                    &[F32Step {
+                        op: step.op,
+                        a: F32Operand::Chain,
+                        b: F32Operand::Chain,
+                    }],
+                    ext,
+                    base,
+                    total_len,
+                );
+            }
+            _ => apply_f32_fusion_other(out, step.op, true, step.b, ext, base),
+        },
+    }
+}
+
+fn apply_seeded_f32_fusion_chunk(
+    out: &mut [f32],
+    tape: &[F32Step],
+    ext: &[&[f32]],
+    base: usize,
+    total_len: usize,
+) {
+    apply_f32_fusion_first_seeded(out, &tape[0], ext, base, total_len);
+    apply_f32_fusion_tail(out, &tape[1..], ext, base, total_len);
+}
+
+/// Evaluate the fused f32 run over one chunk `out` (already sized to the chunk length).
+fn apply_f32_fusion_chunk(
+    out: &mut [f32],
+    tape: &[F32Step],
+    ext: &[&[f32]],
+    base: usize,
+    total_len: usize,
+) {
+    // Step 0 has no chain operand: seed `out` from operand `a`, then apply `b`.
+    let s0 = &tape[0];
+    match s0.a {
+        F32Operand::Ext(i) => out.copy_from_slice(&ext[i][base..base + out.len()]),
+        F32Operand::RowBroadcast(i) => {
+            let row = ext[i];
+            seed_f32_row_broadcast(out, row, base);
+        }
+        F32Operand::ColBroadcast { idx, cols } => {
+            let col = ext[idx];
+            seed_f32_col_broadcast(out, col, cols, base);
+        }
+        F32Operand::Scalar(v) => out.fill(v),
+        F32Operand::Chain => {}
+    }
+    apply_f32_fusion_first_seeded(out, s0, ext, base, total_len);
+    apply_f32_fusion_tail(out, &tape[1..], ext, base, total_len);
+}
+
+fn try_donate_f32_seed_from_env(
+    v: VarId,
+    run_end: usize,
+    ext_vars: &[VarId],
+    env: &mut [Option<Value>],
+    last_use: &[usize],
+) -> Option<Vec<f32>> {
+    if DENSE_F64_DONATION_DISABLE.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        return None;
+    }
+    let slot = v.0 as usize;
+    if last_use.get(slot).copied()? > run_end {
+        return None;
+    }
+    if ext_vars.get(1..).is_some_and(|rest| rest.contains(&v)) {
+        return None;
+    }
+    let value = env.get_mut(slot)?.take()?;
+    let Value::Tensor(tensor) = value else {
+        env[slot] = Some(value);
+        return None;
+    };
+    let TensorValue {
+        dtype,
+        shape,
+        elements,
+    } = tensor;
+    match elements.try_into_f32_values() {
+        Ok(values) => Some(values),
+        Err(elements) => {
+            env[slot] = Some(Value::Tensor(TensorValue {
+                dtype,
+                shape,
+                elements,
+            }));
+            None
+        }
+    }
+}
+
 #[allow(clippy::while_let_loop)] // Mirrors the f64 fusion scanner's ordered bailouts.
 fn try_fuse_elementwise_chain_f32(
     jaxpr: &Jaxpr,
     start: usize,
-    env: &[Option<Value>],
+    env: &mut [Option<Value>],
     last_use: &[usize],
 ) -> Option<FusedRun> {
-    let eqns = &jaxpr.equations;
-    let mut ext: Vec<&[f32]> = Vec::new();
-    let mut ext_vars: Vec<VarId> = Vec::new();
-    let mut tape: Vec<F32Step> = Vec::new();
-    let mut shape: Option<Shape> = None;
-    let mut chain_var: Option<VarId> = None;
-    let mut run_out: Option<VarId> = None;
-    let mut run_end = start;
+    let (tape, shape, n, out_var, ext_vars, run_end) = {
+        let eqns = &jaxpr.equations;
+        let mut ext: Vec<&[f32]> = Vec::new();
+        let mut ext_vars: Vec<VarId> = Vec::new();
+        let mut tape: Vec<F32Step> = Vec::new();
+        let mut shape: Option<Shape> = None;
+        let mut chain_var: Option<VarId> = None;
+        let mut run_out: Option<VarId> = None;
+        let mut run_end = start;
 
-    let mut k = start;
-    loop {
-        let Some(eqn) = eqns.get(k) else { break };
-        if !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
-            break;
-        }
-        let ext_mark = ext.len();
-        let vars_mark = ext_vars.len();
-        // Square(x) fused as Mul(x, x) — see the f64 builder for the bit-identity proof.
-        let (op, a, b) = if eqn.primitive == Primitive::Square && eqn.params.is_empty()
-            || is_integer_pow_2(eqn.primitive, &eqn.params)
-        {
-            if eqn.inputs.len() != 1 {
+        let mut k = start;
+        loop {
+            let Some(eqn) = eqns.get(k) else { break };
+            if !eqn.sub_jaxprs.is_empty() || eqn.outputs.len() != 1 {
                 break;
             }
-            let Some(a) = classify_f32_fusion_operand(
-                &eqn.inputs[0],
-                chain_var,
-                env,
-                &mut ext,
-                &mut ext_vars,
-                &mut shape,
-            ) else {
-                ext.truncate(ext_mark);
-                ext_vars.truncate(vars_mark);
-                break;
-            };
-            (CheapOp::Mul, a, a)
-        } else if eqn.primitive == Primitive::Reciprocal && eqn.params.is_empty() {
-            // Reciprocal(x) == Div(1, x); the f32 fused Div uses the f32->f64->f32
-            // contract matching eval_reciprocal (eval_unary_elementwise f64-widen). See
-            // the f64 builder. Dense-f32 input required (else bails to generic).
-            if eqn.inputs.len() != 1 {
-                break;
-            }
-            let Some(b) = classify_f32_fusion_operand(
-                &eqn.inputs[0],
-                chain_var,
-                env,
-                &mut ext,
-                &mut ext_vars,
-                &mut shape,
-            ) else {
-                ext.truncate(ext_mark);
-                ext_vars.truncate(vars_mark);
-                break;
-            };
-            (CheapOp::Div, F32Operand::Scalar(1.0), b)
-        } else {
-            let Some(op) = cheap_float_op(eqn.primitive, &eqn.params) else {
-                break;
-            };
-            let needed = if op.is_unary() { 1 } else { 2 };
-            if eqn.inputs.len() != needed {
-                break;
-            }
-            let a = classify_f32_fusion_operand(
-                &eqn.inputs[0],
-                chain_var,
-                env,
-                &mut ext,
-                &mut ext_vars,
-                &mut shape,
-            );
-            let b = if op.is_unary() {
-                Some(F32Operand::Scalar(0.0))
-            } else {
-                classify_f32_fusion_operand(
-                    &eqn.inputs[1],
+            let ext_mark = ext.len();
+            let vars_mark = ext_vars.len();
+            let (op, a, b) = if eqn.primitive == Primitive::Square && eqn.params.is_empty()
+                || is_integer_pow_2(eqn.primitive, &eqn.params)
+            {
+                if eqn.inputs.len() != 1 {
+                    break;
+                }
+                let Some(a) = classify_f32_fusion_operand(
+                    &eqn.inputs[0],
                     chain_var,
                     env,
                     &mut ext,
                     &mut ext_vars,
                     &mut shape,
-                )
+                ) else {
+                    ext.truncate(ext_mark);
+                    ext_vars.truncate(vars_mark);
+                    break;
+                };
+                (CheapOp::Mul, a, a)
+            } else if eqn.primitive == Primitive::Reciprocal && eqn.params.is_empty() {
+                if eqn.inputs.len() != 1 {
+                    break;
+                }
+                let Some(b) = classify_f32_fusion_operand(
+                    &eqn.inputs[0],
+                    chain_var,
+                    env,
+                    &mut ext,
+                    &mut ext_vars,
+                    &mut shape,
+                ) else {
+                    ext.truncate(ext_mark);
+                    ext_vars.truncate(vars_mark);
+                    break;
+                };
+                (CheapOp::Div, F32Operand::Scalar(1.0), b)
+            } else {
+                let Some(op) = cheap_float_op(eqn.primitive, &eqn.params) else {
+                    break;
+                };
+                let needed = if op.is_unary() { 1 } else { 2 };
+                if eqn.inputs.len() != needed {
+                    break;
+                }
+                let a = classify_f32_fusion_operand(
+                    &eqn.inputs[0],
+                    chain_var,
+                    env,
+                    &mut ext,
+                    &mut ext_vars,
+                    &mut shape,
+                );
+                let b = if op.is_unary() {
+                    Some(F32Operand::Scalar(0.0))
+                } else {
+                    classify_f32_fusion_operand(
+                        &eqn.inputs[1],
+                        chain_var,
+                        env,
+                        &mut ext,
+                        &mut ext_vars,
+                        &mut shape,
+                    )
+                };
+                let (Some(a), Some(b)) = (a, b) else {
+                    ext.truncate(ext_mark);
+                    ext_vars.truncate(vars_mark);
+                    break;
+                };
+                (op, a, b)
             };
-            let (Some(a), Some(b)) = (a, b) else {
+            if chain_var.is_some()
+                && !matches!(a, F32Operand::Chain)
+                && !matches!(b, F32Operand::Chain)
+            {
                 ext.truncate(ext_mark);
                 ext_vars.truncate(vars_mark);
                 break;
-            };
-            (op, a, b)
-        };
-        // Steps after the first MUST thread the chain (one operand == Chain). The
-        // last_use==k guarantee ensures eqn k uses chain_var, but stay defensive.
-        if chain_var.is_some() && !matches!(a, F32Operand::Chain) && !matches!(b, F32Operand::Chain)
-        {
-            ext.truncate(ext_mark);
-            ext_vars.truncate(vars_mark);
-            break;
+            }
+            tape.push(F32Step { op, a, b });
+            run_out = Some(eqn.outputs[0]);
+            run_end = k;
+            let out_idx = eqn.outputs[0].0 as usize;
+            if k + 1 < eqns.len() && last_use.get(out_idx).copied() == Some(k + 1) {
+                chain_var = Some(eqn.outputs[0]);
+                k += 1;
+            } else {
+                break;
+            }
         }
-        tape.push(F32Step { op, a, b });
-        run_out = Some(eqn.outputs[0]);
-        run_end = k;
-        let out_idx = eqn.outputs[0].0 as usize;
-        if k + 1 < eqns.len() && last_use.get(out_idx).copied() == Some(k + 1) {
-            chain_var = Some(eqn.outputs[0]);
-            k += 1;
+
+        if tape.len() < FUSION_MIN_RUN {
+            return None;
+        }
+        let shape = shape?;
+        let n = shape.element_count()? as usize;
+        if n < FUSION_MIN_ELEMS {
+            return None;
+        }
+        let out_var = run_out?;
+        (tape, shape, n, out_var, ext_vars, run_end)
+    };
+
+    let donated_seed = if matches!(tape.first().map(|s| s.a), Some(F32Operand::Ext(0)))
+        && let Some(&v0) = ext_vars.first()
+    {
+        try_donate_f32_seed_from_env(v0, run_end, &ext_vars, env, last_use)
+    } else {
+        None
+    };
+
+    let mut ext: Vec<&[f32]> = Vec::with_capacity(ext_vars.len());
+    for (idx, &v) in ext_vars.iter().enumerate() {
+        if idx == 0 && donated_seed.is_some() {
+            ext.push(&[]);
         } else {
-            break;
+            let slice = env
+                .get(v.0 as usize)
+                .and_then(|s| s.as_ref())
+                .and_then(|val| val.as_tensor())
+                .and_then(|t| t.elements.as_f32_slice())?;
+            ext.push(slice);
         }
     }
 
-    if tape.len() < FUSION_MIN_RUN {
-        return None;
-    }
-    let shape = shape?;
-    let n = shape.element_count()? as usize;
-    if n < FUSION_MIN_ELEMS {
-        return None;
-    }
-    let out_var = run_out?;
-
-    let mut values = vec![0.0_f32; n];
-    drive_fusion_chunks(&mut values, |chunk, base| {
-        apply_f32_fusion_chunk(chunk, &tape, &ext, base)
-    });
+    let values = if let Some(mut donated) = donated_seed {
+        drive_fusion_chunks(&mut donated, |chunk, base| {
+            apply_seeded_f32_fusion_chunk(chunk, &tape, &ext, base, n)
+        });
+        donated
+    } else {
+        let mut values = vec![0.0_f32; n];
+        drive_fusion_chunks(&mut values, |chunk, base| {
+            apply_f32_fusion_chunk(chunk, &tape, &ext, base, n)
+        });
+        values
+    };
     Some(FusedRun {
         out_var,
         values: FusedValues::F32(values),
@@ -8225,7 +8375,12 @@ fn i64_fused_binary(op: CheapOp, left: i64, right: i64) -> i64 {
         | CheapOp::Trunc
         | CheapOp::RoundAway
         | CheapOp::RoundNearest
-        | CheapOp::Sign => left,
+        | CheapOp::Sign
+        | CheapOp::Sqrt
+        | CheapOp::Rsqrt
+        | CheapOp::Exp
+        | CheapOp::Log
+        | CheapOp::Tanh => left,
     }
 }
 
@@ -8240,6 +8395,11 @@ fn i64_fused_unary(op: CheapOp, value: i64) -> i64 {
         | CheapOp::Trunc
         | CheapOp::RoundAway
         | CheapOp::RoundNearest
+        | CheapOp::Sqrt
+        | CheapOp::Rsqrt
+        | CheapOp::Exp
+        | CheapOp::Log
+        | CheapOp::Tanh
         | CheapOp::Add
         | CheapOp::Sub
         | CheapOp::Mul
@@ -8442,7 +8602,12 @@ fn apply_i64_fusion_other(
                 | CheapOp::Trunc
                 | CheapOp::RoundAway
                 | CheapOp::RoundNearest
-                | CheapOp::Sign,
+                | CheapOp::Sign
+                | CheapOp::Sqrt
+                | CheapOp::Rsqrt
+                | CheapOp::Exp
+                | CheapOp::Log
+                | CheapOp::Tanh,
                 _,
             ) => {}
         },
@@ -8483,7 +8648,12 @@ fn apply_i64_fusion_other(
                     | CheapOp::Trunc
                     | CheapOp::RoundAway
                     | CheapOp::RoundNearest
-                    | CheapOp::Sign,
+                    | CheapOp::Sign
+                    | CheapOp::Sqrt
+                    | CheapOp::Rsqrt
+                    | CheapOp::Exp
+                    | CheapOp::Log
+                    | CheapOp::Tanh,
                     _,
                 ) => {}
             }
@@ -8539,7 +8709,12 @@ fn apply_i64_fusion_chunk(out: &mut [i64], tape: &[I64Step], ext: &[&[i64]], bas
                 | CheapOp::Trunc
                 | CheapOp::RoundAway
                 | CheapOp::RoundNearest
-                | CheapOp::Sign => {}
+                | CheapOp::Sign
+                | CheapOp::Sqrt
+                | CheapOp::Rsqrt
+                | CheapOp::Exp
+                | CheapOp::Log
+                | CheapOp::Tanh => {}
             },
             (I64Operand::Chain, other) => {
                 apply_i64_fusion_other(out, step.op, true, other, ext, base)
@@ -8758,7 +8933,12 @@ fn half_fused_binary(dt: DType, op: CheapOp, left: f64, right: f64) -> u16 {
         | CheapOp::Trunc
         | CheapOp::RoundAway
         | CheapOp::RoundNearest
-        | CheapOp::Sign => left,
+        | CheapOp::Sign
+        | CheapOp::Sqrt
+        | CheapOp::Rsqrt
+        | CheapOp::Exp
+        | CheapOp::Log
+        | CheapOp::Tanh => left,
     };
     half_fusion_round(dt, result)
 }
@@ -9088,12 +9268,16 @@ fn try_fuse_elementwise_chain_half(
 fn try_fuse_elementwise_chain(
     jaxpr: &Jaxpr,
     start: usize,
-    env: &[Option<Value>],
+    env: &mut [Option<Value>],
     last_use: &[usize],
 ) -> Option<FusedRun> {
-    try_fuse_elementwise_chain_f64(jaxpr, start, env, last_use)
-        .or_else(|| try_fuse_elementwise_chain_f32(jaxpr, start, env, last_use))
-        .or_else(|| try_fuse_elementwise_chain_i64(jaxpr, start, env, last_use))
+    if let Some(run) = try_fuse_elementwise_chain_f64(jaxpr, start, env, last_use) {
+        return Some(run);
+    }
+    if let Some(run) = try_fuse_elementwise_chain_f32(jaxpr, start, env, last_use) {
+        return Some(run);
+    }
+    try_fuse_elementwise_chain_i64(jaxpr, start, env, last_use)
         .or_else(|| try_fuse_elementwise_chain_half(jaxpr, start, env, last_use))
 }
 
@@ -10176,7 +10360,7 @@ fn apply_scalar_f64_binary(op: ScalarF64BinaryOp, lhs: f64, rhs: f64) -> f64 {
         ScalarF64BinaryOp::Square => lhs * lhs,
         ScalarF64BinaryOp::IntegerPow(exp) => lhs.powi(exp),
         ScalarF64BinaryOp::Reciprocal => 1.0 / lhs,
-        ScalarF64BinaryOp::Cbrt => lhs.cbrt(),
+        ScalarF64BinaryOp::Cbrt => fj_lax::arithmetic::fast_cbrt_f64(lhs),
         ScalarF64BinaryOp::Logistic => 1.0 / (1.0 + (-lhs).exp()),
         ScalarF64BinaryOp::Sign => scalar_f64_sign(lhs),
     }
@@ -10597,7 +10781,7 @@ fn apply_scalar_f32_binary(op: ScalarF64BinaryOp, lhs: f32, rhs: f32) -> f32 {
         ScalarF64BinaryOp::Square => lhs * lhs,
         ScalarF64BinaryOp::IntegerPow(exp) => lhs.powi(exp),
         ScalarF64BinaryOp::Reciprocal => 1.0 / lhs,
-        ScalarF64BinaryOp::Cbrt => lhs.cbrt(),
+        ScalarF64BinaryOp::Cbrt => fj_lax::arithmetic::fast_cbrt_f64(lhs),
         ScalarF64BinaryOp::Logistic => 1.0 / (1.0 + (-lhs).exp()),
         ScalarF64BinaryOp::Sign => scalar_f64_sign(lhs),
     };
@@ -12697,6 +12881,40 @@ fn run_scalar_f64_plan_as_tensor_into(
         }));
     }
 
+    // Pre-scan tensor lengths before cloning any buffer via `s.to_vec()`.
+    // Large tensors (>= INPLACE_CHAIN_MAX_ELEMS, or >= FUSION_MIN_ELEMS when not a
+    // single-tensor vectorized linear chain) bail out to `run_dense_env_into` and must
+    // never pay an upfront full-buffer allocation + memcpy.
+    let mut pre_shape: Option<&Shape> = None;
+    let mut full_tensor_count = 0usize;
+    let mut pre_n = 0usize;
+    for value in const_values.iter().chain(args.iter()) {
+        if let Value::Tensor(t) = value {
+            let s = t.elements.as_f64_slice()?;
+            match pre_shape {
+                None => {
+                    pre_shape = Some(&t.shape);
+                    pre_n = s.len();
+                    full_tensor_count = 1;
+                }
+                Some(sh) if *sh == t.shape => {
+                    full_tensor_count += 1;
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    let _ = pre_shape?;
+    if pre_n >= INPLACE_CHAIN_MAX_ELEMS
+        || (pre_n >= FUSION_MIN_ELEMS
+            && (!vectorize
+                || full_tensor_count != 1
+                || plan.out_slots.len() != 1
+                || plan.steps.is_empty()))
+    {
+        return None;
+    }
+
     cells.clear();
     cells.resize_with(plan.slots, || DenseF64Cell::Missing);
 
@@ -13108,6 +13326,36 @@ fn run_scalar_f32_plan_as_tensor_into(
         }));
     }
 
+    let mut pre_shape: Option<&Shape> = None;
+    let mut full_tensor_count = 0usize;
+    let mut pre_n = 0usize;
+    for value in const_values.iter().chain(args.iter()) {
+        if let Value::Tensor(t) = value {
+            let s = t.elements.as_f32_slice()?;
+            match pre_shape {
+                None => {
+                    pre_shape = Some(&t.shape);
+                    pre_n = s.len();
+                    full_tensor_count = 1;
+                }
+                Some(sh) if *sh == t.shape => {
+                    full_tensor_count += 1;
+                }
+                Some(_) => return None,
+            }
+        }
+    }
+    let _ = pre_shape?;
+    if pre_n >= INPLACE_CHAIN_MAX_ELEMS
+        || (pre_n >= FUSION_MIN_ELEMS
+            && (!vectorize
+                || full_tensor_count != 1
+                || plan.out_slots.len() != 1
+                || plan.steps.is_empty()))
+    {
+        return None;
+    }
+
     cells.clear();
     cells.resize_with(plan.slots, || DenseF32Cell::Missing);
 
@@ -13331,6 +13579,9 @@ fn run_scalar_i64_plan_as_tensor_into(
             // Only genuine I64 tensors — I32 is i64-backed but generic-narrowed.
             Value::Tensor(t) if t.dtype == DType::I64 => match t.elements.as_i64_slice() {
                 Some(s) => {
+                    if s.len() >= FUSION_MIN_ELEMS {
+                        return None;
+                    }
                     match &shape {
                         None => {
                             shape = Some(t.shape.clone());
@@ -14854,8 +15105,9 @@ fn try_eval_donated_dense_f64_unary(
             return None;
         }
     };
-    drive_fusion_chunks(&mut values, |chunk, _base| {
-        apply_inplace_f64_unary_chunk(chunk, op);
+    let total_len = values.len();
+    drive_fusion_chunks(&mut values, |chunk, base| {
+        apply_inplace_f64_unary_chunk(chunk, op, base, total_len);
     });
     let output = match TensorValue::new_f64_values(shape, values) {
         Ok(tensor) => Value::Tensor(tensor),
@@ -14919,14 +15171,6 @@ fn try_eval_donated_dense_f32_unary(
         shape,
         elements,
     } = tensor;
-    if elements.len() < FUSION_THREAD_MIN_ELEMS {
-        env[input_slot] = Some(Value::Tensor(TensorValue {
-            dtype,
-            shape,
-            elements,
-        }));
-        return None;
-    }
     let mut values = match elements.try_into_f32_values() {
         Ok(values) => values,
         Err(elements) => {
@@ -14938,8 +15182,9 @@ fn try_eval_donated_dense_f32_unary(
             return None;
         }
     };
-    drive_fusion_chunks(&mut values, |chunk, _base| {
-        apply_inplace_f32_unary_chunk(chunk, op);
+    let total_len = values.len();
+    drive_fusion_chunks(&mut values, |chunk, base| {
+        apply_inplace_f32_unary_chunk(chunk, op, base, total_len);
     });
     let output = match TensorValue::new_f32_values(shape, values) {
         Ok(tensor) => Value::Tensor(tensor),
@@ -14951,6 +15196,619 @@ fn try_eval_donated_dense_f32_unary(
     };
     env[out_slot] = Some(output);
     Some(Ok(()))
+}
+
+fn try_eval_donated_dense_f64_binary(
+    eqn: &Equation,
+    eqn_index: usize,
+    env: &mut [Option<Value>],
+    last_use: &[usize],
+) -> Option<Result<(), InterpreterError>> {
+    if DENSE_F64_DONATION_DISABLE.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        return None;
+    }
+    if !eqn.sub_jaxprs.is_empty()
+        || !eqn.effects.is_empty()
+        || eqn.inputs.len() != 2
+        || eqn.outputs.len() != 1
+        || is_multi_output_primitive(eqn.primitive)
+    {
+        return None;
+    }
+    if !matches!(
+        eqn.primitive,
+        Primitive::Add
+            | Primitive::Sub
+            | Primitive::Mul
+            | Primitive::Div
+            | Primitive::Max
+            | Primitive::Min
+    ) {
+        return None;
+    }
+    let out_slot = eqn.outputs[0].0 as usize;
+    if out_slot >= env.len() {
+        return Some(Err(InterpreterError::MissingVariable(eqn.outputs[0])));
+    }
+
+    // Determine whether lhs or rhs is a donatable F64 tensor at its last use.
+    let lhs_var = match eqn.inputs[0] {
+        Atom::Var(v) => Some(v),
+        Atom::Lit(_) => None,
+    };
+    let rhs_var = match eqn.inputs[1] {
+        Atom::Var(v) => Some(v),
+        Atom::Lit(_) => None,
+    };
+    if lhs_var.is_some() && lhs_var == rhs_var {
+        // Same variable used twice (`x + x`): check if this equation is its last use.
+        let v = lhs_var?;
+        let slot = v.0 as usize;
+        if slot >= env.len() || last_use.get(slot).copied() != Some(eqn_index) {
+            return None;
+        }
+        let Some(value) = env[slot].take() else {
+            return Some(Err(InterpreterError::MissingVariable(v)));
+        };
+        let Value::Tensor(tensor) = value else {
+            env[slot] = Some(value);
+            return None;
+        };
+        if tensor.dtype != DType::F64 {
+            env[slot] = Some(Value::Tensor(tensor));
+            return None;
+        }
+        let TensorValue {
+            dtype,
+            shape,
+            elements,
+        } = tensor;
+        let mut values = match elements.try_into_f64_values() {
+            Ok(v) => v,
+            Err(elements) => {
+                env[slot] = Some(Value::Tensor(TensorValue {
+                    dtype,
+                    shape,
+                    elements,
+                }));
+                return None;
+            }
+        };
+        let prim = eqn.primitive;
+        drive_fusion_chunks(&mut values, |chunk, _base| match prim {
+            Primitive::Add => {
+                for x in chunk.iter_mut() {
+                    *x += *x;
+                }
+            }
+            Primitive::Sub => {
+                for x in chunk.iter_mut() {
+                    *x -= *x;
+                }
+            }
+            Primitive::Mul => {
+                for x in chunk.iter_mut() {
+                    *x *= *x;
+                }
+            }
+            Primitive::Div => {
+                for x in chunk.iter_mut() {
+                    *x /= *x;
+                }
+            }
+            Primitive::Max => {
+                for x in chunk.iter_mut() {
+                    *x = x.max(*x);
+                }
+            }
+            Primitive::Min => {
+                for x in chunk.iter_mut() {
+                    *x = x.min(*x);
+                }
+            }
+            _ => {}
+        });
+        let output = TensorValue::new_f64_values(shape, values)
+            .map(Value::Tensor)
+            .map_err(EvalError::InvalidTensor)
+            .map_err(InterpreterError::Primitive);
+        return match output {
+            Ok(val) => {
+                env[out_slot] = Some(val);
+                Some(Ok(()))
+            }
+            Err(e) => Some(Err(e)),
+        };
+    }
+
+    // Try donating lhs first, then rhs.
+    for donate_lhs in [true, false] {
+        let (donate_atom, other_atom) = if donate_lhs {
+            (&eqn.inputs[0], &eqn.inputs[1])
+        } else {
+            (&eqn.inputs[1], &eqn.inputs[0])
+        };
+        let Atom::Var(donate_var) = donate_atom else {
+            continue;
+        };
+        let donate_slot = donate_var.0 as usize;
+        if donate_slot >= env.len() || last_use.get(donate_slot).copied() != Some(eqn_index) {
+            continue;
+        }
+        // Check that `other_atom` is either a valid F64 scalar or a same-shape F64 tensor.
+        enum OtherOperand<'a> {
+            Scalar(f64),
+            Slice(&'a [f64]),
+        }
+        // Extract donate candidate first so we don't alias `env`.
+        let Some(donate_val) = env[donate_slot].take() else {
+            return Some(Err(InterpreterError::MissingVariable(*donate_var)));
+        };
+        let Value::Tensor(donate_tensor) = donate_val else {
+            env[donate_slot] = Some(donate_val);
+            continue;
+        };
+        if donate_tensor.dtype != DType::F64 {
+            env[donate_slot] = Some(Value::Tensor(donate_tensor));
+            continue;
+        }
+        let other_check = match other_atom {
+            Atom::Lit(lit) => lit.as_f64().map(OtherOperand::Scalar),
+            Atom::Var(other_var) => {
+                let other_slot = other_var.0 as usize;
+                match env.get(other_slot).and_then(|s| s.as_ref()) {
+                    Some(Value::Scalar(lit)) => lit.as_f64().map(OtherOperand::Scalar),
+                    Some(Value::Tensor(other_t))
+                        if other_t.dtype == DType::F64
+                            && other_t.shape == donate_tensor.shape =>
+                    {
+                        other_t.elements.as_f64_slice().map(OtherOperand::Slice)
+                    }
+                    _ => None,
+                }
+            }
+        };
+        let Some(other_op) = other_check else {
+            env[donate_slot] = Some(Value::Tensor(donate_tensor));
+            continue;
+        };
+        let TensorValue {
+            dtype,
+            shape,
+            elements,
+        } = donate_tensor;
+        let mut values = match elements.try_into_f64_values() {
+            Ok(v) => v,
+            Err(elements) => {
+                env[donate_slot] = Some(Value::Tensor(TensorValue {
+                    dtype,
+                    shape,
+                    elements,
+                }));
+                continue;
+            }
+        };
+        let prim = eqn.primitive;
+        match other_op {
+            OtherOperand::Scalar(s) => {
+                drive_fusion_chunks(&mut values, |chunk, _base| match (prim, donate_lhs) {
+                    (Primitive::Add, _) => {
+                        for x in chunk.iter_mut() {
+                            *x += s;
+                        }
+                    }
+                    (Primitive::Sub, true) => {
+                        for x in chunk.iter_mut() {
+                            *x -= s;
+                        }
+                    }
+                    (Primitive::Sub, false) => {
+                        for x in chunk.iter_mut() {
+                            *x = s - *x;
+                        }
+                    }
+                    (Primitive::Mul, _) => {
+                        for x in chunk.iter_mut() {
+                            *x *= s;
+                        }
+                    }
+                    (Primitive::Div, true) => {
+                        for x in chunk.iter_mut() {
+                            *x /= s;
+                        }
+                    }
+                    (Primitive::Div, false) => {
+                        for x in chunk.iter_mut() {
+                            *x = s / *x;
+                        }
+                    }
+                    (Primitive::Max, _) => {
+                        for x in chunk.iter_mut() {
+                            *x = x.max(s);
+                        }
+                    }
+                    (Primitive::Min, _) => {
+                        for x in chunk.iter_mut() {
+                            *x = x.min(s);
+                        }
+                    }
+                    _ => {}
+                });
+            }
+            OtherOperand::Slice(other_slice) => {
+                drive_fusion_chunks(&mut values, |chunk, base| {
+                    let rhs_chunk = &other_slice[base..base + chunk.len()];
+                    match (prim, donate_lhs) {
+                        (Primitive::Add, _) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x += y;
+                            }
+                        }
+                        (Primitive::Sub, true) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x -= y;
+                            }
+                        }
+                        (Primitive::Sub, false) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x = y - *x;
+                            }
+                        }
+                        (Primitive::Mul, _) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x *= y;
+                            }
+                        }
+                        (Primitive::Div, true) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x /= y;
+                            }
+                        }
+                        (Primitive::Div, false) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x = y / *x;
+                            }
+                        }
+                        (Primitive::Max, _) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x = x.max(y);
+                            }
+                        }
+                        (Primitive::Min, _) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x = x.min(y);
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+            }
+        }
+        // Drop the other operand if this equation was also its last use.
+        if let Atom::Var(other_var) = other_atom {
+            let other_slot = other_var.0 as usize;
+            if last_use.get(other_slot).copied() == Some(eqn_index) {
+                env[other_slot] = None;
+            }
+        }
+        let output = TensorValue::new_f64_values(shape, values)
+            .map(Value::Tensor)
+            .map_err(EvalError::InvalidTensor)
+            .map_err(InterpreterError::Primitive);
+        return match output {
+            Ok(val) => {
+                env[out_slot] = Some(val);
+                Some(Ok(()))
+            }
+            Err(e) => Some(Err(e)),
+        };
+    }
+    None
+}
+
+fn try_eval_donated_dense_f32_binary(
+    eqn: &Equation,
+    eqn_index: usize,
+    env: &mut [Option<Value>],
+    last_use: &[usize],
+) -> Option<Result<(), InterpreterError>> {
+    if DENSE_F64_DONATION_DISABLE.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        return None;
+    }
+    if !eqn.sub_jaxprs.is_empty()
+        || !eqn.effects.is_empty()
+        || eqn.inputs.len() != 2
+        || eqn.outputs.len() != 1
+        || is_multi_output_primitive(eqn.primitive)
+    {
+        return None;
+    }
+    if !matches!(
+        eqn.primitive,
+        Primitive::Add
+            | Primitive::Sub
+            | Primitive::Mul
+            | Primitive::Div
+            | Primitive::Max
+            | Primitive::Min
+    ) {
+        return None;
+    }
+    let out_slot = eqn.outputs[0].0 as usize;
+    if out_slot >= env.len() {
+        return Some(Err(InterpreterError::MissingVariable(eqn.outputs[0])));
+    }
+
+    let lhs_var = match eqn.inputs[0] {
+        Atom::Var(v) => Some(v),
+        Atom::Lit(_) => None,
+    };
+    let rhs_var = match eqn.inputs[1] {
+        Atom::Var(v) => Some(v),
+        Atom::Lit(_) => None,
+    };
+    if lhs_var.is_some() && lhs_var == rhs_var {
+        let v = lhs_var?;
+        let slot = v.0 as usize;
+        if slot >= env.len() || last_use.get(slot).copied() != Some(eqn_index) {
+            return None;
+        }
+        let Some(value) = env[slot].take() else {
+            return Some(Err(InterpreterError::MissingVariable(v)));
+        };
+        let Value::Tensor(tensor) = value else {
+            env[slot] = Some(value);
+            return None;
+        };
+        if tensor.dtype != DType::F32 {
+            env[slot] = Some(Value::Tensor(tensor));
+            return None;
+        }
+        let TensorValue {
+            dtype,
+            shape,
+            elements,
+        } = tensor;
+        let mut values = match elements.try_into_f32_values() {
+            Ok(v) => v,
+            Err(elements) => {
+                env[slot] = Some(Value::Tensor(TensorValue {
+                    dtype,
+                    shape,
+                    elements,
+                }));
+                return None;
+            }
+        };
+        let prim = eqn.primitive;
+        drive_fusion_chunks(&mut values, |chunk, _base| match prim {
+            Primitive::Add => {
+                for x in chunk.iter_mut() {
+                    *x += *x;
+                }
+            }
+            Primitive::Sub => {
+                for x in chunk.iter_mut() {
+                    *x -= *x;
+                }
+            }
+            Primitive::Mul => {
+                for x in chunk.iter_mut() {
+                    *x *= *x;
+                }
+            }
+            Primitive::Div => {
+                for x in chunk.iter_mut() {
+                    *x /= *x;
+                }
+            }
+            Primitive::Max => {
+                for x in chunk.iter_mut() {
+                    *x = x.max(*x);
+                }
+            }
+            Primitive::Min => {
+                for x in chunk.iter_mut() {
+                    *x = x.min(*x);
+                }
+            }
+            _ => {}
+        });
+        let output = TensorValue::new_f32_values(shape, values)
+            .map(Value::Tensor)
+            .map_err(EvalError::InvalidTensor)
+            .map_err(InterpreterError::Primitive);
+        return match output {
+            Ok(val) => {
+                env[out_slot] = Some(val);
+                Some(Ok(()))
+            }
+            Err(e) => Some(Err(e)),
+        };
+    }
+
+    for donate_lhs in [true, false] {
+        let (donate_atom, other_atom) = if donate_lhs {
+            (&eqn.inputs[0], &eqn.inputs[1])
+        } else {
+            (&eqn.inputs[1], &eqn.inputs[0])
+        };
+        let Atom::Var(donate_var) = donate_atom else {
+            continue;
+        };
+        let donate_slot = donate_var.0 as usize;
+        if donate_slot >= env.len() || last_use.get(donate_slot).copied() != Some(eqn_index) {
+            continue;
+        }
+        enum OtherOperandF32<'a> {
+            Scalar(f32),
+            Slice(&'a [f32]),
+        }
+        let Some(donate_val) = env[donate_slot].take() else {
+            return Some(Err(InterpreterError::MissingVariable(*donate_var)));
+        };
+        let Value::Tensor(donate_tensor) = donate_val else {
+            env[donate_slot] = Some(donate_val);
+            continue;
+        };
+        if donate_tensor.dtype != DType::F32 {
+            env[donate_slot] = Some(Value::Tensor(donate_tensor));
+            continue;
+        }
+        let other_check = match other_atom {
+            Atom::Lit(Literal::F32Bits(b)) => Some(OtherOperandF32::Scalar(f32::from_bits(*b))),
+            Atom::Var(other_var) => {
+                let other_slot = other_var.0 as usize;
+                match env.get(other_slot).and_then(|s| s.as_ref()) {
+                    Some(Value::Scalar(Literal::F32Bits(b))) => {
+                        Some(OtherOperandF32::Scalar(f32::from_bits(*b)))
+                    }
+                    Some(Value::Tensor(other_t))
+                        if other_t.dtype == DType::F32
+                            && other_t.shape == donate_tensor.shape =>
+                    {
+                        other_t.elements.as_f32_slice().map(OtherOperandF32::Slice)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let Some(other_op) = other_check else {
+            env[donate_slot] = Some(Value::Tensor(donate_tensor));
+            continue;
+        };
+        let TensorValue {
+            dtype,
+            shape,
+            elements,
+        } = donate_tensor;
+        let mut values = match elements.try_into_f32_values() {
+            Ok(v) => v,
+            Err(elements) => {
+                env[donate_slot] = Some(Value::Tensor(TensorValue {
+                    dtype,
+                    shape,
+                    elements,
+                }));
+                continue;
+            }
+        };
+        let prim = eqn.primitive;
+        match other_op {
+            OtherOperandF32::Scalar(s) => {
+                drive_fusion_chunks(&mut values, |chunk, _base| match (prim, donate_lhs) {
+                    (Primitive::Add, _) => {
+                        for x in chunk.iter_mut() {
+                            *x += s;
+                        }
+                    }
+                    (Primitive::Sub, true) => {
+                        for x in chunk.iter_mut() {
+                            *x -= s;
+                        }
+                    }
+                    (Primitive::Sub, false) => {
+                        for x in chunk.iter_mut() {
+                            *x = s - *x;
+                        }
+                    }
+                    (Primitive::Mul, _) => {
+                        for x in chunk.iter_mut() {
+                            *x *= s;
+                        }
+                    }
+                    (Primitive::Div, true) => {
+                        for x in chunk.iter_mut() {
+                            *x /= s;
+                        }
+                    }
+                    (Primitive::Div, false) => {
+                        for x in chunk.iter_mut() {
+                            *x = s / *x;
+                        }
+                    }
+                    (Primitive::Max, _) => {
+                        for x in chunk.iter_mut() {
+                            *x = x.max(s);
+                        }
+                    }
+                    (Primitive::Min, _) => {
+                        for x in chunk.iter_mut() {
+                            *x = x.min(s);
+                        }
+                    }
+                    _ => {}
+                });
+            }
+            OtherOperandF32::Slice(other_slice) => {
+                drive_fusion_chunks(&mut values, |chunk, base| {
+                    let rhs_chunk = &other_slice[base..base + chunk.len()];
+                    match (prim, donate_lhs) {
+                        (Primitive::Add, _) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x += y;
+                            }
+                        }
+                        (Primitive::Sub, true) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x -= y;
+                            }
+                        }
+                        (Primitive::Sub, false) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x = y - *x;
+                            }
+                        }
+                        (Primitive::Mul, _) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x *= y;
+                            }
+                        }
+                        (Primitive::Div, true) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x /= y;
+                            }
+                        }
+                        (Primitive::Div, false) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x = y / *x;
+                            }
+                        }
+                        (Primitive::Max, _) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x = x.max(y);
+                            }
+                        }
+                        (Primitive::Min, _) => {
+                            for (x, &y) in chunk.iter_mut().zip(rhs_chunk) {
+                                *x = x.min(y);
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+            }
+        }
+        if let Atom::Var(other_var) = other_atom {
+            let other_slot = other_var.0 as usize;
+            if last_use.get(other_slot).copied() == Some(eqn_index) {
+                env[other_slot] = None;
+            }
+        }
+        let output = TensorValue::new_f32_values(shape, values)
+            .map(Value::Tensor)
+            .map_err(EvalError::InvalidTensor)
+            .map_err(InterpreterError::Primitive);
+        return match output {
+            Ok(val) => {
+                env[out_slot] = Some(val);
+                Some(Ok(()))
+            }
+            Err(e) => Some(Err(e)),
+        };
+    }
+    None
 }
 
 /// [`run_dense_env`] writing its `outvars` into a caller-owned `out` buffer and
@@ -15014,6 +15872,16 @@ fn run_dense_env_into(
             continue;
         }
         if let Some(result) = try_eval_donated_dense_f32_unary(eqn, i, env, last_use) {
+            result?;
+            i += 1;
+            continue;
+        }
+        if let Some(result) = try_eval_donated_dense_f64_binary(eqn, i, env, last_use) {
+            result?;
+            i += 1;
+            continue;
+        }
+        if let Some(result) = try_eval_donated_dense_f32_binary(eqn, i, env, last_use) {
             result?;
             i += 1;
             continue;
@@ -29533,6 +30401,187 @@ mod tests {
                 let actual = out[0].as_f64_scalar().unwrap();
                 prop_assert!((actual - x).abs() < 1e-14, "x + 0 != x: {} + 0 = {}", x, actual);
             }
+        }
+    }
+
+    #[test]
+    fn e2e_buffer_donation_arc_cow_and_binary_reuse() {
+        use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
+        use smallvec::smallvec;
+        use std::collections::BTreeMap;
+
+        // Build a chain where each step is separated by Sin (which is not in CheapOp)
+        // so `try_fuse_elementwise_chain` does not fuse the 1-equation segments (`FUSION_MIN_RUN == 2`),
+        // exercising `try_eval_donated_dense_f64_binary` and `try_eval_donated_dense_f64_unary` directly:
+        // v2 = sin(v1)
+        // v3 = add(v2, 2.0)       <-- binary donation of v2
+        // v4 = sin(v3)
+        // v5 = neg(v4)            <-- unary donation of v4
+        // v6 = add(v1, v5)        <-- binary donation of v1 and/or v5
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(6)],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Lit(Literal::from_f64(2.0))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(VarId(4))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(5))],
+                    outputs: smallvec![VarId(6)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+
+        // 1. Verify Arc COW safety when input is shared externally (`strong_count > 1`):
+        let input_vec: Vec<f64> = (0..4096).map(|i| (i as f64) * 0.001).collect();
+        let shared_input = Value::Tensor(
+            TensorValue::new_f64_values(Shape::vector(4096), input_vec.clone()).unwrap(),
+        );
+        let retained_clone = shared_input.clone();
+
+        let donated_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&shared_input)).unwrap();
+        let fresh_out =
+            crate::eval_jaxpr_hashed_env(&jaxpr, &[], std::slice::from_ref(&shared_input)).unwrap();
+
+        // Bit-identical outputs between donated and fresh-alloc paths:
+        assert_eq!(donated_out, fresh_out);
+        // Retained clone must be completely untouched:
+        assert_eq!(
+            retained_clone.as_tensor().unwrap().to_f64_vec().unwrap(),
+            input_vec
+        );
+    }
+
+    #[test]
+    fn e2e_expanded_elementwise_fusion_transcendental_chain() {
+        use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
+        use smallvec::smallvec;
+        use std::collections::BTreeMap;
+
+        // Chain of 6 elementwise equations including Exp, Tanh, Sqrt, Log, Add:
+        // v2 = add(v1, 1.5)
+        // v3 = exp(v2)
+        // v4 = tanh(v3)
+        // v5 = add(v4, 2.0)
+        // v6 = sqrt(v5)
+        // v7 = log(v6)
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(7)],
+            vec![
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::from_f64(1.5))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Exp,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Tanh,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(4)), Atom::Lit(Literal::from_f64(2.0))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sqrt,
+                    inputs: smallvec![Atom::Var(VarId(5))],
+                    outputs: smallvec![VarId(6)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Log,
+                    inputs: smallvec![Atom::Var(VarId(6))],
+                    outputs: smallvec![VarId(7)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+
+        let n = 65_536usize;
+        let data: Vec<f64> = (0..n).map(|i| ((i % 256) as f64) * 0.01 - 1.0).collect();
+        let arg = Value::Tensor(TensorValue::new_f64_values(Shape::vector(n as u32), data).unwrap());
+
+        let fused_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&arg)).unwrap();
+        let unfused_out =
+            crate::eval_jaxpr_hashed_env(&jaxpr, &[], std::slice::from_ref(&arg)).unwrap();
+
+        let fused_slice = fused_out[0]
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f64_slice()
+            .unwrap();
+        let unfused_slice = unfused_out[0]
+            .as_tensor()
+            .unwrap()
+            .elements
+            .as_f64_slice()
+            .unwrap();
+        assert_eq!(fused_slice.len(), unfused_slice.len());
+        for (idx, (&f, &u)) in fused_slice.iter().zip(unfused_slice.iter()).enumerate() {
+            assert_eq!(
+                f.to_bits(),
+                u.to_bits(),
+                "bit-exact mismatch at index {idx}: fused={f} vs unfused={u}"
+            );
         }
     }
 }
