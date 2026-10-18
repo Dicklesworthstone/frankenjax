@@ -2771,12 +2771,8 @@ fn is_numeric_zero_lit(lit: &Literal) -> bool {
     match lit {
         Literal::I64(v) => *v == 0,
         Literal::I32(v) => *v == 0,
-        Literal::I16(v) => *v == 0,
-        Literal::I8(v) => *v == 0,
         Literal::U64(v) => *v == 0,
         Literal::U32(v) => *v == 0,
-        Literal::U16(v) => *v == 0,
-        Literal::U8(v) => *v == 0,
         Literal::F64Bits(bits) => f64::from_bits(*bits) == 0.0,
         Literal::F32Bits(bits) => f32::from_bits(*bits) == 0.0,
         _ => false,
@@ -2787,12 +2783,8 @@ fn is_numeric_one_lit(lit: &Literal) -> bool {
     match lit {
         Literal::I64(v) => *v == 1,
         Literal::I32(v) => *v == 1,
-        Literal::I16(v) => *v == 1,
-        Literal::I8(v) => *v == 1,
         Literal::U64(v) => *v == 1,
         Literal::U32(v) => *v == 1,
-        Literal::U16(v) => *v == 1,
-        Literal::U8(v) => *v == 1,
         Literal::F64Bits(bits) => f64::from_bits(*bits) == 1.0,
         Literal::F32Bits(bits) => f32::from_bits(*bits) == 1.0,
         _ => false,
@@ -2808,7 +2800,8 @@ fn is_numeric_one_lit(lit: &Literal) -> bool {
 pub fn canonicalize_jaxpr_fast(jaxpr: &Jaxpr, config: &OptimizationConfig) -> Jaxpr {
     let shaped = optimize_shape_parametric_chains(jaxpr);
     let mut aliases: BTreeMap<VarId, VarId> = BTreeMap::new();
-    let mut producer_by_var: BTreeMap<VarId, (Primitive, SmallVec<[Atom; 4]>)> = BTreeMap::new();
+    let mut producer_by_var: BTreeMap<VarId, (Primitive, smallvec::SmallVec<[Atom; 4]>)> =
+        BTreeMap::new();
     let mut equations: Vec<Equation> = Vec::with_capacity(shaped.equations.len());
 
     for equation in &shaped.equations {
@@ -2875,9 +2868,20 @@ pub fn canonicalize_jaxpr_fast(jaxpr: &Jaxpr, config: &OptimizationConfig) -> Ja
                     {
                         rewritten.inputs[0] = prev_inputs[0].clone();
                     }
-                    (Primitive::Neg, Primitive::Neg)
-                    | (Primitive::Conj, Primitive::Conj)
+                    (Primitive::Conj, Primitive::Conj)
                     | (Primitive::BitwiseNot, Primitive::BitwiseNot)
+                        if prev_inputs.len() == 1 =>
+                    {
+                        if let Atom::Var(orig_var) = prev_inputs[0] {
+                            aliases.insert(out_var, orig_var);
+                            continue;
+                        }
+                    }
+                    (Primitive::Neg, Primitive::Neg)
+                    | (Primitive::Log, Primitive::Exp)
+                    | (Primitive::Exp, Primitive::Log)
+                    | (Primitive::Log1p, Primitive::Expm1)
+                    | (Primitive::Expm1, Primitive::Log1p)
                         if !config.numerical_safety_mode && prev_inputs.len() == 1 =>
                     {
                         if let Atom::Var(orig_var) = prev_inputs[0] {
@@ -9182,5 +9186,84 @@ mod tests {
 
             Jaxpr::new(vec![VarId(1)], vec![], vec![current], equations)
         }
+    }
+
+    #[test]
+    fn canonicalize_jaxpr_fast_ieee_strict_and_finite_fast_math() {
+        // Build: y1 = bitwise_not(bitwise_not(x)), y2 = neg(neg(y1)), y3 = add(y2, 0.0), y4 = exp(log(y3))
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(8)],
+            vec![
+                Equation {
+                    primitive: Primitive::BitwiseNot,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::BitwiseNot,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(VarId(4))],
+                    outputs: smallvec![VarId(5)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(5)), Atom::Lit(Literal::from_f64(0.0))],
+                    outputs: smallvec![VarId(6)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Log,
+                    inputs: smallvec![Atom::Var(VarId(6))],
+                    outputs: smallvec![VarId(7)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Exp,
+                    inputs: smallvec![Atom::Var(VarId(7))],
+                    outputs: smallvec![VarId(8)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        // Under ieee_strict, bitwise_not(bitwise_not(x)) cancels, while neg(neg(x)), add(x, 0.0), and exp(log(x)) remain.
+        let strict = canonicalize_jaxpr_fast(&jaxpr, &OptimizationConfig::ieee_strict());
+        assert_eq!(strict.equations.len(), 5);
+        assert_eq!(strict.equations[0].primitive, Primitive::Neg);
+        assert_eq!(strict.equations[0].inputs[0], Atom::Var(VarId(1)));
+
+        // Under finite_fast_math, bitwise_not^2, neg^2, add(x, 0.0), and exp(log(x)) all collapse to x.
+        let fast = canonicalize_jaxpr_fast(&jaxpr, &OptimizationConfig::finite_fast_math());
+        assert!(fast.equations.is_empty());
+        assert_eq!(fast.outvars, vec![VarId(1)]);
     }
 }
