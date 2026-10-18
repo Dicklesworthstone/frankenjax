@@ -885,6 +885,9 @@ fn case_transform_proof_missing_evidence(_: &Path) -> ObservedOutcome {
         root_jaxpr: build_program(ProgramSpec::Square),
         transform_stack: vec![Transform::Jit],
         transform_evidence: Vec::new(),
+        root_input_avals: Vec::new(),
+        root_output_avals: Vec::new(),
+        steps: Vec::new(),
     };
     match verify_transform_composition(&ledger) {
         Ok(_) => ObservedOutcome::success(),
@@ -1084,6 +1087,26 @@ fn classify_transform_composition_error(err: &TransformCompositionError) -> Obse
             "transform_proof.duplicate_evidence",
             "TransformCompositionError::DuplicateEvidence",
             "transform evidence at index {index} duplicates an earlier evidence id: {evidence}",
+        ),
+        TransformCompositionError::RootJaxprFingerprintMismatch { .. } => (
+            "transform_proof.root_jaxpr_fingerprint_mismatch",
+            "TransformCompositionError::RootJaxprFingerprintMismatch",
+            "root jaxpr sha256 mismatch: expected {expected_sha256_hex}, got {actual_sha256_hex}",
+        ),
+        TransformCompositionError::StepChainDiscontinuity { .. } => (
+            "transform_proof.step_chain_discontinuity",
+            "TransformCompositionError::StepChainDiscontinuity",
+            "transform proof chain discontinuity at step {step_index}: prev_output={previous_output_sha256_hex}, next_input={next_input_sha256_hex}",
+        ),
+        TransformCompositionError::InvalidStepSignature { .. } => (
+            "transform_proof.invalid_step_signature",
+            "TransformCompositionError::InvalidStepSignature",
+            "invalid abstract signature at step {step_index} for {transform}: {detail}",
+        ),
+        TransformCompositionError::MerkleCommitmentMismatch { .. } => (
+            "transform_proof.merkle_commitment_mismatch",
+            "TransformCompositionError::MerkleCommitmentMismatch",
+            "ttl proof merkle commitment mismatch: expected {expected}, got {actual}",
         ),
     };
     observed(class, variant, shape, err.to_string())

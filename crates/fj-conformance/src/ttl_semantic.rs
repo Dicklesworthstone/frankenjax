@@ -867,6 +867,9 @@ fn invalid_missing_evidence() -> TtlSemanticProofCase {
         root_jaxpr: build_program(ProgramSpec::Square),
         transform_stack: vec![Transform::Jit],
         transform_evidence: Vec::new(),
+        root_input_avals: Vec::new(),
+        root_output_avals: Vec::new(),
+        steps: Vec::new(),
     };
     rejected_core_case(
         "invalid_missing_evidence",
@@ -1057,6 +1060,18 @@ fn classify_transform_error(err: &TransformCompositionError) -> String {
         }
         TransformCompositionError::DuplicateEvidence { .. } => {
             "transform_invariant.duplicate_evidence".to_owned()
+        }
+        TransformCompositionError::RootJaxprFingerprintMismatch { .. } => {
+            "transform_invariant.stale_input_fingerprint".to_owned()
+        }
+        TransformCompositionError::StepChainDiscontinuity { .. } => {
+            "transform_invariant.step_chain_discontinuity".to_owned()
+        }
+        TransformCompositionError::InvalidStepSignature { .. } => {
+            "transform_invariant.invalid_step_signature".to_owned()
+        }
+        TransformCompositionError::MerkleCommitmentMismatch { .. } => {
+            "transform_invariant.merkle_commitment_mismatch".to_owned()
         }
     }
 }

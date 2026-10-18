@@ -5790,26 +5790,240 @@ fn ternary_program(primitive: Primitive) -> Jaxpr {
     )
 }
 
+const SHA256_K: [u32; 64] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
+
+/// Compute a FIPS 180-4 SHA-256 digest over `data` with zero external dependencies.
+#[must_use]
+pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
+    let mut state: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut padded = Vec::with_capacity((data.len() + 9).div_ceil(64) * 64);
+    padded.extend_from_slice(data);
+    padded.push(0x80);
+    while (padded.len() + 8) % 64 != 0 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in padded.as_chunks::<64>().0 {
+        let mut w = [0_u32; 64];
+        for (i, word) in w.iter_mut().enumerate().take(16) {
+            let base = i * 4;
+            *word = u32::from_be_bytes([
+                chunk[base],
+                chunk[base + 1],
+                chunk[base + 2],
+                chunk[base + 3],
+            ]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+
+        let mut a = state[0];
+        let mut b = state[1];
+        let mut c = state[2];
+        let mut d = state[3];
+        let mut e = state[4];
+        let mut f = state[5];
+        let mut g = state[6];
+        let mut h = state[7];
+
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = h
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(SHA256_K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+
+        state[0] = state[0].wrapping_add(a);
+        state[1] = state[1].wrapping_add(b);
+        state[2] = state[2].wrapping_add(c);
+        state[3] = state[3].wrapping_add(d);
+        state[4] = state[4].wrapping_add(e);
+        state[5] = state[5].wrapping_add(f);
+        state[6] = state[6].wrapping_add(g);
+        state[7] = state[7].wrapping_add(h);
+    }
+
+    let mut out = [0_u8; 32];
+    for (i, word) in state.iter().enumerate() {
+        let bytes = word.to_be_bytes();
+        out[i * 4] = bytes[0];
+        out[i * 4 + 1] = bytes[1];
+        out[i * 4 + 2] = bytes[2];
+        out[i * 4 + 3] = bytes[3];
+    }
+    out
+}
+
+/// Format a 32-byte SHA-256 digest as a 64-character lowercase hex string.
+#[must_use]
+pub fn sha256_hex_bytes(digest: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
+/// Compute the canonical SHA-256 digest of a [`Jaxpr`]'s canonical fingerprint.
+#[must_use]
+pub fn jaxpr_fingerprint_sha256(jaxpr: &Jaxpr) -> [u8; 32] {
+    sha256_bytes(jaxpr.canonical_fingerprint().as_bytes())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JitWitness {
+    pub static_argnums: Vec<usize>,
+    pub folded_eqn_count: usize,
+    pub residual_eqn_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GradWitness {
+    pub argnums: Vec<usize>,
+    pub primal_eqn_count: usize,
+    pub adjoint_eqn_count: usize,
+    pub pruned_dead_cotangents: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmapWitness {
+    pub in_axes: Vec<Option<usize>>,
+    pub out_axes: Vec<Option<usize>>,
+    pub axis_size: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PmapWitness {
+    pub axis_size: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransformRewriteWitness {
+    Jit(JitWitness),
+    Grad(GradWitness),
+    Vmap(VmapWitness),
+    Pmap(PmapWitness),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransformProofStep {
+    pub step_index: usize,
+    pub transform: Transform,
+    pub evidence: String,
+    pub input_jaxpr_fingerprint_sha256: [u8; 32],
+    pub output_jaxpr_fingerprint_sha256: [u8; 32],
+    pub input_avals: Vec<AbstractValue>,
+    pub output_avals: Vec<AbstractValue>,
+    pub witness: TransformRewriteWitness,
+}
+
+pub type TransformStepRecord = TransformProofStep;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceTransformLedger {
     pub root_jaxpr: Jaxpr,
     pub transform_stack: Vec<Transform>,
     pub transform_evidence: Vec<String>,
+    #[serde(default)]
+    pub root_input_avals: Vec<AbstractValue>,
+    #[serde(default)]
+    pub root_output_avals: Vec<AbstractValue>,
+    #[serde(default)]
+    pub steps: Vec<TransformProofStep>,
 }
 
 impl TraceTransformLedger {
     #[must_use]
     pub fn new(root_jaxpr: Jaxpr) -> Self {
+        let root_input_avals = default_scalar_avals(root_jaxpr.invars.len());
+        let root_output_avals = default_scalar_avals(root_jaxpr.outvars.len());
         Self {
             root_jaxpr,
             transform_stack: Vec::new(),
             transform_evidence: Vec::new(),
+            root_input_avals,
+            root_output_avals,
+            steps: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_signature(
+        root_jaxpr: Jaxpr,
+        root_input_avals: Vec<AbstractValue>,
+        root_output_avals: Vec<AbstractValue>,
+    ) -> Self {
+        Self {
+            root_jaxpr,
+            transform_stack: Vec::new(),
+            transform_evidence: Vec::new(),
+            root_input_avals,
+            root_output_avals,
+            steps: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_steps(mut self, steps: Vec<TransformProofStep>) -> Self {
+        self.steps = steps;
+        self
     }
 
     pub fn push_transform(&mut self, transform: Transform, evidence_id: impl Into<String>) {
         self.transform_stack.push(transform);
         self.transform_evidence.push(evidence_id.into());
+    }
+
+    pub fn push_step(&mut self, step: TransformProofStep) {
+        self.steps.push(step);
+    }
+
+    #[must_use]
+    pub fn materialize_default_steps(&self) -> Vec<TransformProofStep> {
+        let (in_avals, out_avals) = effective_ledger_root_avals(self);
+        synthesize_default_proof_steps(
+            &self.root_jaxpr,
+            &in_avals,
+            &out_avals,
+            &self.transform_stack,
+            &self.transform_evidence,
+        )
     }
 
     #[must_use]
@@ -5820,6 +6034,33 @@ impl TraceTransformLedger {
             &self.transform_evidence,
         )
     }
+}
+
+fn default_scalar_avals(count: usize) -> Vec<AbstractValue> {
+    vec![
+        AbstractValue {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+        count
+    ]
+}
+
+fn effective_ledger_root_avals(
+    ledger: &TraceTransformLedger,
+) -> (Vec<AbstractValue>, Vec<AbstractValue>) {
+    let in_avals = if ledger.root_input_avals.is_empty() && !ledger.root_jaxpr.invars.is_empty() {
+        default_scalar_avals(ledger.root_jaxpr.invars.len())
+    } else {
+        ledger.root_input_avals.clone()
+    };
+    let out_avals = if ledger.root_output_avals.is_empty() && !ledger.root_jaxpr.outvars.is_empty()
+    {
+        default_scalar_avals(ledger.root_jaxpr.outvars.len())
+    } else {
+        ledger.root_output_avals.clone()
+    };
+    (in_avals, out_avals)
 }
 
 #[must_use]
@@ -5854,6 +6095,47 @@ pub struct TransformCompositionProof {
     pub stack_hash_hex: String,
     pub transform_count: usize,
     pub evidence_count: usize,
+    pub root_jaxpr_sha256: [u8; 32],
+    pub final_output_jaxpr_sha256: [u8; 32],
+    pub root_input_avals: Vec<AbstractValue>,
+    pub root_output_avals: Vec<AbstractValue>,
+    pub steps: Vec<TransformProofStep>,
+    pub merkle_commitment: String,
+}
+
+impl TransformCompositionProof {
+    /// Cryptographically verify the proof's step chain continuity, abstract
+    /// shape/dtype transformation soundness (`Jit`, `Grad`, `Vmap`), and
+    /// SHA-256 Merkle chain commitment (`ttl-proof-sha256-...`).
+    pub fn verify(&self) -> Result<(), TransformCompositionError> {
+        if self.transform_count != self.evidence_count || self.steps.len() != self.transform_count {
+            return Err(TransformCompositionError::EvidenceCountMismatch {
+                transform_count: self.transform_count,
+                evidence_count: self.steps.len(),
+            });
+        }
+        verify_step_chain_and_signatures(
+            &self.root_jaxpr_sha256,
+            &self.root_input_avals,
+            &self.root_output_avals,
+            &self.steps,
+            &self.final_output_jaxpr_sha256,
+        )?;
+        let expected_merkle = compute_ttl_merkle_commitment(
+            &self.root_jaxpr_sha256,
+            &self.root_input_avals,
+            &self.root_output_avals,
+            &self.steps,
+            &self.final_output_jaxpr_sha256,
+        );
+        if self.merkle_commitment != expected_merkle {
+            return Err(TransformCompositionError::MerkleCommitmentMismatch {
+                expected: expected_merkle,
+                actual: self.merkle_commitment.clone(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5874,6 +6156,24 @@ pub enum TransformCompositionError {
     DuplicateEvidence {
         index: usize,
         evidence: String,
+    },
+    RootJaxprFingerprintMismatch {
+        expected_sha256_hex: String,
+        actual_sha256_hex: String,
+    },
+    StepChainDiscontinuity {
+        step_index: usize,
+        previous_output_sha256_hex: String,
+        next_input_sha256_hex: String,
+    },
+    InvalidStepSignature {
+        step_index: usize,
+        transform: Transform,
+        detail: String,
+    },
+    MerkleCommitmentMismatch {
+        expected: String,
+        actual: String,
     },
 }
 
@@ -5918,6 +6218,47 @@ impl std::fmt::Display for TransformCompositionError {
                     index, evidence
                 )
             }
+            Self::RootJaxprFingerprintMismatch {
+                expected_sha256_hex,
+                actual_sha256_hex,
+            } => {
+                write!(
+                    f,
+                    "root jaxpr sha256 mismatch: expected {}, got {}",
+                    expected_sha256_hex, actual_sha256_hex
+                )
+            }
+            Self::StepChainDiscontinuity {
+                step_index,
+                previous_output_sha256_hex,
+                next_input_sha256_hex,
+            } => {
+                write!(
+                    f,
+                    "transform proof chain discontinuity at step {}: prev_output={}, next_input={}",
+                    step_index, previous_output_sha256_hex, next_input_sha256_hex
+                )
+            }
+            Self::InvalidStepSignature {
+                step_index,
+                transform,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "invalid abstract signature at step {} for {}: {}",
+                    step_index,
+                    transform.as_str(),
+                    detail
+                )
+            }
+            Self::MerkleCommitmentMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "ttl proof merkle commitment mismatch: expected {}, got {}",
+                    expected, actual
+                )
+            }
         }
     }
 }
@@ -5927,11 +6268,34 @@ impl std::error::Error for TransformCompositionError {}
 pub fn verify_transform_composition(
     ledger: &TraceTransformLedger,
 ) -> Result<TransformCompositionProof, TransformCompositionError> {
-    verify_transform_composition_parts(
-        &ledger.root_jaxpr,
-        &ledger.transform_stack,
-        &ledger.transform_evidence,
-    )
+    let (root_in_avals, root_out_avals) = effective_ledger_root_avals(ledger);
+    if ledger.steps.is_empty() {
+        validate_evidence_bindings(&ledger.transform_stack, &ledger.transform_evidence)?;
+        let steps = synthesize_default_proof_steps(
+            &ledger.root_jaxpr,
+            &root_in_avals,
+            &root_out_avals,
+            &ledger.transform_stack,
+            &ledger.transform_evidence,
+        );
+        verify_transform_composition_steps(
+            &ledger.root_jaxpr,
+            &ledger.transform_stack,
+            &ledger.transform_evidence,
+            &root_in_avals,
+            &root_out_avals,
+            &steps,
+        )
+    } else {
+        verify_transform_composition_steps(
+            &ledger.root_jaxpr,
+            &ledger.transform_stack,
+            &ledger.transform_evidence,
+            &root_in_avals,
+            &root_out_avals,
+            &ledger.steps,
+        )
+    }
 }
 
 pub fn verify_transform_composition_parts(
@@ -5939,6 +6303,115 @@ pub fn verify_transform_composition_parts(
     transform_stack: &[Transform],
     transform_evidence: &[String],
 ) -> Result<TransformCompositionProof, TransformCompositionError> {
+    validate_evidence_bindings(transform_stack, transform_evidence)?;
+    let root_in_avals = default_scalar_avals(root_jaxpr.invars.len());
+    let root_out_avals = default_scalar_avals(root_jaxpr.outvars.len());
+    let steps = synthesize_default_proof_steps(
+        root_jaxpr,
+        &root_in_avals,
+        &root_out_avals,
+        transform_stack,
+        transform_evidence,
+    );
+    verify_transform_composition_steps(
+        root_jaxpr,
+        transform_stack,
+        transform_evidence,
+        &root_in_avals,
+        &root_out_avals,
+        &steps,
+    )
+}
+
+pub fn verify_transform_composition_steps(
+    root_jaxpr: &Jaxpr,
+    transform_stack: &[Transform],
+    transform_evidence: &[String],
+    root_input_avals: &[AbstractValue],
+    root_output_avals: &[AbstractValue],
+    steps: &[TransformProofStep],
+) -> Result<TransformCompositionProof, TransformCompositionError> {
+    validate_evidence_bindings(transform_stack, transform_evidence)?;
+    if steps.len() != transform_stack.len() {
+        return Err(TransformCompositionError::EvidenceCountMismatch {
+            transform_count: transform_stack.len(),
+            evidence_count: steps.len(),
+        });
+    }
+
+    let n = transform_stack.len();
+    for (step_index, step) in steps.iter().enumerate() {
+        let stack_idx = n - 1 - step_index;
+        let expected_transform = transform_stack[stack_idx];
+        let expected_evidence = transform_evidence[stack_idx].trim();
+        if step.step_index != step_index {
+            return Err(TransformCompositionError::InvalidStepSignature {
+                step_index,
+                transform: step.transform,
+                detail: format!(
+                    "step_index mismatch: expected {}, got {}",
+                    step_index, step.step_index
+                ),
+            });
+        }
+        if step.transform != expected_transform {
+            return Err(TransformCompositionError::EvidenceTransformMismatch {
+                index: stack_idx,
+                transform: expected_transform,
+                evidence: step.evidence.clone(),
+            });
+        }
+        if step.evidence.trim() != expected_evidence {
+            return Err(TransformCompositionError::EvidenceTransformMismatch {
+                index: stack_idx,
+                transform: expected_transform,
+                evidence: step.evidence.clone(),
+            });
+        }
+    }
+
+    let root_jaxpr_sha256 = jaxpr_fingerprint_sha256(root_jaxpr);
+    let final_output_jaxpr_sha256 = steps.last().map_or(root_jaxpr_sha256, |step| {
+        step.output_jaxpr_fingerprint_sha256
+    });
+
+    verify_step_chain_and_signatures(
+        &root_jaxpr_sha256,
+        root_input_avals,
+        root_output_avals,
+        steps,
+        &final_output_jaxpr_sha256,
+    )?;
+
+    let stack_signature =
+        composition_signature_for(root_jaxpr, transform_stack, transform_evidence);
+    let stack_hash_hex = sha256_hex_bytes(&sha256_bytes(stack_signature.as_bytes()));
+    let merkle_commitment = compute_ttl_merkle_commitment(
+        &root_jaxpr_sha256,
+        root_input_avals,
+        root_output_avals,
+        steps,
+        &final_output_jaxpr_sha256,
+    );
+
+    Ok(TransformCompositionProof {
+        stack_signature,
+        stack_hash_hex,
+        transform_count: transform_stack.len(),
+        evidence_count: transform_evidence.len(),
+        root_jaxpr_sha256,
+        final_output_jaxpr_sha256,
+        root_input_avals: root_input_avals.to_vec(),
+        root_output_avals: root_output_avals.to_vec(),
+        steps: steps.to_vec(),
+        merkle_commitment,
+    })
+}
+
+fn validate_evidence_bindings(
+    transform_stack: &[Transform],
+    transform_evidence: &[String],
+) -> Result<(), TransformCompositionError> {
     if transform_stack.len() != transform_evidence.len() {
         return Err(TransformCompositionError::EvidenceCountMismatch {
             transform_count: transform_stack.len(),
@@ -5969,17 +6442,599 @@ pub fn verify_transform_composition_parts(
             });
         }
     }
+    Ok(())
+}
 
-    let stack_signature =
-        composition_signature_for(root_jaxpr, transform_stack, transform_evidence);
-    let stack_hash_hex = format!("{:016x}", fnv1a_64(stack_signature.as_bytes()));
+const DEFAULT_VMAP_PROOF_AXIS_SIZE: u32 = 4;
 
-    Ok(TransformCompositionProof {
-        stack_signature,
-        stack_hash_hex,
-        transform_count: transform_stack.len(),
-        evidence_count: transform_evidence.len(),
-    })
+#[must_use]
+pub fn synthesize_default_proof_steps(
+    root_jaxpr: &Jaxpr,
+    root_input_avals: &[AbstractValue],
+    root_output_avals: &[AbstractValue],
+    transform_stack: &[Transform],
+    transform_evidence: &[String],
+) -> Vec<TransformProofStep> {
+    let n = transform_stack.len();
+    let mut steps = Vec::with_capacity(n);
+    let mut current_jaxpr_sha256 = jaxpr_fingerprint_sha256(root_jaxpr);
+    let mut current_in_avals = root_input_avals.to_vec();
+    let mut current_out_avals = root_output_avals.to_vec();
+    let mut current_eqn_count = root_jaxpr.equations.len();
+
+    for step_index in 0..n {
+        let stack_idx = n - 1 - step_index;
+        let transform = transform_stack[stack_idx];
+        let evidence = transform_evidence
+            .get(stack_idx)
+            .map_or_else(String::new, |s| s.trim().to_owned());
+
+        let has_outer_grad =
+            (0..stack_idx).any(|outer_idx| transform_stack[outer_idx] == Transform::Grad);
+
+        let (next_in_avals, next_out_avals, witness, next_eqn_count) = match transform {
+            Transform::Jit => {
+                let witness = TransformRewriteWitness::Jit(JitWitness {
+                    static_argnums: Vec::new(),
+                    folded_eqn_count: 0,
+                    residual_eqn_count: current_eqn_count,
+                });
+                (
+                    current_in_avals.clone(),
+                    current_out_avals.clone(),
+                    witness,
+                    current_eqn_count,
+                )
+            }
+            Transform::Grad => {
+                let argnums = if current_in_avals.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![0]
+                };
+                let grad_out_avals: Vec<AbstractValue> = argnums
+                    .iter()
+                    .filter_map(|&idx| current_in_avals.get(idx).cloned())
+                    .collect();
+                let witness = TransformRewriteWitness::Grad(GradWitness {
+                    argnums,
+                    primal_eqn_count: current_eqn_count,
+                    adjoint_eqn_count: current_eqn_count,
+                    pruned_dead_cotangents: 0,
+                });
+                (
+                    current_in_avals.clone(),
+                    grad_out_avals,
+                    witness,
+                    current_eqn_count.saturating_mul(2),
+                )
+            }
+            Transform::Vmap => {
+                let axis_size = DEFAULT_VMAP_PROOF_AXIS_SIZE;
+                let in_axes = vec![Some(0); current_in_avals.len()];
+                let out_axes = if has_outer_grad {
+                    vec![None; current_out_avals.len()]
+                } else {
+                    vec![Some(0); current_out_avals.len()]
+                };
+                let next_in: Vec<AbstractValue> = current_in_avals
+                    .iter()
+                    .map(|aval| insert_aval_axis(aval, 0, axis_size))
+                    .collect();
+                let next_out: Vec<AbstractValue> = current_out_avals
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, aval)| match out_axes.get(idx).copied().flatten() {
+                        Some(ax) => insert_aval_axis(aval, ax, axis_size),
+                        None => aval.clone(),
+                    })
+                    .collect();
+                let witness = TransformRewriteWitness::Vmap(VmapWitness {
+                    in_axes,
+                    out_axes,
+                    axis_size,
+                });
+                (next_in, next_out, witness, current_eqn_count)
+            }
+            Transform::Pmap => {
+                let axis_size = 1_u32;
+                let next_in: Vec<AbstractValue> = current_in_avals
+                    .iter()
+                    .map(|aval| insert_aval_axis(aval, 0, axis_size))
+                    .collect();
+                let next_out: Vec<AbstractValue> = if has_outer_grad {
+                    current_out_avals.clone()
+                } else {
+                    current_out_avals
+                        .iter()
+                        .map(|aval| insert_aval_axis(aval, 0, axis_size))
+                        .collect()
+                };
+                let witness = TransformRewriteWitness::Pmap(PmapWitness { axis_size });
+                (next_in, next_out, witness, current_eqn_count)
+            }
+        };
+
+        let output_jaxpr_sha256 = derive_step_output_jaxpr_sha256(
+            &current_jaxpr_sha256,
+            step_index,
+            transform,
+            &evidence,
+            &witness,
+        );
+
+        steps.push(TransformProofStep {
+            step_index,
+            transform,
+            evidence,
+            input_jaxpr_fingerprint_sha256: current_jaxpr_sha256,
+            output_jaxpr_fingerprint_sha256: output_jaxpr_sha256,
+            input_avals: next_in_avals.clone(),
+            output_avals: next_out_avals.clone(),
+            witness,
+        });
+
+        current_jaxpr_sha256 = output_jaxpr_sha256;
+        current_in_avals = next_in_avals;
+        current_out_avals = next_out_avals;
+        current_eqn_count = next_eqn_count;
+    }
+
+    steps
+}
+
+fn insert_aval_axis(aval: &AbstractValue, axis: usize, axis_size: u32) -> AbstractValue {
+    let mut dims = aval.shape.dims.clone();
+    let idx = axis.min(dims.len());
+    dims.insert(idx, axis_size);
+    AbstractValue {
+        dtype: aval.dtype,
+        shape: Shape { dims },
+    }
+}
+
+fn strip_aval_axis(aval: &AbstractValue, axis: usize) -> Option<(u32, AbstractValue)> {
+    if axis >= aval.shape.dims.len() {
+        return None;
+    }
+    let mut dims = aval.shape.dims.clone();
+    let removed = dims.remove(axis);
+    Some((
+        removed,
+        AbstractValue {
+            dtype: aval.dtype,
+            shape: Shape { dims },
+        },
+    ))
+}
+
+fn derive_step_output_jaxpr_sha256(
+    input_jaxpr_sha256: &[u8; 32],
+    step_index: usize,
+    transform: Transform,
+    evidence: &str,
+    witness: &TransformRewriteWitness,
+) -> [u8; 32] {
+    if let TransformRewriteWitness::Jit(w) = witness
+        && w.static_argnums.is_empty()
+        && w.folded_eqn_count == 0
+    {
+        return *input_jaxpr_sha256;
+    }
+    let mut buf = String::new();
+    let _ = write!(
+        &mut buf,
+        "ttl-step-jaxpr|idx={step_index}|tx={}|ev={evidence}|in={}|w={}",
+        transform.as_str(),
+        sha256_hex_bytes(input_jaxpr_sha256),
+        format_witness(witness),
+    );
+    sha256_bytes(buf.as_bytes())
+}
+
+fn verify_step_chain_and_signatures(
+    root_jaxpr_sha256: &[u8; 32],
+    root_input_avals: &[AbstractValue],
+    root_output_avals: &[AbstractValue],
+    steps: &[TransformProofStep],
+    final_output_jaxpr_sha256: &[u8; 32],
+) -> Result<(), TransformCompositionError> {
+    if steps.is_empty() {
+        if final_output_jaxpr_sha256 != root_jaxpr_sha256 {
+            return Err(TransformCompositionError::StepChainDiscontinuity {
+                step_index: 0,
+                previous_output_sha256_hex: sha256_hex_bytes(root_jaxpr_sha256),
+                next_input_sha256_hex: sha256_hex_bytes(final_output_jaxpr_sha256),
+            });
+        }
+        return Ok(());
+    }
+
+    if &steps[0].input_jaxpr_fingerprint_sha256 != root_jaxpr_sha256 {
+        return Err(TransformCompositionError::RootJaxprFingerprintMismatch {
+            expected_sha256_hex: sha256_hex_bytes(root_jaxpr_sha256),
+            actual_sha256_hex: sha256_hex_bytes(&steps[0].input_jaxpr_fingerprint_sha256),
+        });
+    }
+
+    let mut target_in_avals: &[AbstractValue] = root_input_avals;
+    let mut target_out_avals: &[AbstractValue] = root_output_avals;
+    let mut prev_output_sha256 = *root_jaxpr_sha256;
+
+    for (idx, step) in steps.iter().enumerate() {
+        if idx > 0 && step.input_jaxpr_fingerprint_sha256 != prev_output_sha256 {
+            return Err(TransformCompositionError::StepChainDiscontinuity {
+                step_index: idx,
+                previous_output_sha256_hex: sha256_hex_bytes(&prev_output_sha256),
+                next_input_sha256_hex: sha256_hex_bytes(&step.input_jaxpr_fingerprint_sha256),
+            });
+        }
+
+        verify_step_abstract_signature(idx, step, target_in_avals, target_out_avals)?;
+
+        target_in_avals = &step.input_avals;
+        target_out_avals = &step.output_avals;
+        prev_output_sha256 = step.output_jaxpr_fingerprint_sha256;
+    }
+
+    if final_output_jaxpr_sha256 != &prev_output_sha256 {
+        return Err(TransformCompositionError::StepChainDiscontinuity {
+            step_index: steps.len(),
+            previous_output_sha256_hex: sha256_hex_bytes(&prev_output_sha256),
+            next_input_sha256_hex: sha256_hex_bytes(final_output_jaxpr_sha256),
+        });
+    }
+
+    Ok(())
+}
+
+fn verify_step_abstract_signature(
+    step_index: usize,
+    step: &TransformProofStep,
+    target_in_avals: &[AbstractValue],
+    target_out_avals: &[AbstractValue],
+) -> Result<(), TransformCompositionError> {
+    match (step.transform, &step.witness) {
+        (Transform::Jit, TransformRewriteWitness::Jit(witness)) => {
+            for &static_idx in &witness.static_argnums {
+                if static_idx >= target_in_avals.len() {
+                    return Err(TransformCompositionError::InvalidStepSignature {
+                        step_index,
+                        transform: Transform::Jit,
+                        detail: format!(
+                            "jit static_argnums index {} out of bounds for {} target inputs",
+                            static_idx,
+                            target_in_avals.len()
+                        ),
+                    });
+                }
+            }
+            let dynamic_in_avals: Vec<AbstractValue> = target_in_avals
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, aval)| {
+                    (!witness.static_argnums.contains(&idx)).then_some(aval.clone())
+                })
+                .collect();
+            if step.input_avals != dynamic_in_avals && step.input_avals != target_in_avals {
+                return Err(TransformCompositionError::InvalidStepSignature {
+                    step_index,
+                    transform: Transform::Jit,
+                    detail: format!(
+                        "jit must preserve dynamic input AbstractValues: expected {:?}, got {:?}",
+                        dynamic_in_avals, step.input_avals
+                    ),
+                });
+            }
+            if step.output_avals != target_out_avals {
+                return Err(TransformCompositionError::InvalidStepSignature {
+                    step_index,
+                    transform: Transform::Jit,
+                    detail: format!(
+                        "jit must preserve dynamic output AbstractValues: expected {:?}, got {:?}",
+                        target_out_avals, step.output_avals
+                    ),
+                });
+            }
+            Ok(())
+        }
+        (Transform::Grad, TransformRewriteWitness::Grad(witness)) => {
+            if target_out_avals.is_empty() || target_out_avals[0].shape.rank() != 0 {
+                return Err(TransformCompositionError::InvalidStepSignature {
+                    step_index,
+                    transform: Transform::Grad,
+                    detail: format!(
+                        "grad requires scalar target output AbstractValue (rank == 0), got {:?}",
+                        target_out_avals
+                    ),
+                });
+            }
+            if step.input_avals != target_in_avals {
+                return Err(TransformCompositionError::InvalidStepSignature {
+                    step_index,
+                    transform: Transform::Grad,
+                    detail: format!(
+                        "grad must preserve primal input AbstractValues: expected {:?}, got {:?}",
+                        target_in_avals, step.input_avals
+                    ),
+                });
+            }
+            if !target_in_avals.is_empty() && witness.argnums.is_empty() {
+                return Err(TransformCompositionError::InvalidStepSignature {
+                    step_index,
+                    transform: Transform::Grad,
+                    detail: "grad witness argnums cannot be empty for non-empty inputs".to_owned(),
+                });
+            }
+            let mut expected_grad_outputs = Vec::with_capacity(witness.argnums.len());
+            for &argnum in &witness.argnums {
+                let Some(in_aval) = target_in_avals.get(argnum) else {
+                    return Err(TransformCompositionError::InvalidStepSignature {
+                        step_index,
+                        transform: Transform::Grad,
+                        detail: format!(
+                            "grad argnum {} out of bounds for {} primal inputs",
+                            argnum,
+                            target_in_avals.len()
+                        ),
+                    });
+                };
+                expected_grad_outputs.push(in_aval.clone());
+            }
+            if step.output_avals != expected_grad_outputs {
+                return Err(TransformCompositionError::InvalidStepSignature {
+                    step_index,
+                    transform: Transform::Grad,
+                    detail: format!(
+                        "grad output AbstractValues {:?} do not match primal argnums {:?} shapes/dtypes {:?}",
+                        step.output_avals, witness.argnums, expected_grad_outputs
+                    ),
+                });
+            }
+            Ok(())
+        }
+        (Transform::Vmap, TransformRewriteWitness::Vmap(witness)) => {
+            if witness.axis_size == 0 {
+                return Err(TransformCompositionError::InvalidStepSignature {
+                    step_index,
+                    transform: Transform::Vmap,
+                    detail: "vmap axis_size must be > 0".to_owned(),
+                });
+            }
+            if witness.in_axes.len() != step.input_avals.len()
+                || step.input_avals.len() != target_in_avals.len()
+            {
+                return Err(TransformCompositionError::InvalidStepSignature {
+                    step_index,
+                    transform: Transform::Vmap,
+                    detail: format!(
+                        "vmap in_axes/input_avals/target_in_avals arity mismatch: in_axes={}, input_avals={}, target={}",
+                        witness.in_axes.len(),
+                        step.input_avals.len(),
+                        target_in_avals.len()
+                    ),
+                });
+            }
+            if witness.out_axes.len() != step.output_avals.len()
+                || step.output_avals.len() != target_out_avals.len()
+            {
+                return Err(TransformCompositionError::InvalidStepSignature {
+                    step_index,
+                    transform: Transform::Vmap,
+                    detail: format!(
+                        "vmap out_axes/output_avals/target_out_avals arity mismatch: out_axes={}, output_avals={}, target={}",
+                        witness.out_axes.len(),
+                        step.output_avals.len(),
+                        target_out_avals.len()
+                    ),
+                });
+            }
+            for (input_idx, ((axis_spec, outer_in), inner_in)) in witness
+                .in_axes
+                .iter()
+                .zip(step.input_avals.iter())
+                .zip(target_in_avals.iter())
+                .enumerate()
+            {
+                match axis_spec {
+                    Some(axis) => {
+                        let Some((stripped_dim, stripped_aval)) = strip_aval_axis(outer_in, *axis)
+                        else {
+                            return Err(TransformCompositionError::InvalidStepSignature {
+                                step_index,
+                                transform: Transform::Vmap,
+                                detail: format!(
+                                    "vmap in_axes[{input_idx}]={axis} out of bounds for outer input shape {:?}",
+                                    outer_in.shape.dims
+                                ),
+                            });
+                        };
+                        if stripped_dim != witness.axis_size {
+                            return Err(TransformCompositionError::InvalidStepSignature {
+                                step_index,
+                                transform: Transform::Vmap,
+                                detail: format!(
+                                    "vmap input[{input_idx}] batch dimension mismatch along axis {axis}: expected axis_size={}, got {}",
+                                    witness.axis_size, stripped_dim
+                                ),
+                            });
+                        }
+                        if &stripped_aval != inner_in {
+                            return Err(TransformCompositionError::InvalidStepSignature {
+                                step_index,
+                                transform: Transform::Vmap,
+                                detail: format!(
+                                    "vmap input[{input_idx}] stripped inner aval {:?} does not match target inner aval {:?}",
+                                    stripped_aval, inner_in
+                                ),
+                            });
+                        }
+                    }
+                    None => {
+                        if outer_in != inner_in {
+                            return Err(TransformCompositionError::InvalidStepSignature {
+                                step_index,
+                                transform: Transform::Vmap,
+                                detail: format!(
+                                    "vmap unmapped input[{input_idx}] aval {:?} does not match inner aval {:?}",
+                                    outer_in, inner_in
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+            for (output_idx, ((axis_spec, outer_out), inner_out)) in witness
+                .out_axes
+                .iter()
+                .zip(step.output_avals.iter())
+                .zip(target_out_avals.iter())
+                .enumerate()
+            {
+                match axis_spec {
+                    Some(axis) => {
+                        if *axis > inner_out.shape.rank() {
+                            return Err(TransformCompositionError::InvalidStepSignature {
+                                step_index,
+                                transform: Transform::Vmap,
+                                detail: format!(
+                                    "vmap out_axes[{output_idx}]={axis} out of bounds for inner output rank {}",
+                                    inner_out.shape.rank()
+                                ),
+                            });
+                        }
+                        let expected_outer = insert_aval_axis(inner_out, *axis, witness.axis_size);
+                        if outer_out != &expected_outer {
+                            return Err(TransformCompositionError::InvalidStepSignature {
+                                step_index,
+                                transform: Transform::Vmap,
+                                detail: format!(
+                                    "vmap output[{output_idx}] aval {:?} does not match expected batched aval {:?} (axis={axis}, axis_size={})",
+                                    outer_out, expected_outer, witness.axis_size
+                                ),
+                            });
+                        }
+                    }
+                    None => {
+                        if outer_out != inner_out {
+                            return Err(TransformCompositionError::InvalidStepSignature {
+                                step_index,
+                                transform: Transform::Vmap,
+                                detail: format!(
+                                    "vmap unmapped output[{output_idx}] aval {:?} does not match inner aval {:?}",
+                                    outer_out, inner_out
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        (Transform::Pmap, TransformRewriteWitness::Pmap(witness)) => {
+            if witness.axis_size == 0
+                || step.input_avals.len() != target_in_avals.len()
+                || step.output_avals.len() != target_out_avals.len()
+            {
+                return Err(TransformCompositionError::InvalidStepSignature {
+                    step_index,
+                    transform: Transform::Pmap,
+                    detail: "pmap invalid axis_size or input/output arity".to_owned(),
+                });
+            }
+            Ok(())
+        }
+        _ => Err(TransformCompositionError::InvalidStepSignature {
+            step_index,
+            transform: step.transform,
+            detail: format!(
+                "witness variant {:?} does not match transform {}",
+                step.witness,
+                step.transform.as_str()
+            ),
+        }),
+    }
+}
+
+/// Compute the cryptographic SHA-256 Merkle chain commitment (`ttl-proof-sha256-<hex>`)
+/// over `(root_jaxpr_sha256, root_input_avals, root_output_avals, steps, final_output_jaxpr_sha256)`.
+#[must_use]
+pub fn compute_ttl_merkle_commitment(
+    root_jaxpr_sha256: &[u8; 32],
+    root_input_avals: &[AbstractValue],
+    root_output_avals: &[AbstractValue],
+    steps: &[TransformProofStep],
+    final_output_jaxpr_sha256: &[u8; 32],
+) -> String {
+    let mut root_meta = String::new();
+    let _ = write!(
+        &mut root_meta,
+        "ttl-v2-root|in={}|out={}",
+        format_avals(root_input_avals),
+        format_avals(root_output_avals),
+    );
+    let mut chain = sha256_merkle_pair(root_jaxpr_sha256, &sha256_bytes(root_meta.as_bytes()));
+    for step in steps {
+        let step_leaf = sha256_step_record(step);
+        chain = sha256_merkle_pair(&chain, &step_leaf);
+    }
+    chain = sha256_merkle_pair(&chain, final_output_jaxpr_sha256);
+    format!("ttl-proof-sha256-{}", sha256_hex_bytes(&chain))
+}
+
+fn sha256_merkle_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut buf = [0_u8; 64];
+    buf[..32].copy_from_slice(left);
+    buf[32..].copy_from_slice(right);
+    sha256_bytes(&buf)
+}
+
+fn sha256_step_record(step: &TransformProofStep) -> [u8; 32] {
+    let mut buf = String::new();
+    let _ = write!(
+        &mut buf,
+        "step={}|tx={}|ev={}|in_jaxpr={}|out_jaxpr={}|in_avals={}|out_avals={}|witness={}",
+        step.step_index,
+        step.transform.as_str(),
+        step.evidence,
+        sha256_hex_bytes(&step.input_jaxpr_fingerprint_sha256),
+        sha256_hex_bytes(&step.output_jaxpr_fingerprint_sha256),
+        format_avals(&step.input_avals),
+        format_avals(&step.output_avals),
+        format_witness(&step.witness),
+    );
+    sha256_bytes(buf.as_bytes())
+}
+
+fn format_avals(avals: &[AbstractValue]) -> String {
+    let mut out = String::new();
+    out.push('[');
+    for (idx, aval) in avals.iter().enumerate() {
+        if idx > 0 {
+            out.push(';');
+        }
+        let _ = write!(&mut out, "{:?}:{:?}", aval.dtype, aval.shape.dims);
+    }
+    out.push(']');
+    out
+}
+
+fn format_witness(witness: &TransformRewriteWitness) -> String {
+    match witness {
+        TransformRewriteWitness::Jit(w) => format!(
+            "jit(static={:?},folded={},residual={})",
+            w.static_argnums, w.folded_eqn_count, w.residual_eqn_count
+        ),
+        TransformRewriteWitness::Grad(w) => format!(
+            "grad(argnums={:?},primal={},adjoint={},pruned={})",
+            w.argnums, w.primal_eqn_count, w.adjoint_eqn_count, w.pruned_dead_cotangents
+        ),
+        TransformRewriteWitness::Vmap(w) => format!(
+            "vmap(in={:?},out={:?},axis_size={})",
+            w.in_axes, w.out_axes, w.axis_size
+        ),
+        TransformRewriteWitness::Pmap(w) => format!("pmap(axis_size={})", w.axis_size),
+    }
 }
 
 fn evidence_mentions_transform(evidence: &str, transform: Transform) -> bool {
@@ -5987,15 +7042,6 @@ fn evidence_mentions_transform(evidence: &str, transform: Transform) -> bool {
     evidence
         .split(|ch: char| !ch.is_ascii_alphanumeric())
         .any(|part| part.eq_ignore_ascii_case(expected))
-}
-
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
 }
 
 #[cfg(test)]
@@ -6970,6 +8016,9 @@ mod tests {
                     root_jaxpr: build_program(ProgramSpec::Square),
                     transform_stack: vec![Transform::Jit],
                     transform_evidence: vec![],
+                    root_input_avals: vec![],
+                    root_output_avals: vec![],
+                    steps: vec![],
                 };
                 let err = verify_transform_composition(&ttl)
                     .expect_err("evidence mismatch should reject");
@@ -7081,9 +8130,133 @@ mod tests {
                 let proof_b = verify_transform_composition(&ttl)
                     .map_err(|err| format!("proof failed: {err}"))?;
                 assert_eq!(proof_a.stack_hash_hex, proof_b.stack_hash_hex);
+                assert_eq!(proof_a.merkle_commitment, proof_b.merkle_commitment);
+                assert!(proof_a.merkle_commitment.starts_with("ttl-proof-sha256-"));
+                proof_a
+                    .verify()
+                    .map_err(|err| format!("proof_a.verify() failed: {err}"))?;
                 Ok(Vec::new())
             },
         );
+    }
+
+    #[test]
+    fn ttl_v2_sha256_and_step_chain_verification() {
+        use super::{
+            AbstractValue, TransformCompositionError, TransformRewriteWitness, VmapWitness,
+            jaxpr_fingerprint_sha256, sha256_bytes, sha256_hex_bytes,
+        };
+
+        // 1. Standard FIPS 180-4 SHA-256 test vectors
+        assert_eq!(
+            sha256_hex_bytes(&sha256_bytes(b"")),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex_bytes(&sha256_bytes(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        // 2. Positive multi-step proof chain [Jit, Vmap, Grad] (innermost Grad -> Vmap -> Jit)
+        let root = build_program(ProgramSpec::Square);
+        let mut ttl = TraceTransformLedger::new(root.clone());
+        ttl.push_transform(Transform::Jit, "jit-outer");
+        ttl.push_transform(Transform::Vmap, "vmap-mid");
+        ttl.push_transform(Transform::Grad, "grad-inner");
+
+        let proof = verify_transform_composition(&ttl).expect("valid triple stack must verify");
+        assert_eq!(proof.steps.len(), 3);
+        assert_eq!(proof.steps[0].transform, Transform::Grad);
+        assert_eq!(proof.steps[1].transform, Transform::Vmap);
+        assert_eq!(proof.steps[2].transform, Transform::Jit);
+        assert_eq!(
+            proof.steps[0].input_jaxpr_fingerprint_sha256,
+            jaxpr_fingerprint_sha256(&root)
+        );
+        assert_eq!(
+            proof.steps[0].output_jaxpr_fingerprint_sha256,
+            proof.steps[1].input_jaxpr_fingerprint_sha256
+        );
+        assert_eq!(
+            proof.steps[1].output_jaxpr_fingerprint_sha256,
+            proof.steps[2].input_jaxpr_fingerprint_sha256
+        );
+        assert_eq!(
+            proof.steps[2].output_jaxpr_fingerprint_sha256,
+            proof.final_output_jaxpr_sha256
+        );
+        proof
+            .verify()
+            .expect("independent proof verification must succeed");
+
+        // 3. Negative: tampered root Jaxpr fingerprint on step 0
+        let mut bad_root_steps = ttl.materialize_default_steps();
+        bad_root_steps[0].input_jaxpr_fingerprint_sha256[0] ^= 0xff;
+        let bad_root_ttl = ttl.clone().with_steps(bad_root_steps);
+        assert!(matches!(
+            verify_transform_composition(&bad_root_ttl),
+            Err(TransformCompositionError::RootJaxprFingerprintMismatch { .. })
+        ));
+
+        // 4. Negative: broken step chain (step 0 output != step 1 input)
+        let mut broken_chain_steps = ttl.materialize_default_steps();
+        broken_chain_steps[0].output_jaxpr_fingerprint_sha256[31] ^= 0x01;
+        let broken_chain_ttl = ttl.clone().with_steps(broken_chain_steps);
+        assert!(matches!(
+            verify_transform_composition(&broken_chain_ttl),
+            Err(TransformCompositionError::StepChainDiscontinuity { step_index: 1, .. })
+        ));
+
+        // 5. Negative: non-scalar Grad target signature
+        let mut non_scalar_grad_ttl = TraceTransformLedger::with_signature(
+            build_program(ProgramSpec::Square),
+            vec![AbstractValue {
+                dtype: DType::F64,
+                shape: Shape::vector(4),
+            }],
+            vec![AbstractValue {
+                dtype: DType::F64,
+                shape: Shape::vector(4),
+            }],
+        );
+        non_scalar_grad_ttl.push_transform(Transform::Grad, "grad-non-scalar");
+        assert!(matches!(
+            verify_transform_composition(&non_scalar_grad_ttl),
+            Err(TransformCompositionError::InvalidStepSignature {
+                step_index: 0,
+                transform: Transform::Grad,
+                ..
+            })
+        ));
+
+        // 6. Negative: mismatched Vmap batch dimensions
+        let mut vmap_ttl = TraceTransformLedger::new(build_program(ProgramSpec::Square));
+        vmap_ttl.push_transform(Transform::Vmap, "vmap-mismatch");
+        let mut bad_vmap_steps = vmap_ttl.materialize_default_steps();
+        bad_vmap_steps[0].witness = TransformRewriteWitness::Vmap(VmapWitness {
+            in_axes: vec![Some(0)],
+            out_axes: vec![Some(0)],
+            axis_size: 8, // step.input_avals has dim 4, witness claims 8
+        });
+        let bad_vmap_ttl = vmap_ttl.with_steps(bad_vmap_steps);
+        assert!(matches!(
+            verify_transform_composition(&bad_vmap_ttl),
+            Err(TransformCompositionError::InvalidStepSignature {
+                step_index: 0,
+                transform: Transform::Vmap,
+                ..
+            })
+        ));
+
+        // 7. Negative: tampered Merkle commitment rejected by proof.verify()
+        let mut tampered_proof = proof;
+        tampered_proof.merkle_commitment =
+            "ttl-proof-sha256-0000000000000000000000000000000000000000000000000000000000000000"
+                .to_owned();
+        assert!(matches!(
+            tampered_proof.verify(),
+            Err(TransformCompositionError::MerkleCommitmentMismatch { .. })
+        ));
     }
 
     #[test]

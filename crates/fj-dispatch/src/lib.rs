@@ -4,9 +4,11 @@ pub mod batching;
 
 use fj_cache::{CacheKey, CacheKeyError, CacheKeyInputRef, build_cache_key_ref};
 use fj_core::{
-    Atom, CompatibilityMode, DType, Jaxpr, Literal, Primitive, Shape, TensorValue,
-    TraceTransformLedger, Transform, TransformCompositionError, TransformCompositionProof, Value,
-    verify_transform_composition_parts,
+    AbstractValue, Atom, CompatibilityMode, DType, GradWitness, Jaxpr, JitWitness, Literal,
+    Primitive, Shape, TensorValue, TraceTransformLedger, Transform, TransformCompositionError,
+    TransformCompositionProof, TransformProofStep, TransformRewriteWitness, Value, VmapWitness,
+    jaxpr_fingerprint_sha256, verify_transform_composition, verify_transform_composition_parts,
+    verify_transform_composition_steps,
 };
 use fj_interpreters::InterpreterError;
 use fj_ledger::{
@@ -715,6 +717,7 @@ pub struct DispatchResponse {
     pub outputs: Vec<Value>,
     pub cache_key: String,
     pub evidence_ledger: EvidenceLedger,
+    pub composition_proof: TransformCompositionProof,
     pub telemetry: DispatchCacheTelemetry,
 }
 
@@ -722,6 +725,7 @@ impl PartialEq for DispatchResponse {
     fn eq(&self, other: &Self) -> bool {
         self.outputs == other.outputs
             && self.cache_key == other.cache_key
+            && self.composition_proof == other.composition_proof
             && self.evidence_ledger.entries().len() == other.evidence_ledger.entries().len()
             && self
                 .evidence_ledger
@@ -911,7 +915,15 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
         custom_hook,
         unknown_incompatible_features,
     } = request;
-    dispatch_ref(DispatchRequestRef {
+    let custom_ledger_proof = if !ledger.steps.is_empty()
+        || !ledger.root_input_avals.is_empty()
+        || !ledger.root_output_avals.is_empty()
+    {
+        Some(verify_transform_composition(&ledger)?)
+    } else {
+        None
+    };
+    let mut response = dispatch_ref(DispatchRequestRef {
         mode,
         root_jaxpr: &ledger.root_jaxpr,
         transform_stack: &ledger.transform_stack,
@@ -922,7 +934,13 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
         custom_hook: custom_hook.as_deref(),
         unknown_incompatible_features: &unknown_incompatible_features,
         prepared: None,
-    })
+    })?;
+    if !ledger.steps.is_empty()
+        && let Some(proof) = custom_ledger_proof
+    {
+        response.composition_proof = proof;
+    }
+    Ok(response)
 }
 
 pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse, DispatchError> {
@@ -1255,16 +1273,390 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
         ],
     });
 
+    let lowered_proof = build_lowered_composition_proof(&request, &plan, &static_argnums, &outputs)
+        .unwrap_or_else(|| composition_proof.into_owned());
+
     Ok(DispatchResponse {
         outputs,
         cache_key: cache_key.as_string(),
         evidence_ledger,
+        composition_proof: lowered_proof,
         telemetry: DispatchCacheTelemetry {
             cache_hit,
             cache_stats,
             staged_program: plan.staged_program.clone(),
         },
     })
+}
+
+fn value_to_aval(val: &Value) -> AbstractValue {
+    match val {
+        Value::Scalar(lit) => {
+            let dtype = match lit {
+                Literal::I64(_) => DType::I64,
+                Literal::I32(_) => DType::I32,
+                Literal::U32(_) => DType::U32,
+                Literal::U64(_) => DType::U64,
+                Literal::Bool(_) => DType::Bool,
+                Literal::BF16Bits(_) => DType::BF16,
+                Literal::F16Bits(_) => DType::F16,
+                Literal::F32Bits(_) => DType::F32,
+                Literal::F64Bits(_) => DType::F64,
+                Literal::Complex64Bits(..) => DType::Complex64,
+                Literal::Complex128Bits(..) => DType::Complex128,
+            };
+            AbstractValue {
+                dtype,
+                shape: Shape::scalar(),
+            }
+        }
+        Value::Tensor(t) => AbstractValue {
+            dtype: t.dtype,
+            shape: t.shape.clone(),
+        },
+    }
+}
+
+fn insert_aval_dim(aval: &AbstractValue, axis: usize, dim: u32) -> AbstractValue {
+    let mut dims = aval.shape.dims.clone();
+    let idx = axis.min(dims.len());
+    dims.insert(idx, dim);
+    AbstractValue {
+        dtype: aval.dtype,
+        shape: Shape { dims },
+    }
+}
+
+fn build_lowered_composition_proof(
+    request: &DispatchRequestRef<'_>,
+    plan: &CachedDispatchPlan,
+    static_argnums: &[usize],
+    outputs: &[Value],
+) -> Option<TransformCompositionProof> {
+    use std::borrow::Cow;
+
+    if wants_value_and_grad(&request.compile_options) {
+        return None;
+    }
+
+    let n = request.transform_stack.len();
+    let outer_in_avals: Vec<AbstractValue> = request.args.iter().map(value_to_aval).collect();
+    let outer_out_avals: Vec<AbstractValue> = outputs.iter().map(value_to_aval).collect();
+
+    if n == 0 {
+        return verify_transform_composition_steps(
+            request.root_jaxpr,
+            request.transform_stack,
+            request.transform_evidence,
+            &outer_in_avals,
+            &outer_out_avals,
+            &[],
+        )
+        .ok();
+    }
+
+    // Peel outer Vmap/Pmap dimensions from outer_in_avals to recover root_input_avals.
+    let mut vmap_meta: Vec<Option<(u32, Vec<Option<usize>>)>> = vec![None; n];
+    let mut current_peeled_in = outer_in_avals;
+    for (stack_idx, &transform) in request.transform_stack.iter().enumerate() {
+        if transform == Transform::Vmap {
+            let specs =
+                parse_vmap_in_axes(&request.compile_options, current_peeled_in.len()).ok()?;
+            if specs.len() != current_peeled_in.len() {
+                return None;
+            }
+            let mut axis_size_opt: Option<u32> = None;
+            let mut next_peeled = Vec::with_capacity(current_peeled_in.len());
+            let mut resolved_axes = Vec::with_capacity(current_peeled_in.len());
+            for (aval, spec) in current_peeled_in.iter().zip(specs.iter()) {
+                match spec {
+                    AxisSpec::NotBatched => {
+                        resolved_axes.push(None);
+                        next_peeled.push(aval.clone());
+                    }
+                    AxisSpec::Batched(_) => {
+                        let ndim = aval.shape.rank();
+                        let ax = spec.resolve(ndim)?;
+                        if ax >= ndim {
+                            return None;
+                        }
+                        let dim = aval.shape.dims[ax];
+                        if dim == 0 {
+                            return None;
+                        }
+                        if let Some(expected) = axis_size_opt {
+                            if expected != dim {
+                                return None;
+                            }
+                        } else {
+                            axis_size_opt = Some(dim);
+                        }
+                        let mut stripped_dims = aval.shape.dims.clone();
+                        stripped_dims.remove(ax);
+                        resolved_axes.push(Some(ax));
+                        next_peeled.push(AbstractValue {
+                            dtype: aval.dtype,
+                            shape: Shape {
+                                dims: stripped_dims,
+                            },
+                        });
+                    }
+                }
+            }
+            let axis_size = axis_size_opt?;
+            vmap_meta[stack_idx] = Some((axis_size, resolved_axes));
+            current_peeled_in = next_peeled;
+        }
+    }
+
+    let root_in_avals = current_peeled_in;
+
+    // Determine root_output_avals.
+    let has_grad = request.transform_stack.contains(&Transform::Grad);
+    let root_out_avals = if has_grad {
+        let dtype = root_in_avals.first().map_or(DType::F64, |aval| aval.dtype);
+        vec![AbstractValue {
+            dtype,
+            shape: Shape::scalar(),
+        }]
+    } else {
+        let mut current_peeled_out = outer_out_avals;
+        for (stack_idx, &transform) in request.transform_stack.iter().enumerate() {
+            if transform == Transform::Vmap {
+                let (axis_size, _) = vmap_meta[stack_idx].as_ref()?;
+                let out_specs =
+                    parse_vmap_out_axes(&request.compile_options, current_peeled_out.len()).ok()?;
+                if out_specs.len() != current_peeled_out.len() {
+                    return None;
+                }
+                let mut next_out = Vec::with_capacity(current_peeled_out.len());
+                for (aval, spec) in current_peeled_out.iter().zip(out_specs.iter()) {
+                    match spec {
+                        AxisSpec::NotBatched => next_out.push(aval.clone()),
+                        AxisSpec::Batched(_) => {
+                            let ndim = aval.shape.rank();
+                            let ax = spec.resolve(ndim)?;
+                            if ax >= ndim || aval.shape.dims[ax] != *axis_size {
+                                return None;
+                            }
+                            let mut dims = aval.shape.dims.clone();
+                            dims.remove(ax);
+                            next_out.push(AbstractValue {
+                                dtype: aval.dtype,
+                                shape: Shape { dims },
+                            });
+                        }
+                    }
+                }
+                current_peeled_out = next_out;
+            }
+        }
+        current_peeled_out
+    };
+
+    let mut steps = Vec::with_capacity(n);
+    let mut current_jaxpr: Cow<'_, Jaxpr> = Cow::Borrowed(request.root_jaxpr);
+    let mut current_in_avals = root_in_avals.clone();
+    let mut current_out_avals = root_out_avals.clone();
+
+    for step_index in 0..n {
+        let stack_idx = n - 1 - step_index;
+        let transform = request.transform_stack[stack_idx];
+        let evidence = request.transform_evidence.get(stack_idx)?.trim().to_owned();
+        let input_sha256 = jaxpr_fingerprint_sha256(&current_jaxpr);
+        let has_outer_grad =
+            (0..stack_idx).any(|outer_i| request.transform_stack[outer_i] == Transform::Grad);
+
+        match transform {
+            Transform::Jit => {
+                let (next_jaxpr, next_in_avals, witness) = if stack_idx == 0
+                    && !static_argnums.is_empty()
+                    && let Some(staged) = &plan.staged_program
+                {
+                    let dyn_in: Vec<AbstractValue> = current_in_avals
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, a)| (!static_argnums.contains(&i)).then_some(a.clone()))
+                        .collect();
+                    let w = TransformRewriteWitness::Jit(JitWitness {
+                        static_argnums: static_argnums.to_vec(),
+                        folded_eqn_count: staged.jaxpr_known.equations.len(),
+                        residual_eqn_count: staged.jaxpr_unknown.equations.len(),
+                    });
+                    (Cow::Borrowed(&staged.jaxpr_unknown), dyn_in, w)
+                } else if current_jaxpr.as_ref() == request.root_jaxpr {
+                    let w = TransformRewriteWitness::Jit(JitWitness {
+                        static_argnums: Vec::new(),
+                        folded_eqn_count: 0,
+                        residual_eqn_count: plan.effective_jaxpr.equations.len(),
+                    });
+                    (
+                        Cow::Borrowed(plan.effective_jaxpr.as_ref()),
+                        current_in_avals.clone(),
+                        w,
+                    )
+                } else {
+                    let w = TransformRewriteWitness::Jit(JitWitness {
+                        static_argnums: Vec::new(),
+                        folded_eqn_count: 0,
+                        residual_eqn_count: current_jaxpr.equations.len(),
+                    });
+                    (current_jaxpr.clone(), current_in_avals.clone(), w)
+                };
+                let output_sha256 = jaxpr_fingerprint_sha256(&next_jaxpr);
+                let next_out_avals = current_out_avals.clone();
+                steps.push(TransformProofStep {
+                    step_index,
+                    transform,
+                    evidence,
+                    input_jaxpr_fingerprint_sha256: input_sha256,
+                    output_jaxpr_fingerprint_sha256: output_sha256,
+                    input_avals: next_in_avals.clone(),
+                    output_avals: next_out_avals.clone(),
+                    witness,
+                });
+                current_jaxpr = next_jaxpr;
+                current_in_avals = next_in_avals;
+                current_out_avals = next_out_avals;
+            }
+            Transform::Grad => {
+                if current_out_avals.is_empty() || current_out_avals[0].shape.rank() != 0 {
+                    return None;
+                }
+                let (argnums, _) =
+                    parse_grad_argnums(&request.compile_options, current_in_avals.len()).ok()?;
+                let mut target_for_grad = current_jaxpr.clone().into_owned();
+                if has_outer_grad && current_in_avals.first().is_some_and(|a| a.shape.rank() > 0) {
+                    append_reduce_sum_to_scalar(&mut target_for_grad);
+                }
+                let primal_eqn_count = target_for_grad.equations.len();
+                let mut grad_jaxpr = fj_ad::build_grad_jaxpr(&target_for_grad, &argnums).ok()?;
+                if has_outer_grad && current_in_avals.first().is_some_and(|a| a.shape.rank() > 0) {
+                    append_reduce_sum_to_scalar(&mut grad_jaxpr);
+                }
+                let total_eqn_count = grad_jaxpr.equations.len();
+                let adjoint_eqn_count = total_eqn_count.saturating_sub(primal_eqn_count);
+                let pruned_dead_cotangents =
+                    (primal_eqn_count.saturating_mul(2)).saturating_sub(total_eqn_count);
+                let output_sha256 = jaxpr_fingerprint_sha256(&grad_jaxpr);
+                let next_in_avals = current_in_avals.clone();
+                let next_out_avals: Vec<AbstractValue> = if has_outer_grad
+                    && current_in_avals.first().is_some_and(|a| a.shape.rank() > 0)
+                {
+                    return None;
+                } else {
+                    argnums
+                        .iter()
+                        .map(|&idx| current_in_avals.get(idx).cloned())
+                        .collect::<Option<Vec<_>>>()?
+                };
+                let witness = TransformRewriteWitness::Grad(GradWitness {
+                    argnums,
+                    primal_eqn_count,
+                    adjoint_eqn_count,
+                    pruned_dead_cotangents,
+                });
+                steps.push(TransformProofStep {
+                    step_index,
+                    transform,
+                    evidence,
+                    input_jaxpr_fingerprint_sha256: input_sha256,
+                    output_jaxpr_fingerprint_sha256: output_sha256,
+                    input_avals: next_in_avals.clone(),
+                    output_avals: next_out_avals.clone(),
+                    witness,
+                });
+                current_jaxpr = Cow::Owned(grad_jaxpr);
+                current_in_avals = next_in_avals;
+                current_out_avals = next_out_avals;
+            }
+            Transform::Vmap => {
+                let (axis_size, in_axes_opt) = vmap_meta.get(stack_idx)?.clone()?;
+                let next_in_avals: Vec<AbstractValue> = current_in_avals
+                    .iter()
+                    .zip(in_axes_opt.iter())
+                    .map(|(aval, ax)| match ax {
+                        Some(a) => insert_aval_dim(aval, *a, axis_size),
+                        None => aval.clone(),
+                    })
+                    .collect();
+                let out_specs =
+                    parse_vmap_out_axes(&request.compile_options, current_out_avals.len()).ok()?;
+                if out_specs.len() != current_out_avals.len() {
+                    return None;
+                }
+                let mut out_axes_opt = Vec::with_capacity(current_out_avals.len());
+                let mut next_out_avals = Vec::with_capacity(current_out_avals.len());
+                for (aval, spec) in current_out_avals.iter().zip(out_specs.iter()) {
+                    if has_outer_grad {
+                        out_axes_opt.push(None);
+                        next_out_avals.push(aval.clone());
+                    } else {
+                        match spec {
+                            AxisSpec::NotBatched => {
+                                out_axes_opt.push(None);
+                                next_out_avals.push(aval.clone());
+                            }
+                            AxisSpec::Batched(_) => {
+                                let out_ndim = aval.shape.rank() + 1;
+                                let ax = spec.resolve(out_ndim)?;
+                                if ax >= out_ndim {
+                                    return None;
+                                }
+                                out_axes_opt.push(Some(ax));
+                                next_out_avals.push(insert_aval_dim(aval, ax, axis_size));
+                            }
+                        }
+                    }
+                }
+                let mut batched_jaxpr = Jaxpr::new(
+                    current_jaxpr.invars.clone(),
+                    current_jaxpr.constvars.clone(),
+                    current_jaxpr.outvars.clone(),
+                    current_jaxpr.equations.clone(),
+                );
+                batched_jaxpr.effects = current_jaxpr.effects.clone();
+                if !batched_jaxpr.equations.is_empty() {
+                    batched_jaxpr.equations[0].params.insert(
+                        "__ttl_vmap_axis_size".to_owned(),
+                        format!("{axis_size}:{in_axes_opt:?}:{out_axes_opt:?}"),
+                    );
+                }
+                let output_sha256 = jaxpr_fingerprint_sha256(&batched_jaxpr);
+                let witness = TransformRewriteWitness::Vmap(VmapWitness {
+                    in_axes: in_axes_opt,
+                    out_axes: out_axes_opt,
+                    axis_size,
+                });
+                steps.push(TransformProofStep {
+                    step_index,
+                    transform,
+                    evidence,
+                    input_jaxpr_fingerprint_sha256: input_sha256,
+                    output_jaxpr_fingerprint_sha256: output_sha256,
+                    input_avals: next_in_avals.clone(),
+                    output_avals: next_out_avals.clone(),
+                    witness,
+                });
+                current_jaxpr = Cow::Owned(batched_jaxpr);
+                current_in_avals = next_in_avals;
+                current_out_avals = next_out_avals;
+            }
+            Transform::Pmap => {
+                return None;
+            }
+        }
+    }
+
+    verify_transform_composition_steps(
+        request.root_jaxpr,
+        request.transform_stack,
+        request.transform_evidence,
+        &root_in_avals,
+        &root_out_avals,
+        &steps,
+    )
+    .ok()
 }
 
 fn execute_with_transforms(
@@ -5345,5 +5737,87 @@ mod tests {
 
         let seq = fj_interpreters::eval_jaxpr(&dag_jaxpr, &args).expect("sequential eval");
         assert_eq!(resp.outputs, seq);
+    }
+
+    #[test]
+    fn e2e_ttl_v2_dispatch_composition_proof_and_tamper_rejection() {
+        use fj_core::{
+            TransformCompositionError, TransformRewriteWitness, jaxpr_fingerprint_sha256,
+        };
+
+        let root = build_program(ProgramSpec::Square);
+        let mut ttl = TraceTransformLedger::new(root.clone());
+        ttl.push_transform(Transform::Jit, "jit-outer");
+        ttl.push_transform(Transform::Vmap, "vmap-mid");
+        ttl.push_transform(Transform::Grad, "grad-inner");
+
+        let batch = Value::vector_f64(&[2.0, 3.0, 5.0]).unwrap();
+        let resp = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl.clone(),
+            args: vec![batch.clone()],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("triple composition dispatch should succeed");
+
+        let proof = &resp.composition_proof;
+        assert_eq!(proof.steps.len(), 3);
+        assert_eq!(proof.root_jaxpr_sha256, jaxpr_fingerprint_sha256(&root));
+        assert_eq!(proof.steps[0].transform, Transform::Grad);
+        assert_eq!(proof.steps[1].transform, Transform::Vmap);
+        assert_eq!(proof.steps[2].transform, Transform::Jit);
+        assert!(matches!(
+            proof.steps[0].witness,
+            TransformRewriteWitness::Grad(_)
+        ));
+        assert!(matches!(
+            &proof.steps[1].witness,
+            TransformRewriteWitness::Vmap(w) if w.axis_size == 3
+        ));
+        assert!(matches!(
+            proof.steps[2].witness,
+            TransformRewriteWitness::Jit(_)
+        ));
+        assert_eq!(
+            proof.steps[0].output_jaxpr_fingerprint_sha256,
+            proof.steps[1].input_jaxpr_fingerprint_sha256
+        );
+        assert_eq!(
+            proof.steps[1].output_jaxpr_fingerprint_sha256,
+            proof.steps[2].input_jaxpr_fingerprint_sha256
+        );
+        assert_eq!(
+            proof.steps[2].output_jaxpr_fingerprint_sha256,
+            proof.final_output_jaxpr_sha256
+        );
+        assert!(proof.merkle_commitment.starts_with("ttl-proof-sha256-"));
+        proof
+            .verify()
+            .expect("lowered DispatchResponse composition_proof must verify");
+
+        // Negative: tampered intermediate hash in ledger steps is rejected by dispatch
+        let mut tampered_steps = proof.steps.clone();
+        tampered_steps[0].output_jaxpr_fingerprint_sha256[0] ^= 0xaa;
+        let tampered_ttl = ttl.with_steps(tampered_steps);
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: tampered_ttl,
+            args: vec![batch],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("dispatch must reject tampered intermediate step chain");
+        assert!(matches!(
+            err,
+            DispatchError::TransformInvariant(TransformCompositionError::StepChainDiscontinuity {
+                step_index: 1,
+                ..
+            })
+        ));
     }
 }
