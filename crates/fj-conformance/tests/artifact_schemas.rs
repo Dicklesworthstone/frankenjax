@@ -413,6 +413,64 @@ fn global_performance_gate_covers_required_phases() {
             }
         }
     }
+
+    let regimes = gate["precision_policy_regimes"]
+        .as_object()
+        .expect("precision_policy_regimes must be an object");
+    assert_eq!(
+        regimes.get("default_policy").and_then(Value::as_str),
+        Some("BitExactPortable")
+    );
+    assert_eq!(
+        regimes.get("accelerated_policy").and_then(Value::as_str),
+        Some("HardwareFmaAccelerated")
+    );
+    let gemm_cholesky = regimes["gemm_cholesky_exp"]
+        .as_array()
+        .expect("gemm_cholesky_exp must be an array");
+    assert!(gemm_cholesky.len() >= 4);
+    for row in gemm_cholesky {
+        let speedup = row["speedup_x"].as_f64().expect("speedup_x must be f64");
+        let min_req = row["required_min_speedup_x"]
+            .as_f64()
+            .expect("required_min_speedup_x must be f64");
+        assert!(
+            speedup >= min_req,
+            "regime benchmark {} speedup {speedup} < required {min_req}",
+            row["bench_id"]
+        );
+        assert_eq!(row["status"].as_str(), Some("pass"));
+    }
+    let fft_rows = regimes["stockham_batched_fft"]
+        .as_array()
+        .expect("stockham_batched_fft must be an array");
+    assert!(fft_rows.len() >= 3);
+    for row in fft_rows {
+        let portable_speedup = row["portable_speedup_vs_bluestein_x"]
+            .as_f64()
+            .expect("portable_speedup_vs_bluestein_x must be f64");
+        let fma_speedup = row["fma_speedup_vs_bluestein_x"]
+            .as_f64()
+            .expect("fma_speedup_vs_bluestein_x must be f64");
+        let min_req = row["required_min_speedup_x"]
+            .as_f64()
+            .expect("required_min_speedup_x must be f64");
+        assert!(portable_speedup >= min_req);
+        assert!(fma_speedup >= min_req);
+        assert_eq!(row["status"].as_str(), Some("pass"));
+    }
+
+    let vs_jax = gate["vs_jax_scoreboard"]
+        .as_object()
+        .expect("vs_jax_scoreboard must be an object");
+    assert_eq!(
+        vs_jax.get("comparator_oracle").and_then(Value::as_str),
+        Some("Python JAX 0.10.2 (XLA-CPU)")
+    );
+    let families = vs_jax["families"]
+        .as_array()
+        .expect("vs_jax_scoreboard.families must be an array");
+    assert!(families.len() >= 10);
 }
 
 #[test]

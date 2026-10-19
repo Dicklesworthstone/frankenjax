@@ -1,27 +1,9 @@
-# Enable AVX2 (256-bit SIMD) on x86_64.
-#
-# The default `x86_64-unknown-linux-gnu` target is the baseline `x86-64`
-# microarchitecture, which is SSE2 (128-bit) only. Every `std::simd` kernel in
-# this workspace (f64 8-wide GEMM/elementwise/reduction tiles, f32 16-wide, etc.)
-# therefore compiled to *split* SSE2 ops — using only half the hardware's actual
-# f64 vector width on any AVX2-capable CPU (Haswell 2013+, Excavator+). Enabling
-# `+avx2` lets those same portable-SIMD vectors lower to native 256-bit
-# instructions, a measured ~2.5x on the f64 GEMM (matmul_2d 1024³: 77ms -> 31ms)
-# and a comparable win across the vectorized kernels.
-#
-# This is BIT-IDENTICAL, not a numeric change:
-#   * Rust defaults to `-ffp-contract=off`, so NO fused multiply-add is ever
-#     introduced — `a*b + c` stays a separate `vmulpd` + `vaddpd` (256-bit) with
-#     two roundings, exactly as in the SSE2 build. We never call `f64::mul_add`.
-#   * Portable-SIMD lane order and `reduce_*` tree order are fixed by the library
-#     and width-independent — only the instruction width changes, never which
-#     IEEE op produces which bit. The full conformance/golden suite is unchanged.
-#
-# Deliberately NOT `+fma`: enabling FMA would let `mul_add` contract two roundings
-# into one and is the separately-gated bit-exactness decision (see cz0g0 evidence).
-# `+avx2` decouples the SIMD-width win from that.
+# Portable x86-64 baseline by default (`PrecisionPolicy::BitExactPortable`).
+# Hardware AVX2+FMA acceleration (`#[target_feature(enable = "avx2,fma")]`) is
+# dispatched dynamically at runtime via `std::arch::is_x86_feature_detected!`
+# when `PrecisionPolicy::HardwareFmaAccelerated` is active.
 [target.'cfg(target_arch = "x86_64")']
-rustflags = ["-Z", "threads=4", "-C", "target-feature=+avx2"]
+rustflags = ["-Z", "threads=4"]
 
 [build]
 # Parallel rustc front-end (nightly). Added by build-settings sweep.

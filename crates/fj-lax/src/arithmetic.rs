@@ -6327,6 +6327,35 @@ pub(crate) fn eval_exp(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
     }
     if inputs.first().is_some_and(value_contains_complex) {
         eval_unary_complex_map(primitive, inputs, |a, b| complex_exp((a, b)))
+    } else if crate::should_use_hardware_fma()
+        && let [Value::Tensor(tensor)] = inputs
+        && tensor.dtype == DType::F64
+        && let Some(dense) = tensor.elements.as_f64_slice()
+    {
+        let n = dense.len();
+        let mut out = vec![0.0_f64; n];
+        let threads = work_scaled_threads(n);
+        if threads <= 1 {
+            crate::simd_exp::simd_poly_exp_fma_into(dense, &mut out);
+        } else {
+            let chunk = n.div_ceil(threads).next_multiple_of(8);
+            std::thread::scope(|scope| {
+                let mut o_rest = out.as_mut_slice();
+                let mut x0 = 0usize;
+                while x0 < n {
+                    let cnt = chunk.min(n - x0);
+                    let (oblk, otail) = o_rest.split_at_mut(cnt);
+                    o_rest = otail;
+                    let sblk = &dense[x0..x0 + cnt];
+                    x0 += cnt;
+                    scope.spawn(move || crate::simd_exp::simd_poly_exp_fma_into(sblk, oblk));
+                }
+            });
+        }
+        Ok(Value::Tensor(TensorValue::new_f64_values(
+            tensor.shape.clone(),
+            out,
+        )?))
     } else {
         eval_unary_elementwise_parallel(primitive, inputs, f64::exp)
     }
@@ -15607,6 +15636,15 @@ fn rank2_f32_matmul_dot(
     let (Some(a32), Some(b32)) = (lhs.elements.as_f32_slice(), rhs.elements.as_f32_slice()) else {
         return Ok(None);
     };
+    if crate::should_use_hardware_fma() {
+        let out_f32 = batched_matmul_2d_f32_in(a32, 1, m, k, b32, n);
+        return Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            out_f32,
+        )?)));
+    }
     let a: Vec<f64> = a32.iter().map(|&x| x as f64).collect();
     let b: Vec<f64> = b32.iter().map(|&x| x as f64).collect();
     let out_f64 = matmul_2d(&a, m, k, &b, n);

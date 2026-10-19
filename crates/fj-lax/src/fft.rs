@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 //! FFT primitives: Fft, Ifft, Rfft, Irfft.
 //!
@@ -30,7 +30,10 @@
 //! swarm contention.
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
+use std::borrow::Cow;
 use std::f64::consts::PI;
+use std::simd::Simd;
+use std::simd::StdFloat;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::EvalError;
@@ -127,10 +130,11 @@ fn extract_homogeneous_complex_literals(
         return Some(out);
     }
 
+    let work_cap = (literals.len() / (1 << 17)).clamp(1, 4);
     let threads = std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(1)
-        .min(8)
+        .min(work_cap)
         .min(literals.len());
     if threads <= 1 {
         let mut out = Vec::with_capacity(literals.len());
@@ -276,7 +280,7 @@ fn parse_optional_fft_length(
 fn extract_tensor_complex(
     primitive: Primitive,
     value: &Value,
-) -> Result<(Shape, DType, Vec<(f64, f64)>), EvalError> {
+) -> Result<(Shape, DType, Cow<'_, [(f64, f64)]>), EvalError> {
     let tensor = match value {
         Value::Tensor(t) => t,
         Value::Scalar(_) => {
@@ -295,11 +299,11 @@ fn extract_tensor_complex(
     }
 
     // Fast path: dense complex-backed buffers expose packed `(re, im)` f64 pairs,
-    // so we bulk-copy them instead of matching+converting each `Literal`. The dense
+    // so we borrow them zero-copy instead of matching+converting each `Literal`. The dense
     // representation is bit-identical to what `literal_to_complex` would produce
     // (Complex128: exact f64; Complex64: the same f32→f64 widening).
     if let Some(dense) = tensor.elements.as_complex_slice() {
-        return Ok((tensor.shape.clone(), tensor.dtype, dense.to_vec()));
+        return Ok((tensor.shape.clone(), tensor.dtype, Cow::Borrowed(dense)));
     }
 
     // Fast path for boxed complex literals that intentionally stayed out of
@@ -312,13 +316,13 @@ fn extract_tensor_complex(
             && let Some(elements) =
                 extract_homogeneous_complex_literals(literal_slice, complex128_literal_to_pair)
         {
-            return Ok((tensor.shape.clone(), tensor.dtype, elements));
+            return Ok((tensor.shape.clone(), tensor.dtype, Cow::Owned(elements)));
         }
         if tensor.dtype == DType::Complex64
             && let Some(elements) =
                 extract_homogeneous_complex_literals(literal_slice, complex64_literal_to_pair)
         {
-            return Ok((tensor.shape.clone(), tensor.dtype, elements));
+            return Ok((tensor.shape.clone(), tensor.dtype, Cow::Owned(elements)));
         }
     }
 
@@ -329,7 +333,7 @@ fn extract_tensor_complex(
         && let Some(reals) = tensor.elements.as_f64_slice()
     {
         let elements: Vec<(f64, f64)> = reals.iter().map(|&v| (v, 0.0)).collect();
-        return Ok((tensor.shape.clone(), tensor.dtype, elements));
+        return Ok((tensor.shape.clone(), tensor.dtype, Cow::Owned(elements)));
     }
 
     // Dense real-F32 input (f32 is JAX's default float, so f32-real RFFT/FFT is the
@@ -340,7 +344,7 @@ fn extract_tensor_complex(
         && let Some(reals) = tensor.elements.as_f32_slice()
     {
         let elements: Vec<(f64, f64)> = reals.iter().map(|&v| (f64::from(v), 0.0)).collect();
-        return Ok((tensor.shape.clone(), tensor.dtype, elements));
+        return Ok((tensor.shape.clone(), tensor.dtype, Cow::Owned(elements)));
     }
 
     let elements: Vec<(f64, f64)> = tensor
@@ -354,7 +358,7 @@ fn extract_tensor_complex(
         })
         .collect::<Result<_, _>>()?;
 
-    Ok((tensor.shape.clone(), tensor.dtype, elements))
+    Ok((tensor.shape.clone(), tensor.dtype, Cow::Owned(elements)))
 }
 
 // ── DFT core ─────────────────────────────────────────────────────────
@@ -1000,6 +1004,26 @@ fn bluestein_dft_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>, invers
     plan.apply_into(input, &mut scratch, output);
 }
 
+#[cfg(test)]
+pub(crate) fn bench_fft_uncached_per_row_baseline(
+    elements: &[(f64, f64)],
+    n: usize,
+    batch_size: usize,
+) -> Vec<(f64, f64)> {
+    let mut out = vec![(0.0, 0.0); batch_size * n];
+    let mut row_out = Vec::with_capacity(n);
+    for b in 0..batch_size {
+        let row = &elements[b * n..(b + 1) * n];
+        if n.is_power_of_two() {
+            radix2_fft_1d_into(row, &mut row_out, false);
+        } else {
+            bluestein_dft_into(row, &mut row_out, false);
+        }
+        out[b * n..(b + 1) * n].copy_from_slice(&row_out);
+    }
+    out
+}
+
 fn bit_reverse_permute(values: &mut [(f64, f64)]) {
     let n = values.len();
     let mut j = 0_usize;
@@ -1119,7 +1143,7 @@ fn fft_1d_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>) {
         // and runs FFTs of THAT length — ~2-4x more memory for the same result. The
         // BATCHED path already chooses mixed-radix here; this makes the single-row
         // path consistent. Tolerance parity (mixed_radix == DFT, like Bluestein).
-        let roots = precompute_twiddles(n, false);
+        let roots = cached_twiddles(n, false);
         let mut scratch = Vec::new();
         mixed_radix_into(input, &roots, false, output, &mut scratch);
     } else {
@@ -1142,7 +1166,7 @@ fn ifft_1d_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>) {
     } else if is_mixed_radix_smooth(n) {
         // Smooth composite: mixed-radix (the inverse `1/n` normalization is applied
         // inside mixed_radix_into, matching radix-2 / Bluestein). See fft_1d_into.
-        let roots = precompute_twiddles(n, true);
+        let roots = cached_twiddles(n, true);
         let mut scratch = Vec::new();
         mixed_radix_into(input, &roots, true, output, &mut scratch);
     } else {
@@ -1590,6 +1614,39 @@ fn mixed_radix_into_use8(
     output.resize(n, (0.0, 0.0));
     scratch.clear();
     scratch.resize(n, (0.0, 0.0));
+    #[cfg(target_arch = "x86_64")]
+    {
+        if crate::should_use_hardware_fma() {
+            // SAFETY: `should_use_hardware_fma()` verifies runtime AVX2 + FMA support.
+            #[allow(unsafe_code)]
+            unsafe {
+                mixed_radix_ping_avx2_fma(input, 0, 1, output, scratch, n, roots, n, use8);
+            }
+            if inverse {
+                let inv_n = 1.0 / (n as f64);
+                for v in output.iter_mut() {
+                    v.0 *= inv_n;
+                    v.1 *= inv_n;
+                }
+            }
+            return;
+        }
+        if crate::hardware_avx2_available() {
+            // SAFETY: `hardware_avx2_available()` verifies runtime AVX2 support.
+            #[allow(unsafe_code)]
+            unsafe {
+                mixed_radix_ping_avx2(input, 0, 1, output, scratch, n, roots, n, use8);
+            }
+            if inverse {
+                let inv_n = 1.0 / (n as f64);
+                for v in output.iter_mut() {
+                    v.0 *= inv_n;
+                    v.1 *= inv_n;
+                }
+            }
+            return;
+        }
+    }
     mixed_radix_ping(input, 0, 1, output, scratch, n, roots, n, use8);
     if inverse {
         let inv_n = 1.0 / (n as f64);
@@ -1598,6 +1655,1349 @@ fn mixed_radix_into_use8(
             v.1 *= inv_n;
         }
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments, unsafe_code)]
+unsafe fn mixed_radix_ping_avx2(
+    x: &[(f64, f64)],
+    offset: usize,
+    stride: usize,
+    out: &mut [(f64, f64)],
+    scratch: &mut [(f64, f64)],
+    nn: usize,
+    roots: &[(f64, f64)],
+    big_n: usize,
+    use8: bool,
+) {
+    if nn == 1 {
+        out[0] = x[offset];
+        return;
+    }
+    if nn == 2 {
+        let e = x[offset];
+        let o = x[offset + stride];
+        let (tr, ti) = roots[0];
+        let wr = tr * o.0 - ti * o.1;
+        let wi = tr * o.1 + ti * o.0;
+        out[0] = (e.0 + wr, e.1 + wi);
+        out[1] = (e.0 - wr, e.1 - wi);
+        return;
+    }
+    if nn == 3 {
+        let (tr0, ti0) = roots[0];
+        let tw0 = |a: (f64, f64)| (tr0 * a.0 - ti0 * a.1, tr0 * a.1 + ti0 * a.0);
+        let u0 = x[offset];
+        let u1 = tw0(x[offset + stride]);
+        let u2 = tw0(x[offset + 2 * stride]);
+        let (c, d) = roots[big_n / 3];
+        let sr = u1.0 + u2.0;
+        let si = u1.1 + u2.1;
+        let dr = u1.0 - u2.0;
+        let di = u1.1 - u2.1;
+        out[0] = (u0.0 + sr, u0.1 + si);
+        let cr = u0.0 + c * sr;
+        let ci = u0.1 + c * si;
+        let xr = d * di;
+        let xi = d * dr;
+        out[1] = (cr - xr, ci + xi);
+        out[2] = (cr + xr, ci - xi);
+        return;
+    }
+    if nn == 5 {
+        let (tr0, ti0) = roots[0];
+        let tw0 = |a: (f64, f64)| (tr0 * a.0 - ti0 * a.1, tr0 * a.1 + ti0 * a.0);
+        let u0 = x[offset];
+        let u1 = tw0(x[offset + stride]);
+        let u2 = tw0(x[offset + 2 * stride]);
+        let u3 = tw0(x[offset + 3 * stride]);
+        let u4 = tw0(x[offset + 4 * stride]);
+        let (c1, d1) = roots[big_n / 5];
+        let (c2, d2) = roots[2 * (big_n / 5)];
+        let t1 = (u1.0 + u4.0, u1.1 + u4.1);
+        let t1d = (u1.0 - u4.0, u1.1 - u4.1);
+        let t2 = (u2.0 + u3.0, u2.1 + u3.1);
+        let t2d = (u2.0 - u3.0, u2.1 - u3.1);
+        out[0] = (u0.0 + t1.0 + t2.0, u0.1 + t1.1 + t2.1);
+        let ar = u0.0 + c1 * t1.0 + c2 * t2.0;
+        let ai = u0.1 + c1 * t1.1 + c2 * t2.1;
+        let xr = d1 * t1d.1 + d2 * t2d.1;
+        let xi = d1 * t1d.0 + d2 * t2d.0;
+        out[1] = (ar - xr, ai + xi);
+        out[4] = (ar + xr, ai - xi);
+        let br = u0.0 + c2 * t1.0 + c1 * t2.0;
+        let bi = u0.1 + c2 * t1.1 + c1 * t2.1;
+        let yr = d2 * t1d.1 - d1 * t2d.1;
+        let yi = d2 * t1d.0 - d1 * t2d.0;
+        out[2] = (br - yr, bi + yi);
+        out[3] = (br + yr, bi - yi);
+        return;
+    }
+
+    let p = if use8 && nn.is_multiple_of(8) {
+        8
+    } else if !mixed_radix_no4() && nn.is_multiple_of(4) {
+        4
+    } else {
+        smallest_prime_factor(nn)
+    };
+    let m = nn / p;
+    for r in 0..p {
+        let base = r * m;
+        // SAFETY: AVX2 is enabled on this function.
+        unsafe {
+            mixed_radix_ping_avx2(
+                x,
+                offset + r * stride,
+                stride * p,
+                &mut scratch[base..base + m],
+                &mut out[base..base + m],
+                m,
+                roots,
+                big_n,
+                use8,
+            );
+        }
+    }
+
+    let s_tw = big_n / nn;
+    if p == 2 {
+        let (lo, hi) = out.split_at_mut(m);
+        for s in 0..m {
+            let (e_re, e_im) = scratch[s];
+            let (o_re, o_im) = scratch[m + s];
+            let (tr, ti) = roots[s * s_tw];
+            let wr = tr * o_re - ti * o_im;
+            let wi = tr * o_im + ti * o_re;
+            lo[s] = (e_re + wr, e_im + wi);
+            hi[s] = (e_re - wr, e_im - wi);
+        }
+        return;
+    }
+    if p == 4 {
+        let (jr, ji) = roots[big_n / 4];
+        let (m2, m3) = (2 * m, 3 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let tw = |r: usize, a: (f64, f64)| {
+                let (tr, ti) = roots[r * s * s_tw];
+                (tr * a.0 - ti * a.1, tr * a.1 + ti * a.0)
+            };
+            let u1 = tw(1, scratch[m + s]);
+            let u2 = tw(2, scratch[m2 + s]);
+            let u3 = tw(3, scratch[m3 + s]);
+            let t0 = (u0.0 + u2.0, u0.1 + u2.1);
+            let t1 = (u0.0 - u2.0, u0.1 - u2.1);
+            let t2 = (u1.0 + u3.0, u1.1 + u3.1);
+            let t3 = (u1.0 - u3.0, u1.1 - u3.1);
+            let jt3r = jr * t3.0 - ji * t3.1;
+            let jt3i = jr * t3.1 + ji * t3.0;
+            out[s] = (t0.0 + t2.0, t0.1 + t2.1);
+            out[m + s] = (t1.0 + jt3r, t1.1 + jt3i);
+            out[m2 + s] = (t0.0 - t2.0, t0.1 - t2.1);
+            out[m3 + s] = (t1.0 - jt3r, t1.1 - jt3i);
+        }
+        return;
+    }
+    if p == 8 {
+        let (w1r, w1i) = roots[big_n / 8];
+        let (jr, ji) = roots[big_n / 4];
+        let (w3r, w3i) = roots[3 * (big_n / 8)];
+        let (m2, m3, m4, m5, m6, m7) = (2 * m, 3 * m, 4 * m, 5 * m, 6 * m, 7 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let tw = |r: usize, a: (f64, f64)| {
+                let (tr, ti) = roots[r * s * s_tw];
+                (tr * a.0 - ti * a.1, tr * a.1 + ti * a.0)
+            };
+            let u1 = tw(1, scratch[m + s]);
+            let u2 = tw(2, scratch[m2 + s]);
+            let u3 = tw(3, scratch[m3 + s]);
+            let u4 = tw(4, scratch[m4 + s]);
+            let u5 = tw(5, scratch[m5 + s]);
+            let u6 = tw(6, scratch[m6 + s]);
+            let u7 = tw(7, scratch[m7 + s]);
+            let cmul =
+                |x: (f64, f64), y: (f64, f64)| (x.0 * y.0 - x.1 * y.1, x.0 * y.1 + x.1 * y.0);
+            let e_t0 = (u0.0 + u4.0, u0.1 + u4.1);
+            let e_t1 = (u0.0 - u4.0, u0.1 - u4.1);
+            let e_t2 = (u2.0 + u6.0, u2.1 + u6.1);
+            let e_t3 = (u2.0 - u6.0, u2.1 - u6.1);
+            let e_j = cmul((jr, ji), e_t3);
+            let e0 = (e_t0.0 + e_t2.0, e_t0.1 + e_t2.1);
+            let e1 = (e_t1.0 + e_j.0, e_t1.1 + e_j.1);
+            let e2 = (e_t0.0 - e_t2.0, e_t0.1 - e_t2.1);
+            let e3 = (e_t1.0 - e_j.0, e_t1.1 - e_j.1);
+            let o_t0 = (u1.0 + u5.0, u1.1 + u5.1);
+            let o_t1 = (u1.0 - u5.0, u1.1 - u5.1);
+            let o_t2 = (u3.0 + u7.0, u3.1 + u7.1);
+            let o_t3 = (u3.0 - u7.0, u3.1 - u7.1);
+            let o_j = cmul((jr, ji), o_t3);
+            let o0 = (o_t0.0 + o_t2.0, o_t0.1 + o_t2.1);
+            let o1 = (o_t1.0 + o_j.0, o_t1.1 + o_j.1);
+            let o2 = (o_t0.0 - o_t2.0, o_t0.1 - o_t2.1);
+            let o3 = (o_t1.0 - o_j.0, o_t1.1 - o_j.1);
+            let c1 = cmul((w1r, w1i), o1);
+            let c2 = cmul((jr, ji), o2);
+            let c3 = cmul((w3r, w3i), o3);
+            out[s] = (e0.0 + o0.0, e0.1 + o0.1);
+            out[m + s] = (e1.0 + c1.0, e1.1 + c1.1);
+            out[m2 + s] = (e2.0 + c2.0, e2.1 + c2.1);
+            out[m3 + s] = (e3.0 + c3.0, e3.1 + c3.1);
+            out[m4 + s] = (e0.0 - o0.0, e0.1 - o0.1);
+            out[m5 + s] = (e1.0 - c1.0, e1.1 - c1.1);
+            out[m6 + s] = (e2.0 - c2.0, e2.1 - c2.1);
+            out[m7 + s] = (e3.0 - c3.0, e3.1 - c3.1);
+        }
+        return;
+    }
+    if p == 3 {
+        let (c, d) = roots[big_n / 3];
+        let m2 = 2 * m;
+        for s in 0..m {
+            let u0 = scratch[s];
+            let (a1r, a1i) = scratch[m + s];
+            let (a2r, a2i) = scratch[m2 + s];
+            let (t1r, t1i) = roots[s * s_tw];
+            let (t2r, t2i) = roots[2 * s * s_tw];
+            let u1 = (t1r * a1r - t1i * a1i, t1r * a1i + t1i * a1r);
+            let u2 = (t2r * a2r - t2i * a2i, t2r * a2i + t2i * a2r);
+            let sr = u1.0 + u2.0;
+            let si = u1.1 + u2.1;
+            let dr = u1.0 - u2.0;
+            let di = u1.1 - u2.1;
+            out[s] = (u0.0 + sr, u0.1 + si);
+            let cr = u0.0 + c * sr;
+            let ci = u0.1 + c * si;
+            let xr = d * di;
+            let xi = d * dr;
+            out[m + s] = (cr - xr, ci + xi);
+            out[m2 + s] = (cr + xr, ci - xi);
+        }
+        return;
+    }
+    if p == 5 {
+        let (c1, d1) = roots[big_n / 5];
+        let (c2, d2) = roots[2 * (big_n / 5)];
+        let (m2, m3, m4) = (2 * m, 3 * m, 4 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let tw = |r: usize, a: (f64, f64)| {
+                let (tr, ti) = roots[r * s * s_tw];
+                (tr * a.0 - ti * a.1, tr * a.1 + ti * a.0)
+            };
+            let u1 = tw(1, scratch[m + s]);
+            let u2 = tw(2, scratch[m2 + s]);
+            let u3 = tw(3, scratch[m3 + s]);
+            let u4 = tw(4, scratch[m4 + s]);
+            let t1 = (u1.0 + u4.0, u1.1 + u4.1);
+            let t1d = (u1.0 - u4.0, u1.1 - u4.1);
+            let t2 = (u2.0 + u3.0, u2.1 + u3.1);
+            let t2d = (u2.0 - u3.0, u2.1 - u3.1);
+            out[s] = (u0.0 + t1.0 + t2.0, u0.1 + t1.1 + t2.1);
+            let ar = u0.0 + c1 * t1.0 + c2 * t2.0;
+            let ai = u0.1 + c1 * t1.1 + c2 * t2.1;
+            let xr = d1 * t1d.1 + d2 * t2d.1;
+            let xi = d1 * t1d.0 + d2 * t2d.0;
+            out[m + s] = (ar - xr, ai + xi);
+            out[m4 + s] = (ar + xr, ai - xi);
+            let br = u0.0 + c2 * t1.0 + c1 * t2.0;
+            let bi = u0.1 + c2 * t1.1 + c1 * t2.1;
+            let yr = d2 * t1d.1 - d1 * t2d.1;
+            let yi = d2 * t1d.0 - d1 * t2d.0;
+            out[m2 + s] = (br - yr, bi + yi);
+            out[m3 + s] = (br + yr, bi - yi);
+        }
+        return;
+    }
+
+    for slot in out.iter_mut() {
+        *slot = (0.0, 0.0);
+    }
+    for r in 0..p {
+        let row = r * m;
+        let mut idx = 0usize;
+        let mut qm = 0usize;
+        for slot in out.iter_mut() {
+            let (tr, ti) = roots[idx * s_tw];
+            let (sr, si) = scratch[row + qm];
+            slot.0 += tr * sr - ti * si;
+            slot.1 += tr * si + ti * sr;
+            idx += r;
+            if idx >= nn {
+                idx -= nn;
+            }
+            qm += 1;
+            if qm == m {
+                qm = 0;
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[allow(clippy::too_many_arguments, unsafe_code)]
+unsafe fn mixed_radix_ping_avx2_fma(
+    x: &[(f64, f64)],
+    offset: usize,
+    stride: usize,
+    out: &mut [(f64, f64)],
+    scratch: &mut [(f64, f64)],
+    nn: usize,
+    roots: &[(f64, f64)],
+    big_n: usize,
+    use8: bool,
+) {
+    if nn == 1 {
+        out[0] = x[offset];
+        return;
+    }
+    if nn == 2 {
+        let e = x[offset];
+        let o = x[offset + stride];
+        out[0] = (e.0 + o.0, e.1 + o.1);
+        out[1] = (e.0 - o.0, e.1 - o.1);
+        return;
+    }
+    if nn == 3 {
+        let u0 = x[offset];
+        let u1 = x[offset + stride];
+        let u2 = x[offset + 2 * stride];
+        let (c, d) = roots[big_n / 3];
+        let sr = u1.0 + u2.0;
+        let si = u1.1 + u2.1;
+        let dr = u1.0 - u2.0;
+        let di = u1.1 - u2.1;
+        out[0] = (u0.0 + sr, u0.1 + si);
+        let cr = c.mul_add(sr, u0.0);
+        let ci = c.mul_add(si, u0.1);
+        let xr = d * di;
+        let xi = d * dr;
+        out[1] = (cr - xr, ci + xi);
+        out[2] = (cr + xr, ci - xi);
+        return;
+    }
+    if nn == 5 {
+        let u0 = x[offset];
+        let u1 = x[offset + stride];
+        let u2 = x[offset + 2 * stride];
+        let u3 = x[offset + 3 * stride];
+        let u4 = x[offset + 4 * stride];
+        let (c1, d1) = roots[big_n / 5];
+        let (c2, d2) = roots[2 * (big_n / 5)];
+        let t1 = (u1.0 + u4.0, u1.1 + u4.1);
+        let t1d = (u1.0 - u4.0, u1.1 - u4.1);
+        let t2 = (u2.0 + u3.0, u2.1 + u3.1);
+        let t2d = (u2.0 - u3.0, u2.1 - u3.1);
+        out[0] = (u0.0 + t1.0 + t2.0, u0.1 + t1.1 + t2.1);
+        let ar = c2.mul_add(t2.0, c1.mul_add(t1.0, u0.0));
+        let ai = c2.mul_add(t2.1, c1.mul_add(t1.1, u0.1));
+        let xr = d1.mul_add(t1d.1, d2 * t2d.1);
+        let xi = d1.mul_add(t1d.0, d2 * t2d.0);
+        out[1] = (ar - xr, ai + xi);
+        out[4] = (ar + xr, ai - xi);
+        let br = c1.mul_add(t2.0, c2.mul_add(t1.0, u0.0));
+        let bi = c1.mul_add(t2.1, c2.mul_add(t1.1, u0.1));
+        let yr = d2.mul_add(t1d.1, -(d1 * t2d.1));
+        let yi = d2.mul_add(t1d.0, -(d1 * t2d.0));
+        out[2] = (br - yr, bi + yi);
+        out[3] = (br + yr, bi - yi);
+        return;
+    }
+
+    let p = if use8 && nn.is_multiple_of(8) {
+        8
+    } else if !mixed_radix_no4() && nn.is_multiple_of(4) {
+        4
+    } else {
+        smallest_prime_factor(nn)
+    };
+    let m = nn / p;
+    for r in 0..p {
+        let base = r * m;
+        // SAFETY: AVX2+FMA are enabled on this function.
+        unsafe {
+            mixed_radix_ping_avx2_fma(
+                x,
+                offset + r * stride,
+                stride * p,
+                &mut scratch[base..base + m],
+                &mut out[base..base + m],
+                m,
+                roots,
+                big_n,
+                use8,
+            );
+        }
+    }
+
+    let s_tw = big_n / nn;
+    let cmul_fma = |x: (f64, f64), y: (f64, f64)| {
+        (x.0.mul_add(y.0, -(x.1 * y.1)), x.0.mul_add(y.1, x.1 * y.0))
+    };
+
+    if p == 2 {
+        let (lo, hi) = out.split_at_mut(m);
+        for s in 0..m {
+            let (e_re, e_im) = scratch[s];
+            let (o_re, o_im) = scratch[m + s];
+            let (wr, wi) = if s == 0 {
+                (o_re, o_im)
+            } else {
+                cmul_fma(roots[s * s_tw], (o_re, o_im))
+            };
+            lo[s] = (e_re + wr, e_im + wi);
+            hi[s] = (e_re - wr, e_im - wi);
+        }
+        return;
+    }
+    if p == 4 {
+        let (jr, ji) = roots[big_n / 4];
+        let (m2, m3) = (2 * m, 3 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let (u1, u2, u3) = if s == 0 {
+                (scratch[m], scratch[m2], scratch[m3])
+            } else {
+                let tw = |r: usize, a: (f64, f64)| cmul_fma(roots[r * s * s_tw], a);
+                (
+                    tw(1, scratch[m + s]),
+                    tw(2, scratch[m2 + s]),
+                    tw(3, scratch[m3 + s]),
+                )
+            };
+            let t0 = (u0.0 + u2.0, u0.1 + u2.1);
+            let t1 = (u0.0 - u2.0, u0.1 - u2.1);
+            let t2 = (u1.0 + u3.0, u1.1 + u3.1);
+            let t3 = (u1.0 - u3.0, u1.1 - u3.1);
+            let (jt3r, jt3i) = cmul_fma((jr, ji), t3);
+            out[s] = (t0.0 + t2.0, t0.1 + t2.1);
+            out[m + s] = (t1.0 + jt3r, t1.1 + jt3i);
+            out[m2 + s] = (t0.0 - t2.0, t0.1 - t2.1);
+            out[m3 + s] = (t1.0 - jt3r, t1.1 - jt3i);
+        }
+        return;
+    }
+    if p == 8 {
+        let (w1r, w1i) = roots[big_n / 8];
+        let (jr, ji) = roots[big_n / 4];
+        let (w3r, w3i) = roots[3 * (big_n / 8)];
+        let (m2, m3, m4, m5, m6, m7) = (2 * m, 3 * m, 4 * m, 5 * m, 6 * m, 7 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let (u1, u2, u3, u4, u5, u6, u7) = if s == 0 {
+                (
+                    scratch[m],
+                    scratch[m2],
+                    scratch[m3],
+                    scratch[m4],
+                    scratch[m5],
+                    scratch[m6],
+                    scratch[m7],
+                )
+            } else {
+                let tw = |r: usize, a: (f64, f64)| cmul_fma(roots[r * s * s_tw], a);
+                (
+                    tw(1, scratch[m + s]),
+                    tw(2, scratch[m2 + s]),
+                    tw(3, scratch[m3 + s]),
+                    tw(4, scratch[m4 + s]),
+                    tw(5, scratch[m5 + s]),
+                    tw(6, scratch[m6 + s]),
+                    tw(7, scratch[m7 + s]),
+                )
+            };
+            let e_t0 = (u0.0 + u4.0, u0.1 + u4.1);
+            let e_t1 = (u0.0 - u4.0, u0.1 - u4.1);
+            let e_t2 = (u2.0 + u6.0, u2.1 + u6.1);
+            let e_t3 = (u2.0 - u6.0, u2.1 - u6.1);
+            let e_j = cmul_fma((jr, ji), e_t3);
+            let e0 = (e_t0.0 + e_t2.0, e_t0.1 + e_t2.1);
+            let e1 = (e_t1.0 + e_j.0, e_t1.1 + e_j.1);
+            let e2 = (e_t0.0 - e_t2.0, e_t0.1 - e_t2.1);
+            let e3 = (e_t1.0 - e_j.0, e_t1.1 - e_j.1);
+            let o_t0 = (u1.0 + u5.0, u1.1 + u5.1);
+            let o_t1 = (u1.0 - u5.0, u1.1 - u5.1);
+            let o_t2 = (u3.0 + u7.0, u3.1 + u7.1);
+            let o_t3 = (u3.0 - u7.0, u3.1 - u7.1);
+            let o_j = cmul_fma((jr, ji), o_t3);
+            let o0 = (o_t0.0 + o_t2.0, o_t0.1 + o_t2.1);
+            let o1 = (o_t1.0 + o_j.0, o_t1.1 + o_j.1);
+            let o2 = (o_t0.0 - o_t2.0, o_t0.1 - o_t2.1);
+            let o3 = (o_t1.0 - o_j.0, o_t1.1 - o_j.1);
+            let c1 = cmul_fma((w1r, w1i), o1);
+            let c2 = cmul_fma((jr, ji), o2);
+            let c3 = cmul_fma((w3r, w3i), o3);
+            out[s] = (e0.0 + o0.0, e0.1 + o0.1);
+            out[m + s] = (e1.0 + c1.0, e1.1 + c1.1);
+            out[m2 + s] = (e2.0 + c2.0, e2.1 + c2.1);
+            out[m3 + s] = (e3.0 + c3.0, e3.1 + c3.1);
+            out[m4 + s] = (e0.0 - o0.0, e0.1 - o0.1);
+            out[m5 + s] = (e1.0 - c1.0, e1.1 - c1.1);
+            out[m6 + s] = (e2.0 - c2.0, e2.1 - c2.1);
+            out[m7 + s] = (e3.0 - c3.0, e3.1 - c3.1);
+        }
+        return;
+    }
+    if p == 3 {
+        let (c, d) = roots[big_n / 3];
+        let m2 = 2 * m;
+        for s in 0..m {
+            let u0 = scratch[s];
+            let (u1, u2) = if s == 0 {
+                (scratch[m], scratch[m2])
+            } else {
+                (
+                    cmul_fma(roots[s * s_tw], scratch[m + s]),
+                    cmul_fma(roots[2 * s * s_tw], scratch[m2 + s]),
+                )
+            };
+            let sr = u1.0 + u2.0;
+            let si = u1.1 + u2.1;
+            let dr = u1.0 - u2.0;
+            let di = u1.1 - u2.1;
+            out[s] = (u0.0 + sr, u0.1 + si);
+            let cr = c.mul_add(sr, u0.0);
+            let ci = c.mul_add(si, u0.1);
+            let xr = d * di;
+            let xi = d * dr;
+            out[m + s] = (cr - xr, ci + xi);
+            out[m2 + s] = (cr + xr, ci - xi);
+        }
+        return;
+    }
+    if p == 5 {
+        let (c1, d1) = roots[big_n / 5];
+        let (c2, d2) = roots[2 * (big_n / 5)];
+        let (m2, m3, m4) = (2 * m, 3 * m, 4 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let (u1, u2, u3, u4) = if s == 0 {
+                (scratch[m], scratch[m2], scratch[m3], scratch[m4])
+            } else {
+                let tw = |r: usize, a: (f64, f64)| cmul_fma(roots[r * s * s_tw], a);
+                (
+                    tw(1, scratch[m + s]),
+                    tw(2, scratch[m2 + s]),
+                    tw(3, scratch[m3 + s]),
+                    tw(4, scratch[m4 + s]),
+                )
+            };
+            let t1 = (u1.0 + u4.0, u1.1 + u4.1);
+            let t1d = (u1.0 - u4.0, u1.1 - u4.1);
+            let t2 = (u2.0 + u3.0, u2.1 + u3.1);
+            let t2d = (u2.0 - u3.0, u2.1 - u3.1);
+            out[s] = (u0.0 + t1.0 + t2.0, u0.1 + t1.1 + t2.1);
+            let ar = c2.mul_add(t2.0, c1.mul_add(t1.0, u0.0));
+            let ai = c2.mul_add(t2.1, c1.mul_add(t1.1, u0.1));
+            let xr = d1.mul_add(t1d.1, d2 * t2d.1);
+            let xi = d1.mul_add(t1d.0, d2 * t2d.0);
+            out[m + s] = (ar - xr, ai + xi);
+            out[m4 + s] = (ar + xr, ai - xi);
+            let br = c1.mul_add(t2.0, c2.mul_add(t1.0, u0.0));
+            let bi = c1.mul_add(t2.1, c2.mul_add(t1.1, u0.1));
+            let yr = d2.mul_add(t1d.1, -(d1 * t2d.1));
+            let yi = d2.mul_add(t1d.0, -(d1 * t2d.0));
+            out[m2 + s] = (br - yr, bi + yi);
+            out[m3 + s] = (br + yr, bi - yi);
+        }
+        return;
+    }
+
+    for slot in out.iter_mut() {
+        *slot = (0.0, 0.0);
+    }
+    for r in 0..p {
+        let row = r * m;
+        let mut idx = 0usize;
+        let mut qm = 0usize;
+        for slot in out.iter_mut() {
+            let (tr, ti) = roots[idx * s_tw];
+            let (sr, si) = scratch[row + qm];
+            slot.0 = tr.mul_add(sr, slot.0 - ti * si);
+            slot.1 = tr.mul_add(si, slot.1 + ti * sr);
+            idx += r;
+            if idx >= nn {
+                idx -= nn;
+            }
+            qm += 1;
+            if qm == m {
+                qm = 0;
+            }
+        }
+    }
+}
+
+/// 8-row AVX2 SoA recursive mixed-radix kernel (`BitExactPortable`).
+/// Each element in `x`, `out`, `scratch` is `(Simd<f64, 8>, Simd<f64, 8>)` representing
+/// `(re, im)` for 8 batch rows simultaneously. Performs the exact same sequence of
+/// IEEE-754 operations per lane as `mixed_radix_ping`, so lane `b` is 100% bit-identical
+/// to running `mixed_radix_into` on row `b`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments, unsafe_code)]
+unsafe fn mixed_radix_ping_soa8_avx2(
+    x: &[(Simd<f64, 8>, Simd<f64, 8>)],
+    offset: usize,
+    stride: usize,
+    out: &mut [(Simd<f64, 8>, Simd<f64, 8>)],
+    scratch: &mut [(Simd<f64, 8>, Simd<f64, 8>)],
+    nn: usize,
+    roots: &[(f64, f64)],
+    big_n: usize,
+    use8: bool,
+) {
+    type C8 = (Simd<f64, 8>, Simd<f64, 8>);
+    if nn == 1 {
+        out[0] = x[offset];
+        return;
+    }
+    if nn == 2 {
+        let e = x[offset];
+        let o = x[offset + stride];
+        let (tr, ti) = roots[0];
+        let tr_v = Simd::<f64, 8>::splat(tr);
+        let ti_v = Simd::<f64, 8>::splat(ti);
+        let wr = tr_v * o.0 - ti_v * o.1;
+        let wi = tr_v * o.1 + ti_v * o.0;
+        out[0] = (e.0 + wr, e.1 + wi);
+        out[1] = (e.0 - wr, e.1 - wi);
+        return;
+    }
+    if nn == 3 {
+        let (tr0, ti0) = roots[0];
+        let tr0_v = Simd::<f64, 8>::splat(tr0);
+        let ti0_v = Simd::<f64, 8>::splat(ti0);
+        let tw0 = |a: C8| (tr0_v * a.0 - ti0_v * a.1, tr0_v * a.1 + ti0_v * a.0);
+        let u0 = x[offset];
+        let u1 = tw0(x[offset + stride]);
+        let u2 = tw0(x[offset + 2 * stride]);
+        let (c, d) = roots[big_n / 3];
+        let c_v = Simd::<f64, 8>::splat(c);
+        let d_v = Simd::<f64, 8>::splat(d);
+        let sr = u1.0 + u2.0;
+        let si = u1.1 + u2.1;
+        let dr = u1.0 - u2.0;
+        let di = u1.1 - u2.1;
+        out[0] = (u0.0 + sr, u0.1 + si);
+        let cr = u0.0 + c_v * sr;
+        let ci = u0.1 + c_v * si;
+        let xr = d_v * di;
+        let xi = d_v * dr;
+        out[1] = (cr - xr, ci + xi);
+        out[2] = (cr + xr, ci - xi);
+        return;
+    }
+    if nn == 5 {
+        let (tr0, ti0) = roots[0];
+        let tr0_v = Simd::<f64, 8>::splat(tr0);
+        let ti0_v = Simd::<f64, 8>::splat(ti0);
+        let tw0 = |a: C8| (tr0_v * a.0 - ti0_v * a.1, tr0_v * a.1 + ti0_v * a.0);
+        let u0 = x[offset];
+        let u1 = tw0(x[offset + stride]);
+        let u2 = tw0(x[offset + 2 * stride]);
+        let u3 = tw0(x[offset + 3 * stride]);
+        let u4 = tw0(x[offset + 4 * stride]);
+        let (c1, d1) = roots[big_n / 5];
+        let (c2, d2) = roots[2 * (big_n / 5)];
+        let c1_v = Simd::<f64, 8>::splat(c1);
+        let d1_v = Simd::<f64, 8>::splat(d1);
+        let c2_v = Simd::<f64, 8>::splat(c2);
+        let d2_v = Simd::<f64, 8>::splat(d2);
+        let t1 = (u1.0 + u4.0, u1.1 + u4.1);
+        let t1d = (u1.0 - u4.0, u1.1 - u4.1);
+        let t2 = (u2.0 + u3.0, u2.1 + u3.1);
+        let t2d = (u2.0 - u3.0, u2.1 - u3.1);
+        out[0] = (u0.0 + t1.0 + t2.0, u0.1 + t1.1 + t2.1);
+        let ar = u0.0 + c1_v * t1.0 + c2_v * t2.0;
+        let ai = u0.1 + c1_v * t1.1 + c2_v * t2.1;
+        let xr = d1_v * t1d.1 + d2_v * t2d.1;
+        let xi = d1_v * t1d.0 + d2_v * t2d.0;
+        out[1] = (ar - xr, ai + xi);
+        out[4] = (ar + xr, ai - xi);
+        let br = u0.0 + c2_v * t1.0 + c1_v * t2.0;
+        let bi = u0.1 + c2_v * t1.1 + c1_v * t2.1;
+        let yr = d2_v * t1d.1 - d1_v * t2d.1;
+        let yi = d2_v * t1d.0 - d1_v * t2d.0;
+        out[2] = (br - yr, bi + yi);
+        out[3] = (br + yr, bi - yi);
+        return;
+    }
+
+    let p = if use8 && nn.is_multiple_of(8) {
+        8
+    } else if !mixed_radix_no4() && nn.is_multiple_of(4) {
+        4
+    } else {
+        smallest_prime_factor(nn)
+    };
+    let m = nn / p;
+    for r in 0..p {
+        let base = r * m;
+        // SAFETY: AVX2 is enabled on this function.
+        unsafe {
+            mixed_radix_ping_soa8_avx2(
+                x,
+                offset + r * stride,
+                stride * p,
+                &mut scratch[base..base + m],
+                &mut out[base..base + m],
+                m,
+                roots,
+                big_n,
+                use8,
+            );
+        }
+    }
+
+    let s_tw = big_n / nn;
+    let tw = |r: usize, s: usize, a: C8| -> C8 {
+        let (tr, ti) = roots[r * s * s_tw];
+        let tr_v = Simd::<f64, 8>::splat(tr);
+        let ti_v = Simd::<f64, 8>::splat(ti);
+        (tr_v * a.0 - ti_v * a.1, tr_v * a.1 + ti_v * a.0)
+    };
+
+    if p == 2 {
+        let (lo, hi) = out.split_at_mut(m);
+        for s in 0..m {
+            let (e_re, e_im) = scratch[s];
+            let (wr, wi) = tw(1, s, scratch[m + s]);
+            lo[s] = (e_re + wr, e_im + wi);
+            hi[s] = (e_re - wr, e_im - wi);
+        }
+        return;
+    }
+    if p == 4 {
+        let (jr, ji) = roots[big_n / 4];
+        let jr_v = Simd::<f64, 8>::splat(jr);
+        let ji_v = Simd::<f64, 8>::splat(ji);
+        let (m2, m3) = (2 * m, 3 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let u1 = tw(1, s, scratch[m + s]);
+            let u2 = tw(2, s, scratch[m2 + s]);
+            let u3 = tw(3, s, scratch[m3 + s]);
+            let t0 = (u0.0 + u2.0, u0.1 + u2.1);
+            let t1 = (u0.0 - u2.0, u0.1 - u2.1);
+            let t2 = (u1.0 + u3.0, u1.1 + u3.1);
+            let t3 = (u1.0 - u3.0, u1.1 - u3.1);
+            let jt3r = jr_v * t3.0 - ji_v * t3.1;
+            let jt3i = jr_v * t3.1 + ji_v * t3.0;
+            out[s] = (t0.0 + t2.0, t0.1 + t2.1);
+            out[m + s] = (t1.0 + jt3r, t1.1 + jt3i);
+            out[m2 + s] = (t0.0 - t2.0, t0.1 - t2.1);
+            out[m3 + s] = (t1.0 - jt3r, t1.1 - jt3i);
+        }
+        return;
+    }
+    if p == 8 {
+        let (w1r, w1i) = roots[big_n / 8];
+        let (jr, ji) = roots[big_n / 4];
+        let (w3r, w3i) = roots[3 * (big_n / 8)];
+        let w1 = (Simd::<f64, 8>::splat(w1r), Simd::<f64, 8>::splat(w1i));
+        let jw = (Simd::<f64, 8>::splat(jr), Simd::<f64, 8>::splat(ji));
+        let w3 = (Simd::<f64, 8>::splat(w3r), Simd::<f64, 8>::splat(w3i));
+        let cmul = |x: C8, y: C8| -> C8 { (x.0 * y.0 - x.1 * y.1, x.0 * y.1 + x.1 * y.0) };
+        let (m2, m3, m4, m5, m6, m7) = (2 * m, 3 * m, 4 * m, 5 * m, 6 * m, 7 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let u1 = tw(1, s, scratch[m + s]);
+            let u2 = tw(2, s, scratch[m2 + s]);
+            let u3 = tw(3, s, scratch[m3 + s]);
+            let u4 = tw(4, s, scratch[m4 + s]);
+            let u5 = tw(5, s, scratch[m5 + s]);
+            let u6 = tw(6, s, scratch[m6 + s]);
+            let u7 = tw(7, s, scratch[m7 + s]);
+            let e_t0 = (u0.0 + u4.0, u0.1 + u4.1);
+            let e_t1 = (u0.0 - u4.0, u0.1 - u4.1);
+            let e_t2 = (u2.0 + u6.0, u2.1 + u6.1);
+            let e_t3 = (u2.0 - u6.0, u2.1 - u6.1);
+            let e_j = cmul(jw, e_t3);
+            let e0 = (e_t0.0 + e_t2.0, e_t0.1 + e_t2.1);
+            let e1 = (e_t1.0 + e_j.0, e_t1.1 + e_j.1);
+            let e2 = (e_t0.0 - e_t2.0, e_t0.1 - e_t2.1);
+            let e3 = (e_t1.0 - e_j.0, e_t1.1 - e_j.1);
+            let o_t0 = (u1.0 + u5.0, u1.1 + u5.1);
+            let o_t1 = (u1.0 - u5.0, u1.1 - u5.1);
+            let o_t2 = (u3.0 + u7.0, u3.1 + u7.1);
+            let o_t3 = (u3.0 - u7.0, u3.1 - u7.1);
+            let o_j = cmul(jw, o_t3);
+            let o0 = (o_t0.0 + o_t2.0, o_t0.1 + o_t2.1);
+            let o1 = (o_t1.0 + o_j.0, o_t1.1 + o_j.1);
+            let o2 = (o_t0.0 - o_t2.0, o_t0.1 - o_t2.1);
+            let o3 = (o_t1.0 - o_j.0, o_t1.1 - o_j.1);
+            let c1 = cmul(w1, o1);
+            let c2 = cmul(jw, o2);
+            let c3 = cmul(w3, o3);
+            out[s] = (e0.0 + o0.0, e0.1 + o0.1);
+            out[m + s] = (e1.0 + c1.0, e1.1 + c1.1);
+            out[m2 + s] = (e2.0 + c2.0, e2.1 + c2.1);
+            out[m3 + s] = (e3.0 + c3.0, e3.1 + c3.1);
+            out[m4 + s] = (e0.0 - o0.0, e0.1 - o0.1);
+            out[m5 + s] = (e1.0 - c1.0, e1.1 - c1.1);
+            out[m6 + s] = (e2.0 - c2.0, e2.1 - c2.1);
+            out[m7 + s] = (e3.0 - c3.0, e3.1 - c3.1);
+        }
+        return;
+    }
+    if p == 3 {
+        let (c, d) = roots[big_n / 3];
+        let c_v = Simd::<f64, 8>::splat(c);
+        let d_v = Simd::<f64, 8>::splat(d);
+        let m2 = 2 * m;
+        for s in 0..m {
+            let u0 = scratch[s];
+            let u1 = tw(1, s, scratch[m + s]);
+            let u2 = tw(2, s, scratch[m2 + s]);
+            let sr = u1.0 + u2.0;
+            let si = u1.1 + u2.1;
+            let dr = u1.0 - u2.0;
+            let di = u1.1 - u2.1;
+            out[s] = (u0.0 + sr, u0.1 + si);
+            let cr = u0.0 + c_v * sr;
+            let ci = u0.1 + c_v * si;
+            let xr = d_v * di;
+            let xi = d_v * dr;
+            out[m + s] = (cr - xr, ci + xi);
+            out[m2 + s] = (cr + xr, ci - xi);
+        }
+        return;
+    }
+    if p == 5 {
+        let (c1, d1) = roots[big_n / 5];
+        let (c2, d2) = roots[2 * (big_n / 5)];
+        let c1_v = Simd::<f64, 8>::splat(c1);
+        let d1_v = Simd::<f64, 8>::splat(d1);
+        let c2_v = Simd::<f64, 8>::splat(c2);
+        let d2_v = Simd::<f64, 8>::splat(d2);
+        let (m2, m3, m4) = (2 * m, 3 * m, 4 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let u1 = tw(1, s, scratch[m + s]);
+            let u2 = tw(2, s, scratch[m2 + s]);
+            let u3 = tw(3, s, scratch[m3 + s]);
+            let u4 = tw(4, s, scratch[m4 + s]);
+            let t1 = (u1.0 + u4.0, u1.1 + u4.1);
+            let t1d = (u1.0 - u4.0, u1.1 - u4.1);
+            let t2 = (u2.0 + u3.0, u2.1 + u3.1);
+            let t2d = (u2.0 - u3.0, u2.1 - u3.1);
+            out[s] = (u0.0 + t1.0 + t2.0, u0.1 + t1.1 + t2.1);
+            let ar = u0.0 + c1_v * t1.0 + c2_v * t2.0;
+            let ai = u0.1 + c1_v * t1.1 + c2_v * t2.1;
+            let xr = d1_v * t1d.1 + d2_v * t2d.1;
+            let xi = d1_v * t1d.0 + d2_v * t2d.0;
+            out[m + s] = (ar - xr, ai + xi);
+            out[m4 + s] = (ar + xr, ai - xi);
+            let br = u0.0 + c2_v * t1.0 + c1_v * t2.0;
+            let bi = u0.1 + c2_v * t1.1 + c1_v * t2.1;
+            let yr = d2_v * t1d.1 - d1_v * t2d.1;
+            let yi = d2_v * t1d.0 - d1_v * t2d.0;
+            out[m2 + s] = (br - yr, bi + yi);
+            out[m3 + s] = (br + yr, bi - yi);
+        }
+        return;
+    }
+
+    let z = Simd::<f64, 8>::splat(0.0);
+    for slot in out.iter_mut() {
+        *slot = (z, z);
+    }
+    for r in 0..p {
+        let row = r * m;
+        let mut idx = 0usize;
+        let mut qm = 0usize;
+        for slot in out.iter_mut() {
+            let (tr, ti) = roots[idx * s_tw];
+            let tr_v = Simd::<f64, 8>::splat(tr);
+            let ti_v = Simd::<f64, 8>::splat(ti);
+            let (sr, si) = scratch[row + qm];
+            slot.0 += tr_v * sr - ti_v * si;
+            slot.1 += tr_v * si + ti_v * sr;
+            idx += r;
+            if idx >= nn {
+                idx -= nn;
+            }
+            qm += 1;
+            if qm == m {
+                qm = 0;
+            }
+        }
+    }
+}
+
+/// 8-row AVX2+FMA SoA recursive mixed-radix kernel (`HardwareFmaAccelerated`).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[allow(clippy::too_many_arguments, unsafe_code)]
+unsafe fn mixed_radix_ping_soa8_avx2_fma(
+    x: &[(Simd<f64, 8>, Simd<f64, 8>)],
+    offset: usize,
+    stride: usize,
+    out: &mut [(Simd<f64, 8>, Simd<f64, 8>)],
+    scratch: &mut [(Simd<f64, 8>, Simd<f64, 8>)],
+    nn: usize,
+    roots: &[(f64, f64)],
+    big_n: usize,
+    use8: bool,
+) {
+    type C8 = (Simd<f64, 8>, Simd<f64, 8>);
+    if nn == 1 {
+        out[0] = x[offset];
+        return;
+    }
+    if nn == 2 {
+        let e = x[offset];
+        let o = x[offset + stride];
+        out[0] = (e.0 + o.0, e.1 + o.1);
+        out[1] = (e.0 - o.0, e.1 - o.1);
+        return;
+    }
+    if nn == 3 {
+        let u0 = x[offset];
+        let u1 = x[offset + stride];
+        let u2 = x[offset + 2 * stride];
+        let (c, d) = roots[big_n / 3];
+        let c_v = Simd::<f64, 8>::splat(c);
+        let d_v = Simd::<f64, 8>::splat(d);
+        let sr = u1.0 + u2.0;
+        let si = u1.1 + u2.1;
+        let dr = u1.0 - u2.0;
+        let di = u1.1 - u2.1;
+        out[0] = (u0.0 + sr, u0.1 + si);
+        let cr = c_v.mul_add(sr, u0.0);
+        let ci = c_v.mul_add(si, u0.1);
+        let xr = d_v * di;
+        let xi = d_v * dr;
+        out[1] = (cr - xr, ci + xi);
+        out[2] = (cr + xr, ci - xi);
+        return;
+    }
+    if nn == 5 {
+        let u0 = x[offset];
+        let u1 = x[offset + stride];
+        let u2 = x[offset + 2 * stride];
+        let u3 = x[offset + 3 * stride];
+        let u4 = x[offset + 4 * stride];
+        let (c1, d1) = roots[big_n / 5];
+        let (c2, d2) = roots[2 * (big_n / 5)];
+        let c1_v = Simd::<f64, 8>::splat(c1);
+        let d1_v = Simd::<f64, 8>::splat(d1);
+        let c2_v = Simd::<f64, 8>::splat(c2);
+        let d2_v = Simd::<f64, 8>::splat(d2);
+        let t1 = (u1.0 + u4.0, u1.1 + u4.1);
+        let t1d = (u1.0 - u4.0, u1.1 - u4.1);
+        let t2 = (u2.0 + u3.0, u2.1 + u3.1);
+        let t2d = (u2.0 - u3.0, u2.1 - u3.1);
+        out[0] = (u0.0 + t1.0 + t2.0, u0.1 + t1.1 + t2.1);
+        let ar = c2_v.mul_add(t2.0, c1_v.mul_add(t1.0, u0.0));
+        let ai = c2_v.mul_add(t2.1, c1_v.mul_add(t1.1, u0.1));
+        let xr = d1_v.mul_add(t1d.1, d2_v * t2d.1);
+        let xi = d1_v.mul_add(t1d.0, d2_v * t2d.0);
+        out[1] = (ar - xr, ai + xi);
+        out[4] = (ar + xr, ai - xi);
+        let br = c1_v.mul_add(t2.0, c2_v.mul_add(t1.0, u0.0));
+        let bi = c1_v.mul_add(t2.1, c2_v.mul_add(t1.1, u0.1));
+        let yr = d2_v.mul_add(t1d.1, -(d1_v * t2d.1));
+        let yi = d2_v.mul_add(t1d.0, -(d1_v * t2d.0));
+        out[2] = (br - yr, bi + yi);
+        out[3] = (br + yr, bi - yi);
+        return;
+    }
+
+    let p = if use8 && nn.is_multiple_of(8) {
+        8
+    } else if !mixed_radix_no4() && nn.is_multiple_of(4) {
+        4
+    } else {
+        smallest_prime_factor(nn)
+    };
+    let m = nn / p;
+    for r in 0..p {
+        let base = r * m;
+        // SAFETY: AVX2+FMA are enabled on this function.
+        unsafe {
+            mixed_radix_ping_soa8_avx2_fma(
+                x,
+                offset + r * stride,
+                stride * p,
+                &mut scratch[base..base + m],
+                &mut out[base..base + m],
+                m,
+                roots,
+                big_n,
+                use8,
+            );
+        }
+    }
+
+    let s_tw = big_n / nn;
+    let cmul_fma =
+        |x: C8, y: C8| -> C8 { (x.0.mul_add(y.0, -(x.1 * y.1)), x.0.mul_add(y.1, x.1 * y.0)) };
+    let tw = |r: usize, s: usize, a: C8| -> C8 {
+        let (tr, ti) = roots[r * s * s_tw];
+        cmul_fma((Simd::<f64, 8>::splat(tr), Simd::<f64, 8>::splat(ti)), a)
+    };
+
+    if p == 2 {
+        let (lo, hi) = out.split_at_mut(m);
+        for s in 0..m {
+            let (e_re, e_im) = scratch[s];
+            let (wr, wi) = if s == 0 {
+                scratch[m]
+            } else {
+                tw(1, s, scratch[m + s])
+            };
+            lo[s] = (e_re + wr, e_im + wi);
+            hi[s] = (e_re - wr, e_im - wi);
+        }
+        return;
+    }
+    if p == 4 {
+        let (jr, ji) = roots[big_n / 4];
+        let jw = (Simd::<f64, 8>::splat(jr), Simd::<f64, 8>::splat(ji));
+        let (m2, m3) = (2 * m, 3 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let (u1, u2, u3) = if s == 0 {
+                (scratch[m], scratch[m2], scratch[m3])
+            } else {
+                (
+                    tw(1, s, scratch[m + s]),
+                    tw(2, s, scratch[m2 + s]),
+                    tw(3, s, scratch[m3 + s]),
+                )
+            };
+            let t0 = (u0.0 + u2.0, u0.1 + u2.1);
+            let t1 = (u0.0 - u2.0, u0.1 - u2.1);
+            let t2 = (u1.0 + u3.0, u1.1 + u3.1);
+            let t3 = (u1.0 - u3.0, u1.1 - u3.1);
+            let (jt3r, jt3i) = cmul_fma(jw, t3);
+            out[s] = (t0.0 + t2.0, t0.1 + t2.1);
+            out[m + s] = (t1.0 + jt3r, t1.1 + jt3i);
+            out[m2 + s] = (t0.0 - t2.0, t0.1 - t2.1);
+            out[m3 + s] = (t1.0 - jt3r, t1.1 - jt3i);
+        }
+        return;
+    }
+    if p == 8 {
+        let (w1r, w1i) = roots[big_n / 8];
+        let (jr, ji) = roots[big_n / 4];
+        let (w3r, w3i) = roots[3 * (big_n / 8)];
+        let w1 = (Simd::<f64, 8>::splat(w1r), Simd::<f64, 8>::splat(w1i));
+        let jw = (Simd::<f64, 8>::splat(jr), Simd::<f64, 8>::splat(ji));
+        let w3 = (Simd::<f64, 8>::splat(w3r), Simd::<f64, 8>::splat(w3i));
+        let (m2, m3, m4, m5, m6, m7) = (2 * m, 3 * m, 4 * m, 5 * m, 6 * m, 7 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let (u1, u2, u3, u4, u5, u6, u7) = if s == 0 {
+                (
+                    scratch[m],
+                    scratch[m2],
+                    scratch[m3],
+                    scratch[m4],
+                    scratch[m5],
+                    scratch[m6],
+                    scratch[m7],
+                )
+            } else {
+                (
+                    tw(1, s, scratch[m + s]),
+                    tw(2, s, scratch[m2 + s]),
+                    tw(3, s, scratch[m3 + s]),
+                    tw(4, s, scratch[m4 + s]),
+                    tw(5, s, scratch[m5 + s]),
+                    tw(6, s, scratch[m6 + s]),
+                    tw(7, s, scratch[m7 + s]),
+                )
+            };
+            let e_t0 = (u0.0 + u4.0, u0.1 + u4.1);
+            let e_t1 = (u0.0 - u4.0, u0.1 - u4.1);
+            let e_t2 = (u2.0 + u6.0, u2.1 + u6.1);
+            let e_t3 = (u2.0 - u6.0, u2.1 - u6.1);
+            let e_j = cmul_fma(jw, e_t3);
+            let e0 = (e_t0.0 + e_t2.0, e_t0.1 + e_t2.1);
+            let e1 = (e_t1.0 + e_j.0, e_t1.1 + e_j.1);
+            let e2 = (e_t0.0 - e_t2.0, e_t0.1 - e_t2.1);
+            let e3 = (e_t1.0 - e_j.0, e_t1.1 - e_j.1);
+            let o_t0 = (u1.0 + u5.0, u1.1 + u5.1);
+            let o_t1 = (u1.0 - u5.0, u1.1 - u5.1);
+            let o_t2 = (u3.0 + u7.0, u3.1 + u7.1);
+            let o_t3 = (u3.0 - u7.0, u3.1 - u7.1);
+            let o_j = cmul_fma(jw, o_t3);
+            let o0 = (o_t0.0 + o_t2.0, o_t0.1 + o_t2.1);
+            let o1 = (o_t1.0 + o_j.0, o_t1.1 + o_j.1);
+            let o2 = (o_t0.0 - o_t2.0, o_t0.1 - o_t2.1);
+            let o3 = (o_t1.0 - o_j.0, o_t1.1 - o_j.1);
+            let c1 = cmul_fma(w1, o1);
+            let c2 = cmul_fma(jw, o2);
+            let c3 = cmul_fma(w3, o3);
+            out[s] = (e0.0 + o0.0, e0.1 + o0.1);
+            out[m + s] = (e1.0 + c1.0, e1.1 + c1.1);
+            out[m2 + s] = (e2.0 + c2.0, e2.1 + c2.1);
+            out[m3 + s] = (e3.0 + c3.0, e3.1 + c3.1);
+            out[m4 + s] = (e0.0 - o0.0, e0.1 - o0.1);
+            out[m5 + s] = (e1.0 - c1.0, e1.1 - c1.1);
+            out[m6 + s] = (e2.0 - c2.0, e2.1 - c2.1);
+            out[m7 + s] = (e3.0 - c3.0, e3.1 - c3.1);
+        }
+        return;
+    }
+    if p == 3 {
+        let (c, d) = roots[big_n / 3];
+        let c_v = Simd::<f64, 8>::splat(c);
+        let d_v = Simd::<f64, 8>::splat(d);
+        let m2 = 2 * m;
+        for s in 0..m {
+            let u0 = scratch[s];
+            let (u1, u2) = if s == 0 {
+                (scratch[m], scratch[m2])
+            } else {
+                (tw(1, s, scratch[m + s]), tw(2, s, scratch[m2 + s]))
+            };
+            let sr = u1.0 + u2.0;
+            let si = u1.1 + u2.1;
+            let dr = u1.0 - u2.0;
+            let di = u1.1 - u2.1;
+            out[s] = (u0.0 + sr, u0.1 + si);
+            let cr = c_v.mul_add(sr, u0.0);
+            let ci = c_v.mul_add(si, u0.1);
+            let xr = d_v * di;
+            let xi = d_v * dr;
+            out[m + s] = (cr - xr, ci + xi);
+            out[m2 + s] = (cr + xr, ci - xi);
+        }
+        return;
+    }
+    if p == 5 {
+        let (c1, d1) = roots[big_n / 5];
+        let (c2, d2) = roots[2 * (big_n / 5)];
+        let c1_v = Simd::<f64, 8>::splat(c1);
+        let d1_v = Simd::<f64, 8>::splat(d1);
+        let c2_v = Simd::<f64, 8>::splat(c2);
+        let d2_v = Simd::<f64, 8>::splat(d2);
+        let (m2, m3, m4) = (2 * m, 3 * m, 4 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let (u1, u2, u3, u4) = if s == 0 {
+                (scratch[m], scratch[m2], scratch[m3], scratch[m4])
+            } else {
+                (
+                    tw(1, s, scratch[m + s]),
+                    tw(2, s, scratch[m2 + s]),
+                    tw(3, s, scratch[m3 + s]),
+                    tw(4, s, scratch[m4 + s]),
+                )
+            };
+            let t1 = (u1.0 + u4.0, u1.1 + u4.1);
+            let t1d = (u1.0 - u4.0, u1.1 - u4.1);
+            let t2 = (u2.0 + u3.0, u2.1 + u3.1);
+            let t2d = (u2.0 - u3.0, u2.1 - u3.1);
+            out[s] = (u0.0 + t1.0 + t2.0, u0.1 + t1.1 + t2.1);
+            let ar = c2_v.mul_add(t2.0, c1_v.mul_add(t1.0, u0.0));
+            let ai = c2_v.mul_add(t2.1, c1_v.mul_add(t1.1, u0.1));
+            let xr = d1_v.mul_add(t1d.1, d2_v * t2d.1);
+            let xi = d1_v.mul_add(t1d.0, d2_v * t2d.0);
+            out[m + s] = (ar - xr, ai + xi);
+            out[m4 + s] = (ar + xr, ai - xi);
+            let br = c1_v.mul_add(t2.0, c2_v.mul_add(t1.0, u0.0));
+            let bi = c1_v.mul_add(t2.1, c2_v.mul_add(t1.1, u0.1));
+            let yr = d2_v.mul_add(t1d.1, -(d1_v * t2d.1));
+            let yi = d2_v.mul_add(t1d.0, -(d1_v * t2d.0));
+            out[m2 + s] = (br - yr, bi + yi);
+            out[m3 + s] = (br + yr, bi - yi);
+        }
+        return;
+    }
+
+    let z = Simd::<f64, 8>::splat(0.0);
+    for slot in out.iter_mut() {
+        *slot = (z, z);
+    }
+    for r in 0..p {
+        let row = r * m;
+        let mut idx = 0usize;
+        let mut qm = 0usize;
+        for slot in out.iter_mut() {
+            let (tr, ti) = roots[idx * s_tw];
+            let tr_v = Simd::<f64, 8>::splat(tr);
+            let ti_v = Simd::<f64, 8>::splat(ti);
+            let (sr, si) = scratch[row + qm];
+            slot.0 = tr_v.mul_add(sr, slot.0 - ti_v * si);
+            slot.1 = tr_v.mul_add(si, slot.1 + ti_v * sr);
+            idx += r;
+            if idx >= nn {
+                idx -= nn;
+            }
+            qm += 1;
+            if qm == m {
+                qm = 0;
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments, unsafe_code)]
+fn mixed_radix_soa8_chunk(
+    elements: &[(f64, f64)],
+    n: usize,
+    rows: usize,
+    inverse: bool,
+    roots: &[(f64, f64)],
+    use_fma: bool,
+    out: &mut [(f64, f64)],
+) {
+    let z = Simd::<f64, 8>::splat(0.0);
+    let mut x_soa = vec![(z, z); n];
+    let mut out_soa = vec![(z, z); n];
+    let mut scratch_soa = vec![(z, z); n];
+    let inv_n = 1.0 / (n as f64);
+    let inv_n_v = Simd::<f64, 8>::splat(inv_n);
+
+    let mut row0 = 0usize;
+    while row0 + 8 <= rows {
+        let base = row0 * n;
+        for i in 0..n {
+            let mut re_arr = [0.0f64; 8];
+            let mut im_arr = [0.0f64; 8];
+            for b in 0..8 {
+                let (r, im) = elements[base + b * n + i];
+                re_arr[b] = r;
+                im_arr[b] = im;
+            }
+            x_soa[i] = (Simd::from_array(re_arr), Simd::from_array(im_arr));
+        }
+
+        if use_fma {
+            // SAFETY: caller verified AVX2+FMA support.
+            unsafe {
+                mixed_radix_ping_soa8_avx2_fma(
+                    &x_soa,
+                    0,
+                    1,
+                    &mut out_soa,
+                    &mut scratch_soa,
+                    n,
+                    roots,
+                    n,
+                    true,
+                );
+            }
+        } else {
+            // SAFETY: caller verified AVX2 support.
+            unsafe {
+                mixed_radix_ping_soa8_avx2(
+                    &x_soa,
+                    0,
+                    1,
+                    &mut out_soa,
+                    &mut scratch_soa,
+                    n,
+                    roots,
+                    n,
+                    true,
+                );
+            }
+        }
+
+        if inverse {
+            for (k, &(r_v, i_v)) in out_soa.iter().enumerate() {
+                let r_arr = (r_v * inv_n_v).to_array();
+                let i_arr = (i_v * inv_n_v).to_array();
+                for b in 0..8 {
+                    out[base + b * n + k] = (r_arr[b], i_arr[b]);
+                }
+            }
+        } else {
+            for (k, &(r_v, i_v)) in out_soa.iter().enumerate() {
+                let r_arr = r_v.to_array();
+                let i_arr = i_v.to_array();
+                for b in 0..8 {
+                    out[base + b * n + k] = (r_arr[b], i_arr[b]);
+                }
+            }
+        }
+        row0 += 8;
+    }
+
+    if row0 < rows {
+        let mut row_out = Vec::with_capacity(n);
+        let mut row_scratch = Vec::with_capacity(n);
+        while row0 < rows {
+            let s = row0 * n;
+            mixed_radix_into(
+                &elements[s..s + n],
+                roots,
+                inverse,
+                &mut row_out,
+                &mut row_scratch,
+            );
+            out[s..s + n].copy_from_slice(&row_out);
+            row0 += 1;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn transform_batches_mixed_radix_soa8(
+    elements: &[(f64, f64)],
+    n: usize,
+    batch_size: usize,
+    inverse: bool,
+) -> Vec<(f64, f64)> {
+    let roots = cached_twiddles(n, inverse);
+    let total = batch_size * n;
+    let mut out = vec![(0.0, 0.0); total];
+    let use_fma = crate::should_use_hardware_fma();
+
+    const PARALLEL_MIN_ELEMS: usize = 1 << 18;
+    let work_cap = (total / (1 << 16)).clamp(1, 8);
+    let threads = if total >= PARALLEL_MIN_ELEMS && batch_size >= 16 {
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            .min(work_cap)
+            .min(batch_size / 8)
+    } else {
+        1
+    };
+
+    if threads <= 1 {
+        mixed_radix_soa8_chunk(
+            elements,
+            n,
+            batch_size,
+            inverse,
+            roots.as_ref(),
+            use_fma,
+            &mut out,
+        );
+        return out;
+    }
+
+    let tiles = batch_size.div_ceil(8);
+    let tiles_per = tiles.div_ceil(threads);
+    let rows_per = tiles_per * 8;
+    let roots_ref = roots.as_ref();
+    std::thread::scope(|scope| {
+        let mut rest: &mut [(f64, f64)] = out.as_mut_slice();
+        let mut row0 = 0usize;
+        while row0 < batch_size {
+            let rows = rows_per.min(batch_size - row0);
+            let (blk, tail) = rest.split_at_mut(rows * n);
+            rest = tail;
+            let base = row0 * n;
+            let src = &elements[base..base + rows * n];
+            scope.spawn(move || {
+                mixed_radix_soa8_chunk(src, n, rows, inverse, roots_ref, use_fma, blk);
+            });
+            row0 += rows;
+        }
+    });
+    out
 }
 
 fn mixed_radix_factors(n: usize) -> Vec<usize> {
@@ -2017,12 +3417,20 @@ fn transform_batches_dense(
         return transform_batches_bluestein_vectorized(bplan.as_ref(), elements, n, batch_size);
     }
 
-    // Smooth-composite batches (e.g. 1000 = 2^3*5^3) are the remaining FFT gap:
-    // Bluestein is avoided, but the current recursive mixed-radix path is row-wise
-    // and hard to vectorize. The flat iterative SoA candidate below was MEASURED (RCH
-    // A/B 2026-06-21) at 0.15x (6.5x SLOWER) and is DISABLED via MAX_N=0 — this gate
-    // is now inert; smooth composites keep the proven recursive per-row path. The block
-    // is retained (with its kernel + correctness tests) as a documented no-ship.
+    // Smooth-composite batches (e.g. 1000 = 2^3*5^3): on x86_64 with AVX2, run 8 rows
+    // simultaneously in YMM registers via `transform_batches_mixed_radix_soa8` (bit-identical
+    // to per-row `mixed_radix_into` in BitExactPortable mode, FMA-accelerated in
+    // HardwareFmaAccelerated mode).
+    const MIXED_RADIX_SOA8_MIN_BATCH: usize = 8;
+    #[cfg(target_arch = "x86_64")]
+    if n > 1
+        && batch_size >= MIXED_RADIX_SOA8_MIN_BATCH
+        && is_mixed_radix_smooth(n)
+        && crate::hardware_avx2_available()
+    {
+        return transform_batches_mixed_radix_soa8(elements, n, batch_size, inverse);
+    }
+
     const MIXED_RADIX_ITERATIVE_SOA_MIN_BATCH: usize = 8;
     if n > 1
         && batch_size >= MIXED_RADIX_ITERATIVE_SOA_MIN_BATCH
@@ -2041,15 +3449,22 @@ fn transform_batches_dense(
     let total = batch_size * n;
     let mut out: Vec<(f64, f64)> = vec![(0.0, 0.0); total];
 
+    if batch_size == 1 {
+        let mut scratch = BluesteinScratch::default();
+        let mut mixed_scratch = Vec::with_capacity(n);
+        plan.apply_into(
+            &elements[..n],
+            &mut scratch,
+            &mut mixed_scratch,
+            inverse,
+            &mut out,
+        );
+        return out;
+    }
+
     // Only fan out when there is enough work to amortize thread spawn; dense
     // storage makes the extract/output trivial, so the per-row transform is the
     // dominant cost and parallelizes cleanly across rows.
-    // NO-SHIP (2026-06-21, CrimsonOtter): lowering this to 1<<16 so fft_batch_128x1000
-    // (128_000 elems) threads measured 5.82ms (32 threads) / 7.40ms (work-capped ~7
-    // threads) vs 2.46ms single-thread — a 2.4-3x REGRESSION under swarm contention. The
-    // ~40us per-row 1000-pt FFT is too short to amortize thread overhead when cores are
-    // contended. JAX threads this on idle cores; that win is unmeasurable on this shared
-    // host. Retry only on a quiesced host. See the murmw ledger entry.
     const PARALLEL_MIN_ELEMS: usize = 1 << 18; // 262_144
     let threads = if total >= PARALLEL_MIN_ELEMS && batch_size > 1 {
         std::thread::available_parallelism()
@@ -2078,6 +3493,7 @@ fn transform_batches_dense(
         return out;
     }
 
+    let policy = crate::current_precision_policy();
     let rows_per = batch_size.div_ceil(threads);
     let plan_ref = &plan;
     std::thread::scope(|scope| {
@@ -2089,15 +3505,23 @@ fn transform_batches_dense(
             rest = tail;
             let base = row0 * n;
             scope.spawn(move || {
-                let mut scratch = BluesteinScratch::default();
-                let mut mixed_scratch = Vec::new();
-                let mut buf = Vec::with_capacity(n);
-                for r in 0..rows {
-                    let gs = base + r * n;
-                    let src = &elements[gs..gs + n];
-                    plan_ref.apply_into(src, &mut scratch, &mut mixed_scratch, inverse, &mut buf);
-                    blk[r * n..r * n + n].copy_from_slice(&buf);
-                }
+                crate::with_precision_policy(policy, || {
+                    let mut scratch = BluesteinScratch::default();
+                    let mut mixed_scratch = Vec::new();
+                    let mut buf = Vec::with_capacity(n);
+                    for r in 0..rows {
+                        let gs = base + r * n;
+                        let src = &elements[gs..gs + n];
+                        plan_ref.apply_into(
+                            src,
+                            &mut scratch,
+                            &mut mixed_scratch,
+                            inverse,
+                            &mut buf,
+                        );
+                        blk[r * n..r * n + n].copy_from_slice(&buf);
+                    }
+                });
             });
             row0 += rows;
         }
@@ -2156,6 +3580,26 @@ fn soa_radix2_butterfly_stages(
     re: &mut [f64],
     im: &mut [f64],
 ) {
+    #[cfg(target_arch = "x86_64")]
+    if w == POW2_TILE_ROWS {
+        if crate::should_use_hardware_fma() {
+            // SAFETY: `should_use_hardware_fma()` verifies runtime AVX2 + FMA support.
+            #[allow(unsafe_code)]
+            unsafe {
+                soa_radix2_butterfly_stages_avx2_fma(plan, n, re, im);
+            }
+            return;
+        }
+        if crate::hardware_avx2_available() {
+            // SAFETY: `hardware_avx2_available()` verifies runtime AVX2 support.
+            #[allow(unsafe_code)]
+            unsafe {
+                soa_radix2_butterfly_stages_avx2(plan, n, re, im);
+            }
+            return;
+        }
+    }
+
     let mut twiddle_base = 0usize;
     let mut len = 2usize;
     while len <= n {
@@ -2176,6 +3620,98 @@ fn soa_radix2_butterfly_stages(
                     tw_re,
                     tw_im,
                 );
+            }
+            start += len;
+        }
+        twiddle_base += half;
+        len *= 2;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(unsafe_code)]
+unsafe fn soa_radix2_butterfly_stages_avx2(
+    plan: &Radix2Plan,
+    n: usize,
+    re: &mut [f64],
+    im: &mut [f64],
+) {
+    const W: usize = POW2_TILE_ROWS;
+    let mut twiddle_base = 0usize;
+    let mut len = 2usize;
+    while len <= n {
+        let half = len / 2;
+        let stage_tw = &plan.twiddles[twiddle_base..twiddle_base + half];
+        let mut start = 0usize;
+        while start < n {
+            for (offset, &(tw_re, tw_im)) in stage_tw.iter().enumerate() {
+                let tw_re_v = Simd::<f64, W>::splat(tw_re);
+                let tw_im_v = Simd::<f64, W>::splat(tw_im);
+                let i_even = (start + offset) * W;
+                let i_odd = (start + offset + half) * W;
+                let e_re = Simd::<f64, W>::from_slice(&re[i_even..i_even + W]);
+                let e_im = Simd::<f64, W>::from_slice(&im[i_even..i_even + W]);
+                let o_re = Simd::<f64, W>::from_slice(&re[i_odd..i_odd + W]);
+                let o_im = Simd::<f64, W>::from_slice(&im[i_odd..i_odd + W]);
+                let rot_re = o_re * tw_re_v - o_im * tw_im_v;
+                let rot_im = o_re * tw_im_v + o_im * tw_re_v;
+                (e_re + rot_re).copy_to_slice(&mut re[i_even..i_even + W]);
+                (e_im + rot_im).copy_to_slice(&mut im[i_even..i_even + W]);
+                (e_re - rot_re).copy_to_slice(&mut re[i_odd..i_odd + W]);
+                (e_im - rot_im).copy_to_slice(&mut im[i_odd..i_odd + W]);
+            }
+            start += len;
+        }
+        twiddle_base += half;
+        len *= 2;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn soa_radix2_butterfly_stages_avx2_fma(
+    plan: &Radix2Plan,
+    n: usize,
+    re: &mut [f64],
+    im: &mut [f64],
+) {
+    const W: usize = POW2_TILE_ROWS;
+    let mut twiddle_base = 0usize;
+    let mut len = 2usize;
+    while len <= n {
+        let half = len / 2;
+        let stage_tw = &plan.twiddles[twiddle_base..twiddle_base + half];
+        let mut start = 0usize;
+        while start < n {
+            {
+                let i_even = start * W;
+                let i_odd = (start + half) * W;
+                let e_re = Simd::<f64, W>::from_slice(&re[i_even..i_even + W]);
+                let e_im = Simd::<f64, W>::from_slice(&im[i_even..i_even + W]);
+                let o_re = Simd::<f64, W>::from_slice(&re[i_odd..i_odd + W]);
+                let o_im = Simd::<f64, W>::from_slice(&im[i_odd..i_odd + W]);
+                (e_re + o_re).copy_to_slice(&mut re[i_even..i_even + W]);
+                (e_im + o_im).copy_to_slice(&mut im[i_even..i_even + W]);
+                (e_re - o_re).copy_to_slice(&mut re[i_odd..i_odd + W]);
+                (e_im - o_im).copy_to_slice(&mut im[i_odd..i_odd + W]);
+            }
+            for (offset, &(tw_re, tw_im)) in stage_tw.iter().enumerate().skip(1) {
+                let tw_re_v = Simd::<f64, W>::splat(tw_re);
+                let tw_im_v = Simd::<f64, W>::splat(tw_im);
+                let i_even = (start + offset) * W;
+                let i_odd = (start + offset + half) * W;
+                let e_re = Simd::<f64, W>::from_slice(&re[i_even..i_even + W]);
+                let e_im = Simd::<f64, W>::from_slice(&im[i_even..i_even + W]);
+                let o_re = Simd::<f64, W>::from_slice(&re[i_odd..i_odd + W]);
+                let o_im = Simd::<f64, W>::from_slice(&im[i_odd..i_odd + W]);
+                let rot_re = o_re.mul_add(tw_re_v, -(o_im * tw_im_v));
+                let rot_im = o_re.mul_add(tw_im_v, o_im * tw_re_v);
+                (e_re + rot_re).copy_to_slice(&mut re[i_even..i_even + W]);
+                (e_im + rot_im).copy_to_slice(&mut im[i_even..i_even + W]);
+                (e_re - rot_re).copy_to_slice(&mut re[i_odd..i_odd + W]);
+                (e_im - rot_im).copy_to_slice(&mut im[i_odd..i_odd + W]);
             }
             start += len;
         }
@@ -2265,13 +3801,12 @@ fn digit_reverse_base4(n: usize) -> Vec<usize> {
         .collect()
 }
 
-/// Radix-4 plan for pow-of-four lengths: base-4 digit reversal + per-stage `W_len^j`
-/// twiddles (stage `len` = 4,16,...,n; `quarter` = len/4 twiddles each). `W_len^2j` and
-/// `W_len^3j` are derived inline in the butterfly (one square + one mul) to keep the table
-/// the same size as radix-2's.
+/// Radix-4 plan for pow-of-four lengths: base-4 digit reversal + per-stage precomputed
+/// `[W_len^j.re, W_len^j.im, W_len^2j.re, W_len^2j.im, W_len^3j.re, W_len^3j.im]`
+/// twiddle sextuples (stage `len` = 4,16,...,n; `quarter` = len/4 entries each).
 struct Radix4Plan {
     digit_reversed: Vec<usize>,
-    twiddles: Vec<(f64, f64)>,
+    twiddles: Vec<[f64; 6]>,
     inverse: bool,
 }
 
@@ -2291,7 +3826,11 @@ impl Radix4Plan {
             let (sin_step, cos_step) = angle.sin_cos();
             let (mut tr, mut ti) = (1.0, 0.0);
             for _ in 0..quarter {
-                twiddles.push((tr, ti));
+                let w2r = tr * tr - ti * ti;
+                let w2i = 2.0 * tr * ti;
+                let w3r = w2r * tr - w2i * ti;
+                let w3i = w2r * ti + w2i * tr;
+                twiddles.push([tr, ti, w2r, w2i, w3r, w3i]);
                 let nr = tr * cos_step - ti * sin_step;
                 let ni = tr * sin_step + ti * cos_step;
                 tr = nr;
@@ -2318,6 +3857,26 @@ fn soa_radix4_butterfly_stages(
     re: &mut [f64],
     im: &mut [f64],
 ) {
+    #[cfg(target_arch = "x86_64")]
+    if w == POW2_TILE_ROWS {
+        if crate::should_use_hardware_fma() {
+            // SAFETY: `should_use_hardware_fma()` verifies runtime AVX2 + FMA support.
+            #[allow(unsafe_code)]
+            unsafe {
+                soa_radix4_butterfly_stages_avx2_fma(plan, n, re, im);
+            }
+            return;
+        }
+        if crate::hardware_avx2_available() {
+            // SAFETY: `hardware_avx2_available()` verifies runtime AVX2 support.
+            #[allow(unsafe_code)]
+            unsafe {
+                soa_radix4_butterfly_stages_avx2(plan, n, re, im);
+            }
+            return;
+        }
+    }
+
     let inv = plan.inverse;
     let mut tw_base = 0usize;
     let mut len = 4usize;
@@ -2326,12 +3885,7 @@ fn soa_radix4_butterfly_stages(
         let stage_tw = &plan.twiddles[tw_base..tw_base + quarter];
         let mut start = 0usize;
         while start < n {
-            for (j, &(w1r, w1i)) in stage_tw.iter().enumerate() {
-                // W_len^2j and W_len^3j from W_len^j.
-                let w2r = w1r * w1r - w1i * w1i;
-                let w2i = 2.0 * w1r * w1i;
-                let w3r = w2r * w1r - w2i * w1i;
-                let w3i = w2r * w1i + w2i * w1r;
+            for (j, &[w1r, w1i, w2r, w2i, w3r, w3i]) in stage_tw.iter().enumerate() {
                 let i0 = (start + j) * w;
                 let i1 = (start + j + quarter) * w;
                 let i2 = (start + j + 2 * quarter) * w;
@@ -2362,8 +3916,6 @@ fn soa_radix4_butterfly_stages(
                     im[i0 + lane] = t0i + s2i;
                     re[i2 + lane] = t0r - s2r;
                     im[i2 + lane] = t0i - s2i;
-                    // forward: X1 = u1 - i*s3, X3 = u1 + i*s3 (i*s3 = (-s3i, s3r));
-                    // inverse swaps the two.
                     if inv {
                         re[i1 + lane] = u1r - s3i;
                         im[i1 + lane] = u1i + s3r;
@@ -2375,6 +3927,192 @@ fn soa_radix4_butterfly_stages(
                         re[i3 + lane] = u1r - s3i;
                         im[i3 + lane] = u1i + s3r;
                     }
+                }
+            }
+            start += len;
+        }
+        tw_base += quarter;
+        len *= 4;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(unsafe_code)]
+unsafe fn soa_radix4_butterfly_stages_avx2(
+    plan: &Radix4Plan,
+    n: usize,
+    re: &mut [f64],
+    im: &mut [f64],
+) {
+    const W: usize = POW2_TILE_ROWS;
+    let inv = plan.inverse;
+    let mut tw_base = 0usize;
+    let mut len = 4usize;
+    while len <= n {
+        let quarter = len / 4;
+        let stage_tw = &plan.twiddles[tw_base..tw_base + quarter];
+        let mut start = 0usize;
+        while start < n {
+            for (j, &[w1r, w1i, w2r, w2i, w3r, w3i]) in stage_tw.iter().enumerate() {
+                let w1r_v = Simd::<f64, W>::splat(w1r);
+                let w1i_v = Simd::<f64, W>::splat(w1i);
+                let w2r_v = Simd::<f64, W>::splat(w2r);
+                let w2i_v = Simd::<f64, W>::splat(w2i);
+                let w3r_v = Simd::<f64, W>::splat(w3r);
+                let w3i_v = Simd::<f64, W>::splat(w3i);
+                let i0 = (start + j) * W;
+                let i1 = (start + j + quarter) * W;
+                let i2 = (start + j + 2 * quarter) * W;
+                let i3 = (start + j + 3 * quarter) * W;
+                let ar = Simd::<f64, W>::from_slice(&re[i0..i0 + W]);
+                let ai = Simd::<f64, W>::from_slice(&im[i0..i0 + W]);
+                let b0r = Simd::<f64, W>::from_slice(&re[i1..i1 + W]);
+                let b0i = Simd::<f64, W>::from_slice(&im[i1..i1 + W]);
+                let c0r = Simd::<f64, W>::from_slice(&re[i2..i2 + W]);
+                let c0i = Simd::<f64, W>::from_slice(&im[i2..i2 + W]);
+                let d0r = Simd::<f64, W>::from_slice(&re[i3..i3 + W]);
+                let d0i = Simd::<f64, W>::from_slice(&im[i3..i3 + W]);
+                let br = b0r * w1r_v - b0i * w1i_v;
+                let bi = b0r * w1i_v + b0i * w1r_v;
+                let cr = c0r * w2r_v - c0i * w2i_v;
+                let ci = c0r * w2i_v + c0i * w2r_v;
+                let dr = d0r * w3r_v - d0i * w3i_v;
+                let di = d0r * w3i_v + d0i * w3r_v;
+                let t0r = ar + cr;
+                let t0i = ai + ci;
+                let u1r = ar - cr;
+                let u1i = ai - ci;
+                let s2r = br + dr;
+                let s2i = bi + di;
+                let s3r = br - dr;
+                let s3i = bi - di;
+                (t0r + s2r).copy_to_slice(&mut re[i0..i0 + W]);
+                (t0i + s2i).copy_to_slice(&mut im[i0..i0 + W]);
+                (t0r - s2r).copy_to_slice(&mut re[i2..i2 + W]);
+                (t0i - s2i).copy_to_slice(&mut im[i2..i2 + W]);
+                if inv {
+                    (u1r - s3i).copy_to_slice(&mut re[i1..i1 + W]);
+                    (u1i + s3r).copy_to_slice(&mut im[i1..i1 + W]);
+                    (u1r + s3i).copy_to_slice(&mut re[i3..i3 + W]);
+                    (u1i - s3r).copy_to_slice(&mut im[i3..i3 + W]);
+                } else {
+                    (u1r + s3i).copy_to_slice(&mut re[i1..i1 + W]);
+                    (u1i - s3r).copy_to_slice(&mut im[i1..i1 + W]);
+                    (u1r - s3i).copy_to_slice(&mut re[i3..i3 + W]);
+                    (u1i + s3r).copy_to_slice(&mut im[i3..i3 + W]);
+                }
+            }
+            start += len;
+        }
+        tw_base += quarter;
+        len *= 4;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn soa_radix4_butterfly_stages_avx2_fma(
+    plan: &Radix4Plan,
+    n: usize,
+    re: &mut [f64],
+    im: &mut [f64],
+) {
+    const W: usize = POW2_TILE_ROWS;
+    let inv = plan.inverse;
+    let mut tw_base = 0usize;
+    let mut len = 4usize;
+    while len <= n {
+        let quarter = len / 4;
+        let stage_tw = &plan.twiddles[tw_base..tw_base + quarter];
+        let mut start = 0usize;
+        while start < n {
+            // j == 0 fast path: W^0 = (1, 0), so no twiddle multiplications are required.
+            {
+                let i0 = start * W;
+                let i1 = (start + quarter) * W;
+                let i2 = (start + 2 * quarter) * W;
+                let i3 = (start + 3 * quarter) * W;
+                let ar = Simd::<f64, W>::from_slice(&re[i0..i0 + W]);
+                let ai = Simd::<f64, W>::from_slice(&im[i0..i0 + W]);
+                let br = Simd::<f64, W>::from_slice(&re[i1..i1 + W]);
+                let bi = Simd::<f64, W>::from_slice(&im[i1..i1 + W]);
+                let cr = Simd::<f64, W>::from_slice(&re[i2..i2 + W]);
+                let ci = Simd::<f64, W>::from_slice(&im[i2..i2 + W]);
+                let dr = Simd::<f64, W>::from_slice(&re[i3..i3 + W]);
+                let di = Simd::<f64, W>::from_slice(&im[i3..i3 + W]);
+                let t0r = ar + cr;
+                let t0i = ai + ci;
+                let u1r = ar - cr;
+                let u1i = ai - ci;
+                let s2r = br + dr;
+                let s2i = bi + di;
+                let s3r = br - dr;
+                let s3i = bi - di;
+                (t0r + s2r).copy_to_slice(&mut re[i0..i0 + W]);
+                (t0i + s2i).copy_to_slice(&mut im[i0..i0 + W]);
+                (t0r - s2r).copy_to_slice(&mut re[i2..i2 + W]);
+                (t0i - s2i).copy_to_slice(&mut im[i2..i2 + W]);
+                if inv {
+                    (u1r - s3i).copy_to_slice(&mut re[i1..i1 + W]);
+                    (u1i + s3r).copy_to_slice(&mut im[i1..i1 + W]);
+                    (u1r + s3i).copy_to_slice(&mut re[i3..i3 + W]);
+                    (u1i - s3r).copy_to_slice(&mut im[i3..i3 + W]);
+                } else {
+                    (u1r + s3i).copy_to_slice(&mut re[i1..i1 + W]);
+                    (u1i - s3r).copy_to_slice(&mut im[i1..i1 + W]);
+                    (u1r - s3i).copy_to_slice(&mut re[i3..i3 + W]);
+                    (u1i + s3r).copy_to_slice(&mut im[i3..i3 + W]);
+                }
+            }
+            for (j, &[w1r, w1i, w2r, w2i, w3r, w3i]) in stage_tw.iter().enumerate().skip(1) {
+                let w1r_v = Simd::<f64, W>::splat(w1r);
+                let w1i_v = Simd::<f64, W>::splat(w1i);
+                let w2r_v = Simd::<f64, W>::splat(w2r);
+                let w2i_v = Simd::<f64, W>::splat(w2i);
+                let w3r_v = Simd::<f64, W>::splat(w3r);
+                let w3i_v = Simd::<f64, W>::splat(w3i);
+                let i0 = (start + j) * W;
+                let i1 = (start + j + quarter) * W;
+                let i2 = (start + j + 2 * quarter) * W;
+                let i3 = (start + j + 3 * quarter) * W;
+                let ar = Simd::<f64, W>::from_slice(&re[i0..i0 + W]);
+                let ai = Simd::<f64, W>::from_slice(&im[i0..i0 + W]);
+                let b0r = Simd::<f64, W>::from_slice(&re[i1..i1 + W]);
+                let b0i = Simd::<f64, W>::from_slice(&im[i1..i1 + W]);
+                let c0r = Simd::<f64, W>::from_slice(&re[i2..i2 + W]);
+                let c0i = Simd::<f64, W>::from_slice(&im[i2..i2 + W]);
+                let d0r = Simd::<f64, W>::from_slice(&re[i3..i3 + W]);
+                let d0i = Simd::<f64, W>::from_slice(&im[i3..i3 + W]);
+                let br = b0r.mul_add(w1r_v, -(b0i * w1i_v));
+                let bi = b0r.mul_add(w1i_v, b0i * w1r_v);
+                let cr = c0r.mul_add(w2r_v, -(c0i * w2i_v));
+                let ci = c0r.mul_add(w2i_v, c0i * w2r_v);
+                let dr = d0r.mul_add(w3r_v, -(d0i * w3i_v));
+                let di = d0r.mul_add(w3i_v, d0i * w3r_v);
+                let t0r = ar + cr;
+                let t0i = ai + ci;
+                let u1r = ar - cr;
+                let u1i = ai - ci;
+                let s2r = br + dr;
+                let s2i = bi + di;
+                let s3r = br - dr;
+                let s3i = bi - di;
+                (t0r + s2r).copy_to_slice(&mut re[i0..i0 + W]);
+                (t0i + s2i).copy_to_slice(&mut im[i0..i0 + W]);
+                (t0r - s2r).copy_to_slice(&mut re[i2..i2 + W]);
+                (t0i - s2i).copy_to_slice(&mut im[i2..i2 + W]);
+                if inv {
+                    (u1r - s3i).copy_to_slice(&mut re[i1..i1 + W]);
+                    (u1i + s3r).copy_to_slice(&mut im[i1..i1 + W]);
+                    (u1r + s3i).copy_to_slice(&mut re[i3..i3 + W]);
+                    (u1i - s3r).copy_to_slice(&mut im[i3..i3 + W]);
+                } else {
+                    (u1r + s3i).copy_to_slice(&mut re[i1..i1 + W]);
+                    (u1i - s3r).copy_to_slice(&mut im[i1..i1 + W]);
+                    (u1r - s3i).copy_to_slice(&mut re[i3..i3 + W]);
+                    (u1i + s3r).copy_to_slice(&mut im[i3..i3 + W]);
                 }
             }
             start += len;
@@ -2509,10 +4247,12 @@ fn transform_batches_pow4_vectorized(
     let mut out: Vec<(f64, f64)> = vec![(0.0, 0.0); total];
 
     const PARALLEL_MIN_ELEMS: usize = 1 << 18;
+    let work_cap = (total / (1 << 16)).clamp(1, 8);
     let threads = if total >= PARALLEL_MIN_ELEMS && batch_size > 1 {
         std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(1)
+            .min(work_cap)
             .min(batch_size)
     } else {
         1
@@ -2523,7 +4263,10 @@ fn transform_batches_pow4_vectorized(
         return out;
     }
 
-    let rows_per = batch_size.div_ceil(threads);
+    let policy = crate::current_precision_policy();
+    let tiles = batch_size.div_ceil(POW2_TILE_ROWS);
+    let tiles_per = tiles.div_ceil(threads);
+    let rows_per = tiles_per * POW2_TILE_ROWS;
     let plan_ref = plan.as_ref();
     std::thread::scope(|scope| {
         let mut rest: &mut [(f64, f64)] = out.as_mut_slice();
@@ -2535,7 +4278,9 @@ fn transform_batches_pow4_vectorized(
             let base = row0 * n;
             let src = &elements[base..base + rows * n];
             scope.spawn(move || {
-                vectorized_pow4_tiled(plan_ref, src, rows, n, inverse, blk);
+                crate::with_precision_policy(policy, || {
+                    vectorized_pow4_tiled(plan_ref, src, rows, n, inverse, blk);
+                });
             });
             row0 += rows;
         }
@@ -2777,10 +4522,12 @@ fn transform_batches_pow2_vectorized(
     let mut out: Vec<(f64, f64)> = vec![(0.0, 0.0); total];
 
     const PARALLEL_MIN_ELEMS: usize = 1 << 18; // 262_144
+    let work_cap = (total / (1 << 16)).clamp(1, 8);
     let threads = if total >= PARALLEL_MIN_ELEMS && batch_size > 1 {
         std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(1)
+            .min(work_cap)
             .min(batch_size)
     } else {
         1
@@ -2791,7 +4538,10 @@ fn transform_batches_pow2_vectorized(
         return out;
     }
 
-    let rows_per = batch_size.div_ceil(threads);
+    let policy = crate::current_precision_policy();
+    let tiles = batch_size.div_ceil(POW2_TILE_ROWS);
+    let tiles_per = tiles.div_ceil(threads);
+    let rows_per = tiles_per * POW2_TILE_ROWS;
     let plan_ref = plan.as_ref();
     std::thread::scope(|scope| {
         let mut rest: &mut [(f64, f64)] = out.as_mut_slice();
@@ -2803,7 +4553,9 @@ fn transform_batches_pow2_vectorized(
             let base = row0 * n;
             let src = &elements[base..base + rows * n];
             scope.spawn(move || {
-                vectorized_pow2_tiled(plan_ref, src, rows, n, inverse, blk);
+                crate::with_precision_policy(policy, || {
+                    vectorized_pow2_tiled(plan_ref, src, rows, n, inverse, blk);
+                });
             });
             row0 += rows;
         }

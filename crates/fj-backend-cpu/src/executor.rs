@@ -314,13 +314,16 @@ fn execute_ready_wave(
         // No env.clone() needed: the parallel phase only reads from env.
         // The shared borrow is released after collect() before we mutate env below.
         let env_ref = &*env;
+        let policy = fj_core::current_precision_policy();
         let mut evaluated = ready_indices
             .par_iter()
             .map(|idx| {
-                let eqn = &jaxpr.equations[*idx];
-                let output = evaluate_equation(eqn, env_ref)?;
-                let out_var = single_output_var(eqn)?;
-                Ok((*idx, out_var, output))
+                fj_core::with_precision_policy(policy, || {
+                    let eqn = &jaxpr.equations[*idx];
+                    let output = evaluate_equation(eqn, env_ref)?;
+                    let out_var = single_output_var(eqn)?;
+                    Ok((*idx, out_var, output))
+                })
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 

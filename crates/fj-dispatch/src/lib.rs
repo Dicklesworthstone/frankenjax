@@ -10,6 +10,9 @@ use fj_core::{
     jaxpr_fingerprint_sha256, verify_transform_composition, verify_transform_composition_parts,
     verify_transform_composition_steps,
 };
+pub use fj_core::{
+    PrecisionPolicy, current_precision_policy, set_precision_policy, with_precision_policy,
+};
 use fj_interpreters::InterpreterError;
 use fj_ledger::{
     CalibratedEstimate, CalibrationReport, ConformalPredictor, EProcess, EvidenceLedger,
@@ -1533,59 +1536,71 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
     let (backend, device, _fell_back) =
         backend_registry.resolve_with_fallback(&DevicePlacement::Default, requested_backend)?;
 
+    let requested_precision = request
+        .compile_options
+        .get("precision_policy")
+        .or_else(|| request.compile_options.get("precision"))
+        .and_then(|raw| PrecisionPolicy::from_option_str(raw));
+
     let exec_start = std::time::Instant::now();
-    let outputs = if let Some(staged) = &plan.staged_program {
-        let dynamic_args: Vec<Value> = request
-            .args
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, val)| (!static_argnums.contains(&idx)).then_some(val.clone()))
-            .collect();
-        if request.transform_stack.iter().all(|t| *t == Transform::Jit) {
-            if plan.use_wave_parallel {
-                cpu_backend.execute_with_consts(
-                    &staged.jaxpr_unknown,
-                    &staged.residuals,
-                    &dynamic_args,
-                    device,
-                )?
-            } else {
-                fj_interpreters::staging::execute_staged(staged, &dynamic_args).map_err(|e| {
-                    DispatchError::BackendExecution(BackendError::ExecutionFailed {
-                        detail: e.to_string(),
+    let run_exec = || -> Result<Vec<Value>, DispatchError> {
+        if let Some(staged) = &plan.staged_program {
+            let dynamic_args: Vec<Value> = request
+                .args
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, val)| (!static_argnums.contains(&idx)).then_some(val.clone()))
+                .collect();
+            if request.transform_stack.iter().all(|t| *t == Transform::Jit) {
+                if plan.use_wave_parallel {
+                    Ok(cpu_backend.execute_with_consts(
+                        &staged.jaxpr_unknown,
+                        &staged.residuals,
+                        &dynamic_args,
+                        device,
+                    )?)
+                } else {
+                    fj_interpreters::staging::execute_staged(staged, &dynamic_args).map_err(|e| {
+                        DispatchError::BackendExecution(BackendError::ExecutionFailed {
+                            detail: e.to_string(),
+                        })
                     })
-                })?
+                }
+            } else {
+                let mut full_unk_args = staged.residuals.clone();
+                full_unk_args.extend(dynamic_args);
+                execute_with_transforms(
+                    &staged.jaxpr_unknown,
+                    request.transform_stack,
+                    &full_unk_args,
+                    backend,
+                    device,
+                    &request.compile_options,
+                )
             }
+        } else if request.transform_stack.iter().all(|t| *t == Transform::Jit)
+            && !plan.use_wave_parallel
+            && let Some(compiled) = &plan.compiled_jaxpr
+        {
+            compiled.eval(&request.args).map_err(|e| {
+                DispatchError::BackendExecution(BackendError::ExecutionFailed {
+                    detail: e.to_string(),
+                })
+            })
         } else {
-            let mut full_unk_args = staged.residuals.clone();
-            full_unk_args.extend(dynamic_args);
             execute_with_transforms(
-                &staged.jaxpr_unknown,
+                &plan.effective_jaxpr,
                 request.transform_stack,
-                &full_unk_args,
+                &request.args,
                 backend,
                 device,
                 &request.compile_options,
-            )?
+            )
         }
-    } else if request.transform_stack.iter().all(|t| *t == Transform::Jit)
-        && !plan.use_wave_parallel
-        && let Some(compiled) = &plan.compiled_jaxpr
-    {
-        compiled.eval(&request.args).map_err(|e| {
-            DispatchError::BackendExecution(BackendError::ExecutionFailed {
-                detail: e.to_string(),
-            })
-        })?
-    } else {
-        execute_with_transforms(
-            &plan.effective_jaxpr,
-            request.transform_stack,
-            &request.args,
-            backend,
-            device,
-            &request.compile_options,
-        )?
+    };
+    let outputs = match requested_precision {
+        Some(policy) => with_precision_policy(policy, run_exec)?,
+        None => run_exec()?,
     };
     let exec_elapsed_secs = exec_start.elapsed().as_secs_f64();
 

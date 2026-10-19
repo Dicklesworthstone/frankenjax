@@ -7,7 +7,10 @@ use std::sync::{Arc, OnceLock};
 
 #[cfg(test)]
 use fj_core::TraceTransformLedger;
-use fj_core::{CompatibilityMode, Jaxpr, Transform, TransformCompositionProof, Value};
+use fj_core::{
+    CompatibilityMode, Jaxpr, PrecisionPolicy, Transform, TransformCompositionProof, Value,
+    with_precision_policy,
+};
 use fj_dispatch::{
     DispatchRequestRef, DispatchResponse, PreparedDispatchMeta, check_fast_path_admission,
     dispatch_ref, prepare_dispatch_meta,
@@ -29,6 +32,7 @@ pub struct JitWrapped {
     backend: BackendName,
     mode: CompatibilityMode,
     static_argnums: Vec<usize>,
+    precision_policy: Option<PrecisionPolicy>,
     /// Lazily-computed, args-independent dispatch metadata shared across
     /// repeated `call`s. Excluded from equality/Debug so cached proof/key state
     /// does not change the wrapper's observable identity.
@@ -279,6 +283,7 @@ pub fn jit(jaxpr: Jaxpr) -> JitWrapped {
         backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
         static_argnums: Vec::new(),
+        precision_policy: None,
         meta_cache: DispatchMetaCache::default(),
         compiled_cache: CompiledEvalCache::default(),
         last_evidence: LastEvidenceCache::default(),
@@ -1057,6 +1062,9 @@ impl JitWrapped {
                 .join(",");
             opts.insert("static_argnums".to_owned(), formatted);
         }
+        if let Some(policy) = self.precision_policy {
+            opts.insert("precision_policy".to_owned(), policy.as_str().to_owned());
+        }
         opts
     }
 
@@ -1080,7 +1088,7 @@ impl JitWrapped {
                     fj_interpreters::compile_jaxpr_for_repeated_eval(&self.jaxpr).map(Arc::new);
                 let transforms = [Transform::Jit];
                 let evidence = transform_evidence(&transforms);
-                let compile_options = BTreeMap::new();
+                let compile_options = self.build_compile_options();
                 if let Some(meta) = self
                     .meta_cache
                     .0
@@ -1116,7 +1124,11 @@ impl JitWrapped {
                 .warm_hits
                 .fetch_add(1, Ordering::Relaxed);
         }
-        compiled.eval(args).map(Some).map_err(ApiError::from)
+        let eval_res = match self.precision_policy {
+            Some(policy) => with_precision_policy(policy, || compiled.eval(args)),
+            None => compiled.eval(args),
+        };
+        eval_res.map(Some).map_err(ApiError::from)
     }
 
     #[must_use]
@@ -1154,6 +1166,22 @@ impl JitWrapped {
     #[must_use]
     pub fn static_argnums(&self) -> &[usize] {
         &self.static_argnums
+    }
+
+    /// Configure the floating-point contraction / SIMD [`PrecisionPolicy`] for this `JitWrapped`.
+    #[must_use]
+    pub fn with_precision_policy(mut self, policy: PrecisionPolicy) -> Self {
+        self.precision_policy = Some(policy);
+        self.meta_cache = DispatchMetaCache::default();
+        self.compiled_cache = CompiledEvalCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Return the configured [`PrecisionPolicy`] for this `JitWrapped`, if any.
+    #[must_use]
+    pub const fn precision_policy(&self) -> Option<PrecisionPolicy> {
+        self.precision_policy
     }
 
     /// Return the number of warm fast-path hits recorded on this `JitWrapped` instance.
@@ -1605,6 +1633,12 @@ impl ComposedTransform {
     #[must_use]
     pub fn with_egraph_optimization(self, enabled: bool) -> Self {
         self.with_compile_option("egraph_optimize", if enabled { "true" } else { "false" })
+    }
+
+    /// Configure the floating-point contraction / SIMD [`PrecisionPolicy`] for this composed transform.
+    #[must_use]
+    pub fn with_precision_policy(self, policy: PrecisionPolicy) -> Self {
+        self.with_compile_option("precision_policy", policy.as_str())
     }
 
     /// Execute through the full dispatch + ledger + proof spine and return the
@@ -3000,5 +3034,62 @@ mod tests {
             "unknown_equations": staged.jaxpr_unknown.equations.len(),
         });
         assert_eq!(log["schema_version"], "frankenjax.e2e-forensic-log.v1");
+    }
+
+    #[test]
+    fn jit_with_precision_policy_switches_regime_and_cache_key() {
+        let jaxpr = crate::make_jaxpr_fallible(
+            |args| {
+                let prod = args[0].dot(&args[1])?;
+                Ok(vec![prod])
+            },
+            vec![
+                ShapedArray {
+                    dtype: fj_core::DType::F64,
+                    shape: fj_core::Shape { dims: vec![16, 16] },
+                },
+                ShapedArray {
+                    dtype: fj_core::DType::F64,
+                    shape: fj_core::Shape { dims: vec![16, 16] },
+                },
+            ],
+        )
+        .expect("make_jaxpr_fallible should succeed")
+        .jaxpr;
+
+        let a_data: Vec<f64> = (0..256).map(|i| ((i as f64) * 0.031).sin()).collect();
+        let b_data: Vec<f64> = (0..256).map(|i| ((i as f64) * 0.047).cos()).collect();
+        let a = Value::Tensor(
+            fj_core::TensorValue::new_f64_values(fj_core::Shape { dims: vec![16, 16] }, a_data)
+                .unwrap(),
+        );
+        let b = Value::Tensor(
+            fj_core::TensorValue::new_f64_values(fj_core::Shape { dims: vec![16, 16] }, b_data)
+                .unwrap(),
+        );
+
+        let jit_portable =
+            jit(jaxpr.clone()).with_precision_policy(PrecisionPolicy::BitExactPortable);
+        let jit_fma = jit(jaxpr).with_precision_policy(PrecisionPolicy::HardwareFmaAccelerated);
+        assert_eq!(
+            jit_portable.precision_policy(),
+            Some(PrecisionPolicy::BitExactPortable)
+        );
+        assert_eq!(
+            jit_fma.precision_policy(),
+            Some(PrecisionPolicy::HardwareFmaAccelerated)
+        );
+
+        let resp_portable = jit_portable
+            .call_with_dispatch(vec![a.clone(), b.clone()])
+            .expect("portable jit should succeed");
+        let resp_fma = jit_fma
+            .call_with_dispatch(vec![a, b])
+            .expect("fma jit should succeed");
+
+        assert_ne!(
+            resp_portable.cache_key, resp_fma.cache_key,
+            "different PrecisionPolicy settings must produce distinct cache keys"
+        );
     }
 }

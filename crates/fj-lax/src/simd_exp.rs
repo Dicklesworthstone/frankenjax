@@ -136,17 +136,37 @@ fn exp_scalar(x: f64) -> f64 {
     p * two_a * two_b
 }
 
-/// Vectorized `exp` over a contiguous `f64` slice into `out` (same length). Processes
-/// 8 lanes per step; the remainder runs the identical scalar algorithm.
-pub fn simd_poly_exp_into(src: &[f64], out: &mut [f64]) {
-    assert_eq!(src.len(), out.len());
+#[inline]
+fn exp_scalar_fma(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x > OVERFLOW_X {
+        return f64::INFINITY;
+    }
+    if x < UNDERFLOW_X {
+        return 0.0;
+    }
+    let nf = (x * LOG2E).round();
+    let r = (-nf).mul_add(LN2_HI, x);
+    let r = (-nf).mul_add(LN2_LO, r);
+    let mut p = C[13];
+    for k in (0..13).rev() {
+        p = p.mul_add(r, C[k]);
+    }
+    let ni = nf as i64;
+    let na = ni >> 1;
+    let nb = ni - na;
+    let two_a = f64::from_bits(((na + 1023) << 52) as u64);
+    let two_b = f64::from_bits(((nb + 1023) << 52) as u64);
+    p * two_a * two_b
+}
+
+fn simd_poly_exp_into_portable(src: &[f64], out: &mut [f64]) {
     let (chunks, src_rem) = src.as_chunks::<LANES>();
     let (out_chunks, out_rem) = out.as_chunks_mut::<LANES>();
     for (c, o) in chunks.iter().zip(out_chunks.iter_mut()) {
-        // Clean vector store of the SIMD poly (lets exp_block stay fully vectorized).
         *o = exp_block(F64s::from_array(*c)).to_array();
-        // Cheap branchless scan for any out-of-range / NaN / ±inf lane (autovectorizes);
-        // only the rare chunk that has one re-does just those lanes via the scalar ref.
         let mut has_edge = false;
         for &x in c {
             has_edge |= !(x > UNDERFLOW_X && x < OVERFLOW_X);
@@ -164,11 +184,83 @@ pub fn simd_poly_exp_into(src: &[f64], out: &mut [f64]) {
     }
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn simd_poly_exp_avx2_fma_into(src: &[f64], out: &mut [f64]) {
+    let (chunks, src_rem) = src.as_chunks::<LANES>();
+    let (out_chunks, out_rem) = out.as_chunks_mut::<LANES>();
+    for (c, o) in chunks.iter().zip(out_chunks.iter_mut()) {
+        let x = F64s::from_array(*c);
+        let nf = (x * F64s::splat(LOG2E)).round();
+        let r = (-nf).mul_add(F64s::splat(LN2_HI), x);
+        let r = (-nf).mul_add(F64s::splat(LN2_LO), r);
+        let mut p = F64s::splat(C[13]);
+        for k in (0..13).rev() {
+            p = p.mul_add(r, F64s::splat(C[k]));
+        }
+        let ni = nf.cast::<i64>();
+        let na = ni >> Simd::splat(1);
+        let nb = ni - na;
+        let two_a = F64s::from_bits(((na + Simd::splat(1023)) << Simd::splat(52)).cast::<u64>());
+        let two_b = F64s::from_bits(((nb + Simd::splat(1023)) << Simd::splat(52)).cast::<u64>());
+        *o = (p * two_a * two_b).to_array();
+        let mut has_edge = false;
+        for &xv in c {
+            has_edge |= !(xv > UNDERFLOW_X && xv < OVERFLOW_X);
+        }
+        if has_edge {
+            for (oi, &xv) in o.iter_mut().zip(c.iter()) {
+                if !(xv > UNDERFLOW_X && xv < OVERFLOW_X) {
+                    *oi = exp_scalar_fma(xv);
+                }
+            }
+        }
+    }
+    for (s, o) in src_rem.iter().zip(out_rem.iter_mut()) {
+        *o = exp_scalar_fma(*s);
+    }
+}
+
+/// Vectorized `exp` over a contiguous `f64` slice into `out` (same length). Processes
+/// 8 lanes per step; the remainder runs the identical scalar algorithm.
+pub fn simd_poly_exp_into(src: &[f64], out: &mut [f64]) {
+    if src.len() != out.len() {
+        return;
+    }
+    simd_poly_exp_into_portable(src, out);
+}
+
+/// Hardware-FMA-accelerated vectorized `exp` over a contiguous `f64` slice into `out`.
+pub fn simd_poly_exp_fma_into(src: &[f64], out: &mut [f64]) {
+    if src.len() != out.len() {
+        return;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            simd_poly_exp_avx2_fma_into(src, out);
+        }
+        return;
+    }
+    simd_poly_exp_into(src, out);
+}
+
 /// Allocating convenience wrapper.
 #[must_use]
 pub fn simd_poly_exp(src: &[f64]) -> Vec<f64> {
     let mut out = vec![0.0_f64; src.len()];
     simd_poly_exp_into(src, &mut out);
+    out
+}
+
+/// Allocating convenience wrapper for hardware-FMA-accelerated `exp`.
+#[must_use]
+pub fn simd_poly_exp_fma(src: &[f64]) -> Vec<f64> {
+    let mut out = vec![0.0_f64; src.len()];
+    simd_poly_exp_fma_into(src, &mut out);
     out
 }
 

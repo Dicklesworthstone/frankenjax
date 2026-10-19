@@ -8,7 +8,10 @@ pub use fj_ad::{
     AdError, JvpResult, clear_custom_derivative_rules, grad_jaxpr_with_cotangent,
     register_custom_jaxpr_jvp, register_custom_jaxpr_vjp, register_custom_jvp, register_custom_vjp,
 };
-pub use fj_core::{DType, Shape, TransformCompositionProof, Value};
+pub use fj_core::{
+    DType, PrecisionPolicy, Shape, TransformCompositionProof, Value, current_precision_policy,
+    set_precision_policy, with_precision_policy,
+};
 pub use fj_dispatch::{
     DispatchGovernanceSnapshot, DispatchResponse, dispatch_cancellation_token,
     dispatch_governance_stats, observe_dispatch_drift_likelihood_ratio, reset_dispatch_governance,

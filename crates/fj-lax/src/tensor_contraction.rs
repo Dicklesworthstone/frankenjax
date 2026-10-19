@@ -313,7 +313,7 @@ fn pack_b_pc_panels(b: &[f64], k: usize, n: usize, threads: usize) -> Vec<f64> {
 /// the microkernel misses on every k-step. Below it B is L2-resident and the pack
 /// (plus its scratch allocation) does not pay — keeps the small/medium GEMM path
 /// byte-for-byte and perf-for-perf unchanged.
-const PACK_B_MIN_KN: usize = 1 << 17;
+const PACK_B_MIN_KN: usize = 1 << 16;
 /// `k·n` threshold for the KC-blocked macro-kernel. Below this, same-worker
 /// evidence showed the extra C read/write passes cost more than the B-panel
 /// reuse saves; keep those sizes on the flat packed path.
@@ -332,6 +332,7 @@ struct MatmulRhs<'a> {
     bpack: Option<&'a [f64]>,
     n: usize,
     block_k: bool,
+    use_fma: bool,
 }
 
 /// Base-case threshold for [`strassen_matmul_2d`]: once any of `m,k,n` drops to this,
@@ -640,6 +641,7 @@ fn matmul_2d_with_threads_into(
         bpack: bpack.as_deref(),
         n,
         block_k: plan.block_k,
+        use_fma: crate::should_use_hardware_fma(),
     };
     if plan.threads <= 1 {
         matmul_2d_dispatch(a, k, rhs, 0, result);
@@ -676,33 +678,209 @@ fn matmul_2d_dispatch(
 ) {
     match rhs.bpack {
         Some(bp) if rhs.block_k && k > KC => {
-            matmul_2d_blocked_row_block(a, k, rhs.b, bp, rhs.n, row_start, block);
+            if rhs.use_fma {
+                matmul_2d_blocked_row_block_fma(a, k, rhs.b, bp, rhs.n, row_start, block);
+            } else {
+                matmul_2d_blocked_row_block(a, k, rhs.b, bp, rhs.n, row_start, block);
+            }
         }
-        _ => matmul_2d_row_block(a, k, rhs.b, rhs.bpack, rhs.n, row_start, block),
+        _ => {
+            if rhs.use_fma {
+                matmul_2d_row_block_fma(a, k, rhs.b, rhs.bpack, rhs.n, row_start, block);
+            } else {
+                matmul_2d_row_block(a, k, rhs.b, rhs.bpack, rhs.n, row_start, block);
+            }
+        }
     }
 }
 
-/// Compute a contiguous block of output rows (starting at `row_start`,
-/// `block.len() / n` rows) of the m×n product into `block`, via a
-/// register-blocked MR×NR microkernel.
-///
-/// Each output element `C[i][j]` accumulates `a[i][l]*b[l][j]` over `l` in
-/// strictly ascending order into a single scalar accumulator — bit-for-bit
-/// identical to the textbook i-j-k / serial i-k-j kernels (Rust does not
-/// contract separate `*`/`+=` into a fused FMA at the default release flags, so
-/// the per-element rounding is exactly the same). Register tiling only reorders
-/// work *across* the (i,j) tile grid; it never reassociates a single element's
-/// k-sum, so `matmul_2d_ikj_bit_identical_to_ijk` and the large/threaded
-/// bit-identity tests still hold.
-///
-/// Why this beats the previous i-k-j kernel: that kernel re-streamed the whole
-/// B matrix once per output row (m passes over the k·n B reads) and re-read each
-/// A element n times from memory. The MR×NR tile keeps its MR·NR C accumulators
-/// in registers across the entire k-stream, reuses each loaded B element across
-/// MR rows and each loaded A element across NR columns, and writes every C
-/// element exactly once. That cuts B traffic ≈MR× and A traffic ≈NR×, which is
-/// the binding constraint at GEMM sizes where B (k·n) spills past L2 and streams
-/// from L3 on every row.
+macro_rules! impl_matmul_2d_row_block_body {
+    ($a:ident, $k:ident, $b:ident, $bpack:ident, $n:ident, $row_start:ident, $block:ident, $vec_mac:ident, $scalar_mac:ident) => {{
+        let rows = $block.len() / $n;
+        let full_rows = rows / MR * MR;
+        let full_cols = $n / NR * NR;
+
+        if let Some(bp) = $bpack {
+            let mut j = 0;
+            while j < full_cols {
+                let panel = &bp[(j / NR) * $k * NR..(j / NR + 1) * $k * NR];
+                let mut i = 0;
+                while i < full_rows {
+                    let ar0 = ($row_start + i) * $k;
+                    let a_row0 = &$a[ar0..ar0 + $k];
+                    let a_row1 = &$a[ar0 + $k..ar0 + 2 * $k];
+                    let a_row2 = &$a[ar0 + 2 * $k..ar0 + 3 * $k];
+                    let a_row3 = &$a[ar0 + 3 * $k..ar0 + 4 * $k];
+                    let mut c0 = F64xN::splat(0.0);
+                    let mut c1 = F64xN::splat(0.0);
+                    let mut c2 = F64xN::splat(0.0);
+                    let mut c3 = F64xN::splat(0.0);
+                    for l in 0..$k {
+                        let brow = &panel[l * NR..l * NR + NR];
+                        let bv = f64xnr_from_slice(brow);
+                        c0 = $vec_mac!(a_row0[l], bv, c0);
+                        c1 = $vec_mac!(a_row1[l], bv, c1);
+                        c2 = $vec_mac!(a_row2[l], bv, c2);
+                        c3 = $vec_mac!(a_row3[l], bv, c3);
+                    }
+                    $block[i * $n + j..i * $n + j + NR].copy_from_slice(c0.as_array());
+                    $block[(i + 1) * $n + j..(i + 1) * $n + j + NR].copy_from_slice(c1.as_array());
+                    $block[(i + 2) * $n + j..(i + 2) * $n + j + NR].copy_from_slice(c2.as_array());
+                    $block[(i + 3) * $n + j..(i + 3) * $n + j + NR].copy_from_slice(c3.as_array());
+                    i += MR;
+                }
+                j += NR;
+            }
+        } else {
+            let mut j = 0;
+            while j < full_cols {
+                let bsrc = &$b[j..];
+                let mut i = 0;
+                while i < full_rows {
+                    let ar0 = ($row_start + i) * $k;
+                    let a_row0 = &$a[ar0..ar0 + $k];
+                    let a_row1 = &$a[ar0 + $k..ar0 + 2 * $k];
+                    let a_row2 = &$a[ar0 + 2 * $k..ar0 + 3 * $k];
+                    let a_row3 = &$a[ar0 + 3 * $k..ar0 + 4 * $k];
+                    let mut c0 = F64xN::splat(0.0);
+                    let mut c1 = F64xN::splat(0.0);
+                    let mut c2 = F64xN::splat(0.0);
+                    let mut c3 = F64xN::splat(0.0);
+                    for l in 0..$k {
+                        let brow = &bsrc[l * $n..l * $n + NR];
+                        let bv = f64xnr_from_slice(brow);
+                        c0 = $vec_mac!(a_row0[l], bv, c0);
+                        c1 = $vec_mac!(a_row1[l], bv, c1);
+                        c2 = $vec_mac!(a_row2[l], bv, c2);
+                        c3 = $vec_mac!(a_row3[l], bv, c3);
+                    }
+                    $block[i * $n + j..i * $n + j + NR].copy_from_slice(c0.as_array());
+                    $block[(i + 1) * $n + j..(i + 1) * $n + j + NR].copy_from_slice(c1.as_array());
+                    $block[(i + 2) * $n + j..(i + 2) * $n + j + NR].copy_from_slice(c2.as_array());
+                    $block[(i + 3) * $n + j..(i + 3) * $n + j + NR].copy_from_slice(c3.as_array());
+                    i += MR;
+                }
+                j += NR;
+            }
+        }
+
+        let mut i = 0;
+        while i < full_rows {
+            let ar0 = ($row_start + i) * $k;
+            let ar1 = ar0 + $k;
+            let ar2 = ar1 + $k;
+            let ar3 = ar2 + $k;
+            let mut j = full_cols;
+            while j < $n {
+                let mut s0 = 0.0_f64;
+                let mut s1 = 0.0_f64;
+                let mut s2 = 0.0_f64;
+                let mut s3 = 0.0_f64;
+                for l in 0..$k {
+                    let bv = $b[l * $n + j];
+                    s0 = $scalar_mac!($a[ar0 + l], bv, s0);
+                    s1 = $scalar_mac!($a[ar1 + l], bv, s1);
+                    s2 = $scalar_mac!($a[ar2 + l], bv, s2);
+                    s3 = $scalar_mac!($a[ar3 + l], bv, s3);
+                }
+                $block[i * $n + j] = s0;
+                $block[(i + 1) * $n + j] = s1;
+                $block[(i + 2) * $n + j] = s2;
+                $block[(i + 3) * $n + j] = s3;
+                j += 1;
+            }
+            i += MR;
+        }
+
+        while i < rows {
+            let a_row = ($row_start + i) * $k;
+            let c_row = &mut $block[i * $n..i * $n + $n];
+            c_row.fill(0.0);
+            for l in 0..$k {
+                let a_il = $a[a_row + l];
+                let src = &$b[l * $n..l * $n + $n];
+                for j in 0..$n {
+                    c_row[j] = $scalar_mac!(a_il, src[j], c_row[j]);
+                }
+            }
+            i += 1;
+        }
+    }};
+}
+
+macro_rules! vec_mac_portable_f64 {
+    ($a:expr, $bv:expr, $c:expr) => {
+        $c + F64xN::splat($a) * $bv
+    };
+}
+
+macro_rules! scalar_mac_portable_f64 {
+    ($a:expr, $bv:expr, $c:expr) => {
+        $c + $a * $bv
+    };
+}
+
+macro_rules! vec_mac_fma_f64 {
+    ($a:expr, $bv:expr, $c:expr) => {{
+        use std::simd::StdFloat;
+        F64xN::splat($a).mul_add($bv, $c)
+    }};
+}
+
+macro_rules! scalar_mac_fma_f64 {
+    ($a:expr, $bv:expr, $c:expr) => {
+        ($a).mul_add($bv, $c)
+    };
+}
+
+#[allow(clippy::assign_op_pattern)]
+fn matmul_2d_row_block_portable(
+    a: &[f64],
+    k: usize,
+    b: &[f64],
+    bpack: Option<&[f64]>,
+    n: usize,
+    row_start: usize,
+    block: &mut [f64],
+) {
+    impl_matmul_2d_row_block_body!(
+        a,
+        k,
+        b,
+        bpack,
+        n,
+        row_start,
+        block,
+        vec_mac_portable_f64,
+        scalar_mac_portable_f64
+    );
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn matmul_2d_row_block_avx2_fma(
+    a: &[f64],
+    k: usize,
+    b: &[f64],
+    bpack: Option<&[f64]>,
+    n: usize,
+    row_start: usize,
+    block: &mut [f64],
+) {
+    impl_matmul_2d_row_block_body!(
+        a,
+        k,
+        b,
+        bpack,
+        n,
+        row_start,
+        block,
+        vec_mac_fma_f64,
+        scalar_mac_fma_f64
+    );
+}
+
 fn matmul_2d_row_block(
     a: &[f64],
     k: usize,
@@ -712,117 +890,195 @@ fn matmul_2d_row_block(
     row_start: usize,
     block: &mut [f64],
 ) {
-    let rows = block.len() / n;
-    let full_rows = rows / MR * MR;
-    let full_cols = n / NR * NR;
-
-    // Full MR×NR tiles. Process one B panel across every row tile in this row
-    // block before advancing to the next panel. Each output element still sees
-    // the identical ascending-`l` accumulation order; the only change is that a
-    // packed KC×NR B stream is reused across row tiles while it is cache-hot.
-    let mut j = 0;
-    while j < full_cols {
-        let (bsrc, rstride): (&[f64], usize) = match bpack {
-            Some(bp) => (&bp[(j / NR) * k * NR..], NR),
-            None => (&b[j..], n),
-        };
-        let mut i = 0;
-        while i < full_rows {
-            let ar0 = (row_start + i) * k;
-            let ar1 = ar0 + k;
-            let ar2 = ar1 + k;
-            let ar3 = ar2 + k;
-            let mut c0 = F64xN::splat(0.0);
-            let mut c1 = F64xN::splat(0.0);
-            let mut c2 = F64xN::splat(0.0);
-            let mut c3 = F64xN::splat(0.0);
-            for l in 0..k {
-                let brow = &bsrc[l * rstride..l * rstride + NR];
-                let bv = F64xN::from_array([
-                    brow[0], brow[1], brow[2], brow[3], brow[4], brow[5], brow[6], brow[7],
-                ]);
-                let a0 = a[ar0 + l];
-                let a1 = a[ar1 + l];
-                let a2 = a[ar2 + l];
-                let a3 = a[ar3 + l];
-                c0 += F64xN::splat(a0) * bv;
-                c1 += F64xN::splat(a1) * bv;
-                c2 += F64xN::splat(a2) * bv;
-                c3 += F64xN::splat(a3) * bv;
-            }
-            block[i * n + j..i * n + j + NR].copy_from_slice(c0.as_array());
-            block[(i + 1) * n + j..(i + 1) * n + j + NR].copy_from_slice(c1.as_array());
-            block[(i + 2) * n + j..(i + 2) * n + j + NR].copy_from_slice(c2.as_array());
-            block[(i + 3) * n + j..(i + 3) * n + j + NR].copy_from_slice(c3.as_array());
-            i += MR;
-        }
-        j += NR;
-    }
-
-    // Column remainder (n not a multiple of NR): MR scalar accumulators, same
-    // ascending-`l` order.
-    let mut i = 0;
-    while i < full_rows {
-        let ar0 = (row_start + i) * k;
-        let ar1 = ar0 + k;
-        let ar2 = ar1 + k;
-        let ar3 = ar2 + k;
-        let mut j = full_cols;
-        while j < n {
-            let mut s0 = 0.0_f64;
-            let mut s1 = 0.0_f64;
-            let mut s2 = 0.0_f64;
-            let mut s3 = 0.0_f64;
-            for l in 0..k {
-                let bv = b[l * n + j];
-                s0 += a[ar0 + l] * bv;
-                s1 += a[ar1 + l] * bv;
-                s2 += a[ar2 + l] * bv;
-                s3 += a[ar3 + l] * bv;
-            }
-            block[i * n + j] = s0;
-            block[(i + 1) * n + j] = s1;
-            block[(i + 2) * n + j] = s2;
-            block[(i + 3) * n + j] = s3;
-            j += 1;
-        }
-        i += MR;
-    }
-
-    // Row remainder (rows not a multiple of MR): original i-k-j per row, which
-    // is itself bit-identical ascending-`l`.
-    while i < rows {
-        let a_row = (row_start + i) * k;
-        let c_row = &mut block[i * n..i * n + n];
-        c_row.fill(0.0);
-        for l in 0..k {
-            let a_il = a[a_row + l];
-            let src = &b[l * n..l * n + n];
-            for j in 0..n {
-                c_row[j] += a_il * src[j];
-            }
-        }
-        i += 1;
-    }
+    matmul_2d_row_block_portable(a, k, b, bpack, n, row_start, block);
 }
 
-/// Cache-blocked GEMM macro-kernel for one thread's contiguous row-block, with B
-/// already packed into pc-major panel order (`bpack`, see [`pack_b_pc_panels`]).
-///
-/// Loop order: pc (k in KC chunks) → jp (NR-col panel) → it (MR-row tile). The
-/// packed B panel for `jp`'s pc-block lives at
-/// `bpack[pc*npanels*NR + jp*kc*NR ..]` and is reused across every row-tile while
-/// L1-resident; the [MR×KC] A tile is reused across panels. C is
-/// read-modified-written once per pc-block: each pc-block
-/// LOADS the running C value (or starts at 0 on the first block) and accumulates
-/// its KC products in ascending `l`, so every output element is summed in the
-/// exact ascending-`l` order `(((0 + p0) + p1) + …)` of the textbook kernel — the
-/// pc-blocking never regroups a partial sum, so the product is bit-for-bit
-/// identical to `matmul_2d_row_block` and the i-j-k reference.
-///
-/// The MR/NR remainder border (rows past the last full MR-tile, columns past the
-/// last full NR-panel) is computed once with a single full-`k` ascending sweep —
-/// also bit-identical and negligible in size — so it never enters the pc-loop.
+fn matmul_2d_row_block_fma(
+    a: &[f64],
+    k: usize,
+    b: &[f64],
+    bpack: Option<&[f64]>,
+    n: usize,
+    row_start: usize,
+    block: &mut [f64],
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            matmul_2d_row_block_avx2_fma(a, k, b, bpack, n, row_start, block);
+        }
+        return;
+    }
+    matmul_2d_row_block(a, k, b, bpack, n, row_start, block);
+}
+
+macro_rules! impl_matmul_2d_blocked_row_block_body {
+    ($a:ident, $k:ident, $b:ident, $bpack:ident, $n:ident, $row_start:ident, $block:ident, $vec_mac:ident, $scalar_mac:ident) => {{
+        let rows = $block.len() / $n;
+        let full_rows = rows - rows % MR;
+        let full_cols = $n - $n % NR;
+        let row_tiles = full_rows / MR;
+        let mut apack = vec![0.0_f64; row_tiles * KC * MR];
+
+        let mut pc = 0;
+        while pc < $k {
+            let kc = KC.min($k - pc);
+            let first = pc == 0;
+
+            for tile in 0..row_tiles {
+                let i = tile * MR;
+                let ar0 = ($row_start + i) * $k + pc;
+                let ar1 = ar0 + $k;
+                let ar2 = ar1 + $k;
+                let ar3 = ar2 + $k;
+                let dst = tile * KC * MR;
+                for l in 0..kc {
+                    let base = dst + l * MR;
+                    apack[base] = $a[ar0 + l];
+                    apack[base + 1] = $a[ar1 + l];
+                    apack[base + 2] = $a[ar2 + l];
+                    apack[base + 3] = $a[ar3 + l];
+                }
+            }
+
+            let col_panels = full_cols / NR;
+            let mut row_super = 0;
+            while row_super < row_tiles {
+                let row_super_end = (row_super + ROW_SUPERPANEL_TILES).min(row_tiles);
+                let mut col_super = 0;
+                while col_super < col_panels {
+                    let col_super_end = (col_super + COL_SUPERPANEL_PANELS).min(col_panels);
+                    let pc_base = pc * col_panels * NR;
+                    let mut tile = row_super;
+                    while tile < row_super_end {
+                        let i = tile * MR;
+                        let abase = tile * KC * MR;
+                        let atile = &apack[abase..abase + kc * MR];
+                        let mut jp = col_super;
+                        while jp < col_super_end {
+                            let j = jp * NR;
+                            let panel =
+                                &$bpack[pc_base + jp * kc * NR..pc_base + (jp + 1) * kc * NR];
+                            let mut c0 = if first {
+                                F64xN::splat(0.0)
+                            } else {
+                                f64xnr_from_slice(&$block[i * $n + j..i * $n + j + NR])
+                            };
+                            let mut c1 = if first {
+                                F64xN::splat(0.0)
+                            } else {
+                                f64xnr_from_slice(&$block[(i + 1) * $n + j..(i + 1) * $n + j + NR])
+                            };
+                            let mut c2 = if first {
+                                F64xN::splat(0.0)
+                            } else {
+                                f64xnr_from_slice(&$block[(i + 2) * $n + j..(i + 2) * $n + j + NR])
+                            };
+                            let mut c3 = if first {
+                                F64xN::splat(0.0)
+                            } else {
+                                f64xnr_from_slice(&$block[(i + 3) * $n + j..(i + 3) * $n + j + NR])
+                            };
+                            for l in 0..kc {
+                                let brow = &panel[l * NR..l * NR + NR];
+                                let bv = f64xnr_from_slice(brow);
+                                let ap = l * MR;
+                                c0 = $vec_mac!(atile[ap], bv, c0);
+                                c1 = $vec_mac!(atile[ap + 1], bv, c1);
+                                c2 = $vec_mac!(atile[ap + 2], bv, c2);
+                                c3 = $vec_mac!(atile[ap + 3], bv, c3);
+                            }
+                            $block[i * $n + j..i * $n + j + NR].copy_from_slice(c0.as_array());
+                            $block[(i + 1) * $n + j..(i + 1) * $n + j + NR]
+                                .copy_from_slice(c1.as_array());
+                            $block[(i + 2) * $n + j..(i + 2) * $n + j + NR]
+                                .copy_from_slice(c2.as_array());
+                            $block[(i + 3) * $n + j..(i + 3) * $n + j + NR]
+                                .copy_from_slice(c3.as_array());
+                            jp += 1;
+                        }
+                        tile += 1;
+                    }
+                    col_super = col_super_end;
+                }
+                row_super = row_super_end;
+            }
+            pc += KC;
+        }
+
+        for i in full_rows..rows {
+            let a_row = ($row_start + i) * $k;
+            for j in 0..$n {
+                let mut s = 0.0_f64;
+                for l in 0..$k {
+                    s = $scalar_mac!($a[a_row + l], $b[l * $n + j], s);
+                }
+                $block[i * $n + j] = s;
+            }
+        }
+        for i in 0..full_rows {
+            let a_row = ($row_start + i) * $k;
+            for j in full_cols..$n {
+                let mut s = 0.0_f64;
+                for l in 0..$k {
+                    s = $scalar_mac!($a[a_row + l], $b[l * $n + j], s);
+                }
+                $block[i * $n + j] = s;
+            }
+        }
+    }};
+}
+
+#[allow(clippy::assign_op_pattern)]
+fn matmul_2d_blocked_row_block_portable(
+    a: &[f64],
+    k: usize,
+    b: &[f64],
+    bpack: &[f64],
+    n: usize,
+    row_start: usize,
+    block: &mut [f64],
+) {
+    impl_matmul_2d_blocked_row_block_body!(
+        a,
+        k,
+        b,
+        bpack,
+        n,
+        row_start,
+        block,
+        vec_mac_portable_f64,
+        scalar_mac_portable_f64
+    );
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn matmul_2d_blocked_row_block_avx2_fma(
+    a: &[f64],
+    k: usize,
+    b: &[f64],
+    bpack: &[f64],
+    n: usize,
+    row_start: usize,
+    block: &mut [f64],
+) {
+    impl_matmul_2d_blocked_row_block_body!(
+        a,
+        k,
+        b,
+        bpack,
+        n,
+        row_start,
+        block,
+        vec_mac_fma_f64,
+        scalar_mac_fma_f64
+    );
+}
+
 fn matmul_2d_blocked_row_block(
     a: &[f64],
     k: usize,
@@ -832,128 +1088,28 @@ fn matmul_2d_blocked_row_block(
     row_start: usize,
     block: &mut [f64],
 ) {
-    let rows = block.len() / n;
-    let full_rows = rows - rows % MR; // rows covered by whole MR-tiles
-    let full_cols = n - n % NR; // cols covered by whole NR-panels
-    let row_tiles = full_rows / MR;
-    let mut apack = vec![0.0_f64; row_tiles * KC * MR];
+    matmul_2d_blocked_row_block_portable(a, k, b, bpack, n, row_start, block);
+}
 
-    // Full MR×NR tile region, k-blocked with C carried across pc-blocks.
-    let mut pc = 0;
-    while pc < k {
-        let kc = KC.min(k - pc);
-        let first = pc == 0;
-
-        // Pack this thread's full-row A slab for the pc-block once, in
-        // [MR-row-tile][k][row] order. The multiply below still consumes l in
-        // ascending order for each output; packing only changes where A is read
-        // from after the one-time copy.
-        for tile in 0..row_tiles {
-            let i = tile * MR;
-            let ar0 = (row_start + i) * k + pc;
-            let ar1 = ar0 + k;
-            let ar2 = ar1 + k;
-            let ar3 = ar2 + k;
-            let dst = tile * KC * MR;
-            for l in 0..kc {
-                let base = dst + l * MR;
-                apack[base] = a[ar0 + l];
-                apack[base + 1] = a[ar1 + l];
-                apack[base + 2] = a[ar2 + l];
-                apack[base + 3] = a[ar3 + l];
-            }
+fn matmul_2d_blocked_row_block_fma(
+    a: &[f64],
+    k: usize,
+    b: &[f64],
+    bpack: &[f64],
+    n: usize,
+    row_start: usize,
+    block: &mut [f64],
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            matmul_2d_blocked_row_block_avx2_fma(a, k, b, bpack, n, row_start, block);
         }
-
-        let col_panels = full_cols / NR;
-        let mut row_super = 0;
-        while row_super < row_tiles {
-            let row_super_end = (row_super + ROW_SUPERPANEL_TILES).min(row_tiles);
-            let mut col_super = 0;
-            while col_super < col_panels {
-                let col_super_end = (col_super + COL_SUPERPANEL_PANELS).min(col_panels);
-                let pc_base = pc * col_panels * NR;
-                let mut tile = row_super;
-                while tile < row_super_end {
-                    let i = tile * MR;
-                    let abase = tile * KC * MR;
-                    let mut jp = col_super;
-                    while jp < col_super_end {
-                        let j = jp * NR;
-                        // This panel's pc-block: kc rows of NR, contiguous from the pack.
-                        let panel = &bpack[pc_base + jp * kc * NR..];
-                        // Seed accumulators from the running C (0 on the first pc-block),
-                        // so the kc products continue the ascending sweep in place.
-                        let mut c0 = if first {
-                            F64xN::splat(0.0)
-                        } else {
-                            f64xnr_from_slice(&block[i * n + j..i * n + j + NR])
-                        };
-                        let mut c1 = if first {
-                            F64xN::splat(0.0)
-                        } else {
-                            f64xnr_from_slice(&block[(i + 1) * n + j..(i + 1) * n + j + NR])
-                        };
-                        let mut c2 = if first {
-                            F64xN::splat(0.0)
-                        } else {
-                            f64xnr_from_slice(&block[(i + 2) * n + j..(i + 2) * n + j + NR])
-                        };
-                        let mut c3 = if first {
-                            F64xN::splat(0.0)
-                        } else {
-                            f64xnr_from_slice(&block[(i + 3) * n + j..(i + 3) * n + j + NR])
-                        };
-                        for l in 0..kc {
-                            let brow = &panel[l * NR..l * NR + NR];
-                            let bv = f64xnr_from_slice(brow);
-                            let ap = abase + l * MR;
-                            let a0 = apack[ap];
-                            let a1 = apack[ap + 1];
-                            let a2 = apack[ap + 2];
-                            let a3 = apack[ap + 3];
-                            c0 += F64xN::splat(a0) * bv;
-                            c1 += F64xN::splat(a1) * bv;
-                            c2 += F64xN::splat(a2) * bv;
-                            c3 += F64xN::splat(a3) * bv;
-                        }
-                        block[i * n + j..i * n + j + NR].copy_from_slice(c0.as_array());
-                        block[(i + 1) * n + j..(i + 1) * n + j + NR].copy_from_slice(c1.as_array());
-                        block[(i + 2) * n + j..(i + 2) * n + j + NR].copy_from_slice(c2.as_array());
-                        block[(i + 3) * n + j..(i + 3) * n + j + NR].copy_from_slice(c3.as_array());
-                        jp += 1;
-                    }
-                    tile += 1;
-                }
-                col_super = col_super_end;
-            }
-            row_super = row_super_end;
-        }
-        pc += KC;
+        return;
     }
-
-    // Border, single full-k ascending sweep (bit-identical, tiny region):
-    //   bottom strip = remainder rows × all cols; right strip = full rows ×
-    //   remainder cols. Disjoint, together exactly the non-full-tile elements.
-    for i in full_rows..rows {
-        let a_row = (row_start + i) * k;
-        for j in 0..n {
-            let mut s = 0.0_f64;
-            for l in 0..k {
-                s += a[a_row + l] * b[l * n + j];
-            }
-            block[i * n + j] = s;
-        }
-    }
-    for i in 0..full_rows {
-        let a_row = (row_start + i) * k;
-        for j in full_cols..n {
-            let mut s = 0.0_f64;
-            for l in 0..k {
-                s += a[a_row + l] * b[l * n + j];
-            }
-            block[i * n + j] = s;
-        }
-    }
+    matmul_2d_blocked_row_block(a, k, b, bpack, n, row_start, block);
 }
 
 /// Batched matrix product: `a` is `[batch, m, k]`, `b` is `[batch, k, n]`, both
@@ -1182,14 +1338,6 @@ pub fn batched_matmul_2d(
     if batch == 0 || m == 0 || n == 0 || k == 0 {
         return result;
     }
-    // Single-matrix GEMM with B past L2: route through the non-batched `matmul_2d`,
-    // which packs B panel-major and KC-blocks A (keeping it L1-resident, read once
-    // per pc-block) instead of re-streaming the whole A matrix per B panel — the
-    // binding cost the batched register kernel pays at scale. BIT-IDENTICAL: the
-    // KC/pc-blocking never regroups a partial sum (ascending-`l` preserved), so the
-    // product matches the batched register kernel exactly (mirrors the f32 batched
-    // entry). Batched (batch>1) keeps the unpacked register kernel — B differs per
-    // batch, so packing each one is net overhead.
     if batch == 1 && k.saturating_mul(n) >= PACK_B_MIN_KN {
         matmul_2d_into(a, m, k, b, n, &mut result);
         return result;
@@ -1197,9 +1345,14 @@ pub fn batched_matmul_2d(
     let total_rows = batch * m;
     let ops = total_rows.saturating_mul(k).saturating_mul(n);
     let threads = matmul_thread_count(ops, total_rows);
+    let use_fma = crate::should_use_hardware_fma();
 
     if threads <= 1 {
-        batched_matmul_row_block(a, b, m, k, n, 0, &mut result);
+        if use_fma {
+            batched_matmul_row_block_fma(a, b, m, k, n, 0, &mut result);
+        } else {
+            batched_matmul_row_block(a, b, m, k, n, 0, &mut result);
+        }
         return result;
     }
 
@@ -1212,27 +1365,149 @@ pub fn batched_matmul_2d(
             let (block, tail) = rest.split_at_mut(chunk_rows * n);
             rest = tail;
             let gs = g_start;
-            scope.spawn(move || batched_matmul_row_block(a, b, m, k, n, gs, block));
+            scope.spawn(move || {
+                if use_fma {
+                    batched_matmul_row_block_fma(a, b, m, k, n, gs, block);
+                } else {
+                    batched_matmul_row_block(a, b, m, k, n, gs, block);
+                }
+            });
             g_start += chunk_rows;
         }
     });
     result
 }
 
-/// Compute global output rows `[g_start, g_start + block.len()/n)` of a batched
-/// matmul into `block`. Global row `g` is batch `g / m`, row `g % m`: its A row
-/// is `a[g*k .. g*k+k]` (A is `[batch,m,k]` so `(bt*m+i)*k == g*k`) and its B
-/// panel is batch `g/m`'s `[k,n]` block. Ascending-`l` accumulation.
-/// Register-blocked native-f64 batched matmul row-block: an `MR × NR` output tile
-/// is held in `MR` local `F64xN` accumulators (compiler-register-resident) and
-/// streamed over `k`, reusing each loaded `B[l][j..j+NR]` across the `MR` rows and
-/// each `A` element across the `NR` columns — the same microkernel the non-batched
-/// `matmul_2d_row_block` and the `batched_matmul_row_block_f32_in` already use.
-/// Tiles never cross a batch boundary (rows in a tile share `b_off`); the MR/NR
-/// remainders run the same ascending-`l` sweep with scalar / per-row accumulators.
-/// BIT-IDENTICAL to the per-row kernel [`batched_matmul_row_block_naive`]: each
-/// output still folds its own ascending-`l` `*`/`+` sum (no FMA contraction, no
-/// k-reassociation), only the (i,j) iteration order changes.
+macro_rules! impl_batched_matmul_row_block_body {
+    ($a:ident, $b:ident, $m:ident, $k:ident, $n:ident, $g_start:ident, $block:ident, $vec_mac:ident, $scalar_mac:ident) => {{
+        let total_rows = $block.len() / $n;
+        let full_cols = $n / NR * NR;
+        let mut ri = 0;
+        while ri < total_rows {
+            let g0 = $g_start + ri;
+            let bt = g0 / $m;
+            let b_off = bt * $k * $n;
+            let tile_rows = (total_rows - ri).min((bt + 1) * $m - g0);
+            let full_rows = tile_rows / MR * MR;
+
+            let mut j = 0;
+            while j < full_cols {
+                let mut i = 0;
+                while i < full_rows {
+                    let ar0 = (g0 + i) * $k;
+                    let a_row0 = &$a[ar0..ar0 + $k];
+                    let a_row1 = &$a[ar0 + $k..ar0 + 2 * $k];
+                    let a_row2 = &$a[ar0 + 2 * $k..ar0 + 3 * $k];
+                    let a_row3 = &$a[ar0 + 3 * $k..ar0 + 4 * $k];
+                    let mut c0 = F64xN::splat(0.0);
+                    let mut c1 = F64xN::splat(0.0);
+                    let mut c2 = F64xN::splat(0.0);
+                    let mut c3 = F64xN::splat(0.0);
+                    for l in 0..$k {
+                        let bbase = b_off + l * $n + j;
+                        let bv = F64xN::from_slice(&$b[bbase..bbase + NR]);
+                        c0 = $vec_mac!(a_row0[l], bv, c0);
+                        c1 = $vec_mac!(a_row1[l], bv, c1);
+                        c2 = $vec_mac!(a_row2[l], bv, c2);
+                        c3 = $vec_mac!(a_row3[l], bv, c3);
+                    }
+                    let ob = (ri + i) * $n + j;
+                    $block[ob..ob + NR].copy_from_slice(c0.as_array());
+                    $block[ob + $n..ob + $n + NR].copy_from_slice(c1.as_array());
+                    $block[ob + 2 * $n..ob + 2 * $n + NR].copy_from_slice(c2.as_array());
+                    $block[ob + 3 * $n..ob + 3 * $n + NR].copy_from_slice(c3.as_array());
+                    i += MR;
+                }
+                j += NR;
+            }
+
+            let mut i = 0;
+            while i < full_rows {
+                let ar0 = (g0 + i) * $k;
+                let mut jj = full_cols;
+                while jj < $n {
+                    let mut s = [0.0f64; MR];
+                    for l in 0..$k {
+                        let bv = $b[b_off + l * $n + jj];
+                        for (r, sr) in s.iter_mut().enumerate() {
+                            *sr = $scalar_mac!($a[ar0 + r * $k + l], bv, *sr);
+                        }
+                    }
+                    for (r, sr) in s.iter().enumerate() {
+                        $block[(ri + i + r) * $n + jj] = *sr;
+                    }
+                    jj += 1;
+                }
+                i += MR;
+            }
+
+            while i < tile_rows {
+                let a_row = (g0 + i) * $k;
+                let c_row = &mut $block[(ri + i) * $n..(ri + i) * $n + $n];
+                c_row.fill(0.0);
+                for l in 0..$k {
+                    let a_il = $a[a_row + l];
+                    let src = &$b[b_off + l * $n..b_off + l * $n + $n];
+                    for (cx, bx) in c_row.iter_mut().zip(src) {
+                        *cx = $scalar_mac!(a_il, *bx, *cx);
+                    }
+                }
+                i += 1;
+            }
+
+            ri += tile_rows;
+        }
+    }};
+}
+
+#[allow(clippy::assign_op_pattern)]
+fn batched_matmul_row_block_portable(
+    a: &[f64],
+    b: &[f64],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [f64],
+) {
+    impl_batched_matmul_row_block_body!(
+        a,
+        b,
+        m,
+        k,
+        n,
+        g_start,
+        block,
+        vec_mac_portable_f64,
+        scalar_mac_portable_f64
+    );
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn batched_matmul_row_block_avx2_fma(
+    a: &[f64],
+    b: &[f64],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [f64],
+) {
+    impl_batched_matmul_row_block_body!(
+        a,
+        b,
+        m,
+        k,
+        n,
+        g_start,
+        block,
+        vec_mac_fma_f64,
+        scalar_mac_fma_f64
+    );
+}
+
 fn batched_matmul_row_block(
     a: &[f64],
     b: &[f64],
@@ -1242,85 +1517,28 @@ fn batched_matmul_row_block(
     g_start: usize,
     block: &mut [f64],
 ) {
-    let total_rows = block.len() / n;
-    let full_cols = n / NR * NR;
-    let mut ri = 0;
-    while ri < total_rows {
-        // A row-tile must stay inside one batch (shared `b_off`) and inside the block.
-        let g0 = g_start + ri;
-        let bt = g0 / m;
-        let b_off = bt * k * n;
-        let tile_rows = (total_rows - ri).min((bt + 1) * m - g0);
-        let full_rows = tile_rows / MR * MR;
+    batched_matmul_row_block_portable(a, b, m, k, n, g_start, block);
+}
 
-        // Full MR×NR register-microkernel tiles. Process each NR-wide B panel across
-        // every MR-row tile; B[l][j..j+NR] is loaded once and fanned into the MR rows.
-        let mut j = 0;
-        while j < full_cols {
-            let mut i = 0;
-            while i < full_rows {
-                let ar0 = (g0 + i) * k;
-                let (ar1, ar2, ar3) = (ar0 + k, ar0 + 2 * k, ar0 + 3 * k);
-                let mut c0 = F64xN::splat(0.0);
-                let mut c1 = F64xN::splat(0.0);
-                let mut c2 = F64xN::splat(0.0);
-                let mut c3 = F64xN::splat(0.0);
-                for l in 0..k {
-                    let bbase = b_off + l * n + j;
-                    let bv = F64xN::from_slice(&b[bbase..bbase + NR]);
-                    c0 += F64xN::splat(a[ar0 + l]) * bv;
-                    c1 += F64xN::splat(a[ar1 + l]) * bv;
-                    c2 += F64xN::splat(a[ar2 + l]) * bv;
-                    c3 += F64xN::splat(a[ar3 + l]) * bv;
-                }
-                let ob = (ri + i) * n + j;
-                block[ob..ob + NR].copy_from_slice(c0.as_array());
-                block[ob + n..ob + n + NR].copy_from_slice(c1.as_array());
-                block[ob + 2 * n..ob + 2 * n + NR].copy_from_slice(c2.as_array());
-                block[ob + 3 * n..ob + 3 * n + NR].copy_from_slice(c3.as_array());
-                i += MR;
-            }
-            j += NR;
+fn batched_matmul_row_block_fma(
+    a: &[f64],
+    b: &[f64],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [f64],
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            batched_matmul_row_block_avx2_fma(a, b, m, k, n, g_start, block);
         }
-
-        // Column remainder (n not a multiple of NR) for the full MR-row tiles.
-        let mut i = 0;
-        while i < full_rows {
-            let ar0 = (g0 + i) * k;
-            let mut jj = full_cols;
-            while jj < n {
-                let mut s = [0.0f64; MR];
-                for l in 0..k {
-                    let bv = b[b_off + l * n + jj];
-                    for (r, sr) in s.iter_mut().enumerate() {
-                        *sr += a[ar0 + r * k + l] * bv;
-                    }
-                }
-                for (r, sr) in s.iter().enumerate() {
-                    block[(ri + i + r) * n + jj] = *sr;
-                }
-                jj += 1;
-            }
-            i += MR;
-        }
-
-        // Row remainder (tile_rows not a multiple of MR): per-row ascending-`l` sweep.
-        while i < tile_rows {
-            let a_row = (g0 + i) * k;
-            let c_row = &mut block[(ri + i) * n..(ri + i) * n + n];
-            c_row.fill(0.0);
-            for l in 0..k {
-                let a_il = a[a_row + l];
-                let src = &b[b_off + l * n..b_off + l * n + n];
-                for (cx, bx) in c_row.iter_mut().zip(src) {
-                    *cx += a_il * *bx;
-                }
-            }
-            i += 1;
-        }
-
-        ri += tile_rows;
+        return;
     }
+    batched_matmul_row_block(a, b, m, k, n, g_start, block);
 }
 
 /// Pre-register-blocking per-row reference kernel, kept so a same-binary A/B can
@@ -1474,12 +1692,6 @@ fn batched_complex_row_block(
     g_start: usize,
     block: &mut [(f64, f64)],
 ) {
-    // 4-row register blocking (mirrors the non-batched `rank2_complex_row_block` + i64 kernel)
-    // applied WITHIN each batch: a 4-row group only shares one `b_row` load when all four output
-    // rows belong to the same batch (`g/m`), since each batch `bt` reads its own `b[bt*k*n..]`.
-    // We walk the chunk one same-batch segment at a time and 4-row-block inside it; the < 4-row
-    // remainder of each segment uses the single-row path. BIT-IDENTICAL: every output still folds
-    // `l` in ascending order; blocking only interleaves independent same-batch rows.
     let total_rows = block.len() / n;
     let mut rest: &mut [(f64, f64)] = block;
     let mut ri = 0usize;
@@ -1559,17 +1771,12 @@ pub fn batched_matmul_2d_f32_in(
     let total_rows = batch * m;
     let ops = total_rows.saturating_mul(k).saturating_mul(n);
     let threads = matmul_thread_count(ops, total_rows);
+    let use_fma = crate::should_use_hardware_fma();
 
-    // Single-matrix GEMM with B past L2: pack B panel-major ONCE so every thread's
-    // microkernel streams it sequentially (bit-identical, just B read order). Batched
-    // (batch>1) GEMM keeps the unpacked register kernel (B differs per batch).
     if batch == 1 && k.saturating_mul(n) >= PACK_B_MIN_KN_F32 {
-        // The KC-blocked branch remains available for direct benchmarking/proofs, but
-        // same-worker production profiling currently keeps the flat packed kernel on
-        // the hot route; the empty gate below prevents the noisier KC path from being
-        // selected until fresh evidence finds a winning size band.
         let kn = k.saturating_mul(n);
-        let blocked = k > F32_KC && (F32_BLOCKED_B_MIN_KN..F32_BLOCKED_B_MAX_KN).contains(&kn);
+        let blocked = (use_fma && k > F32_KC && kn >= (1 << 20))
+            || (k > F32_KC && (F32_BLOCKED_B_MIN_KN..F32_BLOCKED_B_MAX_KN).contains(&kn));
         let bpack = if blocked {
             pack_b_pc_panels_f32(b, k, n, threads)
         } else {
@@ -1577,7 +1784,13 @@ pub fn batched_matmul_2d_f32_in(
         };
         let run = |gs: usize, block: &mut [f32], bp: &[f32]| {
             if blocked {
-                matmul_2d_blocked_row_block_f32(a, k, b, bp, n, gs, block);
+                if use_fma {
+                    matmul_2d_blocked_row_block_f32_fma(a, k, b, bp, n, gs, block);
+                } else {
+                    matmul_2d_blocked_row_block_f32(a, k, b, bp, n, gs, block);
+                }
+            } else if use_fma {
+                matmul_2d_packed_row_block_f32_fma(a, k, bp, b, n, gs, block);
             } else {
                 matmul_2d_packed_row_block_f32(a, k, bp, b, n, gs, block);
             }
@@ -1604,7 +1817,11 @@ pub fn batched_matmul_2d_f32_in(
     }
 
     if threads <= 1 {
-        batched_matmul_row_block_f32_in(a, b, m, k, n, 0, &mut result);
+        if use_fma {
+            batched_matmul_row_block_f32_in_fma(a, b, m, k, n, 0, &mut result);
+        } else {
+            batched_matmul_row_block_f32_in(a, b, m, k, n, 0, &mut result);
+        }
         return result;
     }
 
@@ -1617,29 +1834,176 @@ pub fn batched_matmul_2d_f32_in(
             let (block, tail) = rest.split_at_mut(chunk_rows * n);
             rest = tail;
             let gs = g_start;
-            scope.spawn(move || batched_matmul_row_block_f32_in(a, b, m, k, n, gs, block));
+            scope.spawn(move || {
+                if use_fma {
+                    batched_matmul_row_block_f32_in_fma(a, b, m, k, n, gs, block);
+                } else {
+                    batched_matmul_row_block_f32_in(a, b, m, k, n, gs, block);
+                }
+            });
             g_start += chunk_rows;
         }
     });
     result
 }
 
-/// Output rows accumulated together in one register tile (mirrors the f64
-/// [`matmul_2d_row_block`] microkernel). `F32_MR` rows are computed simultaneously so
-/// each `B[l]` panel is loaded ONCE into a register and reused across all `F32_MR`
-/// rows, and the `F32_MR` accumulators live in registers across the whole `k` sweep —
-/// no per-FMA L1 round-trip (the flaw of the prior Vec-accumulator attempt). MR=4 is
-/// the measured sweet spot: it keeps 4 F32xN accumulator chains in flight while needing
-/// only 4 strided A loads per `l` (MR=8 doubled the A-load traffic and regressed).
 const F32_MR: usize = 4;
 
-/// Register-blocked native-f32 GEMM row-block: an `F32_MR × F32_NR` output tile is held
-/// in `F32_MR` local `F32xN` accumulators (compiler-register-resident) and streamed over
-/// `k`. Each output still folds its own ascending-`l` f32 multiply-add (lanes = output
-/// columns; tile rows = independent outputs), so this is BIT-IDENTICAL to the per-row
-/// kernel [`batched_matmul_row_block_f32_in_rowref`] — same per-output order, same f32
-/// `*`/`+`. Tiles never cross a batch boundary (rows in a tile share `b_off`); the MR/NR
-/// remainders run the same ascending-`l` sweep with scalar / per-row accumulators.
+macro_rules! vec_mac_portable_f32 {
+    ($a:expr, $bv:expr, $c:expr) => {
+        $c + F32xN::splat($a) * $bv
+    };
+}
+
+macro_rules! scalar_mac_portable_f32 {
+    ($a:expr, $bv:expr, $c:expr) => {
+        $c + $a * $bv
+    };
+}
+
+macro_rules! vec_mac_fma_f32 {
+    ($a:expr, $bv:expr, $c:expr) => {{
+        use std::simd::StdFloat;
+        F32xN::splat($a).mul_add($bv, $c)
+    }};
+}
+
+macro_rules! scalar_mac_fma_f32 {
+    ($a:expr, $bv:expr, $c:expr) => {
+        ($a).mul_add($bv, $c)
+    };
+}
+
+macro_rules! impl_batched_matmul_row_block_f32_in_body {
+    ($a:ident, $b:ident, $m:ident, $k:ident, $n:ident, $g_start:ident, $block:ident, $vec_mac:ident, $scalar_mac:ident) => {{
+        let total_rows = $block.len() / $n;
+        let full_cols = $n / F32_NR * F32_NR;
+        let mut ri = 0;
+        while ri < total_rows {
+            let g0 = $g_start + ri;
+            let bt = g0 / $m;
+            let b_off = bt * $k * $n;
+            let tile_rows = (total_rows - ri).min((bt + 1) * $m - g0);
+            let full_rows = tile_rows / F32_MR * F32_MR;
+
+            let mut j = 0;
+            while j < full_cols {
+                let mut i = 0;
+                while i < full_rows {
+                    let ar0 = (g0 + i) * $k;
+                    let a_row0 = &$a[ar0..ar0 + $k];
+                    let a_row1 = &$a[ar0 + $k..ar0 + 2 * $k];
+                    let a_row2 = &$a[ar0 + 2 * $k..ar0 + 3 * $k];
+                    let a_row3 = &$a[ar0 + 3 * $k..ar0 + 4 * $k];
+                    let mut c0 = F32xN::splat(0.0);
+                    let mut c1 = F32xN::splat(0.0);
+                    let mut c2 = F32xN::splat(0.0);
+                    let mut c3 = F32xN::splat(0.0);
+                    for l in 0..$k {
+                        let bbase = b_off + l * $n + j;
+                        let bv = F32xN::from_slice(&$b[bbase..bbase + F32_NR]);
+                        c0 = $vec_mac!(a_row0[l], bv, c0);
+                        c1 = $vec_mac!(a_row1[l], bv, c1);
+                        c2 = $vec_mac!(a_row2[l], bv, c2);
+                        c3 = $vec_mac!(a_row3[l], bv, c3);
+                    }
+                    let ob = (ri + i) * $n + j;
+                    $block[ob..ob + F32_NR].copy_from_slice(c0.as_array());
+                    $block[ob + $n..ob + $n + F32_NR].copy_from_slice(c1.as_array());
+                    $block[ob + 2 * $n..ob + 2 * $n + F32_NR].copy_from_slice(c2.as_array());
+                    $block[ob + 3 * $n..ob + 3 * $n + F32_NR].copy_from_slice(c3.as_array());
+                    i += F32_MR;
+                }
+                j += F32_NR;
+            }
+
+            let mut i = 0;
+            while i < full_rows {
+                let ar0 = (g0 + i) * $k;
+                let mut jj = full_cols;
+                while jj < $n {
+                    let mut s = [0.0f32; F32_MR];
+                    for l in 0..$k {
+                        let bv = $b[b_off + l * $n + jj];
+                        for (r, sr) in s.iter_mut().enumerate() {
+                            *sr = $scalar_mac!($a[ar0 + r * $k + l], bv, *sr);
+                        }
+                    }
+                    for (r, sr) in s.iter().enumerate() {
+                        $block[(ri + i + r) * $n + jj] = *sr;
+                    }
+                    jj += 1;
+                }
+                i += F32_MR;
+            }
+
+            while i < tile_rows {
+                let a_row = (g0 + i) * $k;
+                let c_row = &mut $block[(ri + i) * $n..(ri + i) * $n + $n];
+                c_row.fill(0.0);
+                for l in 0..$k {
+                    let a_il = $a[a_row + l];
+                    let src = &$b[b_off + l * $n..b_off + l * $n + $n];
+                    for (cx, bx) in c_row.iter_mut().zip(src) {
+                        *cx = $scalar_mac!(a_il, *bx, *cx);
+                    }
+                }
+                i += 1;
+            }
+
+            ri += tile_rows;
+        }
+    }};
+}
+
+#[allow(clippy::assign_op_pattern)]
+fn batched_matmul_row_block_f32_in_portable(
+    a: &[f32],
+    b: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [f32],
+) {
+    impl_batched_matmul_row_block_f32_in_body!(
+        a,
+        b,
+        m,
+        k,
+        n,
+        g_start,
+        block,
+        vec_mac_portable_f32,
+        scalar_mac_portable_f32
+    );
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn batched_matmul_row_block_f32_in_avx2_fma(
+    a: &[f32],
+    b: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [f32],
+) {
+    impl_batched_matmul_row_block_f32_in_body!(
+        a,
+        b,
+        m,
+        k,
+        n,
+        g_start,
+        block,
+        vec_mac_fma_f32,
+        scalar_mac_fma_f32
+    );
+}
+
 fn batched_matmul_row_block_f32_in(
     a: &[f32],
     b: &[f32],
@@ -1649,86 +2013,28 @@ fn batched_matmul_row_block_f32_in(
     g_start: usize,
     block: &mut [f32],
 ) {
-    let total_rows = block.len() / n;
-    let full_cols = n / F32_NR * F32_NR;
-    let mut ri = 0;
-    while ri < total_rows {
-        // A row-tile must stay inside one batch (shared `b_off`) and inside the block.
-        let g0 = g_start + ri;
-        let bt = g0 / m;
-        let b_off = bt * k * n;
-        let tile_rows = (total_rows - ri).min((bt + 1) * m - g0);
-        let full_rows = tile_rows / F32_MR * F32_MR;
+    batched_matmul_row_block_f32_in_portable(a, b, m, k, n, g_start, block);
+}
 
-        // Full MR×NR register-microkernel tiles. Process each NR-wide B panel across
-        // every MR-row tile; B[l][j..j+NR] is loaded once and fanned into the MR rows.
-        let mut j = 0;
-        while j < full_cols {
-            let mut i = 0;
-            while i < full_rows {
-                let ar0 = (g0 + i) * k;
-                let (ar1, ar2, ar3) = (ar0 + k, ar0 + 2 * k, ar0 + 3 * k);
-                let mut c0 = F32xN::splat(0.0);
-                let mut c1 = F32xN::splat(0.0);
-                let mut c2 = F32xN::splat(0.0);
-                let mut c3 = F32xN::splat(0.0);
-                for l in 0..k {
-                    let bbase = b_off + l * n + j;
-                    let bv = F32xN::from_slice(&b[bbase..bbase + F32_NR]);
-                    c0 += F32xN::splat(a[ar0 + l]) * bv;
-                    c1 += F32xN::splat(a[ar1 + l]) * bv;
-                    c2 += F32xN::splat(a[ar2 + l]) * bv;
-                    c3 += F32xN::splat(a[ar3 + l]) * bv;
-                }
-                let ob = (ri + i) * n + j;
-                block[ob..ob + F32_NR].copy_from_slice(c0.as_array());
-                block[ob + n..ob + n + F32_NR].copy_from_slice(c1.as_array());
-                block[ob + 2 * n..ob + 2 * n + F32_NR].copy_from_slice(c2.as_array());
-                block[ob + 3 * n..ob + 3 * n + F32_NR].copy_from_slice(c3.as_array());
-                i += F32_MR;
-            }
-            j += F32_NR;
+fn batched_matmul_row_block_f32_in_fma(
+    a: &[f32],
+    b: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [f32],
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            batched_matmul_row_block_f32_in_avx2_fma(a, b, m, k, n, g_start, block);
         }
-
-        // Column remainder (n not a multiple of F32_NR) for the full MR-row tiles:
-        // F32_MR scalar accumulators, same ascending-`l` order.
-        let mut i = 0;
-        while i < full_rows {
-            let ar0 = (g0 + i) * k;
-            let mut jj = full_cols;
-            while jj < n {
-                let mut s = [0.0f32; F32_MR];
-                for l in 0..k {
-                    let bv = b[b_off + l * n + jj];
-                    for (r, sr) in s.iter_mut().enumerate() {
-                        *sr += a[ar0 + r * k + l] * bv;
-                    }
-                }
-                for (r, sr) in s.iter().enumerate() {
-                    block[(ri + i + r) * n + jj] = *sr;
-                }
-                jj += 1;
-            }
-            i += F32_MR;
-        }
-
-        // Row remainder (tile_rows not a multiple of MR): per-row ascending-`l` sweep.
-        while i < tile_rows {
-            let a_row = (g0 + i) * k;
-            let c_row = &mut block[(ri + i) * n..(ri + i) * n + n];
-            c_row.fill(0.0);
-            for l in 0..k {
-                let a_il = a[a_row + l];
-                let src = &b[b_off + l * n..b_off + l * n + n];
-                for (cx, bx) in c_row.iter_mut().zip(src) {
-                    *cx += a_il * *bx;
-                }
-            }
-            i += 1;
-        }
-
-        ri += tile_rows;
+        return;
     }
+    batched_matmul_row_block_f32_in(a, b, m, k, n, g_start, block);
 }
 
 /// Pre-cache-blocking per-row reference kernel, kept only so a same-binary A/B can
@@ -1779,9 +2085,6 @@ fn batched_matmul_row_block_f32_in_rowref(
 }
 
 /// `k·n` (B element count) above which B is packed panel-major before the multiply.
-/// Once B spills L2 the strided read in the per-`l` microkernel misses spatial
-/// locality on every k-step; below it B is L2-resident and the pack does not pay.
-/// f32 sibling of the f64 `PACK_B_MIN_KN` (half the bytes, so 2x the elements).
 const PACK_B_MIN_KN_F32: usize = 1 << 18;
 
 /// Flat panel-major B pack for the native-f32 GEMM: panel `jp` (columns
@@ -1804,10 +2107,127 @@ fn pack_b_panels_f32(b: &[f32], k: usize, n: usize) -> Vec<f32> {
     bpack
 }
 
-/// Native-f32 GEMM row-block reading a panel-major-packed B (single matrix, batch 0).
-/// BIT-IDENTICAL to [`batched_matmul_row_block_f32_in`] — same MR=4 × F32_NR register
-/// tile, same per-output ascending-`l` fold; only B's read order changes (sequential
-/// from the pack). Column/row remainders read unpacked B with the same ascending sweep.
+macro_rules! impl_matmul_2d_packed_row_block_f32_body {
+    ($a:ident, $k:ident, $bpack:ident, $b:ident, $n:ident, $g_start:ident, $block:ident, $vec_mac:ident, $scalar_mac:ident) => {{
+        let total_rows = $block.len() / $n;
+        let full_cols = $n / F32_NR * F32_NR;
+        let full_rows = total_rows / F32_MR * F32_MR;
+
+        let mut j = 0;
+        while j < full_cols {
+            let panel = &$bpack[(j / F32_NR) * $k * F32_NR..(j / F32_NR + 1) * $k * F32_NR];
+            let mut i = 0;
+            while i < full_rows {
+                let ar0 = ($g_start + i) * $k;
+                let a_row0 = &$a[ar0..ar0 + $k];
+                let a_row1 = &$a[ar0 + $k..ar0 + 2 * $k];
+                let a_row2 = &$a[ar0 + 2 * $k..ar0 + 3 * $k];
+                let a_row3 = &$a[ar0 + 3 * $k..ar0 + 4 * $k];
+                let mut c0 = F32xN::splat(0.0);
+                let mut c1 = F32xN::splat(0.0);
+                let mut c2 = F32xN::splat(0.0);
+                let mut c3 = F32xN::splat(0.0);
+                for l in 0..$k {
+                    let bv = F32xN::from_slice(&panel[l * F32_NR..l * F32_NR + F32_NR]);
+                    c0 = $vec_mac!(a_row0[l], bv, c0);
+                    c1 = $vec_mac!(a_row1[l], bv, c1);
+                    c2 = $vec_mac!(a_row2[l], bv, c2);
+                    c3 = $vec_mac!(a_row3[l], bv, c3);
+                }
+                let ob = i * $n + j;
+                $block[ob..ob + F32_NR].copy_from_slice(c0.as_array());
+                $block[ob + $n..ob + $n + F32_NR].copy_from_slice(c1.as_array());
+                $block[ob + 2 * $n..ob + 2 * $n + F32_NR].copy_from_slice(c2.as_array());
+                $block[ob + 3 * $n..ob + 3 * $n + F32_NR].copy_from_slice(c3.as_array());
+                i += F32_MR;
+            }
+            j += F32_NR;
+        }
+
+        let mut i = 0;
+        while i < full_rows {
+            let ar0 = ($g_start + i) * $k;
+            let mut jj = full_cols;
+            while jj < $n {
+                let mut s = [0.0f32; F32_MR];
+                for l in 0..$k {
+                    let bv = $b[l * $n + jj];
+                    for (r, sr) in s.iter_mut().enumerate() {
+                        *sr = $scalar_mac!($a[ar0 + r * $k + l], bv, *sr);
+                    }
+                }
+                for (r, sr) in s.iter().enumerate() {
+                    $block[(i + r) * $n + jj] = *sr;
+                }
+                jj += 1;
+            }
+            i += F32_MR;
+        }
+
+        while i < total_rows {
+            let a_row = ($g_start + i) * $k;
+            let c_row = &mut $block[i * $n..i * $n + $n];
+            c_row.fill(0.0);
+            for l in 0..$k {
+                let a_il = $a[a_row + l];
+                let src = &$b[l * $n..l * $n + $n];
+                for (cx, bx) in c_row.iter_mut().zip(src) {
+                    *cx = $scalar_mac!(a_il, *bx, *cx);
+                }
+            }
+            i += 1;
+        }
+    }};
+}
+
+#[allow(clippy::assign_op_pattern)]
+fn matmul_2d_packed_row_block_f32_portable(
+    a: &[f32],
+    k: usize,
+    bpack: &[f32],
+    b: &[f32],
+    n: usize,
+    g_start: usize,
+    block: &mut [f32],
+) {
+    impl_matmul_2d_packed_row_block_f32_body!(
+        a,
+        k,
+        bpack,
+        b,
+        n,
+        g_start,
+        block,
+        vec_mac_portable_f32,
+        scalar_mac_portable_f32
+    );
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn matmul_2d_packed_row_block_f32_avx2_fma(
+    a: &[f32],
+    k: usize,
+    bpack: &[f32],
+    b: &[f32],
+    n: usize,
+    g_start: usize,
+    block: &mut [f32],
+) {
+    impl_matmul_2d_packed_row_block_f32_body!(
+        a,
+        k,
+        bpack,
+        b,
+        n,
+        g_start,
+        block,
+        vec_mac_fma_f32,
+        scalar_mac_fma_f32
+    );
+}
+
 fn matmul_2d_packed_row_block_f32(
     a: &[f32],
     k: usize,
@@ -1817,73 +2237,28 @@ fn matmul_2d_packed_row_block_f32(
     g_start: usize,
     block: &mut [f32],
 ) {
-    let total_rows = block.len() / n;
-    let full_cols = n / F32_NR * F32_NR;
-    let full_rows = total_rows / F32_MR * F32_MR;
+    matmul_2d_packed_row_block_f32_portable(a, k, bpack, b, n, g_start, block);
+}
 
-    let mut j = 0;
-    while j < full_cols {
-        let panel = &bpack[(j / F32_NR) * k * F32_NR..];
-        let mut i = 0;
-        while i < full_rows {
-            let ar0 = (g_start + i) * k;
-            let (ar1, ar2, ar3) = (ar0 + k, ar0 + 2 * k, ar0 + 3 * k);
-            let mut c0 = F32xN::splat(0.0);
-            let mut c1 = F32xN::splat(0.0);
-            let mut c2 = F32xN::splat(0.0);
-            let mut c3 = F32xN::splat(0.0);
-            for l in 0..k {
-                let bv = F32xN::from_slice(&panel[l * F32_NR..l * F32_NR + F32_NR]);
-                c0 += F32xN::splat(a[ar0 + l]) * bv;
-                c1 += F32xN::splat(a[ar1 + l]) * bv;
-                c2 += F32xN::splat(a[ar2 + l]) * bv;
-                c3 += F32xN::splat(a[ar3 + l]) * bv;
-            }
-            let ob = i * n + j;
-            block[ob..ob + F32_NR].copy_from_slice(c0.as_array());
-            block[ob + n..ob + n + F32_NR].copy_from_slice(c1.as_array());
-            block[ob + 2 * n..ob + 2 * n + F32_NR].copy_from_slice(c2.as_array());
-            block[ob + 3 * n..ob + 3 * n + F32_NR].copy_from_slice(c3.as_array());
-            i += F32_MR;
+fn matmul_2d_packed_row_block_f32_fma(
+    a: &[f32],
+    k: usize,
+    bpack: &[f32],
+    b: &[f32],
+    n: usize,
+    g_start: usize,
+    block: &mut [f32],
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            matmul_2d_packed_row_block_f32_avx2_fma(a, k, bpack, b, n, g_start, block);
         }
-        j += F32_NR;
+        return;
     }
-
-    // Column remainder (full MR-row tiles, columns past the last F32_NR panel).
-    let mut i = 0;
-    while i < full_rows {
-        let ar0 = (g_start + i) * k;
-        let mut jj = full_cols;
-        while jj < n {
-            let mut s = [0.0f32; F32_MR];
-            for l in 0..k {
-                let bv = b[l * n + jj];
-                for (r, sr) in s.iter_mut().enumerate() {
-                    *sr += a[ar0 + r * k + l] * bv;
-                }
-            }
-            for (r, sr) in s.iter().enumerate() {
-                block[(i + r) * n + jj] = *sr;
-            }
-            jj += 1;
-        }
-        i += F32_MR;
-    }
-
-    // Row remainder (rows past the last MR tile): per-row ascending-`l` sweep.
-    while i < total_rows {
-        let a_row = (g_start + i) * k;
-        let c_row = &mut block[i * n..i * n + n];
-        c_row.fill(0.0);
-        for l in 0..k {
-            let a_il = a[a_row + l];
-            let src = &b[l * n..l * n + n];
-            for (cx, bx) in c_row.iter_mut().zip(src) {
-                *cx += a_il * *bx;
-            }
-        }
-        i += 1;
-    }
+    matmul_2d_packed_row_block_f32(a, k, bpack, b, n, g_start, block);
 }
 
 /// k-dimension block for the native-f32 cache-blocked macro-kernel (f32 sibling of
@@ -1985,6 +2360,128 @@ fn pack_b_pc_panels_f32(b: &[f32], k: usize, n: usize, threads: usize) -> Vec<f3
 ///
 /// The MR/NR remainder border is computed once with a single full-`k` ascending sweep
 /// (also bit-identical, negligible size) so it never enters the pc-loop.
+macro_rules! impl_matmul_2d_blocked_row_block_f32_body {
+    ($a:ident, $k:ident, $b:ident, $bpack:ident, $n:ident, $row_start:ident, $block:ident, $vec_mac:ident, $scalar_mac:ident) => {{
+        let rows = $block.len() / $n;
+        let full_rows = rows - rows % F32_MR;
+        let full_cols = $n - $n % F32_NR;
+        let row_tiles = full_rows / F32_MR;
+        let mut apack = vec![0.0f32; row_tiles * F32_KC * F32_MR];
+
+        let mut pc = 0;
+        while pc < $k {
+            let kc = F32_KC.min($k - pc);
+            let first = pc == 0;
+
+            // Pack this thread's full-row A slab for the pc-block, [tile][l][row] order.
+            for tile in 0..row_tiles {
+                let i = tile * F32_MR;
+                let ar0 = ($row_start + i) * $k + pc;
+                let (ar1, ar2, ar3) = (ar0 + $k, ar0 + 2 * $k, ar0 + 3 * $k);
+                let dst = tile * F32_KC * F32_MR;
+                for l in 0..kc {
+                    let base = dst + l * F32_MR;
+                    apack[base] = $a[ar0 + l];
+                    apack[base + 1] = $a[ar1 + l];
+                    apack[base + 2] = $a[ar2 + l];
+                    apack[base + 3] = $a[ar3 + l];
+                }
+            }
+
+            let col_panels = full_cols / F32_NR;
+            let mut row_super = 0;
+            while row_super < row_tiles {
+                let row_super_end = (row_super + ROW_SUPERPANEL_TILES).min(row_tiles);
+                let mut col_super = 0;
+                while col_super < col_panels {
+                    let col_super_end = (col_super + COL_SUPERPANEL_PANELS).min(col_panels);
+                    let pc_base = pc * col_panels * F32_NR;
+                    let mut tile = row_super;
+                    while tile < row_super_end {
+                        let i = tile * F32_MR;
+                        let abase = tile * F32_KC * F32_MR;
+                        let mut jp = col_super;
+                        while jp < col_super_end {
+                            let j = jp * F32_NR;
+                            let panel = &$bpack[pc_base + jp * kc * F32_NR..];
+                            let mut c0 = if first {
+                                F32xN::splat(0.0)
+                            } else {
+                                F32xN::from_slice(&$block[i * $n + j..i * $n + j + F32_NR])
+                            };
+                            let mut c1 = if first {
+                                F32xN::splat(0.0)
+                            } else {
+                                F32xN::from_slice(
+                                    &$block[(i + 1) * $n + j..(i + 1) * $n + j + F32_NR],
+                                )
+                            };
+                            let mut c2 = if first {
+                                F32xN::splat(0.0)
+                            } else {
+                                F32xN::from_slice(
+                                    &$block[(i + 2) * $n + j..(i + 2) * $n + j + F32_NR],
+                                )
+                            };
+                            let mut c3 = if first {
+                                F32xN::splat(0.0)
+                            } else {
+                                F32xN::from_slice(
+                                    &$block[(i + 3) * $n + j..(i + 3) * $n + j + F32_NR],
+                                )
+                            };
+                            for l in 0..kc {
+                                let bv = F32xN::from_slice(&panel[l * F32_NR..l * F32_NR + F32_NR]);
+                                let ap = abase + l * F32_MR;
+                                c0 = $vec_mac!(apack[ap], bv, c0);
+                                c1 = $vec_mac!(apack[ap + 1], bv, c1);
+                                c2 = $vec_mac!(apack[ap + 2], bv, c2);
+                                c3 = $vec_mac!(apack[ap + 3], bv, c3);
+                            }
+                            $block[i * $n + j..i * $n + j + F32_NR].copy_from_slice(c0.as_array());
+                            $block[(i + 1) * $n + j..(i + 1) * $n + j + F32_NR]
+                                .copy_from_slice(c1.as_array());
+                            $block[(i + 2) * $n + j..(i + 2) * $n + j + F32_NR]
+                                .copy_from_slice(c2.as_array());
+                            $block[(i + 3) * $n + j..(i + 3) * $n + j + F32_NR]
+                                .copy_from_slice(c3.as_array());
+                            jp += 1;
+                        }
+                        tile += 1;
+                    }
+                    col_super = col_super_end;
+                }
+                row_super = row_super_end;
+            }
+            pc += F32_KC;
+        }
+
+        // Border (bottom remainder rows × all cols; full rows × remainder cols), single
+        // full-k ascending sweep — disjoint and bit-identical.
+        for i in full_rows..rows {
+            let a_row = ($row_start + i) * $k;
+            for j in 0..$n {
+                let mut s = 0.0f32;
+                for l in 0..$k {
+                    s = $scalar_mac!($a[a_row + l], $b[l * $n + j], s);
+                }
+                $block[i * $n + j] = s;
+            }
+        }
+        for i in 0..full_rows {
+            let a_row = ($row_start + i) * $k;
+            for j in full_cols..$n {
+                let mut s = 0.0f32;
+                for l in 0..$k {
+                    s = $scalar_mac!($a[a_row + l], $b[l * $n + j], s);
+                }
+                $block[i * $n + j] = s;
+            }
+        }
+    }};
+}
+
+#[allow(clippy::assign_op_pattern)]
 fn matmul_2d_blocked_row_block_f32(
     a: &[f32],
     k: usize,
@@ -1994,116 +2491,63 @@ fn matmul_2d_blocked_row_block_f32(
     row_start: usize,
     block: &mut [f32],
 ) {
-    let rows = block.len() / n;
-    let full_rows = rows - rows % F32_MR;
-    let full_cols = n - n % F32_NR;
-    let row_tiles = full_rows / F32_MR;
-    let mut apack = vec![0.0f32; row_tiles * F32_KC * F32_MR];
+    impl_matmul_2d_blocked_row_block_f32_body!(
+        a,
+        k,
+        b,
+        bpack,
+        n,
+        row_start,
+        block,
+        vec_mac_portable_f32,
+        scalar_mac_portable_f32
+    );
+}
 
-    let mut pc = 0;
-    while pc < k {
-        let kc = F32_KC.min(k - pc);
-        let first = pc == 0;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn matmul_2d_blocked_row_block_f32_avx2_fma(
+    a: &[f32],
+    k: usize,
+    b: &[f32],
+    bpack: &[f32],
+    n: usize,
+    row_start: usize,
+    block: &mut [f32],
+) {
+    impl_matmul_2d_blocked_row_block_f32_body!(
+        a,
+        k,
+        b,
+        bpack,
+        n,
+        row_start,
+        block,
+        vec_mac_fma_f32,
+        scalar_mac_fma_f32
+    );
+}
 
-        // Pack this thread's full-row A slab for the pc-block, [tile][l][row] order.
-        for tile in 0..row_tiles {
-            let i = tile * F32_MR;
-            let ar0 = (row_start + i) * k + pc;
-            let (ar1, ar2, ar3) = (ar0 + k, ar0 + 2 * k, ar0 + 3 * k);
-            let dst = tile * F32_KC * F32_MR;
-            for l in 0..kc {
-                let base = dst + l * F32_MR;
-                apack[base] = a[ar0 + l];
-                apack[base + 1] = a[ar1 + l];
-                apack[base + 2] = a[ar2 + l];
-                apack[base + 3] = a[ar3 + l];
-            }
+fn matmul_2d_blocked_row_block_f32_fma(
+    a: &[f32],
+    k: usize,
+    b: &[f32],
+    bpack: &[f32],
+    n: usize,
+    row_start: usize,
+    block: &mut [f32],
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            matmul_2d_blocked_row_block_f32_avx2_fma(a, k, b, bpack, n, row_start, block);
         }
-
-        let col_panels = full_cols / F32_NR;
-        let mut row_super = 0;
-        while row_super < row_tiles {
-            let row_super_end = (row_super + ROW_SUPERPANEL_TILES).min(row_tiles);
-            let mut col_super = 0;
-            while col_super < col_panels {
-                let col_super_end = (col_super + COL_SUPERPANEL_PANELS).min(col_panels);
-                let pc_base = pc * col_panels * F32_NR;
-                let mut tile = row_super;
-                while tile < row_super_end {
-                    let i = tile * F32_MR;
-                    let abase = tile * F32_KC * F32_MR;
-                    let mut jp = col_super;
-                    while jp < col_super_end {
-                        let j = jp * F32_NR;
-                        let panel = &bpack[pc_base + jp * kc * F32_NR..];
-                        let mut c0 = if first {
-                            F32xN::splat(0.0)
-                        } else {
-                            F32xN::from_slice(&block[i * n + j..i * n + j + F32_NR])
-                        };
-                        let mut c1 = if first {
-                            F32xN::splat(0.0)
-                        } else {
-                            F32xN::from_slice(&block[(i + 1) * n + j..(i + 1) * n + j + F32_NR])
-                        };
-                        let mut c2 = if first {
-                            F32xN::splat(0.0)
-                        } else {
-                            F32xN::from_slice(&block[(i + 2) * n + j..(i + 2) * n + j + F32_NR])
-                        };
-                        let mut c3 = if first {
-                            F32xN::splat(0.0)
-                        } else {
-                            F32xN::from_slice(&block[(i + 3) * n + j..(i + 3) * n + j + F32_NR])
-                        };
-                        for l in 0..kc {
-                            let bv = F32xN::from_slice(&panel[l * F32_NR..l * F32_NR + F32_NR]);
-                            let ap = abase + l * F32_MR;
-                            c0 += F32xN::splat(apack[ap]) * bv;
-                            c1 += F32xN::splat(apack[ap + 1]) * bv;
-                            c2 += F32xN::splat(apack[ap + 2]) * bv;
-                            c3 += F32xN::splat(apack[ap + 3]) * bv;
-                        }
-                        block[i * n + j..i * n + j + F32_NR].copy_from_slice(c0.as_array());
-                        block[(i + 1) * n + j..(i + 1) * n + j + F32_NR]
-                            .copy_from_slice(c1.as_array());
-                        block[(i + 2) * n + j..(i + 2) * n + j + F32_NR]
-                            .copy_from_slice(c2.as_array());
-                        block[(i + 3) * n + j..(i + 3) * n + j + F32_NR]
-                            .copy_from_slice(c3.as_array());
-                        jp += 1;
-                    }
-                    tile += 1;
-                }
-                col_super = col_super_end;
-            }
-            row_super = row_super_end;
-        }
-        pc += F32_KC;
+        return;
     }
-
-    // Border (bottom remainder rows × all cols; full rows × remainder cols), single
-    // full-k ascending sweep — disjoint and bit-identical.
-    for i in full_rows..rows {
-        let a_row = (row_start + i) * k;
-        for j in 0..n {
-            let mut s = 0.0f32;
-            for l in 0..k {
-                s += a[a_row + l] * b[l * n + j];
-            }
-            block[i * n + j] = s;
-        }
-    }
-    for i in 0..full_rows {
-        let a_row = (row_start + i) * k;
-        for j in full_cols..n {
-            let mut s = 0.0f32;
-            for l in 0..k {
-                s += a[a_row + l] * b[l * n + j];
-            }
-            block[i * n + j] = s;
-        }
-    }
+    matmul_2d_blocked_row_block_f32(a, k, b, bpack, n, row_start, block);
 }
 
 /// Bench-only single-batch f32 GEMM A/B: `blocked=true` runs the F32_MR cache-blocked

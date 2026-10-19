@@ -20,6 +20,93 @@ pub enum CompatibilityMode {
     Hardened,
 }
 
+/// Floating-point contraction and SIMD precision policy across FrankenJAX kernels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum PrecisionPolicy {
+    /// Portable IEEE-754 evaluation without fused multiply-add contraction (`a * b + c`).
+    /// Preserves bit-frozen golden SHA-256 fixtures across CPU architectures.
+    #[default]
+    BitExactPortable,
+    /// Runtime feature-detected hardware FMA/AVX2 acceleration (`a.mul_add(b, c)` -> `vfmadd*`).
+    /// Matches JAX/XLA tolerance parity (`1e-12` f64 / `1e-5` f32) at full hardware FMA throughput.
+    HardwareFmaAccelerated,
+}
+
+impl PrecisionPolicy {
+    /// Canonical string identifier for `compile_options["precision_policy"]`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BitExactPortable => "bit_exact_portable",
+            Self::HardwareFmaAccelerated => "hardware_fma_accelerated",
+        }
+    }
+
+    /// Parse a compile option string into a [`PrecisionPolicy`].
+    #[must_use]
+    pub fn from_option_str(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "bit_exact_portable" | "portable" | "bit_exact" | "bit-exact" | "default"
+            | "ieee_strict" | "strict" => Some(Self::BitExactPortable),
+            "hardware_fma_accelerated"
+            | "hardware_fma"
+            | "fma"
+            | "avx2_fma"
+            | "native"
+            | "fast"
+            | "highest" => Some(Self::HardwareFmaAccelerated),
+            _ => None,
+        }
+    }
+}
+
+thread_local! {
+    static PRECISION_POLICY_OVERRIDE: std::cell::Cell<Option<PrecisionPolicy>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn default_env_precision_policy() -> PrecisionPolicy {
+    static ENV_POLICY: OnceLock<PrecisionPolicy> = OnceLock::new();
+    *ENV_POLICY.get_or_init(|| {
+        std::env::var("FJ_PRECISION_POLICY")
+            .ok()
+            .and_then(|raw| PrecisionPolicy::from_option_str(&raw))
+            .unwrap_or(PrecisionPolicy::BitExactPortable)
+    })
+}
+
+/// Return the active [`PrecisionPolicy`] on the current thread (falling back to
+/// `FJ_PRECISION_POLICY` or [`PrecisionPolicy::BitExactPortable`]).
+#[must_use]
+pub fn current_precision_policy() -> PrecisionPolicy {
+    PRECISION_POLICY_OVERRIDE
+        .with(|cell| cell.get())
+        .unwrap_or_else(default_env_precision_policy)
+}
+
+/// Override the [`PrecisionPolicy`] on the current thread.
+pub fn set_precision_policy(policy: PrecisionPolicy) {
+    PRECISION_POLICY_OVERRIDE.with(|cell| cell.set(Some(policy)));
+}
+
+/// Execute `f` with `policy` active on the current thread, restoring the previous
+/// thread-local policy when `f` returns (including on unwind).
+pub fn with_precision_policy<R>(policy: PrecisionPolicy, f: impl FnOnce() -> R) -> R {
+    struct Guard(Option<PrecisionPolicy>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            PRECISION_POLICY_OVERRIDE.with(|cell| cell.set(self.0));
+        }
+    }
+    let prev = PRECISION_POLICY_OVERRIDE.with(|cell| {
+        let old = cell.get();
+        cell.set(Some(policy));
+        old
+    });
+    let _guard = Guard(prev);
+    f()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DType {
     BF16,

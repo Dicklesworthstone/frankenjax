@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 //! Linear algebra primitives: Cholesky, triangular solve, and QR decomposition.
 
@@ -170,6 +170,10 @@ fn extract_matrix(
     let m = tensor.shape.dims[0] as usize;
     let n = tensor.shape.dims[1] as usize;
 
+    if let Some(slice) = tensor.elements.as_f64_slice() {
+        return Ok((m, n, slice.to_vec(), tensor.dtype));
+    }
+
     let elements: Vec<f64> = tensor
         .elements
         .iter()
@@ -292,7 +296,7 @@ fn eval_cholesky_real_matrix(
     // GEMM-bound and far faster but reorders the FP accumulation (verified by
     // reconstruction + scalar-parity within tolerance, not bit-identity).
     let l = if m >= CHOLESKY_BLOCK_THRESHOLD {
-        cholesky_real_blocked(m, &a)
+        cholesky_real_blocked_in_place(m, a)
     } else {
         cholesky_real_scalar(m, &a)
     };
@@ -371,9 +375,14 @@ fn cholesky_panel_solve(
     } else {
         1
     };
+    let use_fma = crate::should_use_hardware_fma();
 
     if threads <= 1 {
-        cholesky_panel_solve_rows(l11_source, &mut panel_rows[..rem * n], n, j, jb, rem);
+        if use_fma {
+            cholesky_panel_solve_rows_fma(l11_source, &mut panel_rows[..rem * n], n, j, jb, rem);
+        } else {
+            cholesky_panel_solve_rows(l11_source, &mut panel_rows[..rem * n], n, j, jb, rem);
+        }
         return;
     }
 
@@ -386,7 +395,11 @@ fn cholesky_panel_solve(
             let (chunk, tail) = rest.split_at_mut(chunk_rows * n);
             rest = tail;
             scope.spawn(move || {
-                cholesky_panel_solve_rows(l11_source, chunk, n, j, jb, chunk_rows);
+                if use_fma {
+                    cholesky_panel_solve_rows_fma(l11_source, chunk, n, j, jb, chunk_rows);
+                } else {
+                    cholesky_panel_solve_rows(l11_source, chunk, n, j, jb, chunk_rows);
+                }
             });
             row_start += chunk_rows;
         }
@@ -413,14 +426,126 @@ fn cholesky_panel_solve_rows(
     }
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn cholesky_panel_solve_rows_avx2_fma(
+    l11_source: &[f64],
+    rows: &mut [f64],
+    n: usize,
+    j: usize,
+    jb: usize,
+    row_count: usize,
+) {
+    use std::simd::StdFloat;
+    type F64x4 = std::simd::Simd<f64, 4>;
+
+    let full4 = row_count / 4 * 4;
+    let (rows_blocked, rows_tail) = rows.split_at_mut(full4 * n);
+    for four in rows_blocked.chunks_exact_mut(4 * n) {
+        let (r0, rest) = four.split_at_mut(n);
+        let (r1, rest) = rest.split_at_mut(n);
+        let (r2, r3) = rest.split_at_mut(n);
+        let r0j = &mut r0[j..j + jb];
+        let r1j = &mut r1[j..j + jb];
+        let r2j = &mut r2[j..j + jb];
+        let r3j = &mut r3[j..j + jb];
+        for c in 0..jb {
+            let lrow = &l11_source[(j + c) * n + j..(j + c) * n + j + jb];
+            let mut acc0 = F64x4::splat(0.0);
+            let mut acc1 = F64x4::splat(0.0);
+            let mut acc2 = F64x4::splat(0.0);
+            let mut acc3 = F64x4::splat(0.0);
+            let mut t = 0usize;
+            while t + 4 <= c {
+                let lv = F64x4::from_slice(&lrow[t..t + 4]);
+                acc0 = F64x4::from_slice(&r0j[t..t + 4]).mul_add(lv, acc0);
+                acc1 = F64x4::from_slice(&r1j[t..t + 4]).mul_add(lv, acc1);
+                acc2 = F64x4::from_slice(&r2j[t..t + 4]).mul_add(lv, acc2);
+                acc3 = F64x4::from_slice(&r3j[t..t + 4]).mul_add(lv, acc3);
+                t += 4;
+            }
+            let a0 = acc0.as_array();
+            let a1 = acc1.as_array();
+            let a2 = acc2.as_array();
+            let a3 = acc3.as_array();
+            let mut s0 = r0j[c] - ((a0[0] + a0[1]) + (a0[2] + a0[3]));
+            let mut s1 = r1j[c] - ((a1[0] + a1[1]) + (a1[2] + a1[3]));
+            let mut s2 = r2j[c] - ((a2[0] + a2[1]) + (a2[2] + a2[3]));
+            let mut s3 = r3j[c] - ((a3[0] + a3[1]) + (a3[2] + a3[3]));
+            while t < c {
+                let lv = lrow[t];
+                s0 = (-r0j[t]).mul_add(lv, s0);
+                s1 = (-r1j[t]).mul_add(lv, s1);
+                s2 = (-r2j[t]).mul_add(lv, s2);
+                s3 = (-r3j[t]).mul_add(lv, s3);
+                t += 1;
+            }
+            let diag = F64x4::splat(lrow[c]);
+            let solved = F64x4::from_array([s0, s1, s2, s3]) / diag;
+            let sv = solved.as_array();
+            r0j[c] = sv[0];
+            r1j[c] = sv[1];
+            r2j[c] = sv[2];
+            r3j[c] = sv[3];
+        }
+    }
+
+    for row in rows_tail.chunks_exact_mut(n) {
+        let rj = &mut row[j..j + jb];
+        for c in 0..jb {
+            let lrow = &l11_source[(j + c) * n + j..(j + c) * n + j + jb];
+            let mut s = rj[c];
+            for t in 0..c {
+                s = (-rj[t]).mul_add(lrow[t], s);
+            }
+            rj[c] = s / lrow[c];
+        }
+    }
+}
+
+fn cholesky_panel_solve_rows_fma(
+    l11_source: &[f64],
+    rows: &mut [f64],
+    n: usize,
+    j: usize,
+    jb: usize,
+    row_count: usize,
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            cholesky_panel_solve_rows_avx2_fma(l11_source, rows, n, j, jb, row_count);
+        }
+        return;
+    }
+    cholesky_panel_solve_rows(l11_source, rows, n, j, jb, row_count);
+}
+
 /// Apply the Cholesky trailing update `A22 -= L21 * L21^T` only to the lower
 /// triangle. Later panels read only those lower-triangle entries, and the strict
 /// upper triangle is zeroed before returning.
+#[cfg(test)]
 fn cholesky_schur_update_lower(
     a: &mut [f64],
     n: usize,
     base: usize,
     l21: &[f64],
+    rem: usize,
+    jb: usize,
+) {
+    let mut pack = vec![0.0_f64; (rem / 8) * jb * 8];
+    cholesky_schur_update_lower_with_pack(a, n, base, l21, &mut pack, rem, jb);
+}
+
+fn cholesky_schur_update_lower_with_pack(
+    a: &mut [f64],
+    n: usize,
+    base: usize,
+    l21: &[f64],
+    l21_pack_buf: &mut [f64],
     rem: usize,
     jb: usize,
 ) {
@@ -435,6 +560,74 @@ fn cholesky_schur_update_lower(
     } else {
         1
     };
+    let use_fma = crate::should_use_hardware_fma();
+
+    if use_fma {
+        // Pack `l21` into 8-row panels `[qp][c][8]` (`qp = q / 8`), so each 8-column `q`
+        // panel of `L21^T` is stored contiguously as `jb * 8` f64s (8 KB for jb=128) and
+        // streams sequentially (64-byte stride per `c`) from L1D cache.
+        let num_q_panels = rem / 8;
+        let l21_pack = &mut l21_pack_buf[..num_q_panels * jb * 8];
+        for qp in 0..num_q_panels {
+            let q0 = qp * 8;
+            let dst_panel = &mut l21_pack[qp * jb * 8..(qp + 1) * jb * 8];
+            for r in 0..8 {
+                let src_row = &l21[(q0 + r) * jb..(q0 + r) * jb + jb];
+                for c in 0..jb {
+                    dst_panel[c * 8 + r] = src_row[c];
+                }
+            }
+        }
+        let l21_pack_ref: &[f64] = l21_pack;
+        if threads <= 1 {
+            cholesky_schur_update_lower_rows_fma(
+                &mut a[base * n..],
+                n,
+                base,
+                l21,
+                l21_pack_ref,
+                jb,
+                0,
+                rem,
+            );
+            return;
+        }
+        std::thread::scope(|scope| {
+            let mut rest = &mut a[base * n..];
+            let mut p_start = 0usize;
+            for t in 0..threads {
+                if p_start >= rem {
+                    break;
+                }
+                let p_end = if t + 1 == threads {
+                    rem
+                } else {
+                    let raw = (((t + 1) as f64 / (threads as f64)).sqrt() * (rem as f64)).round()
+                        as usize;
+                    let aligned = (raw / 4) * 4;
+                    aligned.clamp(p_start + 4, rem)
+                };
+                let chunk_rows = p_end - p_start;
+                let (chunk, tail) = rest.split_at_mut(chunk_rows * n);
+                rest = tail;
+                let ps = p_start;
+                scope.spawn(move || {
+                    cholesky_schur_update_lower_rows_fma(
+                        chunk,
+                        n,
+                        base,
+                        l21,
+                        l21_pack_ref,
+                        jb,
+                        ps,
+                        chunk_rows,
+                    );
+                });
+                p_start = p_end;
+            }
+        });
+        return;
+    }
 
     if threads <= 1 {
         cholesky_schur_update_lower_rows(&mut a[base * n..], n, base, l21, jb, 0, rem);
@@ -457,6 +650,125 @@ fn cholesky_schur_update_lower(
     });
 }
 
+macro_rules! impl_cholesky_schur_update_lower_rows_portable_body {
+    ($rows:ident, $n:ident, $base:ident, $l21:ident, $jb:ident, $p_start:ident, $row_count:ident) => {{
+        for local_p in 0..$row_count {
+            let p = $p_start + local_p;
+            let p_row = &$l21[p * $jb..p * $jb + $jb];
+            let a_row = &mut $rows[local_p * $n..local_p * $n + $n];
+            let mut q = 0usize;
+            while q + 4 <= p + 1 {
+                let q0 = &$l21[q * $jb..q * $jb + $jb];
+                let q1 = &$l21[(q + 1) * $jb..(q + 1) * $jb + $jb];
+                let q2 = &$l21[(q + 2) * $jb..(q + 2) * $jb + $jb];
+                let q3 = &$l21[(q + 3) * $jb..(q + 3) * $jb + $jb];
+                let mut c = 0usize;
+                let mut acc0 = CholeskySchurF64xN::splat(0.0);
+                let mut acc1 = CholeskySchurF64xN::splat(0.0);
+                let mut acc2 = CholeskySchurF64xN::splat(0.0);
+                let mut acc3 = CholeskySchurF64xN::splat(0.0);
+                while c + CHOLESKY_SCHUR_DOT_LANES <= $jb {
+                    let lv = cholesky_schur_f64x8(&p_row[c..]);
+                    acc0 += lv * cholesky_schur_f64x8(&q0[c..]);
+                    acc1 += lv * cholesky_schur_f64x8(&q1[c..]);
+                    acc2 += lv * cholesky_schur_f64x8(&q2[c..]);
+                    acc3 += lv * cholesky_schur_f64x8(&q3[c..]);
+                    c += CHOLESKY_SCHUR_DOT_LANES;
+                }
+                let lanes0 = acc0.as_array();
+                let lanes1 = acc1.as_array();
+                let lanes2 = acc2.as_array();
+                let lanes3 = acc3.as_array();
+                let mut dots = [
+                    lanes0[0]
+                        + lanes0[1]
+                        + lanes0[2]
+                        + lanes0[3]
+                        + lanes0[4]
+                        + lanes0[5]
+                        + lanes0[6]
+                        + lanes0[7],
+                    lanes1[0]
+                        + lanes1[1]
+                        + lanes1[2]
+                        + lanes1[3]
+                        + lanes1[4]
+                        + lanes1[5]
+                        + lanes1[6]
+                        + lanes1[7],
+                    lanes2[0]
+                        + lanes2[1]
+                        + lanes2[2]
+                        + lanes2[3]
+                        + lanes2[4]
+                        + lanes2[5]
+                        + lanes2[6]
+                        + lanes2[7],
+                    lanes3[0]
+                        + lanes3[1]
+                        + lanes3[2]
+                        + lanes3[3]
+                        + lanes3[4]
+                        + lanes3[5]
+                        + lanes3[6]
+                        + lanes3[7],
+                ];
+                while c < $jb {
+                    let lv = p_row[c];
+                    dots[0] += lv * q0[c];
+                    dots[1] += lv * q1[c];
+                    dots[2] += lv * q2[c];
+                    dots[3] += lv * q3[c];
+                    c += 1;
+                }
+                a_row[$base + q] -= dots[0];
+                a_row[$base + q + 1] -= dots[1];
+                a_row[$base + q + 2] -= dots[2];
+                a_row[$base + q + 3] -= dots[3];
+                q += 4;
+            }
+            while q <= p {
+                let q_row = &$l21[q * $jb..q * $jb + $jb];
+                let mut c = 0usize;
+                let mut acc = CholeskySchurF64xN::splat(0.0);
+                while c + CHOLESKY_SCHUR_DOT_LANES <= $jb {
+                    acc += cholesky_schur_f64x8(&p_row[c..]) * cholesky_schur_f64x8(&q_row[c..]);
+                    c += CHOLESKY_SCHUR_DOT_LANES;
+                }
+                let lanes = acc.as_array();
+                let mut dot = lanes[0]
+                    + lanes[1]
+                    + lanes[2]
+                    + lanes[3]
+                    + lanes[4]
+                    + lanes[5]
+                    + lanes[6]
+                    + lanes[7];
+                while c < $jb {
+                    dot += p_row[c] * q_row[c];
+                    c += 1;
+                }
+                a_row[$base + q] -= dot;
+                q += 1;
+            }
+        }
+    }};
+}
+
+fn cholesky_schur_update_lower_rows_portable(
+    rows: &mut [f64],
+    n: usize,
+    base: usize,
+    l21: &[f64],
+    jb: usize,
+    p_start: usize,
+    row_count: usize,
+) {
+    impl_cholesky_schur_update_lower_rows_portable_body!(
+        rows, n, base, l21, jb, p_start, row_count
+    );
+}
+
 fn cholesky_schur_update_lower_rows(
     rows: &mut [f64],
     n: usize,
@@ -466,30 +778,233 @@ fn cholesky_schur_update_lower_rows(
     p_start: usize,
     row_count: usize,
 ) {
-    for local_p in 0..row_count {
+    cholesky_schur_update_lower_rows_portable(rows, n, base, l21, jb, p_start, row_count);
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+#[allow(clippy::too_many_arguments)]
+unsafe fn cholesky_schur_update_lower_rows_avx2_fma(
+    rows: &mut [f64],
+    n: usize,
+    base: usize,
+    l21: &[f64],
+    l21_pack: &[f64],
+    jb: usize,
+    p_start: usize,
+    row_count: usize,
+) {
+    use std::simd::StdFloat;
+    type F64x4 = std::simd::Simd<f64, 4>;
+
+    #[inline(always)]
+    fn hsum4(v: F64x4) -> f64 {
+        let a = v.as_array();
+        (a[0] + a[1]) + (a[2] + a[3])
+    }
+
+    #[inline(always)]
+    fn dot1_fma(lhs: &[f64], rhs: &[f64], jb: usize) -> f64 {
+        let mut c = 0usize;
+        let mut acc0 = F64x4::splat(0.0);
+        let mut acc1 = F64x4::splat(0.0);
+        while c + 8 <= jb {
+            acc0 =
+                F64x4::from_slice(&lhs[c..c + 4]).mul_add(F64x4::from_slice(&rhs[c..c + 4]), acc0);
+            acc1 = F64x4::from_slice(&lhs[c + 4..c + 8])
+                .mul_add(F64x4::from_slice(&rhs[c + 4..c + 8]), acc1);
+            c += 8;
+        }
+        let mut s = hsum4(acc0 + acc1);
+        while c < jb {
+            s = lhs[c].mul_add(rhs[c], s);
+            c += 1;
+        }
+        s
+    }
+
+    // Outer-product 4x8 microkernel over panel-packed `l21_pack` (`[qp][c][8]`):
+    // 8 YMM accumulators (`c00..c31`) + 2 YMM loads (`qv0, qv1`) + broadcasts = 11 YMMs (zero spills),
+    // traversing 32-row x 8-panel superpanels so both the 64 KB `l21_pack` superpanel and
+    // the 32 KB `l21` row block stay L1D/L2-resident while `a0_row..a3_row` writes 64
+    // contiguous f64s (8 cache lines) per inner pass.
+    const ROW_SUPER: usize = 32;
+    const QP_SUPER: usize = 8;
+    let panel_stride = jb * 8;
+    let full4 = (row_count / 4) * 4;
+    let mut row_super = 0usize;
+
+    while row_super < full4 {
+        let blk_end = (row_super + ROW_SUPER).min(full4);
+        let max_p0 = p_start + blk_end - 4;
+        let max_panels = (max_p0 + 1) / 8;
+
+        let mut qp_super = 0usize;
+        while qp_super < max_panels {
+            let mut local_p = row_super;
+            while local_p < blk_end {
+                let p0 = p_start + local_p;
+                let p0_panels = (p0 + 1) / 8;
+                let qp_end = (qp_super + QP_SUPER).min(p0_panels);
+                if qp_super < qp_end {
+                    let p0_row = &l21[p0 * jb..p0 * jb + jb];
+                    let p1_row = &l21[(p0 + 1) * jb..(p0 + 1) * jb + jb];
+                    let p2_row = &l21[(p0 + 2) * jb..(p0 + 2) * jb + jb];
+                    let p3_row = &l21[(p0 + 3) * jb..(p0 + 3) * jb + jb];
+                    let (_, from_p0) = rows.split_at_mut(local_p * n);
+                    let (a0_row, rest) = from_p0.split_at_mut(n);
+                    let (a1_row, rest) = rest.split_at_mut(n);
+                    let (a2_row, rest) = rest.split_at_mut(n);
+                    let a3_row = &mut rest[..n];
+
+                    for qp in qp_super..qp_end {
+                        let panel = &l21_pack[qp * panel_stride..(qp + 1) * panel_stride];
+                        let mut c00 = F64x4::splat(0.0);
+                        let mut c01 = F64x4::splat(0.0);
+                        let mut c10 = F64x4::splat(0.0);
+                        let mut c11 = F64x4::splat(0.0);
+                        let mut c20 = F64x4::splat(0.0);
+                        let mut c21 = F64x4::splat(0.0);
+                        let mut c30 = F64x4::splat(0.0);
+                        let mut c31 = F64x4::splat(0.0);
+                        for c in 0..jb {
+                            let pbase = c * 8;
+                            let qv0 = F64x4::from_slice(&panel[pbase..pbase + 4]);
+                            let qv1 = F64x4::from_slice(&panel[pbase + 4..pbase + 8]);
+                            let p0v = F64x4::splat(p0_row[c]);
+                            let p1v = F64x4::splat(p1_row[c]);
+                            let p2v = F64x4::splat(p2_row[c]);
+                            let p3v = F64x4::splat(p3_row[c]);
+                            c00 = p0v.mul_add(qv0, c00);
+                            c01 = p0v.mul_add(qv1, c01);
+                            c10 = p1v.mul_add(qv0, c10);
+                            c11 = p1v.mul_add(qv1, c11);
+                            c20 = p2v.mul_add(qv0, c20);
+                            c21 = p2v.mul_add(qv1, c21);
+                            c30 = p3v.mul_add(qv0, c30);
+                            c31 = p3v.mul_add(qv1, c31);
+                        }
+                        let col = base + qp * 8;
+                        let u00 = F64x4::from_slice(&a0_row[col..col + 4]) - c00;
+                        let u01 = F64x4::from_slice(&a0_row[col + 4..col + 8]) - c01;
+                        let u10 = F64x4::from_slice(&a1_row[col..col + 4]) - c10;
+                        let u11 = F64x4::from_slice(&a1_row[col + 4..col + 8]) - c11;
+                        let u20 = F64x4::from_slice(&a2_row[col..col + 4]) - c20;
+                        let u21 = F64x4::from_slice(&a2_row[col + 4..col + 8]) - c21;
+                        let u30 = F64x4::from_slice(&a3_row[col..col + 4]) - c30;
+                        let u31 = F64x4::from_slice(&a3_row[col + 4..col + 8]) - c31;
+                        a0_row[col..col + 4].copy_from_slice(u00.as_array());
+                        a0_row[col + 4..col + 8].copy_from_slice(u01.as_array());
+                        a1_row[col..col + 4].copy_from_slice(u10.as_array());
+                        a1_row[col + 4..col + 8].copy_from_slice(u11.as_array());
+                        a2_row[col..col + 4].copy_from_slice(u20.as_array());
+                        a2_row[col + 4..col + 8].copy_from_slice(u21.as_array());
+                        a3_row[col..col + 4].copy_from_slice(u30.as_array());
+                        a3_row[col + 4..col + 8].copy_from_slice(u31.as_array());
+                    }
+                }
+                local_p += 4;
+            }
+            qp_super += QP_SUPER;
+        }
+
+        // Diagonal remainder columns (`q >= p0_panels * 8`) for each 4-row group in `row_super..blk_end`.
+        let mut local_p = row_super;
+        while local_p < blk_end {
+            let p0 = p_start + local_p;
+            let p1 = p0 + 1;
+            let p2 = p0 + 2;
+            let p3 = p0 + 3;
+            let p0_row = &l21[p0 * jb..p0 * jb + jb];
+            let p1_row = &l21[p1 * jb..p1 * jb + jb];
+            let p2_row = &l21[p2 * jb..p2 * jb + jb];
+            let p3_row = &l21[p3 * jb..p3 * jb + jb];
+            let (_, from_p0) = rows.split_at_mut(local_p * n);
+            let (a0_row, rest) = from_p0.split_at_mut(n);
+            let (a1_row, rest) = rest.split_at_mut(n);
+            let (a2_row, rest) = rest.split_at_mut(n);
+            let a3_row = &mut rest[..n];
+            let q = ((p0 + 1) / 8) * 8;
+            for q_rem in q..=p0 {
+                let q_row = &l21[q_rem * jb..q_rem * jb + jb];
+                a0_row[base + q_rem] -= dot1_fma(p0_row, q_row, jb);
+            }
+            for q_rem in q..=p1 {
+                let q_row = &l21[q_rem * jb..q_rem * jb + jb];
+                a1_row[base + q_rem] -= dot1_fma(p1_row, q_row, jb);
+            }
+            for q_rem in q..=p2 {
+                let q_row = &l21[q_rem * jb..q_rem * jb + jb];
+                a2_row[base + q_rem] -= dot1_fma(p2_row, q_row, jb);
+            }
+            for q_rem in q..=p3 {
+                let q_row = &l21[q_rem * jb..q_rem * jb + jb];
+                a3_row[base + q_rem] -= dot1_fma(p3_row, q_row, jb);
+            }
+            local_p += 4;
+        }
+
+        row_super = blk_end;
+    }
+
+    let mut local_p = full4;
+    while local_p < row_count {
         let p = p_start + local_p;
         let p_row = &l21[p * jb..p * jb + jb];
         let a_row = &mut rows[local_p * n..local_p * n + n];
         let mut q = 0usize;
-        while q + 4 <= p + 1 {
-            let q0 = &l21[q * jb..q * jb + jb];
-            let q1 = &l21[(q + 1) * jb..(q + 1) * jb + jb];
-            let q2 = &l21[(q + 2) * jb..(q + 2) * jb + jb];
-            let q3 = &l21[(q + 3) * jb..(q + 3) * jb + jb];
-            let dots = cholesky_schur_dot4(p_row, q0, q1, q2, q3);
-            a_row[base + q] -= dots[0];
-            a_row[base + q + 1] -= dots[1];
-            a_row[base + q + 2] -= dots[2];
-            a_row[base + q + 3] -= dots[3];
-            q += 4;
+        let mut qp = 0usize;
+        while q + 8 <= p + 1 {
+            let panel = &l21_pack[qp * panel_stride..(qp + 1) * panel_stride];
+            let mut c0 = F64x4::splat(0.0);
+            let mut c1 = F64x4::splat(0.0);
+            for (c, &p_val) in p_row.iter().enumerate().take(jb) {
+                let pbase = c * 8;
+                let pv = F64x4::splat(p_val);
+                c0 = pv.mul_add(F64x4::from_slice(&panel[pbase..pbase + 4]), c0);
+                c1 = pv.mul_add(F64x4::from_slice(&panel[pbase + 4..pbase + 8]), c1);
+            }
+            let col = base + q;
+            let u0 = F64x4::from_slice(&a_row[col..col + 4]) - c0;
+            let u1 = F64x4::from_slice(&a_row[col + 4..col + 8]) - c1;
+            a_row[col..col + 4].copy_from_slice(u0.as_array());
+            a_row[col + 4..col + 8].copy_from_slice(u1.as_array());
+            q += 8;
+            qp += 1;
         }
         while q <= p {
             let q_row = &l21[q * jb..q * jb + jb];
-            let dot = cholesky_schur_dot(p_row, q_row);
-            a_row[base + q] -= dot;
+            a_row[base + q] -= dot1_fma(p_row, q_row, jb);
             q += 1;
         }
+        local_p += 1;
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cholesky_schur_update_lower_rows_fma(
+    rows: &mut [f64],
+    n: usize,
+    base: usize,
+    l21: &[f64],
+    l21_pack: &[f64],
+    jb: usize,
+    p_start: usize,
+    row_count: usize,
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            cholesky_schur_update_lower_rows_avx2_fma(
+                rows, n, base, l21, l21_pack, jb, p_start, row_count,
+            );
+        }
+        return;
+    }
+    cholesky_schur_update_lower_rows(rows, n, base, l21, jb, p_start, row_count);
 }
 
 const CHOLESKY_SCHUR_DOT_LANES: usize = 8;
@@ -500,103 +1015,6 @@ fn cholesky_schur_f64x8(values: &[f64]) -> CholeskySchurF64xN {
     CholeskySchurF64xN::from_array([
         values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7],
     ])
-}
-
-#[inline]
-fn cholesky_schur_dot(lhs: &[f64], rhs: &[f64]) -> f64 {
-    debug_assert_eq!(lhs.len(), rhs.len());
-
-    let mut c = 0usize;
-    let mut acc = CholeskySchurF64xN::splat(0.0);
-    while c + CHOLESKY_SCHUR_DOT_LANES <= lhs.len() {
-        acc += cholesky_schur_f64x8(&lhs[c..]) * cholesky_schur_f64x8(&rhs[c..]);
-        c += CHOLESKY_SCHUR_DOT_LANES;
-    }
-
-    let lanes = acc.as_array();
-    let mut dot =
-        lanes[0] + lanes[1] + lanes[2] + lanes[3] + lanes[4] + lanes[5] + lanes[6] + lanes[7];
-    while c < lhs.len() {
-        dot += lhs[c] * rhs[c];
-        c += 1;
-    }
-    dot
-}
-
-#[inline]
-fn cholesky_schur_dot4(
-    lhs: &[f64],
-    rhs0: &[f64],
-    rhs1: &[f64],
-    rhs2: &[f64],
-    rhs3: &[f64],
-) -> [f64; 4] {
-    debug_assert_eq!(lhs.len(), rhs0.len());
-    debug_assert_eq!(lhs.len(), rhs1.len());
-    debug_assert_eq!(lhs.len(), rhs2.len());
-    debug_assert_eq!(lhs.len(), rhs3.len());
-
-    let mut c = 0usize;
-    let mut acc0 = CholeskySchurF64xN::splat(0.0);
-    let mut acc1 = CholeskySchurF64xN::splat(0.0);
-    let mut acc2 = CholeskySchurF64xN::splat(0.0);
-    let mut acc3 = CholeskySchurF64xN::splat(0.0);
-    while c + CHOLESKY_SCHUR_DOT_LANES <= lhs.len() {
-        let lv = cholesky_schur_f64x8(&lhs[c..]);
-        acc0 += lv * cholesky_schur_f64x8(&rhs0[c..]);
-        acc1 += lv * cholesky_schur_f64x8(&rhs1[c..]);
-        acc2 += lv * cholesky_schur_f64x8(&rhs2[c..]);
-        acc3 += lv * cholesky_schur_f64x8(&rhs3[c..]);
-        c += CHOLESKY_SCHUR_DOT_LANES;
-    }
-
-    let lanes0 = acc0.as_array();
-    let lanes1 = acc1.as_array();
-    let lanes2 = acc2.as_array();
-    let lanes3 = acc3.as_array();
-    let mut dots = [
-        lanes0[0]
-            + lanes0[1]
-            + lanes0[2]
-            + lanes0[3]
-            + lanes0[4]
-            + lanes0[5]
-            + lanes0[6]
-            + lanes0[7],
-        lanes1[0]
-            + lanes1[1]
-            + lanes1[2]
-            + lanes1[3]
-            + lanes1[4]
-            + lanes1[5]
-            + lanes1[6]
-            + lanes1[7],
-        lanes2[0]
-            + lanes2[1]
-            + lanes2[2]
-            + lanes2[3]
-            + lanes2[4]
-            + lanes2[5]
-            + lanes2[6]
-            + lanes2[7],
-        lanes3[0]
-            + lanes3[1]
-            + lanes3[2]
-            + lanes3[3]
-            + lanes3[4]
-            + lanes3[5]
-            + lanes3[6]
-            + lanes3[7],
-    ];
-    while c < lhs.len() {
-        let lv = lhs[c];
-        dots[0] += lv * rhs0[c];
-        dots[1] += lv * rhs1[c];
-        dots[2] += lv * rhs2[c];
-        dots[3] += lv * rhs3[c];
-        c += 1;
-    }
-    dots
 }
 
 /// Block size for the right-looking Cholesky panel.
@@ -615,12 +1033,23 @@ const CHOLESKY_BLOCK_THRESHOLD: usize = 256;
 /// update is the O(n³) cost and runs at GEMM speed instead of strided scalar
 /// dot products. Not bit-identical to the scalar kernel (GEMM reorders the sum),
 /// but numerically equivalent — verified by reconstruction + scalar parity.
+#[cfg(test)]
 fn cholesky_real_blocked(n: usize, a_in: &[f64]) -> Vec<f64> {
-    let mut a = a_in.to_vec(); // lower triangle becomes L in place
+    cholesky_real_blocked_in_place(n, a_in.to_vec())
+}
+
+fn cholesky_real_blocked_in_place(n: usize, mut a: Vec<f64>) -> Vec<f64> {
     let nb = if n < 512 {
         CHOLESKY_MIDSIZE_BLOCK_SIZE
     } else {
         CHOLESKY_BLOCK_SIZE
+    };
+    let max_rem = n.saturating_sub(nb);
+    let mut l21_buf = vec![0.0_f64; max_rem * nb];
+    let mut l21_pack_buf = if crate::should_use_hardware_fma() {
+        vec![0.0_f64; (max_rem / 8) * nb * 8]
+    } else {
+        Vec::new()
     };
 
     let mut j = 0;
@@ -653,14 +1082,20 @@ fn cholesky_real_blocked(n: usize, a_in: &[f64]) -> Vec<f64> {
             cholesky_panel_solve(l11_source, panel_rows, n, j, jb, rem);
 
             // (c) Trailing symmetric update A22 -= L21 · L21ᵀ via blocked GEMM.
-            let mut l21 = vec![0.0_f64; rem * jb];
+            let l21 = &mut l21_buf[..rem * jb];
             for p in 0..rem {
-                for c in 0..jb {
-                    let v = a[(j + jb + p) * n + (j + c)];
-                    l21[p * jb + c] = v;
-                }
+                let row_off = (j + jb + p) * n + j;
+                l21[p * jb..(p + 1) * jb].copy_from_slice(&a[row_off..row_off + jb]);
             }
-            cholesky_schur_update_lower(&mut a, n, j + jb, &l21, rem, jb);
+            cholesky_schur_update_lower_with_pack(
+                &mut a,
+                n,
+                j + jb,
+                l21,
+                &mut l21_pack_buf,
+                rem,
+                jb,
+            );
         }
 
         j += jb;
@@ -668,9 +1103,7 @@ fn cholesky_real_blocked(n: usize, a_in: &[f64]) -> Vec<f64> {
 
     // Zero the strict upper triangle to match the scalar kernel's L layout.
     for i in 0..n {
-        for jj in (i + 1)..n {
-            a[i * n + jj] = 0.0;
-        }
+        a[i * n + (i + 1)..(i + 1) * n].fill(0.0);
     }
     a
 }

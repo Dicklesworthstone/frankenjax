@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![feature(portable_simd)]
 
 pub mod arithmetic;
@@ -28,8 +28,48 @@ pub use type_promotion::promote_dtype as promote_dtype_public;
 pub use arithmetic::eval_igamma_grad_a;
 
 use fj_core::{Literal, Primitive, Shape, TensorValue, Value, ValueError};
+pub use fj_core::{
+    PrecisionPolicy, current_precision_policy, set_precision_policy, with_precision_policy,
+};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+
+/// Return true if hardware AVX2 + FMA instructions are supported on this CPU.
+#[inline]
+#[must_use]
+pub fn hardware_fma_available() -> bool {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        false
+    }
+}
+
+/// Return true if hardware AVX2 instructions are supported on this CPU.
+#[inline]
+#[must_use]
+pub fn hardware_avx2_available() -> bool {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        std::arch::is_x86_feature_detected!("avx2")
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        false
+    }
+}
+
+/// Return true when [`PrecisionPolicy::HardwareFmaAccelerated`] is active and hardware
+/// AVX2 + FMA is available.
+#[inline]
+#[must_use]
+pub fn should_use_hardware_fma() -> bool {
+    current_precision_policy() == PrecisionPolicy::HardwareFmaAccelerated
+        && hardware_fma_available()
+}
 
 /// Build a `TensorValue` with guaranteed BOXED (`Literal`-backed) storage, for
 /// the dense-fast-path-vs-generic guard tests. `TensorValue::new` densifies
@@ -257,6 +297,15 @@ pub fn eval_primitive(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
 ) -> Result<Value, EvalError> {
+    if let Some(policy) = params
+        .get("precision_policy")
+        .and_then(|raw| PrecisionPolicy::from_option_str(raw))
+        && policy != current_precision_policy()
+    {
+        return with_precision_policy(policy, || {
+            eval_primitive_inner(primitive, inputs, params).map(narrow_i32_tensor_result)
+        });
+    }
     eval_primitive_inner(primitive, inputs, params).map(narrow_i32_tensor_result)
 }
 
@@ -29972,5 +30021,525 @@ mod prop_tests {
             prop_assert!(val, "is_finite({}) returned false", x);
         }
 
+    }
+
+    #[test]
+    fn precision_policy_regimes_gemm_cholesky_exp_fft_accuracy_and_restoration() {
+        use super::*;
+        let prev = current_precision_policy();
+
+        // 1. Dot (256x256 f64)
+        let n_dot = 256usize;
+        let a_data: Vec<f64> = (0..n_dot * n_dot)
+            .map(|i| ((i as f64) * 0.00137).sin())
+            .collect();
+        let b_data: Vec<f64> = (0..n_dot * n_dot)
+            .map(|i| ((i as f64) * 0.00211).cos())
+            .collect();
+        let a_val = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n_dot as u32, n_dot as u32],
+                },
+                a_data,
+            )
+            .unwrap(),
+        );
+        let b_val = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n_dot as u32, n_dot as u32],
+                },
+                b_data,
+            )
+            .unwrap(),
+        );
+        let dot_portable = with_precision_policy(PrecisionPolicy::BitExactPortable, || {
+            assert_eq!(
+                current_precision_policy(),
+                PrecisionPolicy::BitExactPortable
+            );
+            eval_primitive(
+                Primitive::Dot,
+                &[a_val.clone(), b_val.clone()],
+                &BTreeMap::new(),
+            )
+            .unwrap()
+        });
+        let dot_fma = with_precision_policy(PrecisionPolicy::HardwareFmaAccelerated, || {
+            assert_eq!(
+                current_precision_policy(),
+                PrecisionPolicy::HardwareFmaAccelerated
+            );
+            eval_primitive(
+                Primitive::Dot,
+                &[a_val.clone(), b_val.clone()],
+                &BTreeMap::new(),
+            )
+            .unwrap()
+        });
+        assert_eq!(current_precision_policy(), prev);
+
+        // Verify BitExactPortable repeats bit-identically
+        let dot_portable_repeat = with_precision_policy(PrecisionPolicy::BitExactPortable, || {
+            eval_primitive(Primitive::Dot, &[a_val, b_val], &BTreeMap::new()).unwrap()
+        });
+        assert_eq!(dot_portable, dot_portable_repeat);
+
+        if let (Value::Tensor(tp), Value::Tensor(tf)) = (&dot_portable, &dot_fma) {
+            let sp = tp.elements.as_f64_slice().unwrap();
+            let sf = tf.elements.as_f64_slice().unwrap();
+            let max_rel = sp
+                .iter()
+                .zip(sf.iter())
+                .map(|(x, y)| (x - y).abs() / x.abs().max(1.0))
+                .fold(0.0_f64, f64::max);
+            assert!(
+                max_rel < 1e-12,
+                "GEMM FMA vs BitExactPortable max rel err {max_rel:e} >= 1e-12"
+            );
+        } else {
+            panic!("expected Tensor output from Dot");
+        }
+
+        // 2. Cholesky (256x256 SPD f64)
+        let n_chol = 256usize;
+        let mut spd = vec![0.0_f64; n_chol * n_chol];
+        for i in 0..n_chol {
+            for j in 0..=i {
+                let v = if i == j {
+                    (n_chol as f64) + 10.0 + (i as f64) * 0.01
+                } else {
+                    (((i * 31 + j * 17) as f64) * 0.013).sin() * 0.25
+                };
+                spd[i * n_chol + j] = v;
+                spd[j * n_chol + i] = v;
+            }
+        }
+        let spd_val = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n_chol as u32, n_chol as u32],
+                },
+                spd,
+            )
+            .unwrap(),
+        );
+        let chol_portable = with_precision_policy(PrecisionPolicy::BitExactPortable, || {
+            eval_primitive(
+                Primitive::Cholesky,
+                std::slice::from_ref(&spd_val),
+                &BTreeMap::new(),
+            )
+            .unwrap()
+        });
+        let chol_fma = with_precision_policy(PrecisionPolicy::HardwareFmaAccelerated, || {
+            eval_primitive(
+                Primitive::Cholesky,
+                std::slice::from_ref(&spd_val),
+                &BTreeMap::new(),
+            )
+            .unwrap()
+        });
+        if let (Value::Tensor(tp), Value::Tensor(tf)) = (&chol_portable, &chol_fma) {
+            let sp = tp.elements.as_f64_slice().unwrap();
+            let sf = tf.elements.as_f64_slice().unwrap();
+            let max_diff = sp
+                .iter()
+                .zip(sf.iter())
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                max_diff < 1e-11,
+                "Cholesky FMA vs BitExactPortable max diff {max_diff:e} >= 1e-11"
+            );
+        }
+
+        // 3. Exp (4096 f64 elements)
+        let exp_in: Vec<f64> = (0..4096)
+            .map(|i| -10.0 + (i as f64) * (20.0 / 4096.0))
+            .collect();
+        let exp_val =
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims: vec![4096] }, exp_in).unwrap());
+        let exp_portable = with_precision_policy(PrecisionPolicy::BitExactPortable, || {
+            eval_primitive(
+                Primitive::Exp,
+                std::slice::from_ref(&exp_val),
+                &BTreeMap::new(),
+            )
+            .unwrap()
+        });
+        let exp_fma = with_precision_policy(PrecisionPolicy::HardwareFmaAccelerated, || {
+            eval_primitive(
+                Primitive::Exp,
+                std::slice::from_ref(&exp_val),
+                &BTreeMap::new(),
+            )
+            .unwrap()
+        });
+        if let (Value::Tensor(tp), Value::Tensor(tf)) = (&exp_portable, &exp_fma) {
+            let sp = tp.elements.as_f64_slice().unwrap();
+            let sf = tf.elements.as_f64_slice().unwrap();
+            let max_rel = sp
+                .iter()
+                .zip(sf.iter())
+                .map(|(x, y)| (x - y).abs() / x.abs().max(1e-300))
+                .fold(0.0_f64, f64::max);
+            assert!(
+                max_rel < 1e-14,
+                "Exp FMA vs BitExactPortable max rel err {max_rel:e} >= 1e-14"
+            );
+        }
+
+        // 4. Rfft + Irfft (pow2 16x1024 and mixed-radix 16x768)
+        for &len in &[1024usize, 768usize] {
+            let batch = 16usize;
+            let sig: Vec<f64> = (0..batch * len)
+                .map(|i| ((i as f64) * 0.0173).sin() + 0.5 * ((i as f64) * 0.031).cos())
+                .collect();
+            let sig_val = Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![batch as u32, len as u32],
+                    },
+                    sig.clone(),
+                )
+                .unwrap(),
+            );
+            let mut fft_params = BTreeMap::new();
+            fft_params.insert("fft_length".to_owned(), len.to_string());
+
+            let rfft_p = with_precision_policy(PrecisionPolicy::BitExactPortable, || {
+                eval_primitive(Primitive::Rfft, std::slice::from_ref(&sig_val), &fft_params)
+                    .unwrap()
+            });
+            let rfft_f = with_precision_policy(PrecisionPolicy::HardwareFmaAccelerated, || {
+                eval_primitive(Primitive::Rfft, std::slice::from_ref(&sig_val), &fft_params)
+                    .unwrap()
+            });
+            let irfft_f = with_precision_policy(PrecisionPolicy::HardwareFmaAccelerated, || {
+                eval_primitive(Primitive::Irfft, std::slice::from_ref(&rfft_f), &fft_params)
+                    .unwrap()
+            });
+            let _ = rfft_p;
+            if let Value::Tensor(t_rec) = &irfft_f {
+                let rec = t_rec.elements.as_f64_slice().unwrap();
+                let max_err = sig
+                    .iter()
+                    .zip(rec.iter())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f64, f64::max);
+                assert!(
+                    max_err < 1e-11,
+                    "RFFT->IRFFT FMA roundtrip (len={len}) max err {max_err:e} >= 1e-11"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf A/B benchmark; run with --release -- --ignored --nocapture"]
+    fn bench_rc26_18_all_regimes() {
+        use super::*;
+        use fj_core::DType;
+        use std::time::Instant;
+
+        fn median_us(mut samples: Vec<f64>) -> f64 {
+            samples.sort_by(|a, b| a.total_cmp(b));
+            samples[samples.len() / 2]
+        }
+
+        // 1. f64 GEMM 2048x2048
+        let n = 2048usize;
+        let a64: Vec<f64> = (0..n * n).map(|i| ((i as f64) * 0.00013).sin()).collect();
+        let b64: Vec<f64> = (0..n * n).map(|i| ((i as f64) * 0.00017).cos()).collect();
+        let a64_v = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                a64,
+            )
+            .unwrap(),
+        );
+        let b64_v = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                b64,
+            )
+            .unwrap(),
+        );
+        let args64 = [a64_v, b64_v];
+        let empty_params = BTreeMap::new();
+        let _ = with_precision_policy(PrecisionPolicy::BitExactPortable, || {
+            eval_primitive(Primitive::Dot, &args64, &empty_params).unwrap()
+        });
+        let _ = with_precision_policy(PrecisionPolicy::HardwareFmaAccelerated, || {
+            eval_primitive(Primitive::Dot, &args64, &empty_params).unwrap()
+        });
+        let mut s_p = Vec::new();
+        let mut s_f = Vec::new();
+        for _ in 0..5 {
+            let t0 = Instant::now();
+            let _ = std::hint::black_box(with_precision_policy(
+                PrecisionPolicy::BitExactPortable,
+                || eval_primitive(Primitive::Dot, &args64, &empty_params).unwrap(),
+            ));
+            s_p.push(t0.elapsed().as_secs_f64() * 1e6);
+
+            let t1 = Instant::now();
+            let _ = std::hint::black_box(with_precision_policy(
+                PrecisionPolicy::HardwareFmaAccelerated,
+                || eval_primitive(Primitive::Dot, &args64, &empty_params).unwrap(),
+            ));
+            s_f.push(t1.elapsed().as_secs_f64() * 1e6);
+        }
+        let gemm64_p = median_us(s_p);
+        let gemm64_f = median_us(s_f);
+        println!(
+            "[rc26.18] f64 GEMM 2048x2048: BitExactPortable={:.1} us, HardwareFma={:.1} us, speedup={:.2}x",
+            gemm64_p,
+            gemm64_f,
+            gemm64_p / gemm64_f
+        );
+
+        // 2. f32 GEMM 2048x2048
+        let a32: Vec<f32> = (0..n * n).map(|i| ((i as f32) * 0.00013).sin()).collect();
+        let b32: Vec<f32> = (0..n * n).map(|i| ((i as f32) * 0.00017).cos()).collect();
+        let a32_v = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                a32,
+            )
+            .unwrap(),
+        );
+        let b32_v = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                b32,
+            )
+            .unwrap(),
+        );
+        let args32 = [a32_v, b32_v];
+        let mut s32_p = Vec::new();
+        let mut s32_f = Vec::new();
+        for _ in 0..5 {
+            let t0 = Instant::now();
+            let _ = std::hint::black_box(with_precision_policy(
+                PrecisionPolicy::BitExactPortable,
+                || eval_primitive(Primitive::Dot, &args32, &empty_params).unwrap(),
+            ));
+            s32_p.push(t0.elapsed().as_secs_f64() * 1e6);
+
+            let t1 = Instant::now();
+            let _ = std::hint::black_box(with_precision_policy(
+                PrecisionPolicy::HardwareFmaAccelerated,
+                || eval_primitive(Primitive::Dot, &args32, &empty_params).unwrap(),
+            ));
+            s32_f.push(t1.elapsed().as_secs_f64() * 1e6);
+        }
+        let gemm32_p = median_us(s32_p);
+        let gemm32_f = median_us(s32_f);
+        println!(
+            "[rc26.18] f32 GEMM 2048x2048: BitExactPortable={:.1} us, HardwareFma={:.1} us, speedup={:.2}x",
+            gemm32_p,
+            gemm32_f,
+            gemm32_p / gemm32_f
+        );
+
+        // 3. Cholesky 2048x2048
+        let mut spd = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..=i {
+                let v = if i == j {
+                    (n as f64) + 10.0
+                } else {
+                    (((i * 31 + j * 17) % 97) as f64 - 48.0) * 0.002
+                };
+                spd[i * n + j] = v;
+                spd[j * n + i] = v;
+            }
+        }
+        let spd_v = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32, n as u32],
+                },
+                spd,
+            )
+            .unwrap(),
+        );
+        let mut sc_p = Vec::new();
+        let mut sc_f = Vec::new();
+        for _ in 0..5 {
+            let t0 = Instant::now();
+            let _ = std::hint::black_box(with_precision_policy(
+                PrecisionPolicy::BitExactPortable,
+                || {
+                    eval_primitive(
+                        Primitive::Cholesky,
+                        std::slice::from_ref(&spd_v),
+                        &BTreeMap::new(),
+                    )
+                    .unwrap()
+                },
+            ));
+            sc_p.push(t0.elapsed().as_secs_f64() * 1e6);
+
+            let t1 = Instant::now();
+            let _ = std::hint::black_box(with_precision_policy(
+                PrecisionPolicy::HardwareFmaAccelerated,
+                || {
+                    eval_primitive(
+                        Primitive::Cholesky,
+                        std::slice::from_ref(&spd_v),
+                        &BTreeMap::new(),
+                    )
+                    .unwrap()
+                },
+            ));
+            sc_f.push(t1.elapsed().as_secs_f64() * 1e6);
+        }
+        let chol_p = median_us(sc_p);
+        let chol_f = median_us(sc_f);
+        println!(
+            "[rc26.18] f64 Cholesky 2048x2048: BitExactPortable={:.1} us, HardwareFma={:.1} us, speedup={:.2}x",
+            chol_p,
+            chol_f,
+            chol_p / chol_f
+        );
+
+        // 4. Exp 65536 f64
+        let exp_in: Vec<f64> = (0..65536)
+            .map(|i| -5.0 + (i as f64) * (10.0 / 65536.0))
+            .collect();
+        let exp_v = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![65536] }, exp_in).unwrap(),
+        );
+        let mut se_p = Vec::new();
+        let mut se_f = Vec::new();
+        for _ in 0..51 {
+            let t0 = Instant::now();
+            let _ = std::hint::black_box(with_precision_policy(
+                PrecisionPolicy::BitExactPortable,
+                || {
+                    eval_primitive(
+                        Primitive::Exp,
+                        std::slice::from_ref(&exp_v),
+                        &BTreeMap::new(),
+                    )
+                    .unwrap()
+                },
+            ));
+            se_p.push(t0.elapsed().as_secs_f64() * 1e6);
+
+            let t1 = Instant::now();
+            let _ = std::hint::black_box(with_precision_policy(
+                PrecisionPolicy::HardwareFmaAccelerated,
+                || {
+                    eval_primitive(
+                        Primitive::Exp,
+                        std::slice::from_ref(&exp_v),
+                        &BTreeMap::new(),
+                    )
+                    .unwrap()
+                },
+            ));
+            se_f.push(t1.elapsed().as_secs_f64() * 1e6);
+        }
+        let exp_p = median_us(se_p);
+        let exp_f = median_us(se_f);
+        println!(
+            "[rc26.18] f64 Exp 65536: BitExactPortable={:.2} us, HardwareFma={:.2} us, speedup={:.2}x",
+            exp_p,
+            exp_f,
+            exp_p / exp_f
+        );
+
+        assert!(
+            gemm64_p / gemm64_f >= 1.7,
+            "f64 GEMM 2048x2048 speedup {:.2}x < 1.7x",
+            gemm64_p / gemm64_f
+        );
+        assert!(
+            gemm32_p / gemm32_f >= 1.7,
+            "f32 GEMM 2048x2048 speedup {:.2}x < 1.7x",
+            gemm32_p / gemm32_f
+        );
+        assert!(
+            chol_p / chol_f >= 1.7,
+            "f64 Cholesky 2048x2048 speedup {:.2}x < 1.7x",
+            chol_p / chol_f
+        );
+
+        // 5. FFT 1000, 128x1000, 2048x256 (Stockham mixed-radix + plan-hoisted SoA vs uncached per-row/Bluestein baseline)
+        for &(batch, len, label) in &[
+            (1usize, 1000usize, "fft_1000"),
+            (128usize, 1000usize, "fft_batch_128x1000"),
+            (2048usize, 256usize, "fft_batch_2048x256"),
+        ] {
+            let pairs: Vec<(f64, f64)> = (0..batch * len)
+                .map(|i| (((i as f64) * 0.013).sin(), ((i as f64) * 0.019).cos()))
+                .collect();
+            let dims = if batch == 1 {
+                vec![len as u32]
+            } else {
+                vec![batch as u32, len as u32]
+            };
+            let val = Value::Tensor(
+                TensorValue::new_complex_values(DType::Complex128, Shape { dims }, pairs.clone())
+                    .unwrap(),
+            );
+            let mut params = BTreeMap::new();
+            params.insert("fft_length".to_owned(), len.to_string());
+            let _ = eval_primitive(Primitive::Fft, std::slice::from_ref(&val), &params).unwrap();
+
+            let mut sf_base = Vec::new();
+            let mut sf_p = Vec::new();
+            let mut sf_f = Vec::new();
+            for _ in 0..9 {
+                let tb = Instant::now();
+                let _ = std::hint::black_box(fft::bench_fft_uncached_per_row_baseline(
+                    &pairs, len, batch,
+                ));
+                sf_base.push(tb.elapsed().as_secs_f64() * 1e6);
+
+                let t0 = Instant::now();
+                let _ = std::hint::black_box(with_precision_policy(
+                    PrecisionPolicy::BitExactPortable,
+                    || eval_primitive(Primitive::Fft, std::slice::from_ref(&val), &params).unwrap(),
+                ));
+                sf_p.push(t0.elapsed().as_secs_f64() * 1e6);
+
+                let t1 = Instant::now();
+                let _ = std::hint::black_box(with_precision_policy(
+                    PrecisionPolicy::HardwareFmaAccelerated,
+                    || eval_primitive(Primitive::Fft, std::slice::from_ref(&val), &params).unwrap(),
+                ));
+                sf_f.push(t1.elapsed().as_secs_f64() * 1e6);
+            }
+            let base_us = median_us(sf_base);
+            let port_us = median_us(sf_p);
+            let fma_us = median_us(sf_f);
+            println!(
+                "[rc26.18] {label}: uncached_baseline={:.2} us, BitExactPortable={:.2} us ({:.2}x), HardwareFma={:.2} us ({:.2}x)",
+                base_us,
+                port_us,
+                base_us / port_us,
+                fma_us,
+                base_us / fma_us,
+            );
+            assert!(
+                base_us / fma_us >= 3.0,
+                "{label} speedup {:.2}x < 3.0x",
+                base_us / fma_us
+            );
+        }
     }
 }

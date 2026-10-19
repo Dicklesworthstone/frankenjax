@@ -21,10 +21,12 @@ CRITERION_DIR="$CRITERION_TARGET/criterion"
 
 SAVE_BASELINE=0
 SKIP_RUN=0
+VERIFY_REGIMES=0
 THRESHOLD_OVERRIDE=""
 BASELINE_NAME=""
 BENCH_FILTER=""
 RISK_NOTES_DIR="$ROOT_DIR/artifacts/performance/risk_notes"
+GLOBAL_PERF_GATE_JSON="$ROOT_DIR/artifacts/performance/global_performance_gate.v1.json"
 
 usage() {
   cat <<'USAGE'
@@ -36,6 +38,8 @@ Options:
   --threshold <percent>    Override max p95 regression percent.
   --bench-filter <filter>  Only compare benchmarks matching this substring.
   --skip-run               Skip running benchmarks; compare existing data.
+  --verify-regimes         Verify PrecisionPolicy (BitExactPortable vs HardwareFmaAccelerated)
+                           and Stockham batched FFT regimes + vs-JAX 0.10.2 scoreboard.
   --budgets <path>         Reliability budget JSON path.
   -h, --help               Show this help.
 USAGE
@@ -63,6 +67,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_RUN=1
       shift
       ;;
+    --verify-regimes)
+      VERIFY_REGIMES=1
+      shift
+      ;;
     --budgets)
       BUDGETS_JSON="$2"
       shift 2
@@ -87,6 +95,29 @@ fi
 if ! command -v jq >/dev/null 2>&1; then
   echo "error: jq is required" >&2
   exit 1
+fi
+
+if [[ $VERIFY_REGIMES -eq 1 ]]; then
+  echo "[perf] verifying global_performance_gate.v1.json PrecisionPolicy regimes and vs-JAX scoreboard..."
+  if [[ ! -f "$GLOBAL_PERF_GATE_JSON" ]]; then
+    echo "error: global performance gate not found at $GLOBAL_PERF_GATE_JSON" >&2
+    exit 1
+  fi
+  jq -e '
+    .precision_policy_regimes.default_policy == "BitExactPortable" and
+    .precision_policy_regimes.accelerated_policy == "HardwareFmaAccelerated" and
+    (.precision_policy_regimes.gemm_cholesky_exp | length >= 4) and
+    ([.precision_policy_regimes.gemm_cholesky_exp[] | select(.speedup_x >= .required_min_speedup_x and .status == "pass")] | length) == (.precision_policy_regimes.gemm_cholesky_exp | length) and
+    (.precision_policy_regimes.stockham_batched_fft | length >= 3) and
+    ([.precision_policy_regimes.stockham_batched_fft[] | select(.portable_speedup_vs_bluestein_x >= .required_min_speedup_x and .fma_speedup_vs_bluestein_x >= .required_min_speedup_x and .status == "pass")] | length) == (.precision_policy_regimes.stockham_batched_fft | length) and
+    (.vs_jax_scoreboard.families | length >= 10)
+  ' "$GLOBAL_PERF_GATE_JSON" >/dev/null
+  if [[ $SKIP_RUN -eq 0 ]]; then
+    echo "[perf] running live PrecisionPolicy and Stockham FFT regime benchmark suite..."
+    cargo test --release -p frankenjax-lax --lib bench_rc26_18_all_regimes -- --ignored --nocapture
+  fi
+  echo "PASS: PrecisionPolicy regimes and vs-JAX 0.10.2 scoreboard verified"
+  exit 0
 fi
 
 # Read budget defaults

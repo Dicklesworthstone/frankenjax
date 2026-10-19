@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.global-performance-gate.v1",
-  "generated_at_unix_ms": 1777600000000,
+  "generated_at_unix_ms": 1792387500000,
   "baseline_ref": "artifacts/performance/benchmark_baselines_v2_2026-03-12.json",
   "regression_report_ref": "artifacts/ci/perf_regression_report.v1.json",
   "memory_gate_ref": "artifacts/performance/memory_performance_gate.v1.json",
@@ -63,6 +63,12 @@
           "bench_id": "backend_execute/square",
           "p50_ns": 174.03,
           "p95_ns": 176.82
+        },
+        {
+          "suite": "compiled_jaxpr",
+          "bench_id": "compiled_jaxpr_execute/chain_add_10",
+          "p50_ns": 180.63,
+          "p95_ns": 185.10
         },
         {
           "suite": "lax_eval",
@@ -167,9 +173,165 @@
       ]
     }
   ],
+  "precision_policy_regimes": {
+    "bead_id": "frankenjax-rc26-n1emn.18",
+    "default_policy": "BitExactPortable",
+    "accelerated_policy": "HardwareFmaAccelerated",
+    "replay_command": "cargo test --release -p frankenjax-lax --lib bench_rc26_18_all_regimes -- --ignored --nocapture",
+    "gemm_cholesky_exp": [
+      {
+        "bench_id": "gemm_f64_2048x2048",
+        "bit_exact_portable_p50_us": 86614.6,
+        "hardware_fma_accelerated_p50_us": 39394.9,
+        "speedup_x": 2.20,
+        "required_min_speedup_x": 1.70,
+        "oracle_tolerance": 1e-12,
+        "status": "pass"
+      },
+      {
+        "bench_id": "gemm_f32_2048x2048",
+        "bit_exact_portable_p50_us": 126710.2,
+        "hardware_fma_accelerated_p50_us": 32517.5,
+        "speedup_x": 3.90,
+        "required_min_speedup_x": 1.70,
+        "oracle_tolerance": 1e-3,
+        "status": "pass"
+      },
+      {
+        "bench_id": "cholesky_f64_2048x2048",
+        "bit_exact_portable_p50_us": 113281.3,
+        "hardware_fma_accelerated_p50_us": 62894.3,
+        "speedup_x": 1.80,
+        "required_min_speedup_x": 1.70,
+        "oracle_tolerance": 1e-10,
+        "status": "pass"
+      },
+      {
+        "bench_id": "exp_f64_65536",
+        "bit_exact_portable_p50_us": 276.16,
+        "hardware_fma_accelerated_p50_us": 201.55,
+        "speedup_x": 1.37,
+        "required_min_speedup_x": 1.20,
+        "oracle_tolerance": 1e-15,
+        "status": "pass"
+      }
+    ],
+    "stockham_batched_fft": [
+      {
+        "bench_id": "fft_1000",
+        "bluestein_uncached_baseline_p50_us": 121.61,
+        "bit_exact_portable_p50_us": 7.88,
+        "hardware_fma_accelerated_p50_us": 7.24,
+        "portable_speedup_vs_bluestein_x": 15.42,
+        "fma_speedup_vs_bluestein_x": 16.79,
+        "required_min_speedup_x": 3.00,
+        "oracle_tolerance": 1e-11,
+        "status": "pass"
+      },
+      {
+        "bench_id": "fft_batch_128x1000",
+        "bluestein_uncached_baseline_p50_us": 15864.43,
+        "bit_exact_portable_p50_us": 802.55,
+        "hardware_fma_accelerated_p50_us": 542.84,
+        "portable_speedup_vs_bluestein_x": 19.77,
+        "fma_speedup_vs_bluestein_x": 29.22,
+        "required_min_speedup_x": 3.00,
+        "oracle_tolerance": 1e-11,
+        "status": "pass"
+      },
+      {
+        "bench_id": "fft_batch_2048x256",
+        "bluestein_uncached_baseline_p50_us": 8587.04,
+        "bit_exact_portable_p50_us": 1853.64,
+        "hardware_fma_accelerated_p50_us": 2086.18,
+        "portable_speedup_vs_bluestein_x": 4.63,
+        "fma_speedup_vs_bluestein_x": 4.12,
+        "required_min_speedup_x": 3.00,
+        "oracle_tolerance": 1e-11,
+        "status": "pass"
+      }
+    ]
+  },
+  "vs_jax_scoreboard": {
+    "comparator_oracle": "Python JAX 0.10.2 (XLA-CPU)",
+    "evidence_ref": "docs/NEGATIVE_EVIDENCE.md",
+    "families": [
+      {
+        "family": "linalg_qr",
+        "workload": "qr_f64_256x256_to_1024x1024",
+        "frankenjax_vs_jax_speedup_x": 30.0,
+        "regime": "BitExactPortable",
+        "verdict": "frankenjax_faster"
+      },
+      {
+        "family": "linalg_lu",
+        "workload": "lu_f64_512x512",
+        "frankenjax_vs_jax_speedup_x": 12.9,
+        "regime": "BitExactPortable",
+        "verdict": "frankenjax_faster"
+      },
+      {
+        "family": "linalg_slogdet_det",
+        "workload": "slogdet_det_f64_512x512",
+        "frankenjax_vs_jax_speedup_x": 7.3,
+        "regime": "BitExactPortable",
+        "verdict": "frankenjax_faster"
+      },
+      {
+        "family": "linalg_solve",
+        "workload": "triangular_and_lu_solve_f64_512x512",
+        "frankenjax_vs_jax_speedup_x": 5.2,
+        "regime": "BitExactPortable",
+        "verdict": "frankenjax_faster"
+      },
+      {
+        "family": "sort_argsort_topk",
+        "workload": "radix_sort_argsort_i64_f64_1m",
+        "frankenjax_vs_jax_speedup_x": 94.0,
+        "regime": "BitExactPortable",
+        "verdict": "frankenjax_faster"
+      },
+      {
+        "family": "pooling_reduce_window",
+        "workload": "reduce_window_4d_nhwc",
+        "frankenjax_vs_jax_speedup_x": 141.0,
+        "regime": "BitExactPortable",
+        "verdict": "frankenjax_faster"
+      },
+      {
+        "family": "integer_contraction",
+        "workload": "dot_i64_512x512",
+        "frankenjax_vs_jax_speedup_x": 230.0,
+        "regime": "BitExactPortable",
+        "verdict": "frankenjax_faster"
+      },
+      {
+        "family": "cumulative_reductions",
+        "workload": "cumsum_cumprod_f64_1m",
+        "frankenjax_vs_jax_speedup_x": 3.9,
+        "regime": "BitExactPortable",
+        "verdict": "frankenjax_faster"
+      },
+      {
+        "family": "gemm_cholesky_fma",
+        "workload": "gemm_and_cholesky_2048x2048",
+        "frankenjax_vs_jax_speedup_x": 0.37,
+        "regime": "HardwareFmaAccelerated",
+        "verdict": "gap_narrowed_2_2x_to_3_9x_via_avx2_fma"
+      },
+      {
+        "family": "fft_composite_and_batched",
+        "workload": "fft_1000_and_batch_128x1000",
+        "frankenjax_vs_jax_speedup_x": 0.68,
+        "regime": "HardwareFmaAccelerated",
+        "verdict": "gap_narrowed_16_8x_to_29_2x_via_stockham_mixed_radix_and_plan_cache"
+      }
+    ]
+  },
   "commands": {
     "save_baseline": "CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-baseline rch exec -- ./scripts/check_perf_regression.sh --save-baseline",
     "compare": "CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-candidate rch exec -- ./scripts/check_perf_regression.sh",
+    "verify_regimes": "CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-regimes ./scripts/check_perf_regression.sh --verify-regimes",
     "single_phase_probe": "CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-probe rch exec -- cargo bench --bench dispatch_baseline -- dispatch_latency"
   }
 }
