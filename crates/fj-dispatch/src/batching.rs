@@ -5842,7 +5842,13 @@ fn batch_passthrough_leading(
         });
         slots
             .into_iter()
-            .map(|slot| slot.expect("every batch slot filled"))
+            .map(|slot| {
+                slot.unwrap_or_else(|| {
+                    Err(BatchError::EvalError(
+                        "parallel batch worker failed to populate batch slot".to_owned(),
+                    ))
+                })
+            })
             .collect::<Result<Vec<Value>, BatchError>>()?
     };
 
@@ -5953,7 +5959,13 @@ fn batch_passthrough_leading_multi(
         });
         slots
             .into_iter()
-            .map(|slot| slot.expect("every batch slot filled"))
+            .map(|slot| {
+                slot.unwrap_or_else(|| {
+                    Err(BatchError::EvalError(
+                        "parallel batch worker failed to populate batch slot".to_owned(),
+                    ))
+                })
+            })
             .collect::<Result<_, _>>()?
     };
 

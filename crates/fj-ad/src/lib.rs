@@ -1,4 +1,8 @@
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 #![allow(clippy::cloned_ref_to_slice_refs)]
 
 use fj_core::{
@@ -1426,10 +1430,12 @@ fn try_scalar_f64_add_mul_value_and_grad(
                     continue;
                 }
 
-                let lhs = scalar_f64_atom_value(&values, &eqn.inputs[0])?
-                    .expect("scalar fast path checked lhs");
-                let rhs = scalar_f64_atom_value(&values, &eqn.inputs[1])?
-                    .expect("scalar fast path checked rhs");
+                let lhs = scalar_f64_atom_value(&values, &eqn.inputs[0])?.ok_or_else(|| {
+                    AdError::EvalFailed("missing scalar f64 lhs value".to_owned())
+                })?;
+                let rhs = scalar_f64_atom_value(&values, &eqn.inputs[1])?.ok_or_else(|| {
+                    AdError::EvalFailed("missing scalar f64 rhs value".to_owned())
+                })?;
                 if let Atom::Var(var) = eqn.inputs[0] {
                     scalar_f64_add_or_insert(&mut adjoints, var, g * rhs)?;
                 }
@@ -15010,9 +15016,10 @@ fn jacobian_jaxpr_inner(
                 ok = false;
                 break;
             }
-            let jac = jacobian.as_mut().expect("initialized");
-            for i in 0..output_dim {
-                jac[i * input_dim + col_offset + i] = diag[i];
+            if let Some(jac) = jacobian.as_mut() {
+                for i in 0..output_dim {
+                    jac[i * input_dim + col_offset + i] = diag[i];
+                }
             }
             col_offset += input_lengths[k];
         }
@@ -15268,7 +15275,9 @@ fn jaxpr_is_separable_sum(jaxpr: &Jaxpr) -> bool {
     if jaxpr.invars.len() != 1 || jaxpr.outvars.len() != 1 || jaxpr.equations.is_empty() {
         return false;
     }
-    let last = jaxpr.equations.last().expect("non-empty");
+    let Some(last) = jaxpr.equations.last() else {
+        return false;
+    };
     if last.primitive != Primitive::ReduceSum
         || !last.sub_jaxprs.is_empty()
         || last.outputs.as_slice() != jaxpr.outvars.as_slice()

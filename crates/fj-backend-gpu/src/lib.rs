@@ -11,6 +11,10 @@
 //! - A typed unavailable contract for non-CPU execution requests
 
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 use fj_core::{Jaxpr, Value};
 use fj_runtime::backend::{Backend, BackendCapabilities, BackendError};

@@ -1,5 +1,9 @@
 #![feature(portable_simd)]
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 pub mod partial_eval;
 pub mod staging;
@@ -1354,7 +1358,14 @@ pub fn eval_equation_single(
                 actual: outputs.len(),
             });
         }
-        return Ok(outputs.into_iter().next().expect("len checked == 1"));
+        return outputs
+            .into_iter()
+            .next()
+            .ok_or(InterpreterError::UnexpectedOutputArity {
+                primitive: equation.primitive,
+                expected: 1,
+                actual: 0,
+            });
     }
 
     if equation.outputs.len() != 1 {
@@ -13210,7 +13221,7 @@ fn run_scalar_f64_plan_as_tensor_into(
                 let mut o = vec![0.0_f64; n];
                 if a.is_bcast() || b.is_bcast() {
                     // Row-chunked so RowBcast/ColBcast index by col/row (no per-elem div).
-                    let cols = *shape.dims.last().expect("rank>=1") as usize;
+                    let cols = shape.dims.last().copied().unwrap_or(1) as usize;
                     // Hoist the op once and vectorize each row (decomposed to a
                     // no-broadcast subproblem); other ops keep the per-element loop.
                     match step.op {

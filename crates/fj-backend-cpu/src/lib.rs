@@ -7,6 +7,10 @@
 //! Legacy anchor: P2C006-A17 (CpuBackend), P2C006-A02 (_discover_backends).
 
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 mod executor;
 

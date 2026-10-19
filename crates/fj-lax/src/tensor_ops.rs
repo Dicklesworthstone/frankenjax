@@ -3814,7 +3814,7 @@ pub(crate) fn eval_gather(
         // a per-element `lit_to_i64` match + Result over 1M indices. Identical values; non-dense
         // (boxed) index tensors keep the per-element path.
         Value::Tensor(t) if t.elements.as_i64_slice().is_some() => (
-            t.elements.as_i64_slice().unwrap().to_vec(),
+            t.elements.as_i64_slice().unwrap_or_default().to_vec(),
             t.shape.dims.clone(),
         ),
         Value::Tensor(t) => (
@@ -4547,7 +4547,13 @@ where
                 })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(lb) => lb,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
     });
 
     let mut out = op.to_vec();
@@ -4975,7 +4981,7 @@ pub(crate) fn eval_scatter(
         // a per-element `lit_to_i64` match + Result over the index count. Identical values;
         // non-dense (boxed) index tensors keep the per-element path. (Mirrors eval_gather.)
         Value::Tensor(t) if t.elements.as_i64_slice().is_some() => (
-            t.elements.as_i64_slice().unwrap().to_vec(),
+            t.elements.as_i64_slice().unwrap_or_default().to_vec(),
             t.shape.dims.clone(),
         ),
         Value::Tensor(t) => (
@@ -11818,7 +11824,13 @@ fn sort_along_axis(
                                     scope.spawn(move || sort_blocks(start, start + cnt, chunk)),
                                 );
                             }
-                            handles.into_iter().map(|h| h.join().unwrap()).collect()
+                            handles
+                                .into_iter()
+                                .map(|h| match h.join() {
+                                    Ok(res) => res,
+                                    Err(payload) => std::panic::resume_unwind(payload),
+                                })
+                                .collect()
                         });
                         for r in results {
                             r?;
@@ -11968,7 +11980,13 @@ fn sort_along_axis(
                             handles
                                 .push(scope.spawn(move || sort_blocks(start, start + cnt, chunk)));
                         }
-                        handles.into_iter().map(|h| h.join().unwrap()).collect()
+                        handles
+                            .into_iter()
+                            .map(|h| match h.join() {
+                                Ok(res) => res,
+                                Err(payload) => std::panic::resume_unwind(payload),
+                            })
+                            .collect()
                     });
                     for r in results {
                         r?;
@@ -12034,7 +12052,13 @@ fn sort_along_axis(
                             handles
                                 .push(scope.spawn(move || sort_blocks(start, start + cnt, chunk)));
                         }
-                        handles.into_iter().map(|h| h.join().unwrap()).collect()
+                        handles
+                            .into_iter()
+                            .map(|h| match h.join() {
+                                Ok(res) => res,
+                                Err(payload) => std::panic::resume_unwind(payload),
+                            })
+                            .collect()
                     });
                     for r in results {
                         r?;
@@ -12206,7 +12230,13 @@ fn sort_along_axis(
                     Ok(())
                 }));
             }
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
+            handles
+                .into_iter()
+                .map(|h| match h.join() {
+                    Ok(res) => res,
+                    Err(payload) => std::panic::resume_unwind(payload),
+                })
+                .collect()
         });
         for r in results {
             r?;
@@ -12360,7 +12390,7 @@ fn sort_key_val_dense_uniform<T: Copy + Send + Sync>(
         let mut start = 0usize;
         while start < outer_count {
             let cnt = per.min(outer_count - start);
-            let blocks: Vec<&mut [T]> = out_iters.iter_mut().map(|it| it.next().unwrap()).collect();
+            let blocks: Vec<&mut [T]> = out_iters.iter_mut().filter_map(|it| it.next()).collect();
             let s0 = start;
             start += cnt;
             scope.spawn(move || {
@@ -12409,7 +12439,9 @@ fn sort_orders_dense<T: Copy + Send + Sync>(
         let mut start = 0usize;
         while start < outer_count {
             let cnt = per.min(outer_count - start);
-            let chunk = iter.next().unwrap();
+            let Some(chunk) = iter.next() else {
+                break;
+            };
             let s0 = start;
             start += cnt;
             scope.spawn(move || {
@@ -12452,7 +12484,9 @@ fn lex_orders_dense(
         let mut start = 0usize;
         while start < outer_count {
             let cnt = per.min(outer_count - start);
-            let chunk = iter.next().unwrap();
+            let Some(chunk) = iter.next() else {
+                break;
+            };
             let s0 = start;
             start += cnt;
             scope.spawn(move || {
@@ -12502,8 +12536,9 @@ fn permute_by_orders<T: Copy + Send + Sync>(
         let mut start = 0usize;
         while start < outer_count {
             let cnt = per.min(outer_count - start);
-            let ochunk = oit.next().unwrap();
-            let nchunk = nit.next().unwrap();
+            let (Some(ochunk), Some(nchunk)) = (oit.next(), nit.next()) else {
+                break;
+            };
             let s0 = start;
             start += cnt;
             scope.spawn(move || {
@@ -12812,7 +12847,7 @@ fn sort_multiple_along_axis(
             while start < outer_count {
                 let cnt = per.min(outer_count - start);
                 let blocks: Vec<&mut [Literal]> =
-                    op_iters.iter_mut().map(|it| it.next().unwrap()).collect();
+                    op_iters.iter_mut().filter_map(|it| it.next()).collect();
                 let s = start;
                 start += cnt;
                 handles.push(scope.spawn(move || -> Result<(), EvalError> {
@@ -12859,7 +12894,13 @@ fn sort_multiple_along_axis(
                     Ok(())
                 }));
             }
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
+            handles
+                .into_iter()
+                .map(|h| match h.join() {
+                    Ok(res) => res,
+                    Err(payload) => std::panic::resume_unwind(payload),
+                })
+                .collect()
         });
         for r in results {
             r?;
@@ -13625,7 +13666,7 @@ fn eval_conv_batch_grouped(
 
     let lhs_rank = lhs.shape.rank();
     let n = lhs.shape.dims[0] as usize;
-    let c_out = *rhs.shape.dims.last().expect("rhs has rank >= 3") as usize;
+    let c_out = rhs.shape.dims.last().copied().unwrap_or(0) as usize;
     if !n.is_multiple_of(batch_groups) {
         return Err(EvalError::Unsupported {
             primitive,

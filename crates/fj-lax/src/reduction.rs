@@ -263,7 +263,13 @@ fn threaded_reduce_minmax_f64(values: &[f64], is_max: bool) -> f64 {
             .chunks(chunk)
             .map(|c| scope.spawn(move || simd_reduce_minmax_f64(c, is_max)))
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(partial) => partial,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
     });
     if partials.iter().any(|p| p.is_nan()) {
         return f64::NAN;
@@ -439,7 +445,10 @@ fn threaded_complex_full_reduce(
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().expect("complex reduce partial-fold thread"))
+            .map(|h| match h.join() {
+                Ok(partial) => partial,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
             .collect()
     });
     let (mut re, mut im) = init;
@@ -561,7 +570,10 @@ fn threaded_reduce_half(values: &[u16], is_f16: bool, mul: bool) -> f64 {
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().expect("half reduce partial-fold thread"))
+            .map(|h| match h.join() {
+                Ok(partial) => partial,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
             .collect()
     });
     let mut acc = if mul { 1.0 } else { 0.0 };
@@ -587,7 +599,13 @@ fn threaded_reduce_minmax_f32(values: &[f32], is_max: bool) -> f32 {
             .chunks(chunk)
             .map(|c| scope.spawn(move || simd_reduce_minmax_f32(c, is_max)))
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(partial) => partial,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
     });
     if partials.iter().any(|p| p.is_nan()) {
         return f32::NAN;
@@ -1963,7 +1981,10 @@ pub(crate) fn eval_reduce(
                                 .collect();
                             handles
                                 .into_iter()
-                                .map(|h| h.join().expect("reduce partial-fold thread"))
+                                .map(|h| match h.join() {
+                                    Ok(partial) => partial,
+                                    Err(payload) => std::panic::resume_unwind(payload),
+                                })
                                 .collect()
                         });
                         let mut acc = int_init;
@@ -2117,8 +2138,7 @@ fn dense_f64_axis_reduce<T: Copy + Sync>(
     // column while replacing the generic per-element odometer update with a
     // tight row-slice loop.
     let rank = tensor.shape.dims.len();
-    let kept_is_trailing_suffix = !kept_axes.is_empty()
-        && *kept_axes.last().unwrap() == rank - 1
+    let kept_is_trailing_suffix = kept_axes.last().copied() == Some(rank - 1)
         && kept_axes
             .iter()
             .enumerate()
@@ -2951,7 +2971,10 @@ pub(crate) fn eval_reduce_axes(
                             }
                             handles
                                 .into_iter()
-                                .map(|h| h.join().expect("reduce partial thread"))
+                                .map(|h| match h.join() {
+                                    Ok(partial) => partial,
+                                    Err(payload) => std::panic::resume_unwind(payload),
+                                })
                                 .collect()
                         });
                         for partial in &partials {
@@ -3943,7 +3966,13 @@ fn scan_leading_axis_i64_threaded(
                 acc
             }));
         }
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(acc) => acc,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
     });
     // Pass 2: directional exclusive prefix of the slab totals -> per-slab cols-wide carry.
     let mut carries = vec![vec![init; cols]; nblocks];
@@ -4082,7 +4111,13 @@ where
                 acc
             }));
         }
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(acc) => acc,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
     });
     // Pass 2: directional cols-wide exclusive prefix of the slab totals -> per-slab cols-wide carry.
     let mut carries = vec![vec![init; cols]; nblocks];
@@ -4184,7 +4219,13 @@ fn parallel_cummax_f64(src: &[f64], init: f64, is_max: bool, reverse: bool) -> V
                 acc
             }));
         }
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(acc) => acc,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
     });
     // Pass 2: directional exclusive prefix of the chunk extrema -> per-chunk carry (forward = earlier
     // chunks, reverse = later chunks).
@@ -4251,7 +4292,13 @@ where
                 acc
             }));
         }
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(acc) => acc,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
     });
     let mut carries = vec![init; totals.len()];
     let mut acc = init;
@@ -4337,7 +4384,13 @@ fn parallel_cummax_f32(src: &[f32], init: f64, is_max: bool, reverse: bool) -> V
                 acc
             }));
         }
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(acc) => acc,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
     });
     // Pass 2: directional exclusive prefix of the chunk extrema -> per-chunk carry. Forward = max of
     // EARLIER chunks; reverse = max of LATER chunks.
@@ -4407,7 +4460,13 @@ where
                 acc
             }));
         }
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(acc) => acc,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
     });
     let mut carries = vec![init; totals.len()];
     let mut acc = init;
@@ -4487,7 +4546,13 @@ where
                 acc
             }));
         }
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(acc) => acc,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
     });
     // Pass 2: directional exclusive op-prefix of the chunk totals -> per-chunk carry. Forward = op of
     // EARLIER chunks; reverse = op of LATER chunks.

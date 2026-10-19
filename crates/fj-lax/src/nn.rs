@@ -2296,6 +2296,7 @@ fn softmax_2d_thread_count(rows: usize, total: usize) -> usize {
 }
 
 #[inline]
+#[allow(clippy::panic)]
 fn checked_2d_row_major_len(context: &str, x: &[f64], rows: usize, cols: usize) -> usize {
     let Some(len) = rows.checked_mul(cols) else {
         panic!("{context} output shape overflow");

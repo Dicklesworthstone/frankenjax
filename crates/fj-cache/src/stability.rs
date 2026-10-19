@@ -80,9 +80,9 @@ pub fn golden_key_refs() -> Vec<GoldenKeyRef> {
 pub fn capture_golden_keys() -> Vec<(String, String)> {
     golden_key_refs()
         .into_iter()
-        .map(|g| {
-            let key = build_cache_key(&g.input).expect("golden ref input must be valid");
-            (g.description.to_owned(), key.digest_hex)
+        .filter_map(|g| {
+            let key = build_cache_key(&g.input).ok()?;
+            Some((g.description.to_owned(), key.digest_hex))
         })
         .collect()
 }

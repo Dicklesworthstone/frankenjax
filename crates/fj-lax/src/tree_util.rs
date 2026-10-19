@@ -76,6 +76,7 @@ pub fn tree_unflatten(treedef: &TreeDef, leaves: &[f64]) -> (TreeNode, usize) {
     (tree, consumed)
 }
 
+#[allow(clippy::panic)]
 fn unflatten_recursive(def: &TreeDef, leaves: &[f64], idx: usize) -> (TreeNode, usize) {
     match def {
         TreeDef::Leaf => {
@@ -148,6 +149,7 @@ where
 /// Apply a function to corresponding leaves of multiple trees.
 ///
 /// Matches `jax.tree_util.tree_map(f, tree, *rest)` for two trees.
+#[allow(clippy::panic)]
 pub fn tree_map2<F>(f: F, tree1: &TreeNode, tree2: &TreeNode) -> TreeNode
 where
     F: Fn(f64, f64) -> f64 + Copy,

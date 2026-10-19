@@ -1962,17 +1962,16 @@ pub fn f16_binary_bench(a: &[u16], b: &[u16], simd: bool) -> Vec<u16> {
 pub fn bf16_neg_abs_bench(values: &[u16], is_abs: bool, simd: bool) -> Vec<u16> {
     use fj_core::Shape;
     let op_f64: fn(f64) -> f64 = if is_abs { f64::abs } else { |x| -x };
-    if simd {
-        let t = TensorValue::new_half_float_values(
+    if simd
+        && let Ok(t) = TensorValue::new_half_float_values(
             DType::BF16,
             Shape::vector(values.len() as u32),
             values.to_vec(),
         )
-        .unwrap();
-        match half_neg_abs_simd(&t, is_abs) {
-            Some(Value::Tensor(out)) => out.elements.as_half_float_slice().unwrap().to_vec(),
-            _ => unreachable!(),
-        }
+        && let Some(Value::Tensor(out)) = half_neg_abs_simd(&t, is_abs)
+        && let Some(slice) = out.elements.as_half_float_slice()
+    {
+        slice.to_vec()
     } else {
         values
             .iter()
@@ -10512,7 +10511,17 @@ fn decode_int_idx_threaded<I: Copy + Send + Sync>(
                 Ok(())
             }));
         }
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().unwrap_or_else(|_| {
+                    Err(EvalError::Unsupported {
+                        primitive,
+                        detail: "worker thread panicked".to_owned(),
+                    })
+                })
+            })
+            .collect()
     });
     for r in results {
         r?;
@@ -10669,7 +10678,17 @@ fn select_n_pick_fused_i64<T: Copy + Send + Sync>(
                 Ok(())
             }));
         }
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().unwrap_or_else(|_| {
+                    Err(EvalError::Unsupported {
+                        primitive,
+                        detail: "worker thread panicked".to_owned(),
+                    })
+                })
+            })
+            .collect()
     });
     for r in results {
         r?;
@@ -13827,17 +13846,17 @@ fn eval_ternary_elementwise(
     }
 
     // Convert scalars to 0-d tensors for uniform handling
-    let scalar_to_tensor = |v: &Value| -> TensorValue {
+    let scalar_to_tensor = |v: &Value| -> Result<TensorValue, EvalError> {
         match v {
             Value::Scalar(lit) => TensorValue::new(DType::F64, Shape { dims: vec![] }, vec![*lit])
-                .expect("scalar->tensor conversion"),
-            Value::Tensor(t) => t.clone(),
+                .map_err(EvalError::from),
+            Value::Tensor(t) => Ok(t.clone()),
         }
     };
 
-    let t_a = scalar_to_tensor(a_val);
-    let t_b = scalar_to_tensor(b_val);
-    let t_x = scalar_to_tensor(x_val);
+    let t_a = scalar_to_tensor(a_val)?;
+    let t_b = scalar_to_tensor(b_val)?;
+    let t_x = scalar_to_tensor(x_val)?;
 
     // Broadcast first two shapes, then result with third
     let ab_shape = broadcast_shape(&t_a.shape, &t_b.shape).ok_or(EvalError::ShapeMismatch {

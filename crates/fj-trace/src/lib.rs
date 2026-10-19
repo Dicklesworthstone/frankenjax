@@ -1,4 +1,8 @@
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 //! Tracing and abstract-value machinery for FJ-P2C-001.
 
@@ -370,6 +374,7 @@ pub struct SimpleTraceContext {
     const_values: BTreeMap<TracerId, Value>,
     literal_values: BTreeMap<TracerId, fj_core::Literal>,
     frame_stack: Vec<TraceFrame>,
+    deferred_operator_error: Option<TraceOperatorFailure>,
 }
 
 impl Default for SimpleTraceContext {
@@ -403,7 +408,12 @@ impl SimpleTraceContext {
             const_values: BTreeMap::new(),
             literal_values: BTreeMap::new(),
             frame_stack: vec![Self::root_frame()],
+            deferred_operator_error: None,
         }
+    }
+
+    pub fn take_deferred_operator_failure(&mut self) -> Option<TraceOperatorFailure> {
+        self.deferred_operator_error.take()
     }
 
     #[must_use]
@@ -2134,7 +2144,12 @@ impl SimpleTraceContext {
                 let mut out_dims = out_dims;
                 if batch_groups > 1 {
                     let n = out_dims[0] as usize;
-                    let c_out = *out_dims.last().expect("conv out_dims non-empty") as usize;
+                    let c_out = out_dims.last().copied().ok_or_else(|| {
+                        TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: "conv output dimensions must not be empty".to_owned(),
+                        }
+                    })? as usize;
                     if !n.is_multiple_of(batch_groups) {
                         return Err(TraceError::ShapeInferenceFailed {
                             primitive,
@@ -2611,6 +2626,9 @@ impl SimpleTraceContext {
     }
 
     fn build_closed_jaxpr(&mut self, frame: TraceFrame) -> Result<ClosedJaxpr, TraceError> {
+        if let Some(failure) = self.deferred_operator_error.take() {
+            return Err(failure.error);
+        }
         let TraceFrame {
             trace_id: _,
             in_ids,
@@ -5916,15 +5934,22 @@ fn dtype_param_str(dtype: DType) -> &'static str {
 // ── Operator overloading for TracerRef ────────────────────────────
 
 /// Operator traits cannot return `Result`, so they preserve expression syntax
-/// while surfacing trace invariant failures as a structured panic payload.
-/// Call `unary_op` or `binary_op` directly when the caller needs fallible flow.
-fn operator_trace_or_panic(
+/// while recording any deferred trace error in `SimpleTraceContext` for
+/// `make_jaxpr` / `finalize` to surface deterministically as `Err(TraceError)`.
+fn operator_trace_or_defer(
+    fallback: &TracerRef,
     primitive: Primitive,
     result: Result<TracerRef, TraceError>,
 ) -> TracerRef {
     match result {
         Ok(tracer) => tracer,
-        Err(error) => std::panic::panic_any(TraceOperatorFailure { primitive, error }),
+        Err(error) => {
+            if let Ok(mut ctx) = fallback.ctx.try_borrow_mut() {
+                ctx.deferred_operator_error
+                    .get_or_insert(TraceOperatorFailure { primitive, error });
+            }
+            fallback.clone()
+        }
     }
 }
 
@@ -5933,28 +5958,28 @@ macro_rules! impl_tracer_binary_op {
         impl std::ops::$trait<&TracerRef> for &TracerRef {
             type Output = TracerRef;
             fn $method(self, rhs: &TracerRef) -> TracerRef {
-                operator_trace_or_panic($primitive, self.binary_op($primitive, rhs))
+                operator_trace_or_defer(self, $primitive, self.binary_op($primitive, rhs))
             }
         }
 
         impl std::ops::$trait<TracerRef> for TracerRef {
             type Output = TracerRef;
             fn $method(self, rhs: TracerRef) -> TracerRef {
-                operator_trace_or_panic($primitive, self.binary_op($primitive, &rhs))
+                operator_trace_or_defer(&self, $primitive, self.binary_op($primitive, &rhs))
             }
         }
 
         impl std::ops::$trait<&TracerRef> for TracerRef {
             type Output = TracerRef;
             fn $method(self, rhs: &TracerRef) -> TracerRef {
-                operator_trace_or_panic($primitive, self.binary_op($primitive, rhs))
+                operator_trace_or_defer(&self, $primitive, self.binary_op($primitive, rhs))
             }
         }
 
         impl std::ops::$trait<TracerRef> for &TracerRef {
             type Output = TracerRef;
             fn $method(self, rhs: TracerRef) -> TracerRef {
-                operator_trace_or_panic($primitive, self.binary_op($primitive, &rhs))
+                operator_trace_or_defer(self, $primitive, self.binary_op($primitive, &rhs))
             }
         }
     };
@@ -5972,7 +5997,11 @@ macro_rules! impl_tracer_scalar_binary_op {
             type Output = TracerRef;
             fn $method(self, rhs: $scalar_ty) -> TracerRef {
                 let lit = ($to_lit)(rhs);
-                operator_trace_or_panic($primitive, self.binary_op_with_literal($primitive, lit))
+                operator_trace_or_defer(
+                    self,
+                    $primitive,
+                    self.binary_op_with_literal($primitive, lit),
+                )
             }
         }
 
@@ -5980,7 +6009,11 @@ macro_rules! impl_tracer_scalar_binary_op {
             type Output = TracerRef;
             fn $method(self, rhs: $scalar_ty) -> TracerRef {
                 let lit = ($to_lit)(rhs);
-                operator_trace_or_panic($primitive, self.binary_op_with_literal($primitive, lit))
+                operator_trace_or_defer(
+                    &self,
+                    $primitive,
+                    self.binary_op_with_literal($primitive, lit),
+                )
             }
         }
 
@@ -5988,7 +6021,11 @@ macro_rules! impl_tracer_scalar_binary_op {
             type Output = TracerRef;
             fn $method(self, rhs: &TracerRef) -> TracerRef {
                 let lit = ($to_lit)(self);
-                operator_trace_or_panic($primitive, rhs.binary_op_from_literal($primitive, lit))
+                operator_trace_or_defer(
+                    rhs,
+                    $primitive,
+                    rhs.binary_op_from_literal($primitive, lit),
+                )
             }
         }
 
@@ -5996,7 +6033,11 @@ macro_rules! impl_tracer_scalar_binary_op {
             type Output = TracerRef;
             fn $method(self, rhs: TracerRef) -> TracerRef {
                 let lit = ($to_lit)(self);
-                operator_trace_or_panic($primitive, rhs.binary_op_from_literal($primitive, lit))
+                operator_trace_or_defer(
+                    &rhs,
+                    $primitive,
+                    rhs.binary_op_from_literal($primitive, lit),
+                )
             }
         }
     };
@@ -6021,14 +6062,14 @@ impl_all_scalar_ops_for_type!(bool, fj_core::Literal::Bool);
 impl std::ops::Neg for &TracerRef {
     type Output = TracerRef;
     fn neg(self) -> TracerRef {
-        operator_trace_or_panic(Primitive::Neg, self.unary_op(Primitive::Neg))
+        operator_trace_or_defer(self, Primitive::Neg, self.unary_op(Primitive::Neg))
     }
 }
 
 impl std::ops::Neg for TracerRef {
     type Output = TracerRef;
     fn neg(self) -> TracerRef {
-        operator_trace_or_panic(Primitive::Neg, self.unary_op(Primitive::Neg))
+        operator_trace_or_defer(&self, Primitive::Neg, self.unary_op(Primitive::Neg))
     }
 }
 
@@ -6799,8 +6840,8 @@ pub fn infer_output_avals(
 #[cfg(test)]
 mod tests {
     use super::{
-        JaxprTrace, ShapedArray, SimpleTraceContext, TraceContext, TraceError,
-        TraceOperatorFailure, TraceToJaxpr, TracerId, TracerRef,
+        JaxprTrace, ShapedArray, SimpleTraceContext, TraceContext, TraceError, TraceToJaxpr,
+        TracerId, TracerRef,
     };
     use fj_core::{
         Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Transform, Value,
@@ -10603,15 +10644,11 @@ mod tests {
             ctx: Rc::clone(&ctx_b),
         };
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = &a + &b;
-        }));
-        let Err(payload) = result else {
-            return Err("foreign-context operator unexpectedly succeeded".to_owned());
-        };
-        let failure = payload
-            .downcast_ref::<TraceOperatorFailure>()
-            .ok_or_else(|| "operator panic payload was not TraceOperatorFailure".to_owned())?;
+        let _ = &a + &b;
+        let failure = ctx_a
+            .borrow_mut()
+            .take_deferred_operator_failure()
+            .ok_or_else(|| "expected deferred TraceOperatorFailure in ctx_a".to_owned())?;
 
         assert_eq!(failure.primitive, Primitive::Add);
         assert!(matches!(
@@ -10619,6 +10656,29 @@ mod tests {
             TraceError::ForeignTracerContext { .. }
         ));
         Ok(())
+    }
+
+    #[test]
+    fn test_make_jaxpr_operator_shape_mismatch_returns_err_without_panic() {
+        let in_avals = vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![2] },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![3] },
+            },
+        ];
+        let err = super::make_jaxpr(|xs| vec![&xs[0] + &xs[1]], in_avals)
+            .expect_err("shape mismatch in TracerRef + operator must return Err(TraceError)");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Add,
+                ..
+            }
+        ));
     }
 
     #[test]

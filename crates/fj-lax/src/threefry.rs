@@ -1095,7 +1095,7 @@ pub fn random_choice(
                 acc += w;
                 cuml.push(acc);
             }
-            let total = *cuml.last().expect("n_inputs > 0");
+            let total = cuml.last().copied().unwrap_or(0.0);
             let uniforms = random_uniform(key, n_draws, 0.0, 1.0);
             Ok(uniforms
                 .into_iter()
@@ -1641,6 +1641,7 @@ pub fn random_maxwell(key: PRNGKey, count: usize) -> Vec<f64> {
 }
 
 #[inline]
+#[allow(clippy::panic)]
 fn checked_random_output_len(context: &str, count: usize, factor: usize) -> usize {
     let Some(len) = count.checked_mul(factor) else {
         panic!("{context} output size overflow: count={count} factor={factor}");

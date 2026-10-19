@@ -1133,3 +1133,40 @@ fn no_stub_docs_and_artifacts_scope_stale_status_claims() {
         matches.join("\n")
     );
 }
+
+#[test]
+fn library_crates_enforce_zero_panic_clippy_lints_in_non_test_code() {
+    let required_attr: String =
+        "#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]"
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+    let library_crates = [
+        "fj-core",
+        "fj-trace",
+        "fj-lax",
+        "fj-interpreters",
+        "fj-dispatch",
+        "fj-ad",
+        "fj-api",
+        "fj-cache",
+        "fj-ledger",
+        "fj-runtime",
+        "fj-egraph",
+        "fj-backend-cpu",
+        "fj-backend-gpu",
+        "fj-ffi",
+    ];
+    let root = workspace_root();
+    for crate_name in library_crates {
+        let lib_rs = root.join("crates").join(crate_name).join("src/lib.rs");
+        let content = std::fs::read_to_string(&lib_rs)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", lib_rs.display()));
+        let compact: String = content.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact.contains(&required_attr),
+            "{} must enforce zero-panic clippy lints via `#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]`",
+            lib_rs.display()
+        );
+    }
+}

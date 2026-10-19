@@ -1,4 +1,8 @@
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 use egg::{CostFunction, Id, Language, RecExpr, Runner, define_language, rewrite};
 use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, VarId};
@@ -990,10 +994,9 @@ fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
             };
             if previous.primitive == Primitive::Transpose
                 && rewritten.primitive == Primitive::Transpose
-            {
-                let composed =
+                && let Some(composed) =
                     compose_explicit_transpose_perms(&previous.params, &rewritten.params)
-                        .expect("fuse predicate already validated permutation composition");
+            {
                 let csv = composed
                     .iter()
                     .map(|axis| axis.to_string())
@@ -1001,9 +1004,11 @@ fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
                     .join(",");
                 rewritten.params.insert("permutation".to_owned(), csv);
             }
-            if previous.primitive == Primitive::Rev && rewritten.primitive == Primitive::Rev {
-                let sym_diff = rev_axes_symmetric_difference(&previous.params, &rewritten.params)
-                    .expect("fuse predicate already validated rev sym-diff");
+            if previous.primitive == Primitive::Rev
+                && rewritten.primitive == Primitive::Rev
+                && let Some(sym_diff) =
+                    rev_axes_symmetric_difference(&previous.params, &rewritten.params)
+            {
                 let csv = sym_diff
                     .iter()
                     .map(|axis| axis.to_string())

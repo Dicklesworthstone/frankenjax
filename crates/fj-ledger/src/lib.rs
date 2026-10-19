@@ -1,4 +1,8 @@
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 use fj_core::CompatibilityMode;
 use serde::{Deserialize, Serialize};

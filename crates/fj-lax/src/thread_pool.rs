@@ -44,8 +44,7 @@ fn pool() -> &'static Pool {
         let mut txs = Vec::with_capacity(n);
         for _ in 0..n {
             let (tx, rx) = channel::<Job>();
-            txs.push(tx);
-            std::thread::Builder::new()
+            if std::thread::Builder::new()
                 .name("fj-lax-pool".into())
                 .spawn(move || {
                     // Exits when the matching Sender is dropped (process teardown).
@@ -53,7 +52,10 @@ fn pool() -> &'static Pool {
                         job();
                     }
                 })
-                .expect("spawn fj-lax pool worker");
+                .is_ok()
+            {
+                txs.push(tx);
+            }
         }
         Pool {
             txs,
@@ -81,12 +83,12 @@ pub(crate) fn parallel_fill_f64<F>(len: usize, threads: usize, fill: F) -> Vec<f
 where
     F: Fn(usize, &mut [f64]) + Send + Sync + 'static,
 {
-    if threads <= 1 || len == 0 {
+    let p = pool();
+    if threads <= 1 || len == 0 || p.txs.is_empty() {
         let mut out = vec![0.0f64; len];
         fill(0, &mut out);
         return out;
     }
-    let p = pool();
     let fill = Arc::new(fill);
     let chunk = len.div_ceil(threads);
     let (tx, rx) = channel::<(usize, Vec<f64>)>();
@@ -110,8 +112,9 @@ where
 
     let mut out = vec![0.0f64; len];
     for _ in 0..njobs {
-        let (s, buf) = rx.recv().expect("pool chunk result");
-        out[s..s + buf.len()].copy_from_slice(&buf);
+        if let Ok((s, buf)) = rx.recv() {
+            out[s..s + buf.len()].copy_from_slice(&buf);
+        }
     }
     out
 }

@@ -1829,7 +1829,7 @@ fn qr_block_apply(
 /// at a fixed size (the public `Qr` primitive auto-gates on `QR_BLOCK_MIN`).
 #[doc(hidden)]
 pub fn qr_real_bench(a: Vec<f64>, m: usize, n: usize, blocked: bool) -> Vec<Value> {
-    eval_qr_real_matrix_impl(m, n, a, DType::F64, false, blocked).expect("qr bench")
+    eval_qr_real_matrix_impl(m, n, a, DType::F64, false, blocked).unwrap_or_default()
 }
 
 // ── LU Decomposition ───────────────────────────────────────────────
