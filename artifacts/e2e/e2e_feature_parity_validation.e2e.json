@@ -1,6 +1,6 @@
 {
   "scenario": "e2e_feature_parity_doc_validation",
-  "generated_at_unix_ms": 1792431476112,
+  "generated_at_unix_ms": 1792441710545,
   "checks": [
     {
       "feature": "matrix",
@@ -18,10 +18,10 @@
     },
     {
       "feature": "Primitive semantics (162 canonical variants)",
-      "claimed_status": "162",
+      "claimed_status": "163",
       "test_evidence": "test_feature_parity_all_primitives_listed",
-      "match": false,
-      "pass": false
+      "match": true,
+      "pass": true
     },
     {
       "feature": "`jit` transform semantics",
@@ -146,15 +146,15 @@
       "feature": "RNG implementation (ThreeFry + samplers)",
       "claimed_status": "all_cited_paths_exist",
       "test_evidence": "test_feature_parity_evidence_paths_exist",
-      "match": false,
-      "pass": false
+      "match": true,
+      "pass": true
     },
     {
       "feature": "RNG determinism vs JAX oracle",
       "claimed_status": "all_cited_paths_exist",
       "test_evidence": "test_feature_parity_evidence_paths_exist",
-      "match": false,
-      "pass": false
+      "match": true,
+      "pass": true
     },
     {
       "feature": "RaptorQ sidecar durability pipeline",

@@ -1,6 +1,6 @@
 {
   "test_name": "feature_parity_validation",
-  "generated_at_unix_ms": 1792431476112,
+  "generated_at_unix_ms": 1792441710545,
   "checks": [
     {
       "test_name": "test_feature_parity_status_tokens_valid",
@@ -21,10 +21,10 @@
     {
       "test_name": "test_feature_parity_all_primitives_listed",
       "feature": "Primitive semantics (162 canonical variants)",
-      "claimed_status": "162",
+      "claimed_status": "163",
       "actual_status": "163",
-      "match": false,
-      "pass": false
+      "match": true,
+      "pass": true
     },
     {
       "test_name": "test_feature_parity_all_transforms_listed",
@@ -166,17 +166,17 @@
       "test_name": "test_feature_parity_evidence_paths_exist",
       "feature": "RNG implementation (ThreeFry + samplers)",
       "claimed_status": "all_cited_paths_exist",
-      "actual_status": "crates/fj-api/src/random.rs",
-      "match": false,
-      "pass": false
+      "actual_status": "ok",
+      "match": true,
+      "pass": true
     },
     {
       "test_name": "test_feature_parity_evidence_paths_exist",
       "feature": "RNG determinism vs JAX oracle",
       "claimed_status": "all_cited_paths_exist",
-      "actual_status": "crates/fj-conformance/tests/rng_determinism.rs",
-      "match": false,
-      "pass": false
+      "actual_status": "ok",
+      "match": true,
+      "pass": true
     },
     {
       "test_name": "test_feature_parity_evidence_paths_exist",
