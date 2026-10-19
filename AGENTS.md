@@ -191,14 +191,20 @@ cargo test --workspace -- --nocapture
 
 # Run tests for a specific crate
 cargo test -p fj-core
+cargo test -p fj-trace
 cargo test -p fj-lax
 cargo test -p fj-interpreters
+cargo test -p fj-ad
 cargo test -p fj-cache
 cargo test -p fj-ledger
-cargo test -p fj-dispatch
 cargo test -p fj-runtime
-cargo test -p fj-ad
 cargo test -p fj-egraph
+cargo test -p fj-dispatch
+cargo test -p fj-backend-cpu
+cargo test -p fj-backend-gpu
+cargo test -p fj-api
+cargo test -p fj-ffi
+cargo test -p fj-py
 cargo test -p fj-conformance
 cargo test -p fj-test-utils
 
@@ -213,16 +219,22 @@ cargo bench
 
 | Crate | Focus Areas |
 |-------|-------------|
-| `fj-core` | IR node construction, shape types, primitive definitions, type serialization |
-| `fj-lax` | LAX primitive operations, shape inference, type promotion rules |
-| `fj-interpreters` | Scoped primitive interpretation, environment binding, evaluation correctness |
-| `fj-cache` | Cache-key determinism, strict/hardened gate behavior, SHA-256 soundness |
-| `fj-ledger` | Decision/evidence ledger entries, loss-matrix actions, audit trail integrity |
-| `fj-dispatch` | Transform-order-sensitive dispatch, composition proof checks, dispatch baselines |
-| `fj-runtime` | Runtime value model, tensor-aware execution, optional async integration |
-| `fj-ad` | Automatic differentiation correctness, forward/reverse mode, Jacobian properties |
-| `fj-egraph` | E-graph rewrite rules, equality saturation, IR optimization correctness |
-| `fj-conformance` | Transform fixture bundles for `jit`/`grad`/`vmap`, differential harness, durability pipeline |
+| `fj-core` | IR node construction, shape types, 162 canonical primitive definitions (+ 1 FFI `CustomCall` = 163 enum variants), 11 dtypes, 121 `ProgramSpec` variants |
+| `fj-trace` | `make_jaxpr` Rust closure tracing, `TracerRef` methods, shape inference, nested trace frames |
+| `fj-lax` | LAX primitive operations, linear algebra (10/10), FFT (4/4), special math (13/13), ThreeFry2x32 RNG |
+| `fj-interpreters` | Scoped primitive interpretation, environment binding, partial evaluation, staging |
+| `fj-ad` | Automatic differentiation correctness, forward/reverse mode (JVP/VJP), symbolic `grad_to_jaxpr` and `hessian_jaxpr` |
+| `fj-cache` | Cache-key determinism, file/memory cache backends, strict/hardened gate behavior, SHA-256 soundness |
+| `fj-ledger` | Decision/evidence ledger entries, loss-matrix actions, conformal predictor, audit trail integrity |
+| `fj-runtime` | Runtime value model, device placement, buffer pool, optional async/TUI integration |
+| `fj-egraph` | E-graph rewrite rules (30 IEEE-754-safe active rules / 91 total), equality saturation, IR optimization correctness |
+| `fj-dispatch` | Transform-order-sensitive dispatch, symbolic AD composition, batching, composition proof checks |
+| `fj-backend-cpu` | Dependency-wave parallel executor (Rayon) wired into dispatch |
+| `fj-backend-gpu` | Multi-device CPU-emulated backend (`DevicePlacement`, `ShardingSpec`, `BufferPool`) |
+| `fj-api` | Public user facade (`jit`, `grad`, `vmap`, `value_and_grad`, `jacobian`, `hessian`, `nn`, `random`, `tree_util`, `lax`) |
+| `fj-ffi` | C FFI boundary (`fj_dispatch_json`, buffer copy, `custom_call` registration) |
+| `fj-py` | PyO3 bindings (`PyArray`, `TracerRef`, `make_jaxpr`, `jit`, `grad`, `vmap`, `hessian`, `checkpoint`, `lax`) |
+| `fj-conformance` | Transform fixture bundles (861 oracle cases), differential harness, RaptorQ durability pipeline |
 | `fj-test-utils` | Shared test scaffolding, fixture helpers, deterministic hash utilities |
 
 ### Test Fixtures
@@ -253,7 +265,7 @@ If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to f
 
 ### Legacy Behavioral Oracle
 
-- **Path:** `/dp/frankenjax/legacy_jax_code/jax`
+- **Path:** `/data/projects/frankenjax/legacy_jax_code/jax`
 - **Upstream:** https://github.com/jax-ml/jax
 
 **CRITICAL NON-REGRESSION RULE:** Transform composition semantics are non-negotiable. Do not optimize tracing/lowering in ways that alter meaning.
@@ -273,20 +285,28 @@ The transform pipeline flows through:
 
 ### Workspace Structure
 
+The workspace contains **17 member crates** (`Cargo.toml`):
+
 ```
 frankenjax/
-├── Cargo.toml                         # Workspace root
+├── Cargo.toml                         # Workspace root (17 member crates)
 ├── crates/
-│   ├── fj-core/                       # Zero-dep IR types, shapes, primitives, error types
-│   ├── fj-lax/                        # LAX primitive operations and shape inference
-│   ├── fj-interpreters/               # Scoped primitive interpreter with environment binding
+│   ├── fj-core/                       # Zero-dep IR types, shapes, 162 canonical primitives (+ 1 FFI = 163 enum variants), 11 dtypes
+│   ├── fj-trace/                      # Closure tracing (make_jaxpr) and TracerRef methods
+│   ├── fj-lax/                        # LAX primitive operations, linalg, FFT, RNG, and shape inference
+│   ├── fj-interpreters/               # Scoped primitive interpreter, partial evaluation, staging
+│   ├── fj-ad/                         # Automatic differentiation (forward JVP, reverse VJP, symbolic grad_to_jaxpr)
 │   ├── fj-cache/                      # Deterministic cache-key module with strict/hardened gates
 │   ├── fj-ledger/                     # Decision/evidence ledger with loss-matrix actions
-│   ├── fj-dispatch/                   # Transform-order-sensitive dispatch and composition proofs
 │   ├── fj-runtime/                    # Tensor-aware runtime value model and execution
-│   ├── fj-ad/                         # Automatic differentiation (forward + reverse mode)
-│   ├── fj-egraph/                     # E-graph equality saturation for IR optimization
-│   ├── fj-conformance/                # Differential conformance harness, fixtures, durability
+│   ├── fj-egraph/                     # E-graph equality saturation (30 IEEE-754-safe active rules / 91 total)
+│   ├── fj-dispatch/                   # Transform-order-sensitive dispatch and composition proofs
+│   ├── fj-backend-cpu/                # Rayon dependency-wave parallel CPU backend
+│   ├── fj-backend-gpu/                # Multi-device CPU-emulated sharding backend
+│   ├── fj-api/                        # Public user API facade (jit, grad, vmap, nn, random, tree_util, lax)
+│   ├── fj-ffi/                        # C FFI surface (only crate permitted unsafe)
+│   ├── fj-py/                         # PyO3 Python bindings
+│   ├── fj-conformance/                # Differential conformance harness, 861 oracle fixtures, durability
 │   └── fj-test-utils/                 # Shared test scaffolding and fixture helpers
 ├── artifacts/                         # Generated artifacts (durability, schemas, examples)
 ├── references/                        # Reference specs (e.g., frankensqlite V1 spec)
@@ -297,16 +317,22 @@ frankenjax/
 
 | Crate | Key Areas | Purpose |
 |-------|-----------|---------|
-| `fj-core` | IR nodes, shapes, primitives | Canonical IR representation, tensor shape types, primitive definitions |
-| `fj-lax` | LAX ops, shape inference | LAX-level primitive operations (add, mul, dot, sin, cos, reduce_sum) |
-| `fj-interpreters` | Eval, environments | Scoped primitive interpreter with hash-map environments |
+| `fj-core` | IR nodes, shapes, primitives | Canonical IR representation, tensor shape types, 162 canonical primitive variants (+ 1 FFI `CustomCall` = 163 enum variants) |
+| `fj-trace` | Tracing, shape inference | `make_jaxpr` closure tracing and abstract shape checking |
+| `fj-lax` | LAX ops, linalg, FFT, RNG | LAX-level primitive operations, decompositions, FFT, ThreeFry2x32 |
+| `fj-interpreters` | Eval, partial eval, staging | Scoped primitive interpreter and constant folding (`stage_jaxpr`) |
+| `fj-ad` | Grad, Jacobian, Hessian | Tape-based VJP/JVP and symbolic `grad_to_jaxpr` / `hessian_jaxpr` |
 | `fj-cache` | Cache keys, gates | SHA-256-based deterministic cache keys with strict/hardened mode split |
 | `fj-ledger` | Evidence, decisions | Transform evidence entries, loss-matrix decision logging, audit trail |
-| `fj-dispatch` | Transforms, proofs | Order-sensitive transform dispatch, composition proof verification |
 | `fj-runtime` | Values, execution | Tensor-aware runtime value model, optional async/TUI integration |
-| `fj-ad` | Grad, Jacobian | Automatic differentiation engine for `grad` transform |
-| `fj-egraph` | Rewrites, saturation | Equality saturation via `egg` for algebraic IR simplification |
-| `fj-conformance` | Fixtures, harness, durability | Legacy-oracle differential testing, RaptorQ durability pipeline |
+| `fj-egraph` | Rewrites, saturation | Equality saturation via `egg` (30 IEEE-754-safe active rules / 91 total) |
+| `fj-dispatch` | Transforms, proofs | Order-sensitive transform dispatch, composition proof verification |
+| `fj-backend-cpu` | Parallel executor | Rayon dependency-wave parallel execution |
+| `fj-backend-gpu` | Sharding, devices | Multi-device CPU-emulated placement and buffer pool |
+| `fj-api` | Public facade | Top-level user API (`jit`, `grad`, `vmap`, `nn`, `random`, `tree_util`, `lax`) |
+| `fj-ffi` | C ABI, custom calls | C FFI boundary and host callback registration |
+| `fj-py` | PyO3 module | Python bindings (`PyArray`, `TracerRef`, transforms) |
+| `fj-conformance` | Fixtures, harness, durability | Legacy-oracle differential testing (861 cases), RaptorQ durability pipeline |
 | `fj-test-utils` | Helpers | Shared test scaffolding, deterministic hashing, fixture I/O |
 
 ### Compatibility Doctrine (Mode-Split)
@@ -390,8 +416,8 @@ Required evidence for substantive changes:
 | Type | Purpose |
 |------|---------|
 | IR nodes | Canonical JAXPR-like intermediate representation |
-| Shape types | Tensor shape and dtype definitions |
-| Primitives | `add`, `mul`, `dot`, `sin`, `cos`, `reduce_sum`, etc. (110 ops) |
+| Shape types | Tensor shape and dtype definitions (11 dtypes) |
+| Primitives | `add`, `mul`, `dot`, `sin`, `cos`, `reduce_sum`, etc. (162 canonical primitive variants: 157 V1 local + 5 pmap collectives, plus 1 FFI `CustomCall` = 163 enum variants) |
 | Cache keys | SHA-256 deterministic keys with strict/hardened gate behavior |
 | Evidence entries | Transform composition proofs and decision audit trail |
 | Loss-matrix actions | Decision-theoretic runtime contracts |
@@ -502,7 +528,7 @@ Beads provides a lightweight, dependency-aware issue database and CLI (`br` - be
 
 ## bv — Graph-Aware Triage Engine
 
-bv is a graph-aware triage engine for Beads projects (`.beads/beads.jsonl`). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
+bv is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl`). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
 
 **Scope boundary:** bv handles *what to work on* (triage, priority, planning). For agent-to-agent coordination (messaging, work claiming, file reservations), use MCP Agent Mail.
 
@@ -569,7 +595,7 @@ bv --robot-triage --robot-triage-by-label    # Group by domain
 ### Understanding Robot Output
 
 **All robot JSON includes:**
-- `data_hash` — Fingerprint of source beads.jsonl
+- `data_hash` — Fingerprint of source `.beads/issues.jsonl`
 - `status` — Per-metric state: `computed|approx|timeout|skipped` + elapsed ms
 - `as_of` / `as_of_commit` — Present when using `--as-of`
 
@@ -717,7 +743,7 @@ rg -l -t rust 'unwrap\(' | xargs ast-grep run -l Rust -p '$X.unwrap()' --json
 
 ```
 mcp__morph-mcp__warp_grep(
-  repoPath: "/dp/frankenjax",
+  repoPath: "/data/projects/frankenjax",
   query: "How does the transform dispatch pipeline work?"
 )
 ```

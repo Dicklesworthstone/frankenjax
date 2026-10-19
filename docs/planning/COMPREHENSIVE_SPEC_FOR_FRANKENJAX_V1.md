@@ -45,7 +45,7 @@ FrankenJAX is a memory-safe, clean-room Rust system whose crown-jewel abstractio
 
 Legacy behavioral oracle:
 
-- `/dp/frankenjax/legacy_jax_code/jax`
+- `/data/projects/frankenjax/legacy_jax_code/jax`
 - upstream `jax-ml/jax`
 
 Non-regression imperative:
@@ -91,16 +91,25 @@ Target architecture:
 
 `user API -> trace -> canonical IR -> transform stack -> lowering -> runtime backend`
 
-Current crate realization:
+Current crate realization (17 workspace member crates):
 
 - `fj-core`
+- `fj-trace`
 - `fj-lax`
 - `fj-interpreters`
+- `fj-ad`
 - `fj-cache`
 - `fj-ledger`
-- `fj-dispatch`
 - `fj-runtime`
+- `fj-egraph`
+- `fj-dispatch`
+- `fj-backend-cpu`
+- `fj-backend-gpu`
+- `fj-api`
+- `fj-ffi`
+- `fj-py`
 - `fj-conformance`
+- `fj-test-utils`
 
 ## 5. Canonical IR and TTL Contract
 

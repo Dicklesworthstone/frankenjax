@@ -9,8 +9,8 @@
 
   ![Rust](https://img.shields.io/badge/rust-nightly_2024-orange)
   ![Tests](https://img.shields.io/badge/tests-workspace_passing-brightgreen)
-  ![Primitives](https://img.shields.io/badge/primitives-118_variants-blue)
-  ![AD Coverage](https://img.shields.io/badge/V1_local_AD-113%2F113_VJP%2BJVP-brightgreen)
+  ![Primitives](https://img.shields.io/badge/primitives-162_canonical_%28163_enum%29-blue)
+  ![AD Coverage](https://img.shields.io/badge/V1_local_AD-157%2F157_VJP%2BJVP-brightgreen)
   ![Oracle Fixtures](https://img.shields.io/badge/oracle_fixtures-861_cases-purple)
 </div>
 
@@ -20,22 +20,22 @@
 
 **The problem:** JAX's transform semantics (`jit`, `grad`, `vmap`) are deeply entangled with Python and XLA. There's no standalone, portable, verifiable implementation of the mathematical core.
 
-**The solution:** FrankenJAX extracts and reimplements JAX's transform composition model in Rust with a canonical JAXPR-like IR, full automatic differentiation for the V1 local execution scope, and a differential conformance harness that validates primitive behavior against the real JAX oracle.
+**The solution:** FrankenJAX extracts and reimplements JAX's transform composition model in Rust with a canonical JAXPR-like IR, full automatic differentiation (both tape-based and symbolic `grad_to_jaxpr`) for the V1 local execution scope, and a differential conformance harness that validates primitive behavior against the real JAX oracle.
 
 **Why FrankenJAX?**
 
 | Feature | Status |
 |---------|--------|
-| 162 canonical primitive variants: 157 V1 local primitives plus 5 pmap collectives | V1 local eval green; pmap collectives fail closed |
-| Reverse-mode (VJP) + Forward-mode (JVP) AD for all 157 V1 local primitives | All green |
-| Transform composition: `jit(grad(f))`, `vmap(grad(f))`, `grad(grad(f))` | V1 matrix gated; unsupported rows fail closed |
-| Linear algebra: Cholesky, QR, SVD, Eigh, TriangularSolve (eval + AD) | All green |
+| 162 canonical primitive variants: 157 V1 local primitives plus 5 pmap collectives (+ 1 FFI `CustomCall` = 163 enum variants) | V1 local eval green; pmap collectives fail closed |
+| Reverse-mode (VJP) + Forward-mode (JVP) + symbolic `grad_to_jaxpr` AD for all 157 V1 local primitives (+ `CustomCall`) | All green |
+| Transform composition: `jit(grad(f))`, `vmap(grad(f))`, `grad(vmap(f))`, `grad(grad(f))` | Symbolic AD + V1 matrix gated; unsupported rows fail closed |
+| Linear algebra: Cholesky, QR, SVD, Eigh, TriangularSolve, Lu, Eig, Schur, Solve, Det/Slogdet (eval + AD) | All green |
 | FFT: Fft, Ifft, Rfft, Irfft (eval + AD) | All green |
-| E-graph equality saturation optimizer (86 algebraic rewrite rules) | All green |
+| E-graph equality saturation optimizer (30 IEEE-754-safe active rules by default + 61 opt-in fast-math rules = 91 total) | All green |
 | 861 JAX oracle fixture cases for differential conformance | All green |
-| RaptorQ erasure-coded durability for current evidence bundles | Implemented; all-long-lived-artifact expansion tracked |
+| RaptorQ erasure-coded durability across all 5 long-lived artifact families (19 policy entries) | All green (100% SHA-256 fresh) |
 | Strict/Hardened compatibility-security mode split | All green |
-| Workspace tests + 4,416 static Rust test/proptest markers | Passing in the latest RCH run |
+| Workspace tests + 9,400+ static Rust test/proptest markers across 17 workspace crates | Passing |
 
 ## Comparison vs Alternatives
 
@@ -47,8 +47,8 @@
 | **Verifiable evidence** | Trace Transform Ledger | No | No | No | No |
 | **Oracle conformance** | 861 JAX-verified cases | N/A (is the oracle) | No | No | No |
 | **Artifact durability** | RaptorQ sidecars | No | No | No | No |
-| **E-graph optimization** | 86 rules, equality saturation | XLA HLO passes | TorchScript/Inductor | LLVM passes | None |
-| **Embeddable** | Yes (Rust library + C FFI) | No (Python required) | Partially (libtorch) | Yes (LLVM plugin) | No |
+| **E-graph optimization** | 30 IEEE-754-safe active rules (91 total), equality saturation | XLA HLO passes | TorchScript/Inductor | LLVM passes | None |
+| **Embeddable** | Yes (Rust library + C FFI + PyO3) | No (Python required) | Partially (libtorch) | Yes (LLVM plugin) | No |
 
 FrankenJAX is not a replacement for JAX in production ML training. It is a **reference implementation** of JAX's mathematical transform semantics that you can embed in Rust applications, use as a verification oracle, or study to understand how composable transforms work.
 
@@ -136,7 +136,7 @@ mul_vjp for v2:  g_v1 += 3.0 * 1.0 + 3.0 * 1.0 = 6.0   (d(x^2)/dx = 2x = 6)
 ## Design Philosophy
 
 **1. Transform composition semantics are non-negotiable.**
-Every transform composition produces an auditable evidence artifact linking input IR, applied transforms, and output IR via the Trace Transform Ledger (TTL). The verifier checks deterministic ledger structure, evidence-to-transform binding, duplicate evidence IDs, evidence-bound stack signatures, and the `ttl_semantic_proof_matrix.v1` gate replays representative `jit`, `grad`, `vmap`, `jit(grad)`, `grad(jit)`, `vmap(grad)`, and fail-closed `grad(vmap)` rows against structural output metadata and oracle fixture links.
+Every transform composition produces an auditable evidence artifact linking input IR, applied transforms, and output IR via the Trace Transform Ledger (TTL). The verifier checks deterministic ledger structure, evidence-to-transform binding, duplicate evidence IDs, input/output `Jaxpr` SHA-256 fingerprint chains (`TransformationProof`), evidence-bound stack signatures, and the `ttl_semantic_proof_matrix.v1` gate replays representative `jit`, `grad`, `vmap`, `jit(grad)`, `grad(jit)`, `vmap(grad)`, and `grad(vmap)` rows (plus negative fail-closed rows) against structural output metadata and oracle fixture links.
 
 **2. Differential conformance, not reimplementation faith.**
 Every primitive's behavior is validated against real JAX 0.9.2 oracle fixtures. We verify, not trust, our implementations: 861 oracle test cases spanning transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition.
@@ -145,7 +145,7 @@ Every primitive's behavior is validated against real JAX 0.9.2 oracle fixtures. 
 Strict mode maximizes observable compatibility. Hardened mode adds safety guards with bounded defensive recovery. You choose the tradeoff per invocation.
 
 **4. RaptorQ-everywhere durability.**
-Current conformance and evidence bundles get erasure-coded sidecars with scrub reports and decode proofs. Expanding that coverage to every long-lived artifact family is tracked in `frankenjax-fcxy.2`.
+All 5 long-lived artifact families (conformance fixture bundles, benchmark baseline bundles, migration manifests, reproducibility ledgers, and long-lived state snapshots — 19 policy entries in `durability_coverage_policy.v1.json`) get erasure-coded sidecars with scrub reports and decode proofs.
 
 **5. Correctness is measured, not assumed.**
 Numerical AD rules are validated against finite-difference gradients. The Cholesky VJP/JVP bugs we found and fixed? Found by numerical verification tests, not by staring at formulas.
@@ -153,29 +153,29 @@ Numerical AD rules are validated against finite-difference gradients. The Choles
 ## Architecture
 
 ```
-User API (fj-api)
+User API (fj-api / fj-py / fj-ffi)
   |
   v
-Trace (fj-trace) --> Canonical IR (fj-core: Jaxpr + 118 Primitive variants)
+Trace (fj-trace) --> Canonical IR (fj-core: Jaxpr + 162 canonical Primitive variants + 1 FFI CustomCall = 163 enum variants)
   |
   v
 Transform Stack (fj-dispatch)
   |  jit    grad    vmap
   |    \      |      /
   v     v     v     v
-  +-- E-graph optimizer (fj-egraph: 86 rewrite rules)
-  +-- AD engine (fj-ad: VJP + JVP for all 157 V1 local primitives)
+  +-- E-graph optimizer (fj-egraph: 30 IEEE-754-safe active rules / 91 total)
+  +-- AD engine (fj-ad: VJP + JVP + symbolic grad_to_jaxpr for all 157 V1 local primitives + CustomCall)
   +-- Batch trace (fj-dispatch/batching: per-primitive vmap rules)
-  +-- Evidence ledger (fj-ledger: transform composition proofs)
+  +-- Evidence ledger (fj-ledger: transform composition proofs + TransformationProof SHA-256 chains)
   |
   v
-Lowering + Eval (fj-lax: arithmetic, linalg, FFT, tensor ops)
+Lowering + Eval (fj-lax: arithmetic, linalg, FFT, tensor ops, custom_call)
   |
   v
-CPU Backend (fj-backend-cpu: dependency-wave parallel executor)
+Backends (fj-backend-cpu: dependency-wave parallel executor; fj-backend-gpu: multi-device sharding)
   |
   v
-Cache (fj-cache: SHA-256 deterministic keys, strict/hardened gates)
+Cache (fj-cache: SHA-256 deterministic keys, LRU execution cache, strict/hardened gates)
 ```
 
 Architecture boundary decisions are now checked by:
@@ -193,40 +193,43 @@ advanced transform/control-flow parity and public API example replay are green.
 
 ## Workspace Crates
 
+The workspace contains **17 member crates** (`Cargo.toml`):
+
 | Crate | Purpose | Tests |
 |-------|---------|-------|
-| `fj-core` | Canonical IR (Jaxpr), 118 primitive variants, 11 dtypes, shapes, value model | Extensive |
-| `fj-lax` | Primitive evaluation: arithmetic, linalg, FFT, reductions, tensor ops | 479 |
-| `fj-ad` | Automatic differentiation: VJP + JVP for all 157 V1 local primitives | 179 |
-| `fj-dispatch` | Transform dispatch, order-sensitive composition, batching | 55+ |
-| `fj-trace` | `make_jaxpr` tracing from Rust closures, nested trace contexts | 50 |
-| `fj-egraph` | E-graph equality saturation: 86 algebraic rewrite rules | 47 |
-| `fj-api` | User-facing API: `jit`, `grad`, `vmap`, `jacobian`, `hessian` | 38 |
-| `fj-cache` | Deterministic cache keys, strict/hardened gate behavior | Yes |
-| `fj-ledger` | Decision/evidence ledger, loss-matrix actions, audit trail | Yes |
-| `fj-runtime` | Tensor-aware runtime value model, optional async integration | Yes |
-| `fj-interpreters` | Scoped primitive interpreter, partial evaluation, staging | Yes |
-| `fj-conformance` | Differential conformance harness, 861 oracle fixtures, durability | 200+ |
-| `fj-backend-cpu` | Dependency-wave parallel executor (rayon) | 40 |
-| `fj-ffi` | C FFI surface (only crate permitted `unsafe`) | Yes |
-| `fj-py` | Alpha PyO3 bindings for `PyValue`, canned Jaxpr builders, `jit`, `grad`, `vmap`, `value_and_grad`, and `checkpoint` | Smoke |
-| `fj-test-utils` | Shared test scaffolding, fixture helpers | Yes |
+| `fj-core` | Canonical IR (Jaxpr), 162 canonical primitive variants (+ 1 FFI `CustomCall` = 163 enum variants), 11 dtypes, 121 ProgramSpec variants | Extensive |
+| `fj-lax` | Primitive evaluation: arithmetic, linalg (10/10), FFT (4/4), special math (13/13), reductions, tensor ops | 479+ |
+| `fj-ad` | Automatic differentiation: VJP + JVP + symbolic `grad_to_jaxpr` / `hessian_jaxpr` for all 157 V1 local primitives (+ `CustomCall`) | 180+ |
+| `fj-dispatch` | Transform dispatch, order-sensitive symbolic composition, batching, staging, LRU execution cache | 60+ |
+| `fj-trace` | `make_jaxpr` tracing from Rust closures, 140+ `TracerRef` methods, nested trace contexts | 55+ |
+| `fj-egraph` | E-graph equality saturation: 30 IEEE-754-safe active rules by default (+ 61 opt-in fast-math = 91 total) | 50+ |
+| `fj-api` | User-facing API: `jit`, `grad`, `vmap`, `value_and_grad`, `jacobian`, `hessian`, `nn`, `random`, `tree_util`, `lax` | 45+ |
+| `fj-cache` | Deterministic SHA-256 cache keys, file/memory cache backends, strict/hardened gate behavior | Yes |
+| `fj-ledger` | Decision/evidence ledger, loss-matrix actions, conformal predictor, audit trail | Yes |
+| `fj-runtime` | Tensor-aware runtime value model, device placement, buffer pool, optional async/TUI integration | Yes |
+| `fj-interpreters` | Scoped primitive interpreter, partial evaluation (`partial_eval_jaxpr`), staging (`stage_jaxpr`) | Yes |
+| `fj-conformance` | Differential conformance harness, 861 oracle fixtures, RaptorQ durability, 174 integration test files | 200+ |
+| `fj-backend-cpu` | Dependency-wave parallel executor (Rayon) wired into `fj-dispatch` | 40+ |
+| `fj-backend-gpu` | Multi-device CPU-emulated backend (`DevicePlacement`, `ShardingSpec`, `BufferPool`) | 30+ |
+| `fj-ffi` | C FFI surface (`fj_dispatch_json`, buffer copy, `custom_call` registration; only crate permitted `unsafe`) | Yes |
+| `fj-py` | PyO3 bindings: `PyArray` (NumPy buffer protocol), `TracerRef` closure tracing, `jit`, `grad`, `vmap`, `hessian`, `checkpoint`, `lax` | 24 |
+| `fj-test-utils` | Shared test scaffolding, fixture helpers, deterministic hash utilities | Yes |
 
 ## Current Status
 
-**162,733 lines of Rust** across 15 crates with end-to-end trace -> dispatch -> runtime pipeline:
+**~342,000 lines of library Rust (~481,000 total Rust lines)** across **17 workspace crates** with end-to-end trace -> dispatch -> runtime pipeline:
 
-- **162 canonical primitive variants**: 157 V1 local primitives covering arithmetic, trigonometric, hyperbolic, comparison, reduction, shape manipulation, linear algebra, FFT, bitwise, control flow, sorting, convolution, and special math functions, plus 5 pmap collectives that fail closed without multi-device context
+- **162 canonical primitive variants** (`Primitive::ALL`): **157 V1 local** primitives covering arithmetic, trigonometric, hyperbolic, comparison, reduction, shape manipulation, linear algebra, FFT, bitwise, control flow, sorting, convolution, and special math functions, plus **5 pmap collectives** (`Psum`, `Pmean`, `AllGather`, `AllToAll`, `AxisIndex`) that fail closed without multi-device context, plus **1 FFI `CustomCall` primitive** (`Primitive::FFI_PRIMITIVES`) for **163 total `Primitive` enum variants**
 - **11 DTypes** (BF16, F16, F32, F64, I32, I64, U32, U64, Bool, Complex64, Complex128) with JAX-verified type promotion rules
-- **Full V1 local AD coverage**: all 157 non-pmap primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including multi-output decompositions (Cholesky, QR, SVD, Eigh) and FFT; pmap collectives are typed unsupported until the multi-device backend lands
-- **Jacobian and Hessian** matrix computation via composable AD
-- **`vmap`** with per-primitive batching rules, `in_axes`/`out_axes`, BatchTrace interpreter, and a 21-row transform/control-flow matrix gate
-- **E-graph optimizer**: 86 algebraic rewrite rules with equality saturation, verified to preserve program semantics
-- **ThreeFry2x32 RNG**: key/split/fold_in/uniform/normal/bernoulli/categorical with JAX-matched determinism
-- **Control flow**: `cond`, `scan`, `while_loop`, `fori_loop`, `switch` with AD support and explicit advanced transform-composition evidence
-- **861 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
-- **4,416 static Rust test/proptest markers** plus 115 conformance test files; the latest full `cargo test --workspace` run passed through RCH
-- **RaptorQ durability pipeline** for current conformance/evidence bundles, with all-long-lived-artifact coverage tracked in `frankenjax-fcxy.2`
+- **Full V1 local AD coverage (157/157 + `CustomCall`)**: all 157 non-pmap canonical primitives (and `CustomCall`) have both VJP (reverse-mode) and JVP (forward-mode) rules, plus symbolic Jaxpr differentiation (`grad_to_jaxpr` and `hessian_jaxpr`) enabling exact arbitrary-order composition (`grad(grad(f))`, `vmap(grad(f))`, `grad(vmap(f))`, `hessian(f)`); pmap collectives are typed unsupported until multi-device pmap execution is invoked
+- **Jacobian and Hessian** matrix computation via symbolic AD composition (`jacfwd`, `jacrev`, `hessian`, `hessian_jaxpr`)
+- **`vmap`** with per-primitive batching rules, `in_axes`/`out_axes` (including rank>1 `AxisSpec`), BatchTrace interpreter, and a 21-row transform/control-flow matrix gate
+- **E-graph optimizer**: 30 IEEE-754-safe algebraic rewrite rules active by default (plus 61 opt-in fast-math rules in `numerically_unsafe_rules()` = 91 total) with equality saturation, verified to preserve program semantics
+- **ThreeFry2x32 RNG**: key/split/fold_in and 22 distribution samplers (uniform, normal, bernoulli, categorical, exponential, gamma, beta, dirichlet, chisquare, student_t, cauchy, laplace, logistic, gumbel, pareto, weibull, wald, lognormal, poisson, geometric, permutation, choice) with JAX-matched determinism
+- **Control flow**: `cond`, `scan`, `while_loop`, `fori_loop`, `switch` with symbolic and tape AD support (including `reverse` and `unroll` scan parameters)
+- **861 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode across 6 fixture bundles, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
+- **9,400+ static Rust `#[test]` markers and 23 `proptest!` blocks** plus **174 conformance test files** across 17 workspace crates
+- **RaptorQ durability pipeline** covering all 19 policy entries across all 5 long-lived artifact families with 100% SHA-256 fresh sidecars, scrub reports, and decode proofs
 
 ## The Canonical IR: Jaxpr
 
@@ -423,15 +426,15 @@ The linalg decomposition VJPs follow Murray 2016 ("Differentiation of the Choles
 
 The optimizer converts Jaxpr programs into an **e-graph** (equivalence graph) and applies **equality saturation** via the `egg` library. Instead of choosing one rewrite direction, all applicable rewrites fire simultaneously, and a cost function extracts the cheapest equivalent program.
 
-86 algebraic rewrite rules, including:
+30 IEEE-754-safe algebraic rewrite rules are active by default in `rules()`, with an additional 61 opt-in fast-math rules in `numerically_unsafe_rules()` (91 total), including:
 
 | Category | Example Rule | Effect |
 |----------|-------------|--------|
 | Arithmetic identities | `x + 0 → x`, `x * 1 → x` | Eliminate no-ops |
 | Strength reduction | `x + x → 2 * x` | Reduce operation count |
-| Inverse pairs | `exp(log(x)) → x`, `neg(neg(x)) → x` | Cancel inverses |
-| Trig identities | `sin²(x) + cos²(x) → 1` | Simplify trig expressions |
-| Distributivity | `a*(b+c) ↔ a*b + a*c` | Factor or expand as needed |
+| Inverse pairs | `exp(log(x)) → x`, `neg(neg(x)) → x` | Cancel inverses (opt-in fast-math when domain/NaN-sensitive) |
+| Trig identities | `sin²(x) + cos²(x) → 1` | Simplify trig expressions (opt-in fast-math) |
+| Distributivity | `a*(b+c) ↔ a*b + a*c` | Factor or expand as needed (opt-in fast-math) |
 | Complex field | `real(complex(r, i)) → r` | Simplify complex extraction |
 | Comparison absorption | `max(a, min(a, b)) → a` | Eliminate nested comparisons |
 
@@ -441,11 +444,12 @@ The cost model (`OpCount`) counts the number of operations in each equivalent ex
 
 Transform composition is order-sensitive. `grad(vmap(f))` produces different results from `vmap(grad(f))`. The dispatcher processes a stack of transforms against a Jaxpr:
 
-1. **Strip leading `jit`** (compile-time annotation, no-op in V1)
-2. **Apply innermost transform first**: `grad` uses symbolic tape-based AD; `vmap` uses the BatchTrace interpreter with per-primitive batching rules
-3. **Compose recursively**: for `grad(vmap(f))`, first vmap the Jaxpr, then grad the vectorized result
+1. **Stage via partial evaluation**: when `jit` is present with `static_argnums` or constant inputs, `stage_jaxpr` folds known constants and caches the residual `Jaxpr`
+2. **Apply innermost transform first**: `grad` uses symbolic `grad_to_jaxpr` IR differentiation when composing with outer transforms (and tape-based reverse-mode AD for direct evaluation); `vmap` uses the BatchTrace interpreter with per-primitive batching rules
+3. **Compose recursively**: `grad(grad(f))`, `vmap(grad(f))`, and scalar-output `grad(vmap(f))` compose purely symbolically via `grad_to_jaxpr` without finite-difference approximation
 4. **Thread effect tokens** through execution to maintain side-effect ordering
-5. **Record composition proof** in the Trace Transform Ledger for auditability
+5. **Record composition proof** in the Trace Transform Ledger with SHA-256 `TransformationProof` input/output `Jaxpr` fingerprint chains and `DecisionLedger` entries for auditability
+6. **Execute & cache**: routes execution through `CpuBackend` (including Rayon dependency-wave parallel execution when `parallel_execution=true`) and caches pure deterministic outputs in an in-memory LRU execution cache keyed by SHA-256 `cache_key` + input values
 
 The dispatcher also supports **e-graph optimization** as a compile option. When `egraph_optimize=true`, the Jaxpr is optimized via equality saturation before evaluation.
 
@@ -555,18 +559,18 @@ FrankenJAX reimplements JAX's *semantics*, not its *implementation*. Key archite
 |--------|-----------------|-------------------|
 | **IR** | JAXPR with Python objects | Jaxpr with Rust enums (fully serializable) |
 | **Tracing** | Python abstract interpreter | Rust closure tracing via `TracerRef` operator overloading |
-| **AD tape** | Implicit via Python closures | Explicit `Vec<TapeEntry>` with value snapshots |
-| **Compilation** | XLA HLO to device code | E-graph optimization then direct interpretation |
-| **Dispatch** | C++ `xla::Client` | Rust `dispatch()` with transform stack |
+| **AD** | Implicit via Python closures + Jaxpr transposition | Both explicit `Vec<TapeEntry>` and symbolic `grad_to_jaxpr(&Jaxpr) -> Jaxpr` |
+| **Compilation** | XLA HLO to device code | Partial evaluation (`stage_jaxpr`) + e-graph optimization then direct interpretation |
+| **Dispatch** | C++ `xla::Client` | Rust `dispatch()` with transform stack, `CpuBackend`, and LRU execution cache |
 | **Type system** | NumPy dtype objects | Rust `DType` enum (11 variants) |
-| **Parallelism** | XLA partitioning + SPMD | Rayon dependency-wave scheduling |
+| **Parallelism** | XLA partitioning + SPMD | Rayon dependency-wave scheduling + `fj-backend-gpu` CPU-emulated sharding |
 | **Value model** | NumPy arrays + JAX DeviceArray | `Value::Scalar(Literal)` / `Value::Tensor(TensorValue)` |
 
 What we kept identical: the Jaxpr structure (invars, constvars, outvars, equations), primitive semantics, transform composition rules, VJP/JVP mathematical formulas, type promotion lattice, ThreeFry PRNG cipher, and control flow primitive semantics.
 
-What we simplified: no XLA lowering (we interpret directly), no device placement (CPU only), no SPMD partitioning, no custom call mechanism, no platform-specific kernels.
+What we simplified: no XLA GPU/TPU codegen (we interpret on CPU or CPU-emulated multi-device backends), no distributed GSPMD compiler, and `CustomCall` uses a thread-safe host-callback registry (`fj_lax::custom_call`) rather than XLA custom-call ABI.
 
-What we added: Trace Transform Ledger (auditable composition proofs), RaptorQ durability (erasure-coded artifacts), decision/evidence ledger (loss-matrix runtime decisions), strict/hardened mode split, e-graph equality saturation optimizer.
+What we added: Trace Transform Ledger (auditable composition proofs with SHA-256 `TransformationProof` chains), RaptorQ durability (erasure-coded artifacts), decision/evidence ledger (loss-matrix runtime decisions), strict/hardened mode split, e-graph equality saturation optimizer.
 
 ### Tracing: From Closures to IR (fj-trace)
 
@@ -652,24 +656,24 @@ The `clear_custom_derivative_rules()` function resets all registrations, used in
 
 ### Jacobian & Hessian via AD Composition (fj-ad)
 
-Higher-order derivatives are computed by composing first-order AD:
+Higher-order derivatives are computed by composing symbolic and forward/reverse-mode AD:
 
-**Jacobian** (forward-mode, JVP-based):
+**Jacobian** (forward-mode `jacfwd` via JVP, or reverse-mode `jacrev` via VJP):
 ```
 For each basis vector e_j in input space:
     tangent_j = jvp(f, x, e_j)    # One forward pass per input dimension
     J[:, j] = tangent_j            # Column j of Jacobian
 ```
-Cost: `input_dim` forward passes. Returns a `[output_dim, input_dim]` matrix.
+Cost: `input_dim` forward passes (`jacfwd`) or `output_dim` backward passes (`jacrev`). Returns a `[output_dim, input_dim]` matrix.
 
-**Hessian** (mixed-mode, grad + finite differences):
+**Hessian** (symbolic AD composition via `hessian_jaxpr` / `jacfwd(grad_to_jaxpr(f))`):
 ```
+grad_jaxpr = grad_to_jaxpr(f)           # Exact symbolic gradient Jaxpr
+hess_jaxpr = hessian_jaxpr(f)           # Symbolic Jacobian of grad_jaxpr
 For each basis vector e_k in input space:
-    g_plus  = grad(f)(x + eps*e_k)   # Gradient at perturbed point
-    g_minus = grad(f)(x - eps*e_k)
-    H[:, k] = (g_plus - g_minus) / (2*eps)  # Central difference
+    H[:, k] = jvp_jaxpr(grad_jaxpr, x, e_k)  # Exact symbolic second derivative column
 ```
-Cost: `2 × input_dim` gradient evaluations. Returns a symmetric `[input_dim, input_dim]` matrix. Uses `ε = 1e-5` for numerical stability.
+Cost: `input_dim` exact forward-over-reverse passes with zero finite-difference step-size error. Returns a symmetric `[input_dim, input_dim]` matrix.
 
 ### FFT Implementation (fj-lax)
 
@@ -981,36 +985,38 @@ cargo fuzz run ir_deserializer corpus/seed/ir_deserializer
 
 ## Primitive Coverage
 
-The `Primitive` enum currently has 162 canonical primitive variants. The V1 local execution and AD scope covers 157 non-pmap primitives; the 5 pmap collectives (`psum`, `pmean`, `all_gather`, `all_to_all`, `axis_index`) are represented in the IR but fail closed until multi-device pmap context exists.
+`Primitive::ALL` defines **162 canonical primitive variants** (**157 V1 local** primitives plus **5 pmap collectives** `Psum`, `Pmean`, `AllGather`, `AllToAll`, `AxisIndex` that fail closed without multi-device context), plus **1 FFI primitive** (`CustomCall` in `Primitive::FFI_PRIMITIVES`) for **163 total `Primitive` enum variants**.
 
 | Category | Primitives | Count |
 |----------|-----------|-------|
-| **Arithmetic** | Add, Sub, Mul, Div, Neg, Abs, Rem, Pow, Max, Min, Exp, Log, Sqrt, Rsqrt, Floor, Ceil, Round, Expm1, Log1p, Sign, Square, Reciprocal, Logistic | 23 |
-| **Trigonometric** | Sin, Cos, Tan, Asin, Acos, Atan, Atan2 | 7 |
-| **Hyperbolic** | Sinh, Cosh, Tanh, Asinh, Acosh, Atanh | 6 |
-| **Special math** | Erf, Erfc, Cbrt, Lgamma, Digamma, ErfInv, IsFinite, IntegerPow, Nextafter | 9 |
+| **Arithmetic & Algebraic** | Add, Sub, Mul, Div, Neg, Abs, Rem, Pow, Max, Min, Exp, Log, Sqrt, Rsqrt, Floor, Ceil, Round, Expm1, Log1p, Sign, Square, Reciprocal, Logistic, AddAny | 24 |
+| **Trigonometric & Hyperbolic** | Sin, Cos, Tan, Asin, Acos, Atan, Atan2, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh, Sinc | 14 |
+| **Special Math** | Erf, Erfc, Cbrt, Lgamma, Digamma, Trigamma, Polygamma, ErfInv, IsFinite, IntegerPow, Nextafter, Ldexp, Frexp, BesselI0e, BesselI1e, RegularizedIncompleteBeta, Zeta | 17 |
 | **Complex** | Complex, Conj, Real, Imag | 4 |
 | **Comparison** | Eq, Ne, Lt, Le, Gt, Ge | 6 |
-| **Reduction** | ReduceSum, ReduceMax, ReduceMin, ReduceProd, ReduceAnd, ReduceOr, ReduceXor, ReduceWindow | 8 |
-| **Shape manipulation** | Reshape, Transpose, BroadcastInDim, Slice, DynamicSlice, DynamicUpdateSlice, Gather, Scatter, Concatenate, Pad, Rev, Squeeze, Split, ExpandDims | 14 |
-| **Linear algebra** | Cholesky, QR, SVD, TriangularSolve, Eigh | 5 |
+| **Reduction & Cumulative** | ReduceSum, ReduceMax, ReduceMin, ReduceProd, ReduceAnd, ReduceOr, ReduceXor, ReduceWindow, Cumsum, Cumprod, Cummax, Cummin | 12 |
+| **Shape & Indexing** | Reshape, Transpose, BroadcastInDim, BroadcastedIota, Slice, DynamicSlice, DynamicUpdateSlice, Gather, Scatter, Concatenate, Pad, Rev, Squeeze, Split, ExpandDims | 15 |
+| **Linear Algebra** | Cholesky, QR, SVD, TriangularSolve, Eigh, Lu, Eig, Schur, Solve, Pinv | 10 |
 | **FFT** | Fft, Ifft, Rfft, Irfft | 4 |
 | **Bitwise** | BitwiseAnd, BitwiseOr, BitwiseXor, BitwiseNot, ShiftLeft, ShiftRightArithmetic, ShiftRightLogical, PopulationCount, CountLeadingZeros | 9 |
-| **Control flow** | Cond, Scan, While, Switch | 4 |
-| **Pmap collectives** | Psum, Pmean, AllGather, AllToAll, AxisIndex | 5 |
-| **Other** | Dot, Select, Clamp, Iota, BroadcastedIota, Copy, BitcastConvertType, ReducePrecision, OneHot, Cumsum, Cumprod, Sort, Argsort, Conv | 14 |
+| **Control Flow & Custom FFI** | Cond, Scan, While, Switch (+ CustomCall in `FFI_PRIMITIVES`) | 4 (+1 FFI) |
+| **RNG (ThreeFry2x32 + Samplers)** | RandomKey, RandomSplit, RandomFoldIn, RandomBits, RandomUniform, RandomNormal, RandomBernoulli, RandomCategorical, RandomExponential, RandomGamma, RandomBeta, RandomDirichlet, RandomChisquare, RandomStudentT, RandomCauchy, RandomLaplace, RandomLogistic, RandomGumbel, RandomPareto, RandomWeibull, RandomWald, RandomLognormal, RandomPoisson, RandomGeometric, RandomPermutation, RandomChoice | 26 |
+| **Other Tensor Ops** | Dot, Conv, Select, SelectN, Clamp, Iota, Copy, BitcastConvertType, ConvertElementType, ReducePrecision, OneHot, Sort, Argsort, TopK, Searchsorted, Argmax, Argmin, Unique, StopGradient | 12 |
+| **Pmap Collectives** | Psum, Pmean, AllGather, AllToAll, AxisIndex | 5 |
+| **Total** | **162 canonical (`Primitive::ALL`) + 1 FFI (`CustomCall`)** | **163** |
 
-Every V1 local primitive has:
+Every V1 local primitive (157/157 canonical + `CustomCall`) has:
 - Full evaluation in `fj-lax` (scalar and tensor paths)
-- VJP rule (reverse-mode gradient) in `fj-ad`
-- JVP rule (forward-mode tangent) in `fj-ad`
+- Analytical VJP rule (reverse-mode gradient) in `fj-ad`
+- Analytical JVP rule (forward-mode tangent) in `fj-ad`
+- Symbolic `grad_to_jaxpr` lowering in `fj-ad`
 - NumPy-style broadcasting for binary operations
 
-The pmap collective variants deliberately return typed unsupported errors instead of fake-success behavior. They remain visible in `Primitive::ALL` so audits and fuzzing account for the full canonical IR surface.
+The pmap collective variants deliberately return typed unsupported errors in single-device `eval_primitive` instead of fake-success behavior. They remain visible in `Primitive::ALL` so audits and fuzzing account for the full canonical IR surface.
 
 ## Test Program Library
 
-FrankenJAX includes a library of **145+ pre-defined test programs** (`ProgramSpec` enum) that serve as standardized inputs for conformance testing, benchmarking, and AD verification:
+FrankenJAX includes a library of **121 pre-defined test program specifications** (`ProgramSpec` enum) that serve as standardized inputs for conformance testing, benchmarking, and AD verification:
 
 | Category | Examples | Count |
 |----------|---------|-------|
@@ -1025,7 +1031,7 @@ FrankenJAX includes a library of **145+ pre-defined test programs** (`ProgramSpe
 | Bitwise | `LaxBitwiseAnd`, `LaxShiftLeft`, `LaxPopulationCount`, ... | ~10 |
 | Cumulative/Sort | `LaxCumsum`, `LaxCumprod`, `LaxSort`, `LaxArgsort` | 4 |
 | Reductions | `LaxReduceSum`, `LaxReduceMax`, `LaxReduceWindow` | ~5 |
-| Other | `LaxIota5`, `LaxOneHot4`, `LaxConv1dValid`, `LaxCopy` | ~30 |
+| Other | `LaxIota5`, `LaxOneHot4`, `LaxConv1dValid`, `LaxCopy` | ~8 |
 
 Each program is constructed via `build_program(spec) -> Jaxpr`, returning a ready-to-evaluate Jaxpr. This enables systematic testing: run every program through `jit`, `grad`, `vmap`, and composed transforms, comparing against oracle values.
 
@@ -1103,7 +1109,7 @@ enum EvalError {
 }
 ```
 
-No panics in library code. All error paths return `Result`. The only `unwrap()` calls are in test code.
+No panics on valid or adversarial inputs in library code. All fallible paths return `Result`, enforced by the workspace panic/stub audit gate (`crates/fj-conformance/tests/panic_stub_audit.rs`).
 
 ## Numerical Stability
 
@@ -1154,10 +1160,10 @@ Both primitives have VJP and JVP rules. Gather's VJP produces a scatter (adjoint
 
 ## Limitations
 
-- **CPU-only backend.** GPU/TPU backends are not yet implemented. The CPU backend uses rayon for wave-parallel execution.
-- **No XLA lowering.** FrankenJAX evaluates through its own interpreter, not through XLA. This means we match JAX's mathematical semantics but not its compilation/optimization pipeline.
-- **Gateable finite-difference compatibility fallback.** `grad(jit(f))` uses symbolic AD because `jit` is transparent, but higher-order/composed `grad` cases that still require numerical fallback can be denied with `allow_finite_diff_grad_fallback=false` or `deny`.
-- **Explicit V1 transform/control-flow boundary.** `artifacts/conformance/transform_control_flow_matrix.v1.json` gates 21 rows across `jit`, `grad`, `vmap`, `value_and_grad`, `jacobian`, `hessian`, nested grad/vmap, `cond`, `scan`, `while`, `switch`, scalar/tensor inputs, multi-carry state, multi-output returns, dtype-mixed promotion, and error rows. Supported rows execute under strict mode; unsupported V1 rows fail closed with deterministic typed errors for vector-input `grad(vmap(...))`, empty `vmap`, and nonconstant `out_axes=none`.
+- **CPU + CPU-emulated multi-device backends.** Hardware GPU/TPU kernel backends are not yet implemented. `fj-backend-cpu` uses Rayon for wave-parallel execution, and `fj-backend-gpu` provides multi-device CPU-emulated sharding (`DevicePlacement`, `ShardingSpec`, `BufferPool`).
+- **No XLA lowering.** FrankenJAX evaluates through its own interpreter (`fj-lax` + `fj-backend-cpu`), not through XLA. This means we match JAX's mathematical semantics and achieve sub-millisecond dispatch latency, while XLA's vectorized C++/Eigen/LAPACK kernels are faster on large dense tensors (see `artifacts/performance/vs_jax_benchmark_scoreboard.v1.json`).
+- **Symbolic AD composition with fail-closed fallback policy.** `grad(jit(f))`, `grad(grad(f))`, `vmap(grad(f))`, scalar-output `grad(vmap(f))`, and `hessian(f)` execute symbolically via `grad_to_jaxpr` and `hessian_jaxpr`. Finite-difference fallback is disabled by default (`allow_finite_diff_grad_fallback=false` / `deny`) and only permitted when explicitly enabled via compile options.
+- **Explicit V1 transform/control-flow boundary.** `artifacts/conformance/transform_control_flow_matrix.v1.json` gates 21 rows across `jit`, `grad`, `vmap`, `value_and_grad`, `jacobian`, `hessian`, nested grad/vmap, `cond`, `scan`, `while`, `switch`, scalar/tensor inputs, multi-carry state, multi-output returns, dtype-mixed promotion, and error rows. Supported rows execute under strict mode; unsupported V1 rows fail closed with deterministic typed errors for non-scalar-output `grad(vmap(...))`, empty `vmap`, and nonconstant `out_axes=none`.
 
 ## FAQ
 
@@ -1165,25 +1171,25 @@ Both primitives have VJP and JVP rules. Gather's VJP produces a scatter (adjoint
 A: JAX requires Python + XLA + CUDA/TPU. FrankenJAX gives you the mathematical transform semantics in a standalone Rust library with no Python dependency.
 
 **Q: How do you verify correctness without running JAX?**
-A: We capture oracle fixtures from real JAX 0.9.2 (861 cases), then run our Rust implementation against those fixtures in CI. The V1 local primitive scope, transform matrix, and dtype combinations are covered; pmap collectives are explicit fail-closed rows until multi-device execution is implemented.
+A: We capture oracle fixtures from real JAX 0.9.2 (861 cases), then run our Rust implementation against those fixtures in CI. The V1 local primitive scope, transform matrix, and dtype combinations are covered; pmap collectives are explicit fail-closed rows in single-device eval.
 
 **Q: Is the AD (automatic differentiation) complete?**
-A: Yes for the V1 local scope. All 157 non-pmap primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including complex operations like Cholesky, QR, SVD, Eigh decompositions and FFT. Pmap collectives fail closed until multi-device semantics are implemented. Numerical verification tests confirm correctness via finite-difference comparison.
+A: Yes for the V1 local scope. All 157 non-pmap canonical primitives (plus `CustomCall`) have both VJP (reverse-mode) and JVP (forward-mode) rules plus symbolic `grad_to_jaxpr` lowering, including complex operations like Cholesky, QR, SVD, Eigh, Lu, Eig, Schur, Solve, Pinv decompositions and FFT. Numerical verification tests confirm correctness via finite-difference and oracle comparison.
 
 **Q: What's the Trace Transform Ledger?**
-A: Every transform composition (`jit(grad(f))`, `vmap(grad(f))`, etc.) produces an auditable evidence artifact that records the input IR, applied transforms, and output IR. Verification binds evidence entries to their transforms, includes evidence content in the stack signature, and the TTL semantic gate replays representative stacks with canonical fingerprints, output shape/dtype metadata, fixture links, and deterministic rejection reasons for invalid proof chains.
+A: Every transform composition (`jit(grad(f))`, `vmap(grad(f))`, etc.) produces an auditable evidence artifact that records the input IR, applied transforms, and output IR, backed by SHA-256 `TransformationProof` chains over input/output `Jaxpr` fingerprints. Verification binds evidence entries to their transforms, includes evidence content in the stack signature, and the TTL semantic gate replays representative stacks with canonical fingerprints, output shape/dtype metadata, fixture links, and deterministic rejection reasons for invalid or tampered proof chains.
 
 **Q: How fast is it?**
-A: Performance optimization is ongoing and evidence-gated. The CPU backend uses a dependency-wave parallel executor, the e-graph optimizer applies 86 algebraic simplification rules, and `artifacts/performance/global_performance_gate.v1.json` ties trace, compile/dispatch, execute, cold-cache, warm-cache, and memory phases to checked evidence. The memory phase links to `artifacts/performance/memory_performance_gate.v1.json`, which records Linux procfs RSS measurements for trace, dispatch, AD, vmap, FFT, linalg, cache hit/miss, and durability workloads without synthesizing allocation counts.
+A: Performance is evidence-gated and transparently benchmarked against JAX 0.10.2 CPU (`artifacts/performance/vs_jax_benchmark_scoreboard.v1.json`). FrankenJAX wins sub-millisecond dispatch, trace, and cold/warm call latency on small workloads by ~29x–62x (no Python or XLA compilation overhead), while JAX/XLA CPU wins vectorized array math, dense matmul, linalg decompositions, and large reductions by 1.3x–372x due to `Value::Tensor(Vec<Literal>)` enum-boxed element storage vs contiguous SIMD/BLAS buffers. Additionally, `artifacts/performance/global_performance_gate.v1.json` and `artifacts/performance/memory_performance_gate.v1.json` gate phase latencies and Linux procfs RSS memory budgets.
 
 **Q: What's the difference between Strict and Hardened mode?**
 A: Strict mode refuses to process anything it does not fully understand. Unknown features, incompatible cache entries, or ambiguous inputs cause hard failures. Hardened mode allows bounded defensive recovery: it can handle some malformed inputs and degrade gracefully, but logs every recovery action in the decision ledger for audit.
 
 **Q: How does the e-graph optimizer work?**
-A: It converts your Jaxpr into an equivalence graph where every algebraically equivalent form exists simultaneously (e.g., `x+x` and `2*x` coexist as equivalent). The 86 rewrite rules fire until saturation (no new equivalences found), then a cost function extracts the cheapest program. This can discover simplifications that sequential rule application would miss.
+A: It converts your Jaxpr into an equivalence graph where every algebraically equivalent form exists simultaneously (e.g., `x+x` and `2*x` coexist as equivalent). By default, 30 IEEE-754-safe rewrite rules fire until saturation (with an additional 61 opt-in fast-math rules in `numerically_unsafe_rules()`, 91 total), then a cost function extracts the cheapest program. This discovers simplifications that sequential rule application would miss while preserving strict IEEE-754 NaN/signed-zero semantics by default.
 
 **Q: Can I use FrankenJAX from Python/C?**
-A: The `fj-ffi` crate provides a C FFI surface for calling FrankenJAX from any language with C interop. The `fj-py` crate now provides alpha PyO3 bindings via a `frankenjax` module: scalar/vector `PyValue`, canned Jaxpr builders for smoke programs, `jit`, `grad`, `vmap`, `value_and_grad`, and a real `checkpoint` wrapper with `call`, `grad`, `value_and_grad`, and `memory_savings_entries`. This is not a full NumPy/JAX-compatible Python frontend yet; it is a narrow smoke-tested binding surface.
+A: The `fj-ffi` crate provides a C FFI surface (`fj_dispatch_json`, typed buffer extraction, and `custom_call` registration) for calling FrankenJAX from any language with C interop. The `fj-py` crate provides PyO3 bindings via a `frankenjax` module: `PyArray` (with NumPy `__array_interface__`, `from_numpy`, and `to_numpy`), `TracerRef` Python operator overloading, `make_jaxpr`, `jit` (with `static_argnums`), `grad`, `vmap`, `value_and_grad`, `jacobian`, `hessian`, `checkpoint`, and `lax` primitive helpers.
 
 **Q: How are the linalg AD rules verified?**
 A: Every linalg VJP and JVP rule is verified two ways: (1) numerical finite-difference comparison (perturb inputs, compare analytical vs numerical gradient), and (2) oracle comparison against JAX's output with x64 precision enabled. This caught two real bugs in the Cholesky decomposition AD during development: a missing diagonal-halving factor and a wrong triangular-solve direction.
@@ -1192,7 +1198,7 @@ A: Every linalg VJP and JVP rule is verified two ways: (1) numerical finite-diff
 A: RaptorQ is a fountain code (erasure code) that can reconstruct data from any sufficient subset of encoded symbols. We use it to protect conformance fixtures and benchmark baselines against silent data corruption. In a distributed CI setup where cache nodes can lose data, this ensures your test evidence survives. Unusual for a math library, yes, but correctness evidence that cannot be trusted is worthless.
 
 **Q: How does the RNG match JAX?**
-A: FrankenJAX implements the exact same ThreeFry2x32 cipher with the same rotation constants, key schedule, and oracle-backed sampling algorithms (f32 mantissa-bit uniform generation, inverse-erf normal generation, and checked Gumbel-max categorical sampling). The determinism is verified against 25 JAX oracle fixtures. `random_key(42)` produces bit-identical output to JAX's `jax.random.key(42)`.
+A: FrankenJAX implements the exact same ThreeFry2x32 cipher with the same rotation constants, key schedule, and oracle-backed sampling algorithms (f32 mantissa-bit uniform generation, inverse-erf normal generation, checked Gumbel-max categorical sampling, plus 18 additional distribution samplers). The determinism is verified against 25 JAX oracle fixtures. `random_key(42)` produces bit-identical output to JAX's `jax.random.key(42)`.
 
 ## Key Documents
 

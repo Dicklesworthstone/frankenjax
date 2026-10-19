@@ -1,8 +1,8 @@
 # TODO_SUPER_DETAILED_PORT_AND_PARITY
 
-Last updated: 2026-10-13 (`HEAD = 4f04dd82ace83f609eedd232839244ce872bb4ce`)
+Last updated: 2026-10-19 (`frankenjax-rc26-n1emn` program completed)
 Owner: Antigravity session (`0bfbe145-820c-4bbf-848d-90bf02295c16`)
-Goal: End-to-end `/reality-check-for-project` audit, Bridge Plan, Ambition Rounds (1–3), Bead Creation (`frankenjax-rc26-n1emn`), and Plan-Space Refinement (Rounds 1–5).
+Goal: End-to-end `/reality-check-for-project` audit, Bridge Plan, Ambition Rounds (1–3), Bead Creation (`frankenjax-rc26-n1emn`), Plan-Space Refinement (Rounds 1–5), and Complete Execution of all 18 `rc26` beads + `frankenjax-jjb1h`.
 
 ## Legend
 
@@ -13,7 +13,7 @@ Goal: End-to-end `/reality-check-for-project` audit, Bridge Plan, Ambition Round
 
 ## 2026-10-13 Comprehensive Reality Check, Bridge Plan, Ambition Rounds (1–3), and Refined Bead Graph
 
-Tracker parent: `frankenjax-rc26-n1emn` (`in_progress`)
+Tracker parent: `frankenjax-rc26-n1emn` (`completed`)
 Companion Vision vs Reality Matrix: `artifacts/conformance/vision_reality_checklist.v1.md`
 
 ### RC26-0. Phase 0 Source Ingestion & Ground-Truth Audit
@@ -67,29 +67,29 @@ Companion Vision vs Reality Matrix: `artifacts/conformance/vision_reality_checkl
   - [x] Link `frankenjax-special-fn-rational-3gsc5` to its documented blocker `frankenjax-cntiy`.
 - [x] Create parent epic `frankenjax-rc26-n1emn` (`in_progress`) and 18 self-contained child beads across 6 execution tracks:
   - **Track 1 — Workspace Hygiene, Compiler Lint Gate, Zero-Panic Library Safety, & Doc Truth:**
-    - [ ] `frankenjax-rc26-n1emn.1` (`P0`): Fix all 125 `cargo clippy` errors in `fj-lax` and `#[cfg(test)]`-gate embedded benchmark evidence modules (`cz0g0_*`).
-    - [ ] `frankenjax-rc26-n1emn.2` (`P1`): Eliminate all 122 non-test library `.unwrap()`, `.expect()`, `panic!()`, `unreachable!()`, and `assert!()` calls across all 14 core crates and enforce `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)`.
-    - [ ] `frankenjax-rc26-n1emn.3` (`P1`): Reconcile all documentation contradictions across `README.md`, `AGENTS.md`, `FEATURE_PARITY.md`, `PARITY-COVERAGE.md`, `COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`, and `CHANGELOG.md`, fix `validate_feature_parity.sh` / `bootstrap_vision_evidence_map.sh`, and add `doc_metric_truth_gate.rs`.
+    - [x] `frankenjax-rc26-n1emn.1` (`P0`): Fix all 125 `cargo clippy` errors in `fj-lax` and `#[cfg(test)]`-gate embedded benchmark evidence modules (`cz0g0_*`).
+    - [x] `frankenjax-rc26-n1emn.2` (`P1`): Eliminate all 122 non-test library `.unwrap()`, `.expect()`, `panic!()`, `unreachable!()`, and `assert!()` calls across all 14 core crates and enforce `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)`.
+    - [x] `frankenjax-rc26-n1emn.3` (`P1`): Reconcile all documentation contradictions across `README.md`, `AGENTS.md`, `FEATURE_PARITY.md`, `PARITY-COVERAGE.md`, `COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`, and `CHANGELOG.md`, fix `validate_feature_parity.sh` / `bootstrap_vision_evidence_map.sh`, and add `doc_metric_truth_gate.rs`.
   - **Track 2 — Tracing (`fj-trace`) & Public API (`fj-api`) Ergonomic and Semantic Completeness:**
-    - [ ] `frankenjax-rc26-n1emn.4` (`P0`): Wire `fj-api::eval_shape` directly to `fj_lax::eval_abstract_primitive` and remove the broken 37-op match + 125-op `inputs[0].clone()` fallback.
-    - [ ] `frankenjax-rc26-n1emn.5` (`P0`): Support `Atom::Lit` constants, scalar-tracer operator mixing, and zero-input primitives (`Iota`, `BroadcastedIota`) in `fj-trace::make_jaxpr`.
-    - [ ] `frankenjax-rc26-n1emn.6` (`P1`): Complete `TracerRef` primitive method surface (all 157 V1 local ops + `Div`/`Rem`) and eliminate the 22-op wildcard aval fallback in `fj-trace`.
-    - [ ] `frankenjax-rc26-n1emn.7` (`P1`): Trace higher-order control flow (`Cond`, `Scan`, `While`, `Switch` with `sub_jaxprs`) in `make_jaxpr` and expose traceable `fj_api::{nn, random, tree_util}` modules.
+    - [x] `frankenjax-rc26-n1emn.4` (`P0`): Wire `fj-api::eval_shape` directly to `fj_lax::eval_abstract_primitive` and remove the broken 37-op match + 125-op `inputs[0].clone()` fallback.
+    - [x] `frankenjax-rc26-n1emn.5` (`P0`): Support `Atom::Lit` constants, scalar-tracer operator mixing, and zero-input primitives (`Iota`, `BroadcastedIota`) in `fj-trace::make_jaxpr`.
+    - [x] `frankenjax-rc26-n1emn.6` (`P1`): Complete `TracerRef` primitive method surface (all 157 V1 local ops + `Div`/`Rem`) and eliminate the 22-op wildcard aval fallback in `fj-trace`.
+    - [x] `frankenjax-rc26-n1emn.7` (`P1`): Trace higher-order control flow (`Cond`, `Scan`, `While`, `Switch` with `sub_jaxprs`) in `make_jaxpr` and expose traceable `fj_api::{nn, random, tree_util}` modules.
   - **Track 3 — True Symbolic Jaxpr-to-Jaxpr Autodiff & Arbitrary-Order Transform Composition:**
-    - [ ] `frankenjax-rc26-n1emn.8` (`P0`): Implement symbolic Jaxpr-to-Jaxpr differentiation (`build_jvp_jaxpr` & `build_grad_jaxpr`) with activity analysis and dead-cotangent pruning in `fj-ad`.
-    - [ ] `frankenjax-rc26-n1emn.9` (`P0`): Replace `1e-6`/`1e-5` finite-difference fallbacks in `fj-dispatch::execute_grad` and `fj-ad::hessian_jaxpr` with symbolic AD composition (`grad(grad(f))`, `grad(vmap(f))`, `vmap(grad(f))` via `BatchTrace`, multi-arg `argnums`, symbolic `hessian`).
-    - [ ] `frankenjax-rc26-n1emn.10` (`P0`): Implement `sub_jaxprs`-aware JVP/VJP for `Cond`, `Scan`, `While`, `Switch` and fix `AssociativeScan` (`"max"`/`"min"` VJP, `"prod"` JVP) and `ReduceWindow` (`"prod"` JVP) mathematical bugs in `fj-ad`.
+    - [x] `frankenjax-rc26-n1emn.8` (`P0`): Implement symbolic Jaxpr-to-Jaxpr differentiation (`build_jvp_jaxpr` & `build_grad_jaxpr`) with activity analysis and dead-cotangent pruning in `fj-ad`.
+    - [x] `frankenjax-rc26-n1emn.9` (`P0`): Replace `1e-6`/`1e-5` finite-difference fallbacks in `fj-dispatch::execute_grad` and `fj-ad::hessian_jaxpr` with symbolic AD composition (`grad(grad(f))`, `grad(vmap(f))`, `vmap(grad(f))` via `BatchTrace`, multi-arg `argnums`, symbolic `hessian`).
+    - [x] `frankenjax-rc26-n1emn.10` (`P0`): Implement `sub_jaxprs`-aware JVP/VJP for `Cond`, `Scan`, `While`, `Switch` and fix `AssociativeScan` (`"max"`/`"min"` VJP, `"prod"` JVP) and `ReduceWindow` (`"prod"` JVP) mathematical bugs in `fj-ad`.
   - **Track 4 — Connected Execution Spine: Partial Eval, Persistent Cache Store, Wave-Parallel CPU Backend, & E-Graph Fusion:**
-    - [ ] `frankenjax-rc26-n1emn.11` (`P0`): Wire `partial_eval_jaxpr`/`stage_jaxpr` (`static_argnums`) and `fj-cache` (`LruCache`/`FileCache`) into `fj-dispatch` and `fj-api::jit`.
-    - [ ] `frankenjax-rc26-n1emn.12` (`P1`): Integrate `fj-backend-cpu` wave-parallel DAG execution, `fj-egraph` cost-guided loop fusion, and `frankenjax-jjb1h` liveness-driven buffer donation into `dispatch` and `CompiledJaxpr`.
+    - [x] `frankenjax-rc26-n1emn.11` (`P0`): Wire `partial_eval_jaxpr`/`stage_jaxpr` (`static_argnums`) and `fj-cache` (`LruCache`/`FileCache`) into `fj-dispatch` and `fj-api::jit`.
+    - [x] `frankenjax-rc26-n1emn.12` (`P1`): Integrate `fj-backend-cpu` wave-parallel DAG execution, `fj-egraph` cost-guided loop fusion, and `frankenjax-jjb1h` liveness-driven buffer donation into `dispatch` and `CompiledJaxpr`.
   - **Track 5 — Crown-Jewel Proof-Carrying TTL, Live Decision/Runtime Governance, & FFI/Python Surfaces:**
-    - [ ] `frankenjax-rc26-n1emn.13` (`P0`): Upgrade `TraceTransformLedger` from string-token substring checks to a cryptographic Proof-Carrying IR Transform Ledger (TTL v2) binding per-step input/output `Jaxpr` SHA-256 hashes, `AbstractValue` signatures, and `TransformRewriteWitness` records.
-    - [ ] `frankenjax-rc26-n1emn.14` (`P1`): Wire `fj-ledger` (`LogDomainPosterior`, `ConformalPredictor`, `EProcess`, `CalibrationReport`) and `fj-runtime` (`RuntimeAdmissionModel`, `asupersync`, `frankentui`) into pre-execution dispatch routing and `fj-api` telemetry.
-    - [ ] `frankenjax-rc26-n1emn.15` (`P1`): Expose real `extern "C"` ABI exports in `fj-ffi` + `Primitive::CustomCall` dispatch, and upgrade `fj-py` for Python 3.14 compatibility and real Python callable tracing via `PyTracer`.
+    - [x] `frankenjax-rc26-n1emn.13` (`P0`): Upgrade `TraceTransformLedger` from string-token substring checks to a cryptographic Proof-Carrying IR Transform Ledger (TTL v2) binding per-step input/output `Jaxpr` SHA-256 hashes, `AbstractValue` signatures, and `TransformRewriteWitness` records.
+    - [x] `frankenjax-rc26-n1emn.14` (`P1`): Wire `fj-ledger` (`LogDomainPosterior`, `ConformalPredictor`, `EProcess`, `CalibrationReport`) and `fj-runtime` (`RuntimeAdmissionModel`, `asupersync`, `frankentui`) into pre-execution dispatch routing and `fj-api` telemetry.
+    - [x] `frankenjax-rc26-n1emn.15` (`P1`): Expose real `extern "C"` ABI exports in `fj-ffi` + `Primitive::CustomCall` dispatch, and upgrade `fj-py` for Python 3.14 compatibility and real Python callable tracing via `PyTracer`.
   - **Track 6 — Gate Honesty, Artifact Freshness, RaptorQ Durability Repair, & vs-JAX Performance Architecture:**
-    - [ ] `frankenjax-rc26-n1emn.16` (`P0`): Replace static/hardcoded gate generators (`security_adversarial.rs`, `numerical_stability.rs`, `decision_ledger.rs`, `onboarding_command.rs`) with live workload execution and assert committed JSON artifact freshness in `oracle_recapture_gate` and `architecture_boundary_gate`.
-    - [ ] `frankenjax-rc26-n1emn.17` (`P0`): Unify RaptorQ durability policy, regenerate 61 stale sidecars + 6 missing fixture/oracle sidecar triplets, and enforce on-disk `source_sha256` verification in `tests/durability_coverage.rs` and `scripts/run_durability_coverage_gate.sh`.
-    - [ ] `frankenjax-rc26-n1emn.18` (`P1`): Implement `PrecisionPolicy::{BitExactPortable, HardwareFmaAccelerated}` runtime SIMD/FMA dispatch (unblocking `frankenjax-cntiy`), Stockham mixed-radix (`radix-2/3/4/5/8`) plan-hoisted batched FFT (unblocking `frankenjax-murmw`), and live vs-JAX 0.10.2 performance gate reporting.
+    - [x] `frankenjax-rc26-n1emn.16` (`P0`): Replace static/hardcoded gate generators (`security_adversarial.rs`, `numerical_stability.rs`, `decision_ledger.rs`, `onboarding_command.rs`) with live workload execution and assert committed JSON artifact freshness in `oracle_recapture_gate` and `architecture_boundary_gate`.
+    - [x] `frankenjax-rc26-n1emn.17` (`P0`): Unify RaptorQ durability policy, regenerate 61 stale sidecars + 6 missing fixture/oracle sidecar triplets, and enforce on-disk `source_sha256` verification in `tests/durability_coverage.rs` and `scripts/run_durability_coverage_gate.sh`.
+    - [x] `frankenjax-rc26-n1emn.18` (`P1`): Implement `PrecisionPolicy::{BitExactPortable, HardwareFmaAccelerated}` runtime SIMD/FMA dispatch (unblocking `frankenjax-cntiy`), Stockham mixed-radix (`radix-2/3/4/5/8`) plan-hoisted batched FFT (unblocking `frankenjax-murmw`), and live vs-JAX 0.10.2 performance gate reporting.
 
 ### RC26-3. Phase 4 Ambition Rounds (1–3) Applied In-Place
 - [x] **Ambition Round 1 — Architectural Integrity over Workarounds:**

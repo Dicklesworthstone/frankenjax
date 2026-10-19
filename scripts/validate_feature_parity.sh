@@ -5,9 +5,15 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 feature_file="${repo_root}/docs/planning/FEATURE_PARITY.md"
 core_file="${repo_root}/crates/fj-core/src/lib.rs"
 
-ci_out="${repo_root}/artifacts/ci/runs/feature-parity-validation/result.json"
-e2e_out="${repo_root}/artifacts/e2e/e2e_feature_parity_validation.e2e.json"
-log_out="${repo_root}/artifacts/testing/logs/evidence/feature-parity-validation.result.json"
+if [[ -n "${FJ_FEATURE_PARITY_OUT_DIR:-}" ]]; then
+  ci_out="${FJ_FEATURE_PARITY_OUT_DIR}/ci/result.json"
+  e2e_out="${FJ_FEATURE_PARITY_OUT_DIR}/e2e/e2e_feature_parity_validation.e2e.json"
+  log_out="${FJ_FEATURE_PARITY_OUT_DIR}/logs/feature-parity-validation.result.json"
+else
+  ci_out="${repo_root}/artifacts/ci/runs/feature-parity-validation/result.json"
+  e2e_out="${repo_root}/artifacts/e2e/e2e_feature_parity_validation.e2e.json"
+  log_out="${repo_root}/artifacts/testing/logs/evidence/feature-parity-validation.result.json"
+fi
 
 mkdir -p "$(dirname "${ci_out}")" "$(dirname "${e2e_out}")" "$(dirname "${log_out}")"
 
@@ -210,13 +216,6 @@ for row in rows:
 all_pass = all(bool(c["pass"]) for c in checks)
 now_ms = int(time.time() * 1000)
 
-ci_payload = {
-    "test_name": "feature_parity_validation",
-    "generated_at_unix_ms": now_ms,
-    "checks": checks,
-}
-ci_out.write_text(json.dumps(ci_payload, indent=2) + "\n", encoding="utf-8")
-
 e2e_checks = [
     {
         "feature": c["feature"],
@@ -227,6 +226,24 @@ e2e_checks = [
     }
     for c in checks
 ]
+
+if e2e_out.exists():
+    try:
+        existing_e2e = json.loads(e2e_out.read_text(encoding="utf-8"))
+        if existing_e2e.get("checks") == e2e_checks and isinstance(
+            existing_e2e.get("generated_at_unix_ms"), int
+        ):
+            now_ms = existing_e2e["generated_at_unix_ms"]
+    except Exception:
+        pass
+
+ci_payload = {
+    "test_name": "feature_parity_validation",
+    "generated_at_unix_ms": now_ms,
+    "checks": checks,
+}
+ci_out.write_text(json.dumps(ci_payload, indent=2) + "\n", encoding="utf-8")
+
 e2e_payload = {
     "scenario": "e2e_feature_parity_doc_validation",
     "generated_at_unix_ms": now_ms,

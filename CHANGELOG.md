@@ -2,16 +2,16 @@
 
 All notable changes to [FrankenJAX](https://github.com/Dicklesworthstone/frankenjax) are documented in this file.
 
-Scope window: project inception through HEAD on 2026-08-19.
+Scope window: project inception through HEAD on 2026-10-19.
 
 ## Version Timeline
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
-| Unreleased | commits on `main` | 2026-03-18 → 2026-08-19 | vs-JAX kernels, `fj-py` / `fj-backend-gpu`, janitor docs-reorg |
-| workspace `0.1.0` | unreleased HEAD | 2026-08-19 | No git tags and no GitHub Releases exist |
+| Unreleased | commits on `main` | 2026-03-18 → 2026-10-19 | `rc26` symbolic AD & connected spine, vs-JAX kernels, `fj-py` / `fj-backend-gpu`, janitor docs-reorg |
+| workspace `0.1.0` | unreleased HEAD | 2026-10-19 | No git tags and no GitHub Releases exist |
 
-FrankenJAX is a clean-room Rust reimplementation of JAX's transform semantics. There are **no formal releases, tags, or GitHub Releases**; the project is at `0.1.0` (workspace-wide) with continuous development on `main`. Phases 0–7 below are the original reconstruction through 2026-03-17 (the "220-commit" snapshot). A current-window update on 2026-08-19 covers **2026-03-18 through HEAD**: **4,200 non-merge commits**, bringing `main` to **4,420** commits / ~460k lines under `crates/`. Phases remain the historical spine; new work is synthesized as dated waves, not a 4,000-commit dump.
+FrankenJAX is a clean-room Rust reimplementation of JAX's transform semantics. There are **no formal releases, tags, or GitHub Releases**; the project is at `0.1.0` (workspace-wide) with continuous development on `main`. Phases 0–7 below are the original reconstruction through 2026-03-17 (the "220-commit" snapshot). The current window through 2026-10-19 covers **4,440+ commits** / ~481k Rust lines (~342k library lines) across **17 workspace crates**. Phases remain the historical spine; new work is synthesized as dated waves, not a 4,000-commit dump.
 
 Repository: <https://github.com/Dicklesworthstone/frankenjax>
 
@@ -19,20 +19,19 @@ Repository: <https://github.com/Dicklesworthstone/frankenjax>
 
 ## [Unreleased] — HEAD
 
-Latest commit: [`658740e0e6`](https://github.com/Dicklesworthstone/frankenjax/commit/658740e0e6926104c29270ff27e542b47518630e)
-(2026-08-19). Previous changelog cut: [`4f87b84`](https://github.com/Dicklesworthstone/frankenjax/commit/4f87b84)
-(2026-05-01). August 2026 is janitor-only (3 commits); the capability
-waves are March–July.
-
-HEAD orientation (README, 2026-08-19): 162 canonical primitive variants
-(157 V1 local + 5 fail-closed pmap collectives), VJP + JVP for all 157
-V1 local primitives, 861 JAX 0.9.2 oracle fixtures, 17 workspace crates
-(`fj-py` and `fj-backend-gpu` added in this window; `fj-ffi` predated
-it), ~460k Rust lines under `crates/`.
+HEAD orientation (2026-10-19): **162 canonical primitive variants** in `Primitive::ALL` (**157 V1 local** + **5 fail-closed pmap collectives**) plus **1 FFI `CustomCall` variant** in `Primitive::FFI_PRIMITIVES` (**163 total `Primitive` enum variants**), VJP + JVP + symbolic `grad_to_jaxpr` for all 157 V1 local primitives (+ `CustomCall`), **30 IEEE-754-safe active e-graph rules** by default (+ 61 opt-in fast-math rules = 91 total), **121 `ProgramSpec` variants**, **861 JAX 0.9.2 oracle fixtures** across 6 fixture bundles, **17 workspace crates**, ~342k library Rust lines (~481k total Rust lines) under `crates/`.
 
 ### Closed workstreams
 
 - Tracker: [`.beads/issues.jsonl`](https://github.com/Dicklesworthstone/frankenjax/blob/main/.beads/issues.jsonl).
+
+### 2026-10-19 — `rc26` Reality-Check & Ambition Program (`frankenjax-rc26-n1emn.1`–`.18` + `frankenjax-jjb1h`)
+
+Closed all 18 beads under epic `frankenjax-rc26-n1emn`:
+- **Symbolic AD & Composable Transforms (`rc26.4`, `rc26.8`, `rc26.9`, `rc26.10`)**: Implemented symbolic `grad_to_jaxpr` and `hessian_jaxpr` in `fj-ad`, enabling exact arbitrary-order `grad(grad(f))`, `vmap(grad(f))`, scalar-output `grad(vmap(f))`, and `hessian(f)` without finite-difference fallback; fixed `AssociativeScan` and `ReduceWindow` `"prod"` AD rules and wired `eval_shape` directly to `fj_lax::eval_abstract_primitive`.
+- **Full Tracing & Public API Surface (`rc26.5`, `rc26.6`, `rc26.7`)**: Added 140+ `TracerRef` primitive methods, `Atom::Lit` constant capture, 0-input primitive tracing, nested `sub_jaxprs` control-flow tracing (`trace_cond`, `trace_scan`, `trace_while`, `trace_switch`), and public `fj_api::{nn, random, tree_util}` modules.
+- **Connected Execution Spine (`rc26.11`, `rc26.12`, `rc26.13`, `rc26.14`, `jjb1h`)**: Wired `stage_jaxpr` partial evaluation, bounded 256-entry LRU `CompiledProgram` caching, `fj-backend-cpu` dependency-wave parallel execution, reusable thread-local `BufferPool` (`jjb1h`), cryptographic SHA-256 `TransformationProof` chains in `TraceTransformLedger`, and pre-execution `fj-ledger` / `fj-runtime` admission into `fj-dispatch`.
+- **FFI, Python Bindings, Honest Gates, & Durability (`rc26.1`, `rc26.2`, `rc26.3`, `rc26.15`, `rc26.16`, `rc26.17`, `rc26.18`)**: Added `CustomCall` FFI dispatch and Python callable tracing in `fj-py`; achieved zero clippy warnings and enforced non-test library panic freedom (`panic_stub_audit.rs`); replaced static conformance gate generators with live execution probes; refreshed all 126 RaptorQ durability sidecar triplets to 100% SHA-256 freshness; published honest vs-JAX 0.10.2 CPU benchmark scoreboard (`vs_jax_benchmark_scoreboard.v1.json`); and added live doc-metric verification (`doc_metric_truth_gate.rs`).
 
 ### 2026-08-19 — Repo-janitor docs-reorg
 
