@@ -33,6 +33,7 @@ pub struct JitWrapped {
     mode: CompatibilityMode,
     static_argnums: Vec<usize>,
     precision_policy: Option<PrecisionPolicy>,
+    compile_options: BTreeMap<String, String>,
     /// Lazily-computed, args-independent dispatch metadata shared across
     /// repeated `call`s. Excluded from equality/Debug so cached proof/key state
     /// does not change the wrapper's observable identity.
@@ -215,13 +216,12 @@ pub struct HessianWrapped {
 
 /// A linearized function returned by `linearize`.
 ///
-/// Captures the Jaxpr and input primals, allowing JVP tangent computation
-/// without recomputing the forward pass. JAX equivalent: the second return
-/// value of `jax.linearize`.
+/// Captures the pre-recorded [`fj_ad::LinearizedTape`], allowing JVP tangent
+/// computation without recomputing the forward pass. JAX equivalent: the second
+/// return value of `jax.linearize`.
 #[derive(Debug, Clone)]
 pub struct LinearizedFunction {
-    jaxpr: Jaxpr,
-    primals: Vec<Value>,
+    tape: fj_ad::LinearizedTape,
 }
 
 /// Result of `linearize(jaxpr, primals)`.
@@ -241,8 +241,20 @@ pub struct LinearizeResult {
 /// JAX equivalent: the return value of `jax.linear_transpose`.
 #[derive(Debug, Clone)]
 pub struct TransposedLinearFunction {
-    jaxpr: Jaxpr,
-    primals: Vec<Value>,
+    tape: fj_ad::VjpTape,
+}
+
+/// Reusable reverse-mode pullback function returned by [`vjp`].
+#[derive(Debug, Clone)]
+pub struct VjpPullback {
+    tape: fj_ad::VjpTape,
+}
+
+/// Result of [`vjp`], containing primal outputs and the reusable [`VjpPullback`].
+#[derive(Debug, Clone)]
+pub struct VjpResult {
+    pub primal_outputs: Vec<Value>,
+    pub pullback: VjpPullback,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -284,6 +296,7 @@ pub fn jit(jaxpr: Jaxpr) -> JitWrapped {
         mode: CompatibilityMode::Strict,
         static_argnums: Vec::new(),
         precision_policy: None,
+        compile_options: BTreeMap::new(),
         meta_cache: DispatchMetaCache::default(),
         compiled_cache: CompiledEvalCache::default(),
         last_evidence: LastEvidenceCache::default(),
@@ -441,6 +454,43 @@ pub fn hessian(jaxpr: Jaxpr) -> HessianWrapped {
     HessianWrapped { jaxpr }
 }
 
+/// Compute forward-mode JVP `(primals_out, tangents_out)` for `jaxpr` at `(primals, tangents)`.
+///
+/// JAX equivalent: `jax.jvp`
+pub fn jvp(
+    jaxpr: &Jaxpr,
+    primals: &[Value],
+    tangents: &[Value],
+) -> Result<fj_ad::JvpResult, ApiError> {
+    fj_ad::jvp(jaxpr, primals, tangents).map_err(ApiError::from)
+}
+
+/// Evaluate `jaxpr` at `primals` and return `(primal_outputs, VjpPullback)` for
+/// reverse-mode pullback evaluation without re-evaluating primal equations.
+///
+/// JAX equivalent: `jax.vjp`
+pub fn vjp(jaxpr: Jaxpr, primals: Vec<Value>) -> Result<VjpResult, ApiError> {
+    let (primal_outputs, tape) = fj_ad::record_vjp_tape(&jaxpr, &primals)?;
+    Ok(VjpResult {
+        primal_outputs,
+        pullback: VjpPullback { tape },
+    })
+}
+
+impl VjpPullback {
+    /// Evaluate the reverse-mode pullback for a single-output `Jaxpr` at `cotangent`
+    /// without re-running the primal forward pass.
+    pub fn call(&self, cotangent: Value) -> Result<Vec<Value>, ApiError> {
+        self.tape.backward(&cotangent).map_err(ApiError::from)
+    }
+
+    /// Evaluate the reverse-mode pullback for a general (single- or multi-output) `Jaxpr`
+    /// at `cotangents` without re-running the primal forward pass.
+    pub fn call_multi(&self, cotangents: &[Value]) -> Result<Vec<Value>, ApiError> {
+        self.tape.backward_multi(cotangents).map_err(ApiError::from)
+    }
+}
+
 /// Linearize a Jaxpr at given primal values.
 ///
 /// Returns `(f(primals), linearized_fn)` where `linearized_fn(tangents)` computes
@@ -454,20 +504,20 @@ pub fn hessian(jaxpr: Jaxpr) -> HessianWrapped {
 /// let tangent_out = result.linearized.call(tangents)?;
 /// ```
 pub fn linearize(jaxpr: Jaxpr, primals: Vec<Value>) -> Result<LinearizeResult, ApiError> {
-    let primal_outputs = fj_interpreters::eval_jaxpr(&jaxpr, &primals)?;
+    let (primal_outputs, tape) = fj_ad::linearize_jaxpr(&jaxpr, &primals)?;
     Ok(LinearizeResult {
         primal_outputs,
-        linearized: LinearizedFunction { jaxpr, primals },
+        linearized: LinearizedFunction { tape },
     })
 }
 
 impl LinearizedFunction {
     /// Compute tangent outputs for the given input tangents.
     ///
-    /// Uses the cached primals from `linearize` to avoid recomputing the forward pass.
+    /// Uses the pre-recorded primal environment from `linearize` to avoid
+    /// recomputing the forward pass.
     pub fn call(&self, tangents: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        let jvp_result = fj_ad::jvp(&self.jaxpr, &self.primals, &tangents)?;
-        Ok(jvp_result.tangents)
+        self.tape.pushforward(&tangents).map_err(ApiError::from)
     }
 }
 
@@ -477,7 +527,8 @@ impl LinearizedFunction {
 /// `TransposedLinearFunction` that computes f^T: R^m -> R^n.
 ///
 /// The function is assumed to be linear in all its inputs. For a linear f,
-/// the transpose is computed using VJP: f^T(cotangent) = VJP(f, zeros, cotangent).
+/// the transpose is computed using VJP over the pre-recorded tape without
+/// re-running the primal forward pass on each cotangent call.
 ///
 /// JAX equivalent: `jax.linear_transpose`
 ///
@@ -490,17 +541,21 @@ pub fn linear_transpose(
     jaxpr: Jaxpr,
     primals: Vec<Value>,
 ) -> Result<TransposedLinearFunction, ApiError> {
-    let _ = fj_interpreters::eval_jaxpr(&jaxpr, &primals)?;
-    Ok(TransposedLinearFunction { jaxpr, primals })
+    let (_outputs, tape) = fj_ad::record_vjp_tape(&jaxpr, &primals)?;
+    Ok(TransposedLinearFunction { tape })
 }
 
 impl TransposedLinearFunction {
     /// Compute the transposed linear function at the given cotangent.
     ///
-    /// For a linear function f, this computes f^T(cotangent) using VJP.
+    /// For a linear function f, this computes f^T(cotangent) using the pre-recorded VJP tape.
     pub fn call(&self, cotangent: Value) -> Result<Vec<Value>, ApiError> {
-        let grads = fj_ad::grad_jaxpr_with_cotangent(&self.jaxpr, &self.primals, &cotangent)?;
-        Ok(grads)
+        self.tape.backward(&cotangent).map_err(ApiError::from)
+    }
+
+    /// Compute the transposed linear function for a multi-output linear function.
+    pub fn call_multi(&self, cotangents: &[Value]) -> Result<Vec<Value>, ApiError> {
+        self.tape.backward_multi(cotangents).map_err(ApiError::from)
     }
 }
 
@@ -1052,7 +1107,7 @@ pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
 
 impl JitWrapped {
     fn build_compile_options(&self) -> BTreeMap<String, String> {
-        let mut opts = BTreeMap::new();
+        let mut opts = self.compile_options.clone();
         if !self.static_argnums.is_empty() {
             let formatted = self
                 .static_argnums
@@ -1074,6 +1129,7 @@ impl JitWrapped {
     ) -> Result<Option<Vec<Value>>, ApiError> {
         if self.backend.as_ref() != DEFAULT_BACKEND
             || !self.static_argnums.is_empty()
+            || !self.compile_options.is_empty()
             || fj_dispatch::jaxpr_has_parallel_heavy_wave(&self.jaxpr)
         {
             return Ok(None);
@@ -1149,6 +1205,53 @@ impl JitWrapped {
         self.compiled_cache = CompiledEvalCache::default();
         self.last_evidence = LastEvidenceCache::default();
         self
+    }
+
+    /// Set a dispatch compile option key/value pair on this `JitWrapped`.
+    #[must_use]
+    pub fn with_compile_option(mut self, key: &str, value: &str) -> Self {
+        self.compile_options
+            .insert(key.to_owned(), value.to_owned());
+        self.meta_cache = DispatchMetaCache::default();
+        self.compiled_cache = CompiledEvalCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Return the effective compile options map for this `JitWrapped`.
+    #[must_use]
+    pub fn compile_options(&self) -> BTreeMap<String, String> {
+        self.build_compile_options()
+    }
+
+    /// Enable or disable e-graph equality-saturation optimization (`fj-egraph`) during JIT compilation.
+    #[must_use]
+    pub fn with_egraph_optimization(self, enabled: bool) -> Self {
+        self.with_compile_option("egraph_optimize", if enabled { "true" } else { "false" })
+    }
+
+    /// Force or disable dependency-wave Rayon parallel execution (`fj-backend-cpu`) during JIT dispatch.
+    #[must_use]
+    pub fn with_wave_parallel(self, enabled: bool) -> Self {
+        self.with_compile_option("wave_parallel", if enabled { "true" } else { "false" })
+    }
+
+    /// Persist compiled JIT artifacts to a `fj_cache::backend::FileCache` directory.
+    #[must_use]
+    pub fn with_cache_dir(self, cache_dir: &str) -> Self {
+        self.with_compile_option("cache_dir", cache_dir)
+    }
+
+    /// Configure a per-wrapper memory working-set admission ceiling (in bytes).
+    #[must_use]
+    pub fn with_max_working_set_bytes(self, max_bytes: usize) -> Self {
+        self.with_compile_option("max_working_set_bytes", &max_bytes.to_string())
+    }
+
+    /// Configure a per-wrapper equation-count admission ceiling.
+    #[must_use]
+    pub fn with_max_equation_count(self, max_equations: usize) -> Self {
+        self.with_compile_option("max_equation_count", &max_equations.to_string())
     }
 
     /// Specify argument indices (`0`-indexed) whose values are treated as known
@@ -2040,6 +2143,99 @@ impl PmapWrapped {
                 .to_owned(),
         })
     }
+}
+
+/// Trace a fallible Rust closure against the shapes and dtypes of `args` and return
+/// a self-contained executable [`Jaxpr`].
+pub fn trace_jaxpr_for_values<F>(f: F, args: &[Value]) -> Result<Jaxpr, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let in_avals: Vec<ShapedArray> = args.iter().map(ShapedArray::from_value).collect();
+    let closed = fj_trace::make_jaxpr_fallible(f, in_avals)?;
+    Ok(closed.into_executable_jaxpr())
+}
+
+/// Infer output [`ShapedArray`]s of a fallible Rust closure directly from abstract input
+/// [`ShapedArray`]s without materializing runtime [`Value`] tensors.
+pub fn eval_shape_fn<F>(f: F, in_avals: &[ShapedArray]) -> Result<Vec<ShapedArray>, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let closed = fj_trace::make_jaxpr_fallible(f, in_avals.to_vec())?;
+    let jaxpr = closed.into_executable_jaxpr();
+    eval_shape_avals(&jaxpr, in_avals)
+}
+
+/// Trace a Rust closure against `args` and execute it through [`jit`].
+pub fn jit_fn<F>(f: F, args: Vec<Value>) -> Result<Vec<Value>, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let jaxpr = trace_jaxpr_for_values(f, &args)?;
+    jit(jaxpr).call(args)
+}
+
+/// Trace a scalar-output Rust closure against `args` and compute its gradient via [`grad`].
+pub fn grad_fn<F>(f: F, args: Vec<Value>) -> Result<Vec<Value>, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let jaxpr = trace_jaxpr_for_values(f, &args)?;
+    grad(jaxpr).call(args)
+}
+
+/// Trace a scalar-output Rust closure against `args` and compute `(values, gradients)`
+/// in a single forward+backward pass via [`value_and_grad`].
+pub fn value_and_grad_fn<F>(f: F, args: Vec<Value>) -> Result<(Vec<Value>, Vec<Value>), ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let jaxpr = trace_jaxpr_for_values(f, &args)?;
+    value_and_grad(jaxpr).call(args)
+}
+
+/// Trace a per-element Rust closure (peeling axis 0 from each batched tensor in `args`)
+/// and execute it across the batch via [`vmap`].
+pub fn vmap_fn<F>(f: F, args: Vec<Value>) -> Result<Vec<Value>, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let mut elem_avals = Vec::with_capacity(args.len());
+    for arg in &args {
+        let aval = ShapedArray::from_value(arg);
+        if aval.shape.dims.is_empty() {
+            return Err(ApiError::EvalError {
+                detail: "vmap_fn requires batched tensor arguments with rank >= 1".to_owned(),
+            });
+        }
+        elem_avals.push(ShapedArray {
+            dtype: aval.dtype,
+            shape: fj_core::Shape {
+                dims: aval.shape.dims[1..].to_vec(),
+            },
+        });
+    }
+    let closed = fj_trace::make_jaxpr_fallible(f, elem_avals)?;
+    vmap(closed.into_executable_jaxpr()).call(args)
+}
+
+/// Trace a Rust closure against `args` and compute its Jacobian matrix via [`jacobian`].
+pub fn jacobian_fn<F>(f: F, args: Vec<Value>) -> Result<Value, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let jaxpr = trace_jaxpr_for_values(f, &args)?;
+    jacobian(jaxpr).call(args)
+}
+
+/// Trace a scalar-output Rust closure against `args` and compute its Hessian matrix via [`hessian`].
+pub fn hessian_fn<F>(f: F, args: Vec<Value>) -> Result<Value, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let jaxpr = trace_jaxpr_for_values(f, &args)?;
+    hessian(jaxpr).call(args)
 }
 
 #[cfg(test)]

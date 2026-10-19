@@ -101,3 +101,11 @@ impl From<InterpreterError> for ApiError {
         }
     }
 }
+
+impl From<fj_trace::TraceError> for ApiError {
+    fn from(err: fj_trace::TraceError) -> Self {
+        Self::EvalError {
+            detail: err.to_string(),
+        }
+    }
+}

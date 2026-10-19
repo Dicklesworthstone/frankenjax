@@ -297,6 +297,7 @@ struct PyCheckpoint {
 struct PyVjpPullback {
     jaxpr: Jaxpr,
     primals: Vec<Value>,
+    tape: Option<fj_ad::VjpTape>,
 }
 
 #[pyclass]
@@ -304,6 +305,7 @@ struct PyVjpPullback {
 struct PyLinearizedJvp {
     jaxpr: Jaxpr,
     primals: Vec<Value>,
+    tape: Option<fj_ad::LinearizedTape>,
 }
 
 #[pyclass]
@@ -1864,6 +1866,18 @@ impl PyCheckpoint {
 impl PyVjpPullback {
     fn call(&self, cotangents: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
         let rust_cotangents = py_values_to_rust(cotangents);
+        if let Some(ref tape) = self.tape {
+            if rust_cotangents.len() == 1 {
+                return tape
+                    .backward(&rust_cotangents[0])
+                    .map(py_values_from_rust)
+                    .map_err(runtime_error);
+            }
+            return tape
+                .backward_multi(&rust_cotangents)
+                .map(py_values_from_rust)
+                .map_err(runtime_error);
+        }
         let [cotangent] = rust_cotangents.as_slice() else {
             return Err(runtime_error(format!(
                 "vjp pullback expects exactly one output cotangent, got {}",
@@ -1889,6 +1903,12 @@ impl PyVjpPullback {
 impl PyLinearizedJvp {
     fn call(&self, tangents: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
         let rust_tangents = py_values_to_rust(tangents);
+        if let Some(ref tape) = self.tape {
+            return tape
+                .pushforward(&rust_tangents)
+                .map(py_values_from_rust)
+                .map_err(runtime_error);
+        }
         fj_ad::jvp(&self.jaxpr, &self.primals, &rust_tangents)
             .map(|result| py_values_from_rust(result.tangents))
             .map_err(runtime_error)
@@ -2503,18 +2523,16 @@ fn vjp_outputs_and_pullback(
     args: Vec<PyValue>,
 ) -> PyResult<(Vec<PyValue>, PyVjpPullback)> {
     let rust_args = py_values_to_rust(args);
-    fj_api::jit(jaxpr.clone())
-        .call(rust_args.clone())
-        .map(|outputs| {
-            (
-                py_values_from_rust(outputs),
-                PyVjpPullback {
-                    jaxpr: jaxpr.clone(),
-                    primals: rust_args,
-                },
-            )
-        })
-        .map_err(runtime_error)
+    let (outputs, tape) = fj_ad::record_vjp_tape(jaxpr, &rust_args).map_err(runtime_error)?;
+    check_debug_nans_infs(&outputs)?;
+    Ok((
+        py_values_from_rust(outputs),
+        PyVjpPullback {
+            jaxpr: jaxpr.clone(),
+            primals: rust_args,
+            tape: Some(tape),
+        },
+    ))
 }
 
 fn runtime_error(error: impl ToString) -> PyErr {
@@ -4292,9 +4310,14 @@ fn py_vjp(
 }
 
 fn linear_transpose(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyVjpPullback {
+    let primals = py_values_to_rust(args);
+    let tape = fj_ad::record_vjp_tape(&jaxpr.inner, &primals)
+        .ok()
+        .map(|(_, tape)| tape);
     PyVjpPullback {
         jaxpr: jaxpr.inner.clone(),
-        primals: py_values_to_rust(args),
+        primals,
+        tape,
     }
 }
 
@@ -4310,12 +4333,15 @@ fn py_linear_transpose(
 
 fn linearize(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<(Vec<PyValue>, PyLinearizedJvp)> {
     let rust_args = py_values_to_rust(args);
-    let outputs = execute_jaxpr_with_scopes(jaxpr.inner.clone(), rust_args.clone())?;
+    let (outputs, tape) =
+        fj_ad::linearize_jaxpr(&jaxpr.inner, &rust_args).map_err(runtime_error)?;
+    check_debug_nans_infs(&outputs)?;
     Ok((
         py_values_from_rust(outputs),
         PyLinearizedJvp {
             jaxpr: jaxpr.inner.clone(),
             primals: rust_args,
+            tape: Some(tape),
         },
     ))
 }
@@ -6408,50 +6434,44 @@ mod tests {
     #[test]
     fn clear_caches_and_active_scopes_enforce_runtime_policies() {
         pyo3::prepare_freethreaded_python();
-        clear_caches();
-        assert_eq!(dispatch_cache_stats().0, 0);
-
-        let jaxpr = make_jaxpr_square();
-        let out = jit(&jaxpr, vec![PyValue::scalar_f64(4.0)]).unwrap();
-        assert!((out[0].as_f64().unwrap() - 16.0).abs() < 1e-12);
-        assert!(dispatch_cache_stats().0 >= 1);
-
-        clear_caches();
-        assert_eq!(dispatch_cache_stats().0, 0);
-
-        let scope_disable_jit = disable_jit(true);
-        scope_disable_jit.__enter__();
-        let eager_out = jit(&jaxpr, vec![PyValue::scalar_f64(5.0)]).unwrap();
         Python::with_gil(|py| {
             let none = py.None().into_bound(py);
+            clear_caches();
+            assert_eq!(dispatch_cache_stats().0, 0);
+
+            let jaxpr = make_jaxpr_square();
+            let out = jit(&jaxpr, vec![PyValue::scalar_f64(4.0)]).unwrap();
+            assert!((out[0].as_f64().unwrap() - 16.0).abs() < 1e-12);
+            assert!(dispatch_cache_stats().0 >= 1);
+
+            clear_caches();
+            assert_eq!(dispatch_cache_stats().0, 0);
+
+            let scope_disable_jit = disable_jit(true);
+            scope_disable_jit.__enter__();
+            let eager_out = jit(&jaxpr, vec![PyValue::scalar_f64(5.0)]).unwrap();
             scope_disable_jit.__exit__(&none, &none, &none);
-        });
-        assert!((eager_out[0].as_f64().unwrap() - 25.0).abs() < 1e-12);
-        assert_eq!(
-            dispatch_cache_stats().0,
-            0,
-            "disable_jit(true) must bypass dispatch cache"
-        );
+            assert!((eager_out[0].as_f64().unwrap() - 25.0).abs() < 1e-12);
+            assert_eq!(
+                dispatch_cache_stats().0,
+                0,
+                "disable_jit(true) must bypass dispatch cache"
+            );
 
-        let scope_no_exec = no_execution(true);
-        scope_no_exec.__enter__();
-        let blocked_exec = jit(&jaxpr, vec![PyValue::scalar_f64(2.0)]);
-        Python::with_gil(|py| {
-            let none = py.None().into_bound(py);
+            let scope_no_exec = no_execution(true);
+            scope_no_exec.__enter__();
+            let blocked_exec = jit(&jaxpr, vec![PyValue::scalar_f64(2.0)]);
             scope_no_exec.__exit__(&none, &none, &none);
-        });
-        assert!(blocked_exec.is_err());
+            assert!(blocked_exec.is_err());
 
-        let scope_nans = debug_nans(true);
-        scope_nans.__enter__();
-        let nan_exec = jit(&jaxpr, vec![PyValue::scalar_f64(f64::NAN)]);
-        Python::with_gil(|py| {
-            let none = py.None().into_bound(py);
+            let scope_nans = debug_nans(true);
+            scope_nans.__enter__();
+            let nan_exec = jit(&jaxpr, vec![PyValue::scalar_f64(f64::NAN)]);
             scope_nans.__exit__(&none, &none, &none);
+            assert!(
+                nan_exec.is_err(),
+                "debug_nans(true) must fail closed on NaN output"
+            );
         });
-        assert!(
-            nan_exec.is_err(),
-            "debug_nans(true) must fail closed on NaN output"
-        );
     }
 }

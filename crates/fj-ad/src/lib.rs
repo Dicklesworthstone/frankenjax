@@ -3552,6 +3552,109 @@ pub fn vjp_jaxpr_multi(
     backward_multi(&tape, &jaxpr.outvars, output_cotangents, jaxpr, &env)
 }
 
+/// Pre-recorded reverse-mode tape for repeated pullback (`vjp` / `linear_transpose`)
+/// evaluation without re-running the primal forward pass.
+#[derive(Debug, Clone)]
+pub struct VjpTape {
+    jaxpr: Jaxpr,
+    primals: Vec<Value>,
+    outputs: Vec<Value>,
+    tape: Tape,
+    env: AdValueStore,
+}
+
+impl VjpTape {
+    /// Return the input primals at which this tape was recorded.
+    #[must_use]
+    pub fn primals(&self) -> &[Value] {
+        &self.primals
+    }
+
+    /// Return the primal outputs produced during tape recording.
+    #[must_use]
+    pub fn outputs(&self) -> &[Value] {
+        &self.outputs
+    }
+
+    /// Return the number of recorded tape entries (equations).
+    #[must_use]
+    pub fn num_entries(&self) -> usize {
+        self.tape.entries.len()
+    }
+
+    /// Run the reverse-mode pullback for a single-output `Jaxpr` given `output_cotangent`,
+    /// without re-evaluating primal equations.
+    pub fn backward(&self, output_cotangent: &Value) -> Result<Vec<Value>, AdError> {
+        if let Some(custom_rule) = lookup_custom_jaxpr_vjp(&self.jaxpr) {
+            let grads = custom_rule(&self.primals, &self.outputs, output_cotangent)?;
+            if grads.len() != self.jaxpr.invars.len() {
+                return Err(AdError::EvalFailed(format!(
+                    "custom Jaxpr VJP cotangent arity mismatch: expected {}, got {}",
+                    self.jaxpr.invars.len(),
+                    grads.len()
+                )));
+            }
+            return Ok(grads);
+        }
+        let output_var = self
+            .jaxpr
+            .outvars
+            .first()
+            .copied()
+            .ok_or(AdError::NonScalarGradientOutput)?;
+        backward(
+            &self.tape,
+            output_var,
+            output_cotangent.clone(),
+            &self.jaxpr,
+            &self.env,
+        )
+    }
+
+    /// Run the reverse-mode pullback for a general (single- or multi-output) `Jaxpr`
+    /// given `output_cotangents`, without re-evaluating primal equations.
+    pub fn backward_multi(&self, output_cotangents: &[Value]) -> Result<Vec<Value>, AdError> {
+        if output_cotangents.len() != self.jaxpr.outvars.len() {
+            return Err(AdError::CotangentArity {
+                primitive: Primitive::Cond,
+                expected_at_least: self.jaxpr.outvars.len(),
+                actual: output_cotangents.len(),
+            });
+        }
+        if output_cotangents.len() == 1
+            && let Some(cot) = output_cotangents.first()
+            && lookup_custom_jaxpr_vjp(&self.jaxpr).is_some()
+        {
+            return self.backward(cot);
+        }
+        backward_multi(
+            &self.tape,
+            &self.jaxpr.outvars,
+            output_cotangents,
+            &self.jaxpr,
+            &self.env,
+        )
+    }
+}
+
+/// Evaluate `jaxpr` at `primals` once and return `(primal_outputs, VjpTape)`.
+///
+/// Subsequent calls to [`VjpTape::backward`] or [`VjpTape::backward_multi`] execute
+/// only the reverse pass over the recorded tape without re-running primal equations.
+pub fn record_vjp_tape(jaxpr: &Jaxpr, primals: &[Value]) -> Result<(Vec<Value>, VjpTape), AdError> {
+    let (outputs, tape, env) = forward_with_tape(jaxpr, primals)?;
+    Ok((
+        outputs.clone(),
+        VjpTape {
+            jaxpr: jaxpr.clone(),
+            primals: primals.to_vec(),
+            outputs,
+            tape,
+            env,
+        },
+    ))
+}
+
 fn bind_sub_jaxpr_consts_as_invars(sub: &Jaxpr) -> std::borrow::Cow<'_, Jaxpr> {
     if sub.constvars.is_empty() {
         std::borrow::Cow::Borrowed(sub)
@@ -11143,6 +11246,178 @@ fn jvp_inner(
     })
 }
 
+/// Pre-recorded linearized forward state for repeated JVP pushforward (`linearize`)
+/// without re-evaluating primal equations.
+#[derive(Debug, Clone)]
+pub struct LinearizedTape {
+    jaxpr: Jaxpr,
+    primals: Vec<Value>,
+    outputs: Vec<Value>,
+    primal_env: AdValueStore,
+}
+
+impl LinearizedTape {
+    /// Return the input primals at which this tape was linearized.
+    #[must_use]
+    pub fn primals(&self) -> &[Value] {
+        &self.primals
+    }
+
+    /// Return the primal outputs produced during linearization.
+    #[must_use]
+    pub fn outputs(&self) -> &[Value] {
+        &self.outputs
+    }
+
+    /// Compute the JVP tangent outputs for `tangents` using the pre-recorded primal
+    /// environment, without re-evaluating primal primitive equations.
+    pub fn pushforward(&self, tangents: &[Value]) -> Result<Vec<Value>, AdError> {
+        if tangents.len() != self.primals.len() {
+            return Err(AdError::InputArity {
+                expected: self.primals.len(),
+                actual: tangents.len(),
+            });
+        }
+        if let Some(custom_rule) = lookup_custom_jaxpr_jvp(&self.jaxpr) {
+            let result = custom_rule(&self.primals, tangents)?;
+            if result.tangents.len() != self.jaxpr.outvars.len() {
+                return Err(AdError::EvalFailed(format!(
+                    "custom Jaxpr JVP tangent arity mismatch: expected {}, got {}",
+                    self.jaxpr.outvars.len(),
+                    result.tangents.len()
+                )));
+            }
+            return Ok(result.tangents);
+        }
+
+        let mut tangent_env = AdValueStore::for_jaxpr(&self.jaxpr);
+        for (idx, var) in self.jaxpr.invars.iter().enumerate() {
+            tangent_env.insert(*var, tangents[idx].clone());
+        }
+
+        for eqn in &self.jaxpr.equations {
+            let mut resolved_primals = TapeValues::with_capacity(eqn.inputs.len());
+            let mut resolved_tangents = TapeValues::with_capacity(eqn.inputs.len());
+
+            for atom in &eqn.inputs {
+                match atom {
+                    Atom::Var(var) => {
+                        let pval = self
+                            .primal_env
+                            .get(var)
+                            .cloned()
+                            .ok_or(AdError::MissingVariable(*var))?;
+                        let tval = tangent_env
+                            .get(var)
+                            .cloned()
+                            .unwrap_or_else(|| zeros_like(&pval));
+                        resolved_primals.push(pval);
+                        resolved_tangents.push(tval);
+                    }
+                    Atom::Lit(lit) => {
+                        let pval = Value::Scalar(*lit);
+                        resolved_tangents.push(zeros_like(&pval));
+                        resolved_primals.push(pval);
+                    }
+                }
+            }
+
+            if !eqn.sub_jaxprs.is_empty() {
+                let sub_res = jvp_with_sub_jaxprs(
+                    eqn.primitive,
+                    &resolved_primals,
+                    &resolved_tangents,
+                    &eqn.params,
+                    &eqn.sub_jaxprs,
+                )?;
+                for (idx, var) in eqn.outputs.iter().enumerate() {
+                    if let Some(t) = sub_res.tangents.get(idx) {
+                        tangent_env.insert(*var, t.clone());
+                    } else if let Some(p) = self
+                        .primal_env
+                        .get(var)
+                        .or_else(|| sub_res.primals.get(idx))
+                    {
+                        tangent_env.insert(*var, zeros_like(p));
+                    }
+                }
+                continue;
+            }
+
+            if eqn.outputs.len() > 1 {
+                let mut primal_outs = Vec::with_capacity(eqn.outputs.len());
+                for var in &eqn.outputs {
+                    let pval = self
+                        .primal_env
+                        .get(var)
+                        .cloned()
+                        .ok_or(AdError::MissingVariable(*var))?;
+                    primal_outs.push(pval);
+                }
+                let tangent_outs = jvp_rule_multi(
+                    eqn.primitive,
+                    &resolved_primals,
+                    &resolved_tangents,
+                    &primal_outs,
+                    &eqn.params,
+                )?;
+                for (idx, var) in eqn.outputs.iter().enumerate() {
+                    tangent_env.insert(
+                        *var,
+                        tangent_outs
+                            .get(idx)
+                            .cloned()
+                            .unwrap_or_else(|| zeros_like(&primal_outs[idx])),
+                    );
+                }
+            } else {
+                let tangent_out = jvp_rule(
+                    eqn.primitive,
+                    &resolved_primals,
+                    &resolved_tangents,
+                    &eqn.params,
+                )?;
+                tangent_env.insert(eqn.outputs[0], tangent_out);
+            }
+        }
+
+        let out_tangents = self
+            .jaxpr
+            .outvars
+            .iter()
+            .map(|var| {
+                tangent_env.get(var).cloned().unwrap_or_else(|| {
+                    self.primal_env
+                        .get(var)
+                        .map(zeros_like)
+                        .unwrap_or_else(|| Value::scalar_f64(0.0))
+                })
+            })
+            .collect();
+        Ok(out_tangents)
+    }
+}
+
+/// Evaluate `jaxpr` at `primals` once and return `(primal_outputs, LinearizedTape)`.
+///
+/// Subsequent calls to [`LinearizedTape::pushforward`] propagate tangents using the
+/// cached primal environment without re-evaluating primal primitive equations.
+pub fn linearize_jaxpr(
+    jaxpr: &Jaxpr,
+    primals: &[Value],
+) -> Result<(Vec<Value>, LinearizedTape), AdError> {
+    let (outputs, _tape, primal_env) = forward_with_tape(jaxpr, primals)?;
+    Ok((
+        outputs.clone(),
+        LinearizedTape {
+            jaxpr: jaxpr.clone(),
+            primals: primals.to_vec(),
+            outputs,
+            primal_env,
+        },
+    ))
+}
+
 /// Apply a JVP rule for a single primitive with tensor-valued tangents.
 ///
 /// For each primitive, computes the output tangent given input primals and input tangents.
@@ -14332,6 +14607,18 @@ pub fn build_grad_jaxpr(jaxpr: &Jaxpr, argnums: &[usize]) -> Result<Jaxpr, AdErr
 /// Build a symbolic `value_and_grad` `Jaxpr` returning `[value, grad_0, ...]` for `argnums`.
 pub fn build_value_and_grad_jaxpr(jaxpr: &Jaxpr, argnums: &[usize]) -> Result<Jaxpr, AdError> {
     build_grad_jaxpr_internal(jaxpr, argnums, true)
+}
+
+/// Transform `jaxpr` into its symbolic forward-mode JVP `Jaxpr` (`2N` inputs: `[primals..., tangents...]`,
+/// `2M` outputs: `[primal_outputs..., tangent_outputs...]`).
+pub fn jvp_to_jaxpr(jaxpr: &Jaxpr) -> Result<Jaxpr, AdError> {
+    build_jvp_jaxpr(jaxpr)
+}
+
+/// Transform `jaxpr` into its symbolic reverse-mode gradient `Jaxpr` with respect to all inputs.
+pub fn grad_to_jaxpr(jaxpr: &Jaxpr) -> Result<Jaxpr, AdError> {
+    let argnums: Vec<usize> = (0..jaxpr.invars.len()).collect();
+    build_grad_jaxpr(jaxpr, &argnums)
 }
 
 fn flatten_value_to_f64(value: &Value) -> Result<Vec<f64>, AdError> {

@@ -264,6 +264,292 @@ pub fn simd_poly_exp_fma(src: &[f64]) -> Vec<f64> {
     out
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+#[inline]
+unsafe fn exp_block_fma(x: F64s) -> F64s {
+    let nf = (x * F64s::splat(LOG2E)).round();
+    let r = (-nf).mul_add(F64s::splat(LN2_HI), x);
+    let r = (-nf).mul_add(F64s::splat(LN2_LO), r);
+    let mut p = F64s::splat(C[13]);
+    for k in (0..13).rev() {
+        p = p.mul_add(r, F64s::splat(C[k]));
+    }
+    let ni = nf.cast::<i64>();
+    let na = ni >> Simd::splat(1);
+    let nb = ni - na;
+    let two_a = F64s::from_bits(((na + Simd::splat(1023)) << Simd::splat(52)).cast::<u64>());
+    let two_b = F64s::from_bits(((nb + Simd::splat(1023)) << Simd::splat(52)).cast::<u64>());
+    p * two_a * two_b
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn simd_poly_exp_shifted_avx2_fma_into(src: &[f64], shift: f64, out: &mut [f64]) -> f64 {
+    let shift_v = F64s::splat(shift);
+    let (chunks, src_rem) = src.as_chunks::<LANES>();
+    let (out_chunks, out_rem) = out.as_chunks_mut::<LANES>();
+    let mut sum = 0.0_f64;
+    for (c, o) in chunks.iter().zip(out_chunks.iter_mut()) {
+        let x = F64s::from_array(*c) - shift_v;
+        // SAFETY: target_feature(enable = "avx2,fma") is active.
+        let mut y = unsafe { exp_block_fma(x) }.to_array();
+        let xa = x.to_array();
+        let mut has_edge = false;
+        for &xv in &xa {
+            has_edge |= !(xv > UNDERFLOW_X && xv < OVERFLOW_X);
+        }
+        if has_edge {
+            for (yi, &xv) in y.iter_mut().zip(xa.iter()) {
+                if !(xv > UNDERFLOW_X && xv < OVERFLOW_X) {
+                    *yi = exp_scalar_fma(xv);
+                }
+            }
+        }
+        *o = y;
+        for &yi in &y {
+            sum += yi;
+        }
+    }
+    for (&s, o) in src_rem.iter().zip(out_rem.iter_mut()) {
+        let yi = exp_scalar_fma(s - shift);
+        *o = yi;
+        sum += yi;
+    }
+    sum
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn simd_poly_exp_shifted_avx2_fma_sum(src: &[f64], shift: f64) -> f64 {
+    let shift_v = F64s::splat(shift);
+    let (chunks, src_rem) = src.as_chunks::<LANES>();
+    let mut sum = 0.0_f64;
+    for c in chunks {
+        let x = F64s::from_array(*c) - shift_v;
+        // SAFETY: target_feature(enable = "avx2,fma") is active.
+        let mut y = unsafe { exp_block_fma(x) }.to_array();
+        let xa = x.to_array();
+        let mut has_edge = false;
+        for &xv in &xa {
+            has_edge |= !(xv > UNDERFLOW_X && xv < OVERFLOW_X);
+        }
+        if has_edge {
+            for (yi, &xv) in y.iter_mut().zip(xa.iter()) {
+                if !(xv > UNDERFLOW_X && xv < OVERFLOW_X) {
+                    *yi = exp_scalar_fma(xv);
+                }
+            }
+        }
+        for &yi in &y {
+            sum += yi;
+        }
+    }
+    for &s in src_rem {
+        sum += exp_scalar_fma(s - shift);
+    }
+    sum
+}
+
+/// Hardware-FMA-accelerated `out[i] = exp(src[i] - shift)`, returning the index-order sum.
+pub fn simd_poly_exp_shifted_fma_into(src: &[f64], shift: f64, out: &mut [f64]) -> f64 {
+    if src.len() != out.len() {
+        return 0.0;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        return unsafe { simd_poly_exp_shifted_avx2_fma_into(src, shift, out) };
+    }
+    let mut sum = 0.0;
+    for (o, &s) in out.iter_mut().zip(src.iter()) {
+        let e = exp_scalar(s - shift);
+        *o = e;
+        sum += e;
+    }
+    sum
+}
+
+/// Hardware-FMA-accelerated `sum_i exp(src[i] - shift)` without buffer allocation.
+#[must_use]
+pub fn simd_poly_exp_shifted_fma_sum(src: &[f64], shift: f64) -> f64 {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        return unsafe { simd_poly_exp_shifted_avx2_fma_sum(src, shift) };
+    }
+    let mut sum = 0.0;
+    for &s in src {
+        sum += exp_scalar(s - shift);
+    }
+    sum
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn simd_sigmoid_avx2_fma_into(src: &[f64], out: &mut [f64]) {
+    let one = F64s::splat(1.0);
+    let (chunks, src_rem) = src.as_chunks::<LANES>();
+    let (out_chunks, out_rem) = out.as_chunks_mut::<LANES>();
+    for (c, o) in chunks.iter().zip(out_chunks.iter_mut()) {
+        let neg_x = -F64s::from_array(*c);
+        // SAFETY: target_feature(enable = "avx2,fma") is active.
+        let exp_neg = unsafe { exp_block_fma(neg_x) };
+        let mut y = (one / (one + exp_neg)).to_array();
+        let nxa = neg_x.to_array();
+        let mut has_edge = false;
+        for &nx in &nxa {
+            has_edge |= !(nx > UNDERFLOW_X && nx < OVERFLOW_X);
+        }
+        if has_edge {
+            for (yi, &nx) in y.iter_mut().zip(nxa.iter()) {
+                if !(nx > UNDERFLOW_X && nx < OVERFLOW_X) {
+                    *yi = 1.0 / (1.0 + exp_scalar_fma(nx));
+                }
+            }
+        }
+        *o = y;
+    }
+    for (&s, o) in src_rem.iter().zip(out_rem.iter_mut()) {
+        *o = 1.0 / (1.0 + exp_scalar_fma(-s));
+    }
+}
+
+/// Hardware-FMA-accelerated `out[i] = 1 / (1 + exp(-src[i]))`.
+pub fn simd_sigmoid_fma_into(src: &[f64], out: &mut [f64]) {
+    if src.len() != out.len() {
+        return;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            simd_sigmoid_avx2_fma_into(src, out);
+        }
+        return;
+    }
+    for (o, &s) in out.iter_mut().zip(src.iter()) {
+        *o = 1.0 / (1.0 + exp_scalar(-s));
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn simd_silu_avx2_fma_into(src: &[f64], out: &mut [f64]) {
+    let one = F64s::splat(1.0);
+    let (chunks, src_rem) = src.as_chunks::<LANES>();
+    let (out_chunks, out_rem) = out.as_chunks_mut::<LANES>();
+    for (c, o) in chunks.iter().zip(out_chunks.iter_mut()) {
+        let xv = F64s::from_array(*c);
+        let neg_x = -xv;
+        // SAFETY: target_feature(enable = "avx2,fma") is active.
+        let exp_neg = unsafe { exp_block_fma(neg_x) };
+        let mut y = (xv / (one + exp_neg)).to_array();
+        let nxa = neg_x.to_array();
+        let mut has_edge = false;
+        for &nx in &nxa {
+            has_edge |= !(nx > UNDERFLOW_X && nx < OVERFLOW_X);
+        }
+        if has_edge {
+            for ((yi, &x), &nx) in y.iter_mut().zip(c.iter()).zip(nxa.iter()) {
+                if !(nx > UNDERFLOW_X && nx < OVERFLOW_X) {
+                    *yi = x / (1.0 + exp_scalar_fma(nx));
+                }
+            }
+        }
+        *o = y;
+    }
+    for (&s, o) in src_rem.iter().zip(out_rem.iter_mut()) {
+        *o = s / (1.0 + exp_scalar_fma(-s));
+    }
+}
+
+/// Hardware-FMA-accelerated `out[i] = src[i] / (1 + exp(-src[i]))`.
+pub fn simd_silu_fma_into(src: &[f64], out: &mut [f64]) {
+    if src.len() != out.len() {
+        return;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            simd_silu_avx2_fma_into(src, out);
+        }
+        return;
+    }
+    for (o, &s) in out.iter_mut().zip(src.iter()) {
+        *o = s / (1.0 + exp_scalar(-s));
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(unsafe_code)]
+unsafe fn simd_swiglu_avx2_fma_into(a: &[f64], b: &[f64], out: &mut [f64]) {
+    let one = F64s::splat(1.0);
+    let (a_chunks, a_rem) = a.as_chunks::<LANES>();
+    let (b_chunks, b_rem) = b.as_chunks::<LANES>();
+    let (out_chunks, out_rem) = out.as_chunks_mut::<LANES>();
+    for ((ac, bc), o) in a_chunks
+        .iter()
+        .zip(b_chunks.iter())
+        .zip(out_chunks.iter_mut())
+    {
+        let av = F64s::from_array(*ac);
+        let bv = F64s::from_array(*bc);
+        let neg_a = -av;
+        // SAFETY: target_feature(enable = "avx2,fma") is active.
+        let exp_neg = unsafe { exp_block_fma(neg_a) };
+        let mut y = ((av / (one + exp_neg)) * bv).to_array();
+        let naa = neg_a.to_array();
+        let mut has_edge = false;
+        for &na in &naa {
+            has_edge |= !(na > UNDERFLOW_X && na < OVERFLOW_X);
+        }
+        if has_edge {
+            for (((yi, &ax), &bx), &na) in
+                y.iter_mut().zip(ac.iter()).zip(bc.iter()).zip(naa.iter())
+            {
+                if !(na > UNDERFLOW_X && na < OVERFLOW_X) {
+                    *yi = (ax / (1.0 + exp_scalar_fma(na))) * bx;
+                }
+            }
+        }
+        *o = y;
+    }
+    for ((&ax, &bx), o) in a_rem.iter().zip(b_rem.iter()).zip(out_rem.iter_mut()) {
+        *o = (ax / (1.0 + exp_scalar_fma(-ax))) * bx;
+    }
+}
+
+/// Hardware-FMA-accelerated `out[i] = (a[i] / (1 + exp(-a[i]))) * b[i]`.
+pub fn simd_swiglu_fma_into(a: &[f64], b: &[f64], out: &mut [f64]) {
+    if a.len() != out.len() || b.len() != out.len() {
+        return;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if crate::hardware_fma_available() {
+        #[allow(unsafe_code)]
+        // SAFETY: `hardware_fma_available()` verified `avx2` + `fma` support at runtime.
+        unsafe {
+            simd_swiglu_avx2_fma_into(a, b, out);
+        }
+        return;
+    }
+    for ((o, &ax), &bx) in out.iter_mut().zip(a.iter()).zip(b.iter()) {
+        *o = (ax / (1.0 + exp_scalar(-ax))) * bx;
+    }
+}
+
 /// 8-wide f32 `exp` (Cephes `expf`: Cody-Waite ln2 range reduction + degree-6 minimax poly,
 /// 2^n by exponent-field injection). Explicit `*`/`+` (NO `mul_add`) so it never libcalls `fma`.
 ///

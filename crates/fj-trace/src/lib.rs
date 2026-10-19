@@ -125,6 +125,182 @@ pub struct ClosedJaxpr {
     pub const_values: Vec<Value>,
 }
 
+impl ClosedJaxpr {
+    /// Convert this `ClosedJaxpr` into a self-contained [`Jaxpr`] with empty `constvars`
+    /// by materializing any captured `const_values` as prologue equations / literal atoms.
+    ///
+    /// When `const_values` is empty, returns a clone of `self.jaxpr` directly.
+    #[must_use]
+    pub fn to_executable_jaxpr(&self) -> Jaxpr {
+        if self.jaxpr.constvars.is_empty() || self.const_values.is_empty() {
+            return self.jaxpr.clone();
+        }
+        let mut max_var = 0_u32;
+        for var in self
+            .jaxpr
+            .invars
+            .iter()
+            .chain(self.jaxpr.constvars.iter())
+            .chain(self.jaxpr.outvars.iter())
+        {
+            max_var = max_var.max(var.0);
+        }
+        for eqn in &self.jaxpr.equations {
+            for atom in &eqn.inputs {
+                if let Atom::Var(v) = atom {
+                    max_var = max_var.max(v.0);
+                }
+            }
+            for v in &eqn.outputs {
+                max_var = max_var.max(v.0);
+            }
+        }
+        let mut next_var = max_var.saturating_add(1);
+        let mut fresh_var = || {
+            let v = VarId(next_var);
+            next_var = next_var.saturating_add(1);
+            v
+        };
+
+        let mut scalar_consts: BTreeMap<VarId, fj_core::Literal> = BTreeMap::new();
+        let mut prologue: Vec<Equation> = Vec::new();
+
+        for (&cvar, cval) in self.jaxpr.constvars.iter().zip(self.const_values.iter()) {
+            match cval {
+                Value::Scalar(lit) => {
+                    scalar_consts.insert(cvar, *lit);
+                    if self.jaxpr.outvars.contains(&cvar) {
+                        let mut params = BTreeMap::new();
+                        params.insert("new_shape".to_owned(), String::new());
+                        prologue.push(Equation {
+                            primitive: Primitive::Reshape,
+                            inputs: smallvec::smallvec![Atom::Lit(*lit)],
+                            outputs: smallvec::smallvec![cvar],
+                            params,
+                            sub_jaxprs: Vec::new(),
+                            effects: Vec::new(),
+                        });
+                    }
+                }
+                Value::Tensor(tensor) => {
+                    let dims_str = tensor
+                        .shape
+                        .dims
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let elements = tensor.elements.as_slice();
+                    let uniform_lit = elements
+                        .first()
+                        .copied()
+                        .filter(|first| elements.iter().all(|lit| lit == first));
+                    if elements.is_empty() || uniform_lit.is_some() {
+                        let fill_lit = uniform_lit.unwrap_or_else(|| match tensor.dtype {
+                            DType::Bool => fj_core::Literal::Bool(false),
+                            DType::I32 => fj_core::Literal::I32(0),
+                            DType::I64 => fj_core::Literal::I64(0),
+                            DType::U32 => fj_core::Literal::U32(0),
+                            DType::U64 => fj_core::Literal::U64(0),
+                            DType::BF16 => fj_core::Literal::from_bf16_f32(0.0),
+                            DType::F16 => fj_core::Literal::from_f16_f32(0.0),
+                            DType::F32 => fj_core::Literal::from_f32(0.0),
+                            DType::F64 => fj_core::Literal::from_f64(0.0),
+                            DType::Complex64 => fj_core::Literal::from_complex64(0.0, 0.0),
+                            DType::Complex128 => fj_core::Literal::from_complex128(0.0, 0.0),
+                        });
+                        let mut params = BTreeMap::new();
+                        params.insert("shape".to_owned(), dims_str);
+                        params.insert("broadcast_dimensions".to_owned(), String::new());
+                        prologue.push(Equation {
+                            primitive: Primitive::BroadcastInDim,
+                            inputs: smallvec::smallvec![Atom::Lit(fill_lit)],
+                            outputs: smallvec::smallvec![cvar],
+                            params,
+                            sub_jaxprs: Vec::new(),
+                            effects: Vec::new(),
+                        });
+                    } else {
+                        let mut elem_atoms = SmallVec::<[Atom; 4]>::with_capacity(elements.len());
+                        for &lit in elements {
+                            let evar = fresh_var();
+                            let mut bparams = BTreeMap::new();
+                            bparams.insert("shape".to_owned(), "1".to_owned());
+                            bparams.insert("broadcast_dimensions".to_owned(), String::new());
+                            prologue.push(Equation {
+                                primitive: Primitive::BroadcastInDim,
+                                inputs: smallvec::smallvec![Atom::Lit(lit)],
+                                outputs: smallvec::smallvec![evar],
+                                params: bparams,
+                                sub_jaxprs: Vec::new(),
+                                effects: Vec::new(),
+                            });
+                            elem_atoms.push(Atom::Var(evar));
+                        }
+                        let is_rank1_matching = tensor.shape.dims.len() == 1
+                            && tensor.shape.dims[0] as usize == elements.len();
+                        let concat_out = if is_rank1_matching { cvar } else { fresh_var() };
+                        let mut cparams = BTreeMap::new();
+                        cparams.insert("dimension".to_owned(), "0".to_owned());
+                        prologue.push(Equation {
+                            primitive: Primitive::Concatenate,
+                            inputs: elem_atoms,
+                            outputs: smallvec::smallvec![concat_out],
+                            params: cparams,
+                            sub_jaxprs: Vec::new(),
+                            effects: Vec::new(),
+                        });
+                        if !is_rank1_matching {
+                            let mut rparams = BTreeMap::new();
+                            rparams.insert("new_shape".to_owned(), dims_str);
+                            prologue.push(Equation {
+                                primitive: Primitive::Reshape,
+                                inputs: smallvec::smallvec![Atom::Var(concat_out)],
+                                outputs: smallvec::smallvec![cvar],
+                                params: rparams,
+                                sub_jaxprs: Vec::new(),
+                                effects: Vec::new(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        for eqn in &self.jaxpr.equations {
+            let mut cloned = eqn.clone();
+            if !scalar_consts.is_empty() {
+                for input in &mut cloned.inputs {
+                    if let Atom::Var(v) = input
+                        && let Some(&lit) = scalar_consts.get(v)
+                    {
+                        *input = Atom::Lit(lit);
+                    }
+                }
+            }
+            prologue.push(cloned);
+        }
+
+        let mut out = Jaxpr::new(
+            self.jaxpr.invars.clone(),
+            Vec::new(),
+            self.jaxpr.outvars.clone(),
+            prologue,
+        );
+        out.effects = self.jaxpr.effects.clone();
+        out
+    }
+
+    /// Consume this `ClosedJaxpr` and return a self-contained [`Jaxpr`] with empty `constvars`.
+    #[must_use]
+    pub fn into_executable_jaxpr(self) -> Jaxpr {
+        if self.jaxpr.constvars.is_empty() || self.const_values.is_empty() {
+            return self.jaxpr;
+        }
+        self.to_executable_jaxpr()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TraceError {
     UnsupportedPrimitive {

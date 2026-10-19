@@ -21,6 +21,7 @@ fn threaded_f64_map(x: &[f64], f: impl Fn(f64) -> f64 + Sync) -> Vec<f64> {
     if threads <= 1 {
         return x.iter().map(|&v| f(v)).collect();
     }
+    let policy = crate::current_precision_policy();
     let mut out = vec![0.0f64; n];
     let chunk = n.div_ceil(threads);
     let f = &f;
@@ -33,9 +34,11 @@ fn threaded_f64_map(x: &[f64], f: impl Fn(f64) -> f64 + Sync) -> Vec<f64> {
             rest = tail;
             let src = &x[start..start + len];
             scope.spawn(move || {
-                for (o, &v) in blk.iter_mut().zip(src) {
-                    *o = f(v);
-                }
+                crate::with_precision_policy(policy, || {
+                    for (o, &v) in blk.iter_mut().zip(src) {
+                        *o = f(v);
+                    }
+                });
             });
             start += len;
         }
@@ -53,6 +56,7 @@ fn threaded_f64_zip(a: &[f64], b: &[f64], f: impl Fn(f64, f64) -> f64 + Sync) ->
     if threads <= 1 {
         return a.iter().zip(b).map(|(&x, &y)| f(x, y)).collect();
     }
+    let policy = crate::current_precision_policy();
     let mut out = vec![0.0f64; n];
     let chunk = n.div_ceil(threads);
     let f = &f;
@@ -66,9 +70,76 @@ fn threaded_f64_zip(a: &[f64], b: &[f64], f: impl Fn(f64, f64) -> f64 + Sync) ->
             let sa = &a[start..start + len];
             let sb = &b[start..start + len];
             scope.spawn(move || {
-                for (o, (&x, &y)) in blk.iter_mut().zip(sa.iter().zip(sb)) {
-                    *o = f(x, y);
-                }
+                crate::with_precision_policy(policy, || {
+                    for (o, (&x, &y)) in blk.iter_mut().zip(sa.iter().zip(sb)) {
+                        *o = f(x, y);
+                    }
+                });
+            });
+            start += len;
+        }
+    });
+    out
+}
+
+#[inline]
+fn threaded_f64_slice_op(x: &[f64], slice_fn: fn(&[f64], &mut [f64])) -> Vec<f64> {
+    let n = x.len();
+    let mut out = vec![0.0f64; n];
+    let threads = crate::arithmetic::work_scaled_threads(n);
+    if threads <= 1 {
+        slice_fn(x, &mut out);
+        return out;
+    }
+    let policy = crate::current_precision_policy();
+    let chunk = n.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f64] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let src = &x[start..start + len];
+            scope.spawn(move || {
+                crate::with_precision_policy(policy, || {
+                    slice_fn(src, blk);
+                });
+            });
+            start += len;
+        }
+    });
+    out
+}
+
+#[inline]
+fn threaded_f64_zip_slice_op(
+    a: &[f64],
+    b: &[f64],
+    slice_fn: fn(&[f64], &[f64], &mut [f64]),
+) -> Vec<f64> {
+    let n = a.len();
+    let mut out = vec![0.0f64; n];
+    let threads = crate::arithmetic::work_scaled_threads(n);
+    if threads <= 1 {
+        slice_fn(a, b, &mut out);
+        return out;
+    }
+    let policy = crate::current_precision_policy();
+    let chunk = n.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f64] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let sa = &a[start..start + len];
+            let sb = &b[start..start + len];
+            scope.spawn(move || {
+                crate::with_precision_policy(policy, || {
+                    slice_fn(sa, sb, blk);
+                });
             });
             start += len;
         }
@@ -153,6 +224,9 @@ pub fn relu6(x: &[f64]) -> Vec<f64> {
 /// Matches `jax.nn.sigmoid(x)` and `jax.lax.logistic(x)`.
 #[must_use]
 pub fn sigmoid(x: &[f64]) -> Vec<f64> {
+    if crate::should_use_hardware_fma() {
+        return threaded_f64_slice_op(x, crate::simd_exp::simd_sigmoid_fma_into);
+    }
     threaded_f64_map(x, |v| 1.0 / (1.0 + (-v).exp()))
 }
 
@@ -177,6 +251,9 @@ pub fn hard_tanh(x: &[f64]) -> Vec<f64> {
 /// Matches `jax.nn.silu(x)` and `jax.nn.swish(x)`.
 #[must_use]
 pub fn silu(x: &[f64]) -> Vec<f64> {
+    if crate::should_use_hardware_fma() {
+        return threaded_f64_slice_op(x, crate::simd_exp::simd_silu_fma_into);
+    }
     threaded_f64_map(x, |v| v / (1.0 + (-v).exp()))
 }
 
@@ -194,6 +271,9 @@ pub fn swish(x: &[f64]) -> Vec<f64> {
 /// swiglu superinstruction. Callers guarantee `a.len() == b.len()`.
 #[must_use]
 pub fn swiglu(a: &[f64], b: &[f64]) -> Vec<f64> {
+    if crate::should_use_hardware_fma() {
+        return threaded_f64_zip_slice_op(a, b, crate::simd_exp::simd_swiglu_fma_into);
+    }
     threaded_f64_zip(a, b, |av, bv| (av / (1.0 + (-av).exp())) * bv)
 }
 
@@ -382,6 +462,10 @@ pub fn logsumexp(x: &[f64]) -> f64 {
     if max_val.is_infinite() {
         return max_val;
     }
+    if crate::should_use_hardware_fma() {
+        let sum_exp = crate::simd_exp::simd_poly_exp_shifted_fma_sum(x, max_val);
+        return max_val + sum_exp.ln();
+    }
     // Large 1D logsumexp (e.g. a language-model softmax over a big vocab) is dominated by
     // the per-element `exp`. Thread it into a buffer, then sum SERIALLY in index order —
     // BIT-IDENTICAL to the fused `.map(exp).sum()` (same values, same left-fold order). For
@@ -424,6 +508,7 @@ pub fn logsumexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
         return result;
     }
 
+    let policy = crate::current_precision_policy();
     let rows_per = rows.div_ceil(threads);
     std::thread::scope(|scope| {
         let mut out_rest: &mut [f64] = &mut result;
@@ -435,10 +520,12 @@ pub fn logsumexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
             let x_block = &x[row0 * cols..(row0 + row_count) * cols];
             row0 += row_count;
             scope.spawn(move || {
-                for (k, out_slot) in out_block.iter_mut().enumerate() {
-                    let start = k * cols;
-                    *out_slot = logsumexp(&x_block[start..start + cols]);
-                }
+                crate::with_precision_policy(policy, || {
+                    for (k, out_slot) in out_block.iter_mut().enumerate() {
+                        let start = k * cols;
+                        *out_slot = logsumexp(&x_block[start..start + cols]);
+                    }
+                });
             });
         }
     });
@@ -469,6 +556,7 @@ pub fn logmeanexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
         return result;
     }
 
+    let policy = crate::current_precision_policy();
     let log_n = (cols as f64).ln();
     let rows_per = rows.div_ceil(threads);
     std::thread::scope(|scope| {
@@ -481,10 +569,12 @@ pub fn logmeanexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
             let x_block = &x[row0 * cols..(row0 + row_count) * cols];
             row0 += row_count;
             scope.spawn(move || {
-                for (k, out_slot) in out_block.iter_mut().enumerate() {
-                    let start = k * cols;
-                    *out_slot = logsumexp(&x_block[start..start + cols]) - log_n;
-                }
+                crate::with_precision_policy(policy, || {
+                    for (k, out_slot) in out_block.iter_mut().enumerate() {
+                        let start = k * cols;
+                        *out_slot = logsumexp(&x_block[start..start + cols]) - log_n;
+                    }
+                });
             });
         }
     });
@@ -2264,6 +2354,14 @@ pub fn softmax(x: &[f64]) -> Vec<f64> {
         return Vec::new();
     }
     let max_val = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if crate::should_use_hardware_fma() && max_val.is_finite() {
+        let mut out = vec![0.0; x.len()];
+        let sum_exp = crate::simd_exp::simd_poly_exp_shifted_fma_into(x, max_val, &mut out);
+        for d in &mut out {
+            *d /= sum_exp;
+        }
+        return out;
+    }
     // Thread the compute-bound `exp` map (≈20 flop/elem dominates the cheap O(1) max/sum
     // reductions). `exp_shifted` is built in index order, so the serial `sum` below reads it
     // in the same order — BIT-IDENTICAL. The cheap divide stays sequential (BW-bound).
@@ -2275,6 +2373,13 @@ pub fn softmax(x: &[f64]) -> Vec<f64> {
 #[inline]
 fn softmax_row_into(src: &[f64], dst: &mut [f64]) {
     let max_val = src.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if crate::should_use_hardware_fma() && max_val.is_finite() {
+        let sum_exp = crate::simd_exp::simd_poly_exp_shifted_fma_into(src, max_val, dst);
+        for d in dst.iter_mut() {
+            *d /= sum_exp;
+        }
+        return;
+    }
     let mut sum_exp = 0.0;
     for (d, &v) in dst.iter_mut().zip(src.iter()) {
         let e = (v - max_val).exp();
@@ -2328,6 +2433,7 @@ fn fill_softmax_rows_parallel(
         return;
     }
 
+    let policy = crate::current_precision_policy();
     let rows_per = rows.div_ceil(threads);
     std::thread::scope(|scope| {
         let mut dst_rest: &mut [f64] = result;
@@ -2340,12 +2446,14 @@ fn fill_softmax_rows_parallel(
             let src_block = &x[row0 * cols..(row0 + row_count) * cols];
             row0 += row_count;
             scope.spawn(move || {
-                for (src_row, dst_row) in src_block
-                    .chunks_exact(cols)
-                    .zip(dst_block.chunks_exact_mut(cols))
-                {
-                    row_fn(src_row, dst_row);
-                }
+                crate::with_precision_policy(policy, || {
+                    for (src_row, dst_row) in src_block
+                        .chunks_exact(cols)
+                        .zip(dst_block.chunks_exact_mut(cols))
+                    {
+                        row_fn(src_row, dst_row);
+                    }
+                });
             });
         }
     });
@@ -2390,6 +2498,13 @@ pub fn log_softmax(x: &[f64]) -> Vec<f64> {
     if max_val.is_infinite() {
         return threaded_f64_map_bw(x, move |v| v - max_val);
     }
+    if crate::should_use_hardware_fma() {
+        let sum_exp = crate::simd_exp::simd_poly_exp_shifted_fma_sum(x, max_val);
+        let lse = max_val + sum_exp.ln();
+        let mut out = vec![0.0; x.len()];
+        fill_log_softmax_sub_into(x, &mut out, lse);
+        return out;
+    }
     let mut out = threaded_f64_map(x, |v| (v - max_val).exp());
     let sum_exp: f64 = out.iter().sum();
     let lse = max_val + sum_exp.ln();
@@ -2412,6 +2527,9 @@ fn log_softmax_row_into(src: &[f64], dst: &mut [f64]) {
     let max_val = src.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let lse = if max_val.is_infinite() {
         max_val
+    } else if crate::should_use_hardware_fma() {
+        let sum_exp = crate::simd_exp::simd_poly_exp_shifted_fma_sum(src, max_val);
+        max_val + sum_exp.ln()
     } else {
         let sum_exp: f64 = src.iter().map(|&v| (v - max_val).exp()).sum();
         max_val + sum_exp.ln()
@@ -2450,6 +2568,14 @@ fn log_softmax_row_shifted_into(src: &[f64], dst: &mut [f64]) {
     // `softmax_row_into`, so this equals the ReduceMax/Sub/Exp/ReduceSum/Log/Sub jaxpr
     // bit-for-bit. Superinstruction callers guarantee finite input, so `rowmax` is finite.
     let max_val = src.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if crate::should_use_hardware_fma() && max_val.is_finite() {
+        let sum_exp = crate::simd_exp::simd_poly_exp_shifted_fma_sum(src, max_val);
+        let log_val = sum_exp.ln();
+        for (d, &v) in dst.iter_mut().zip(src.iter()) {
+            *d = (v - max_val) - log_val;
+        }
+        return;
+    }
     let mut sum_exp = 0.0;
     for (d, &v) in dst.iter_mut().zip(src.iter()) {
         let shifted = v - max_val;
@@ -2552,10 +2678,15 @@ fn softmax_cross_entropy_row(logits: &[f64], labels: &[f64]) -> f64 {
     // superinstruction's `shifted - log` grouping), then `Mul(labels, ls)` per element, an
     // index-order `ReduceSum`, and a final `Neg`. Callers guarantee finite input → rowmax finite.
     let max_val = logits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let mut sum_exp = 0.0;
-    for &value in logits {
-        sum_exp += (value - max_val).exp();
-    }
+    let sum_exp = if crate::should_use_hardware_fma() && max_val.is_finite() {
+        crate::simd_exp::simd_poly_exp_shifted_fma_sum(logits, max_val)
+    } else {
+        let mut sum_exp = 0.0;
+        for &value in logits {
+            sum_exp += (value - max_val).exp();
+        }
+        sum_exp
+    };
     let log_val = sum_exp.ln();
     let mut s = 0.0;
     for (&value, &label) in logits.iter().zip(labels.iter()) {
@@ -2594,6 +2725,7 @@ pub fn softmax_cross_entropy_2d(
         return result;
     }
 
+    let policy = crate::current_precision_policy();
     let rows_per = rows.div_ceil(threads);
     std::thread::scope(|scope| {
         let mut out_rest: &mut [f64] = &mut result;
@@ -2606,13 +2738,15 @@ pub fn softmax_cross_entropy_2d(
             let labels_block = &labels[row0 * cols..(row0 + row_count) * cols];
             row0 += row_count;
             scope.spawn(move || {
-                for (k, out_slot) in out_block.iter_mut().enumerate() {
-                    let start = k * cols;
-                    *out_slot = softmax_cross_entropy_row(
-                        &logits_block[start..start + cols],
-                        &labels_block[start..start + cols],
-                    );
-                }
+                crate::with_precision_policy(policy, || {
+                    for (k, out_slot) in out_block.iter_mut().enumerate() {
+                        let start = k * cols;
+                        *out_slot = softmax_cross_entropy_row(
+                            &logits_block[start..start + cols],
+                            &labels_block[start..start + cols],
+                        );
+                    }
+                });
             });
         }
     });
@@ -3805,5 +3939,67 @@ mod tests {
         bench("threaded", &|| {
             std::hint::black_box(gelu(&x));
         });
+    }
+
+    #[test]
+    fn nn_hardware_fma_accelerated_matches_portable_within_tolerance() {
+        let rows = 32usize;
+        let cols = 131usize;
+        let x: Vec<f64> = (0..rows * cols)
+            .map(|i| ((i as f64) * 0.17).sin() * 12.0 - 1.5)
+            .collect();
+        let b: Vec<f64> = (0..rows * cols)
+            .map(|i| ((i as f64) * 0.29).cos() * 3.0)
+            .collect();
+
+        let (sm_port, sm2_port, lsm_port, lsm2_port, lse_port, sig_port, silu_port, swiglu_port) =
+            crate::with_precision_policy(crate::PrecisionPolicy::BitExactPortable, || {
+                (
+                    softmax(&x),
+                    softmax_2d(&x, rows, cols),
+                    log_softmax(&x),
+                    log_softmax_2d(&x, rows, cols),
+                    logsumexp(&x),
+                    sigmoid(&x),
+                    silu(&x),
+                    swiglu(&x, &b),
+                )
+            });
+
+        let (sm_fma, sm2_fma, lsm_fma, lsm2_fma, lse_fma, sig_fma, silu_fma, swiglu_fma) =
+            crate::with_precision_policy(crate::PrecisionPolicy::HardwareFmaAccelerated, || {
+                (
+                    softmax(&x),
+                    softmax_2d(&x, rows, cols),
+                    log_softmax(&x),
+                    log_softmax_2d(&x, rows, cols),
+                    logsumexp(&x),
+                    sigmoid(&x),
+                    silu(&x),
+                    swiglu(&x, &b),
+                )
+            });
+
+        assert!(
+            (lse_port - lse_fma).abs() < 1e-12,
+            "logsumexp diverged: {lse_port} vs {lse_fma}"
+        );
+        for (label, p, f) in [
+            ("softmax", &sm_port, &sm_fma),
+            ("softmax_2d", &sm2_port, &sm2_fma),
+            ("log_softmax", &lsm_port, &lsm_fma),
+            ("log_softmax_2d", &lsm2_port, &lsm2_fma),
+            ("sigmoid", &sig_port, &sig_fma),
+            ("silu", &silu_port, &silu_fma),
+            ("swiglu", &swiglu_port, &swiglu_fma),
+        ] {
+            assert_eq!(p.len(), f.len());
+            for (idx, (&pv, &fv)) in p.iter().zip(f.iter()).enumerate() {
+                assert!(
+                    (pv - fv).abs() < 1e-12,
+                    "{label}[{idx}] diverged: {pv} vs {fv}"
+                );
+            }
+        }
     }
 }

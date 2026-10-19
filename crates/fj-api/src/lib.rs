@@ -9,8 +9,10 @@ pub mod transforms;
 
 pub use errors::ApiError;
 pub use fj_ad::{
-    AdError, JvpResult, clear_custom_derivative_rules, grad_jaxpr_with_cotangent,
-    register_custom_jaxpr_jvp, register_custom_jaxpr_vjp, register_custom_jvp, register_custom_vjp,
+    AdError, JvpResult, LinearizedTape, VjpTape, build_grad_jaxpr, build_jvp_jaxpr,
+    build_value_and_grad_jaxpr, clear_custom_derivative_rules, grad_jaxpr_with_cotangent,
+    grad_to_jaxpr, jvp_to_jaxpr, linearize_jaxpr, record_vjp_tape, register_custom_jaxpr_jvp,
+    register_custom_jaxpr_vjp, register_custom_jvp, register_custom_vjp,
 };
 pub use fj_core::{
     DType, PrecisionPolicy, Shape, TransformCompositionProof, Value, current_precision_policy,
@@ -26,16 +28,18 @@ pub use fj_runtime::{AdmissionRejection, CancellationToken, ExecutionRegime, Mem
 pub use transforms::{
     CheckpointWrapped, ComposedTransform, CustomJvpWrapped, CustomVjpWrapped, GradWrapped,
     HessianWrapped, JacobianWrapped, JitWrapped, LinearizeResult, LinearizedFunction, PmapWrapped,
-    TransposedLinearFunction, ValueAndGradWrapped, VmapWrapped,
+    TransposedLinearFunction, ValueAndGradWrapped, VjpPullback, VjpResult, VmapWrapped,
 };
 pub use transforms::{
-    ShapedArray, checkpoint, compose, custom_jvp, custom_vjp, eval_shape, eval_shape_avals, grad,
-    hessian, jacobian, jit, linear_transpose, linearize, pmap, value_and_grad, vmap,
+    ShapedArray, checkpoint, compose, custom_jvp, custom_vjp, eval_shape, eval_shape_avals,
+    eval_shape_fn, grad, grad_fn, hessian, hessian_fn, jacobian, jacobian_fn, jit, jit_fn, jvp,
+    linear_transpose, linearize, pmap, trace_jaxpr_for_values, value_and_grad, value_and_grad_fn,
+    vjp, vmap, vmap_fn,
 };
 
-// Re-export make_jaxpr and control-flow tracing API from fj-trace
+// Re-export make_jaxpr, ClosedJaxpr, and control-flow tracing API from fj-trace
 pub use fj_trace::{
-    TracerRef, make_jaxpr, make_jaxpr_fallible, trace_cond, trace_scan, trace_switch,
+    ClosedJaxpr, TracerRef, make_jaxpr, make_jaxpr_fallible, trace_cond, trace_scan, trace_switch,
     trace_while_loop,
 };
 
@@ -2695,6 +2699,146 @@ mod tests {
         );
 
         reset_dispatch_governance();
+    }
+
+    #[test]
+    fn wave9_vjp_jvp_and_symbolic_ad_jaxpr_work_end_to_end() {
+        let jaxpr = build_program(ProgramSpec::Square);
+        let jvp_res = jvp(&jaxpr, &[Value::scalar_f64(3.0)], &[Value::scalar_f64(2.0)])
+            .expect("top-level jvp should succeed");
+        assert_eq!(jvp_res.primals, vec![Value::scalar_f64(9.0)]);
+        assert_eq!(jvp_res.tangents, vec![Value::scalar_f64(12.0)]);
+
+        let vjp_res = vjp(jaxpr.clone(), vec![Value::scalar_f64(3.0)])
+            .expect("top-level vjp should record tape once");
+        assert_eq!(vjp_res.primal_outputs, vec![Value::scalar_f64(9.0)]);
+        assert_eq!(
+            vjp_res
+                .pullback
+                .call(Value::scalar_f64(1.0))
+                .expect("pullback(1.0)"),
+            vec![Value::scalar_f64(6.0)]
+        );
+        assert_eq!(
+            vjp_res
+                .pullback
+                .call(Value::scalar_f64(2.5))
+                .expect("pullback(2.5)"),
+            vec![Value::scalar_f64(15.0)]
+        );
+
+        let sym_jvp = jvp_to_jaxpr(&jaxpr).expect("jvp_to_jaxpr should succeed");
+        let sym_jvp_out = jit(sym_jvp)
+            .call(vec![Value::scalar_f64(3.0), Value::scalar_f64(2.0)])
+            .expect("jit(jvp_to_jaxpr) should succeed");
+        assert_eq!(
+            sym_jvp_out,
+            vec![Value::scalar_f64(9.0), Value::scalar_f64(12.0)]
+        );
+
+        let sym_grad = grad_to_jaxpr(&jaxpr).expect("grad_to_jaxpr should succeed");
+        let sym_grad_out = jit(sym_grad)
+            .call(vec![Value::scalar_f64(3.0)])
+            .expect("jit(grad_to_jaxpr) should succeed");
+        assert_eq!(sym_grad_out, vec![Value::scalar_f64(6.0)]);
+    }
+
+    #[test]
+    fn wave9_jit_compile_option_builders_wire_into_dispatch() {
+        let jaxpr = build_program(ProgramSpec::Add2);
+        let wrapped = jit(jaxpr.clone())
+            .with_egraph_optimization(true)
+            .with_wave_parallel(true);
+        let opts = wrapped.compile_options();
+        assert_eq!(
+            opts.get("egraph_optimize").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(opts.get("wave_parallel").map(String::as_str), Some("true"));
+
+        let out = wrapped
+            .call(vec![Value::scalar_f64(4.0), Value::scalar_f64(5.0)])
+            .expect("jit with egraph + wave_parallel options should succeed");
+        assert_eq!(out, vec![Value::scalar_f64(9.0)]);
+
+        let over_limit = jit(jaxpr).with_max_equation_count(0);
+        let err = over_limit
+            .call(vec![Value::scalar_f64(4.0), Value::scalar_f64(5.0)])
+            .expect_err("max_equation_count=0 must reject execution");
+        assert!(
+            err.to_string().contains("exceeds budget"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn wave9_closed_jaxpr_into_executable_and_closure_transforms_work() {
+        // 1. ClosedJaxpr with captured tensor const_values lowered via into_executable_jaxpr
+        let closed = make_jaxpr_fallible(
+            |xs| {
+                let c = TracerRef::constant(Value::vector_f64(&[10.0, 20.0, 30.0]).unwrap())?;
+                Ok(vec![xs[0].add_op(&c)?.reduce_sum(None)?])
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::vector(3),
+            }],
+        )
+        .expect("trace with tensor constant should succeed");
+        assert_eq!(closed.const_values.len(), 1);
+        let exec_jaxpr = closed.into_executable_jaxpr();
+        assert!(exec_jaxpr.constvars.is_empty());
+
+        let x = Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap();
+        let (vals, grads) = value_and_grad(exec_jaxpr)
+            .call(vec![x.clone()])
+            .expect("value_and_grad on lowered ClosedJaxpr should succeed");
+        assert_eq!(vals, vec![Value::scalar_f64(66.0)]);
+        assert_eq!(grads, vec![Value::vector_f64(&[1.0, 1.0, 1.0]).unwrap()]);
+
+        // 2. Closure-tracing transform wrappers (jit_fn, grad_fn, value_and_grad_fn, vmap_fn, jacobian_fn, hessian_fn, eval_shape_fn)
+        let jit_out = jit_fn(|xs| Ok(vec![xs[0].square()?]), vec![Value::scalar_f64(5.0)])
+            .expect("jit_fn should succeed");
+        assert_eq!(jit_out, vec![Value::scalar_f64(25.0)]);
+
+        let grad_out = grad_fn(|xs| Ok(vec![xs[0].square()?]), vec![Value::scalar_f64(5.0)])
+            .expect("grad_fn should succeed");
+        assert_eq!(grad_out, vec![Value::scalar_f64(10.0)]);
+
+        let (vg_v, vg_g) =
+            value_and_grad_fn(|xs| Ok(vec![xs[0].square()?]), vec![Value::scalar_f64(4.0)])
+                .expect("value_and_grad_fn should succeed");
+        assert_eq!(vg_v, vec![Value::scalar_f64(16.0)]);
+        assert_eq!(vg_g, vec![Value::scalar_f64(8.0)]);
+
+        let vmap_out =
+            vmap_fn(|xs| Ok(vec![xs[0].square()?]), vec![x]).expect("vmap_fn should succeed");
+        assert_eq!(vmap_out, vec![Value::vector_f64(&[1.0, 4.0, 9.0]).unwrap()]);
+
+        let jac_out = jacobian_fn(|xs| Ok(vec![xs[0].square()?]), vec![Value::scalar_f64(3.0)])
+            .expect("jacobian_fn should succeed");
+        assert_eq!(
+            jac_out.as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![6.0]
+        );
+
+        let hess_out = hessian_fn(|xs| Ok(vec![xs[0].square()?]), vec![Value::scalar_f64(3.0)])
+            .expect("hessian_fn should succeed");
+        assert_eq!(
+            hess_out.as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![2.0]
+        );
+
+        let shapes = eval_shape_fn(
+            |xs| Ok(vec![xs[0].reduce_sum(Some(&[1]))?]),
+            &[ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![4, 8] },
+            }],
+        )
+        .expect("eval_shape_fn should succeed");
+        assert_eq!(shapes.len(), 1);
+        assert_eq!(shapes[0].shape.dims, vec![4]);
     }
 
     mod proptest_tests {
