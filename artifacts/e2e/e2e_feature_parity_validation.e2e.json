@@ -1,6 +1,6 @@
 {
   "scenario": "e2e_feature_parity_doc_validation",
-  "generated_at_unix_ms": 1772498374369,
+  "generated_at_unix_ms": 1792431476112,
   "checks": [
     {
       "feature": "matrix",
@@ -17,86 +17,212 @@
       "pass": true
     },
     {
-      "feature": "Primitive semantics (implemented subset)",
-      "claimed_status": "87",
+      "feature": "Primitive semantics (162 canonical variants)",
+      "claimed_status": "162",
       "test_evidence": "test_feature_parity_all_primitives_listed",
-      "match": true,
-      "pass": true
+      "match": false,
+      "pass": false
     },
     {
-      "feature": "`jit` transform semantics (current fixture families)",
+      "feature": "`jit` transform semantics",
       "claimed_status": "row_present",
       "test_evidence": "test_feature_parity_all_transforms_listed",
       "match": true,
       "pass": true
     },
     {
-      "feature": "`grad` transform semantics (current fixture families)",
+      "feature": "`grad` transform semantics",
       "claimed_status": "row_present",
       "test_evidence": "test_feature_parity_all_transforms_listed",
       "match": true,
       "pass": true
     },
     {
-      "feature": "`vmap` transform semantics (current fixture families)",
+      "feature": "`vmap` transform semantics",
       "claimed_status": "row_present",
       "test_evidence": "test_feature_parity_all_transforms_listed",
       "match": true,
       "pass": true
     },
     {
-      "feature": "Primitive semantics (full V1-scoped surface)",
-      "claimed_status": "status != parity_green",
-      "test_evidence": "test_feature_parity_no_false_claims",
+      "feature": "Canonical IR + TTL model",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
       "match": true,
       "pass": true
     },
     {
-      "feature": "Conformance harness + transform bundle runner (V1 acceptance scope)",
-      "claimed_status": "status != parity_green",
-      "test_evidence": "test_feature_parity_no_false_claims",
+      "feature": "Primitive semantics (162 canonical variants)",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
       "match": true,
       "pass": true
+    },
+    {
+      "feature": "Interpreter path over canonical IR",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "Dispatch path + transform wrappers (`jit`/`grad`/`vmap`)",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "Cache-key determinism + strict/hardened split",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "Cross-crate error taxonomy",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "Security/adversarial gates",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "Fresh-clone onboarding command gates",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "Decision/evidence ledger foundation",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "Conformance harness + transform bundle runner",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "Legacy fixture capture automation",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "`jit` transform semantics",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "`grad` transform semantics",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "`vmap` transform semantics",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "RNG implementation (ThreeFry + samplers)",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": false,
+      "pass": false
     },
     {
       "feature": "RNG determinism vs JAX oracle",
-      "claimed_status": "status != parity_green",
-      "test_evidence": "test_feature_parity_no_false_claims",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": false,
+      "pass": false
+    },
+    {
+      "feature": "RaptorQ sidecar durability pipeline",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
       "match": true,
       "pass": true
     },
     {
-      "feature": "DType system expansion (BF16/F16/U32/U64 and promotion rules)",
-      "claimed_status": "status != parity_green",
-      "test_evidence": "test_feature_parity_no_false_claims",
+      "feature": "DType system (11 types + promotion rules)",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
       "match": true,
       "pass": true
     },
     {
-      "feature": "Vmap batching completeness (`in_axes`/`out_axes`, broader primitive surface)",
-      "claimed_status": "status != parity_green",
-      "test_evidence": "test_feature_parity_no_false_claims",
+      "feature": "AD completeness",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
       "match": true,
       "pass": true
     },
     {
-      "feature": "AD completeness (custom rules, remaining VJP/JVP parity gaps)",
-      "claimed_status": "status != parity_green",
-      "test_evidence": "test_feature_parity_no_false_claims",
+      "feature": "Numerical stability + platform determinism",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
       "match": true,
       "pass": true
     },
     {
-      "feature": "Control flow completion (`while`/`scan`/`fori` + transform interactions)",
-      "claimed_status": "status != parity_green",
-      "test_evidence": "test_feature_parity_no_false_claims",
+      "feature": "Control flow (`cond`/`scan`/`while`/`fori_loop`/`switch`)",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
       "match": true,
       "pass": true
     },
     {
-      "feature": "Special/missing primitive backlog (beyond current subset)",
-      "claimed_status": "status != parity_green",
-      "test_evidence": "test_feature_parity_no_false_claims",
+      "feature": "Python bindings (`fj-py`)",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "Tracing from user code + nested transform tracing",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "E-graph optimization pipeline",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "Special functions + linear algebra + FFT",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
+      "match": true,
+      "pass": true
+    },
+    {
+      "feature": "CPU parallel backend",
+      "claimed_status": "all_cited_paths_exist",
+      "test_evidence": "test_feature_parity_evidence_paths_exist",
       "match": true,
       "pass": true
     }

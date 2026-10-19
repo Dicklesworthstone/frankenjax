@@ -108,9 +108,9 @@ extract_feature_parity_claims() {
         claim_id="claim_fp_$(echo "$feature" | tr '[:upper:]' '[:lower:]' | tr ' ' '_' | tr -cd 'a-z0-9_' | head -c 40)"
 
         # Determine status color
-        if [[ "$status" == "parity_green" ]]; then
+        if [[ "$status" == "parity_green" || "$status" == "parity_green for V1 local scope" ]]; then
           color="green"
-          reason="FEATURE_PARITY status is parity_green with documented evidence"
+          reason="FEATURE_PARITY status is $status with documented evidence"
         elif [[ "$status" == "in_progress" ]]; then
           color="yellow"
           reason="FEATURE_PARITY status is in_progress"
@@ -131,7 +131,7 @@ extract_feature_parity_claims() {
               evidence_refs=$(echo "$evidence_refs" | jq --arg kind "test" --arg path "$test_path" --argjson exists "$exists" --arg replay "$replay" \
                 '. + [{"kind": $kind, "path": $path, "exists": $exists, "replay_command": (if $replay == "null" then null else $replay end), "last_verified_unix_ms": null}]')
             fi
-          done < <(echo "$evidence" | grep -oE 'crates/[^;`]+\.rs' | head -5 || true)
+          done < <(echo "$evidence" | grep -oE 'crates/[^;` ,)]+\.rs' | head -5 || true)
         fi
 
         # Check for artifact references
@@ -142,7 +142,7 @@ extract_feature_parity_claims() {
               evidence_refs=$(echo "$evidence_refs" | jq --arg kind "artifact" --arg path "$artifact_path" --argjson exists "$exists" \
                 '. + [{"kind": $kind, "path": $path, "exists": $exists, "replay_command": null, "last_verified_unix_ms": null}]')
             fi
-          done < <(echo "$evidence" | grep -oE 'artifacts/[^;`]+' | head -5 || true)
+          done < <(echo "$evidence" | grep -oE 'artifacts/[^;` ,)]+' | head -5 || true)
         fi
 
         # Check for E2E references
@@ -153,7 +153,7 @@ extract_feature_parity_claims() {
               evidence_refs=$(echo "$evidence_refs" | jq --arg kind "e2e_script" --arg path "$e2e_path" --argjson exists "$exists" \
                 '. + [{"kind": $kind, "path": $path, "exists": $exists, "replay_command": null, "last_verified_unix_ms": null}]')
             fi
-          done < <(echo "$evidence" | grep -oE 'artifacts/e2e/[^;`]+' | head -5 || true)
+          done < <(echo "$evidence" | grep -oE 'artifacts/e2e/[^;` ,)]+' | head -5 || true)
         fi
 
         # If no evidence found but status is green, mark as needing verification

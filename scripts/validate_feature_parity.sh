@@ -119,23 +119,31 @@ check(
 
 required_rows = [
     "Canonical IR + TTL model",
-    "Primitive semantics (implemented subset)",
-    "Primitive semantics (full V1-scoped surface)",
+    "Primitive semantics (162 canonical variants)",
     "Interpreter path over canonical IR",
     "Dispatch path + transform wrappers (`jit`/`grad`/`vmap`)",
     "Cache-key determinism + strict/hardened split",
+    "Cross-crate error taxonomy",
+    "Security/adversarial gates",
+    "Fresh-clone onboarding command gates",
     "Decision/evidence ledger foundation",
-    "Conformance harness + transform bundle runner (V1 acceptance scope)",
-    "`jit` transform semantics (current fixture families)",
-    "`grad` transform semantics (current fixture families)",
-    "`vmap` transform semantics (current fixture families)",
+    "Conformance harness + transform bundle runner",
+    "Legacy fixture capture automation",
+    "`jit` transform semantics",
+    "`grad` transform semantics",
+    "`vmap` transform semantics",
+    "RNG implementation (ThreeFry + samplers)",
     "RNG determinism vs JAX oracle",
-    "DType system expansion (BF16/F16/U32/U64 and promotion rules)",
-    "Vmap batching completeness (`in_axes`/`out_axes`, broader primitive surface)",
-    "AD completeness (custom rules, remaining VJP/JVP parity gaps)",
-    "Control flow completion (`while`/`scan`/`fori` + transform interactions)",
+    "RaptorQ sidecar durability pipeline",
+    "DType system (11 types + promotion rules)",
+    "AD completeness",
+    "Numerical stability + platform determinism",
+    "Control flow (`cond`/`scan`/`while`/`fori_loop`/`switch`)",
+    "Python bindings (`fj-py`)",
     "Tracing from user code + nested transform tracing",
-    "Special/missing primitive backlog (beyond current subset)",
+    "E-graph optimization pipeline",
+    "Special functions + linear algebra + FFT",
+    "CPU parallel backend",
 ]
 missing_rows = [name for name in required_rows if name not in lookup]
 check(
@@ -148,33 +156,33 @@ check(
 )
 
 primitive_count = count_primitives(core_path)
-subset_row = lookup.get("Primitive semantics (implemented subset)")
-if subset_row is None:
+prim_row = lookup.get("Primitive semantics (162 canonical variants)")
+if prim_row is None:
     check(
         checks,
         "test_feature_parity_all_primitives_listed",
-        "Primitive semantics (implemented subset)",
+        "Primitive semantics (162 canonical variants)",
         "row_present",
         "missing",
         False,
     )
 else:
-    evidence = subset_row["current_evidence"]
+    evidence = prim_row["current_evidence"]
     match = re.search(r"(\d+)\s+ops", evidence)
     parsed_count = int(match.group(1)) if match else None
     check(
         checks,
         "test_feature_parity_all_primitives_listed",
-        "Primitive semantics (implemented subset)",
+        "Primitive semantics (162 canonical variants)",
         str(parsed_count) if parsed_count is not None else "missing_count",
         str(primitive_count),
         parsed_count == primitive_count,
     )
 
 for transform_feature in [
-    "`jit` transform semantics (current fixture families)",
-    "`grad` transform semantics (current fixture families)",
-    "`vmap` transform semantics (current fixture families)",
+    "`jit` transform semantics",
+    "`grad` transform semantics",
+    "`vmap` transform semantics",
 ]:
     check(
         checks,
@@ -185,27 +193,18 @@ for transform_feature in [
         transform_feature in lookup,
     )
 
-must_not_be_green = [
-    "Primitive semantics (full V1-scoped surface)",
-    "Conformance harness + transform bundle runner (V1 acceptance scope)",
-    "RNG determinism vs JAX oracle",
-    "DType system expansion (BF16/F16/U32/U64 and promotion rules)",
-    "Vmap batching completeness (`in_axes`/`out_axes`, broader primitive surface)",
-    "AD completeness (custom rules, remaining VJP/JVP parity gaps)",
-    "Control flow completion (`while`/`scan`/`fori` + transform interactions)",
-    "Special/missing primitive backlog (beyond current subset)",
-]
-for feature in must_not_be_green:
-    row = lookup.get(feature)
-    ok = row is not None and row["status"] != "parity_green"
-    actual = "missing" if row is None else row["status"]
+repo_root = feature_path.parent.parent.parent
+for row in rows:
+    evidence = row["current_evidence"]
+    cited_paths = re.findall(r"`((?:crates|artifacts)/[^`]+)`", evidence)
+    missing_paths = [p for p in cited_paths if not (repo_root / p).exists()]
     check(
         checks,
-        "test_feature_parity_no_false_claims",
-        feature,
-        "status != parity_green",
-        actual,
-        ok,
+        "test_feature_parity_evidence_paths_exist",
+        row["feature"],
+        "all_cited_paths_exist",
+        "ok" if not missing_paths else ",".join(missing_paths),
+        bool(cited_paths) and not missing_paths,
     )
 
 all_pass = all(bool(c["pass"]) for c in checks)
