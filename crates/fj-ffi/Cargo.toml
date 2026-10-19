@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "FFI call interface for FrankenJAX — the ONLY crate permitted to use unsafe code"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
 smallvec = { workspace = true }

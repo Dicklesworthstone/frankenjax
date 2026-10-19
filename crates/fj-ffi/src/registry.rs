@@ -130,6 +130,52 @@ impl FfiRegistry {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Register or replace an FFI target by name.
+    pub fn register_or_replace(&self, name: &str, fn_ptr: FfiFnPtr) -> Result<(), FfiError> {
+        if (fn_ptr as usize) == 0 {
+            return Err(FfiError::NullPointer {
+                target_name: name.to_string(),
+            });
+        }
+
+        let mut targets = self.targets_write();
+        targets.insert(
+            name.to_string(),
+            FfiTarget {
+                name: name.to_string(),
+                fn_ptr,
+            },
+        );
+        Ok(())
+    }
+
+    /// Clear all registered targets from this registry.
+    pub fn clear(&self) {
+        self.targets_write().clear();
+    }
+}
+
+static GLOBAL_FFI_REGISTRY: std::sync::OnceLock<FfiRegistry> = std::sync::OnceLock::new();
+
+/// Access the process-wide global `FfiRegistry` used by default when evaluating
+/// `Primitive::CustomCall` equations without a scoped override.
+pub fn global_ffi_registry() -> &'static FfiRegistry {
+    GLOBAL_FFI_REGISTRY.get_or_init(FfiRegistry::new)
+}
+
+/// Register an FFI target in the process-wide global `FfiRegistry`.
+pub fn register_global_ffi_target(name: &str, fn_ptr: FfiFnPtr) -> Result<(), FfiError> {
+    global_ffi_registry().register(name, fn_ptr)
+}
+
+impl Clone for FfiRegistry {
+    fn clone(&self) -> Self {
+        let targets = self.targets_read().clone();
+        Self {
+            targets: RwLock::new(targets),
+        }
+    }
 }
 
 impl Default for FfiRegistry {

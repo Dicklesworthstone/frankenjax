@@ -26,3 +26,9 @@ rustflags = ["-Z", "threads=4", "-C", "target-feature=+avx2"]
 [build]
 # Parallel rustc front-end (nightly). Added by build-settings sweep.
 rustflags = ["-Z", "threads=4"]
+
+[env]
+# Allow PyO3 0.23 to build and run against newer Python minor versions (e.g. Python 3.14)
+# via the stable CPython ABI3 forward-compatibility contract.
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY = "1"
+

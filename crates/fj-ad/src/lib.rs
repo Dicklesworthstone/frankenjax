@@ -6242,12 +6242,13 @@ pub fn vjp(
         // ReduceWindow VJP: scatter gradient back over the window positions.
         Primitive::ReduceWindow => vjp_reduce_window(inputs, g, params),
 
-        // Collective operations (pmap-only, not differentiable outside pmap context)
+        // Collective operations (pmap-only) and foreign custom calls
         Primitive::Psum
         | Primitive::Pmean
         | Primitive::AllGather
         | Primitive::AllToAll
-        | Primitive::AxisIndex => Err(AdError::UnsupportedPrimitive(primitive)),
+        | Primitive::AxisIndex
+        | Primitive::CustomCall => Err(AdError::UnsupportedPrimitive(primitive)),
 
         // Cbrt: d/dx cbrt(x) = 1 / (3 * cbrt(x)^2)
         Primitive::Cbrt => {
@@ -12051,12 +12052,13 @@ fn jvp_rule(
             }
         }
 
-        // Collective operations (pmap-only, not differentiable outside pmap context)
+        // Collective operations (pmap-only) and foreign custom calls
         Primitive::Psum
         | Primitive::Pmean
         | Primitive::AllGather
         | Primitive::AllToAll
-        | Primitive::AxisIndex => Err(AdError::UnsupportedPrimitive(primitive)),
+        | Primitive::AxisIndex
+        | Primitive::CustomCall => Err(AdError::UnsupportedPrimitive(primitive)),
 
         // Cbrt JVP: d cbrt(x) = tangent / (3 * cbrt(x)^2)
         Primitive::Cbrt => {

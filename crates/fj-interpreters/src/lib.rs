@@ -1040,20 +1040,246 @@ pub fn eval_equation_outputs(
     eval_equation_outputs_from_resolved(equation, &resolved)
 }
 
-/// Evaluate `equation` from its already-resolved input values.
-///
-/// This is the part of [`eval_equation_outputs`] that does not touch the
-/// variable environment: given the equation's inputs already resolved to
-/// `Value`s (in atom order), it dispatches to the multi-output primitive
-/// evaluator or the control-flow sub-jaxpr evaluators and validates output
-/// arity. Splitting it out lets both the hash-map environment and the flat
+thread_local! {
+    static SCOPED_FFI_REGISTRY: std::cell::RefCell<Option<fj_ffi::FfiRegistry>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+struct ScopedFfiRegistryGuard {
+    previous: Option<fj_ffi::FfiRegistry>,
+}
+
+impl Drop for ScopedFfiRegistryGuard {
+    fn drop(&mut self) {
+        let prev = self.previous.take();
+        SCOPED_FFI_REGISTRY.with(|slot| {
+            *slot.borrow_mut() = prev;
+        });
+    }
+}
+
+/// Execute `f` with `registry` installed as the thread-local `FfiRegistry` for
+/// `Primitive::CustomCall` evaluation.
+pub fn with_ffi_registry<R>(registry: &fj_ffi::FfiRegistry, f: impl FnOnce() -> R) -> R {
+    let previous = SCOPED_FFI_REGISTRY.with(|slot| slot.borrow_mut().replace(registry.clone()));
+    let _guard = ScopedFfiRegistryGuard { previous };
+    f()
+}
+
+/// Evaluate a `Jaxpr` with an explicit `FfiRegistry` context for `Primitive::CustomCall` equations.
+pub fn eval_jaxpr_with_ffi(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    registry: &fj_ffi::FfiRegistry,
+) -> Result<Vec<Value>, InterpreterError> {
+    with_ffi_registry(registry, || eval_jaxpr(jaxpr, args))
+}
+
+fn parse_custom_call_dtype(token: &str) -> Option<DType> {
+    match token.trim().to_ascii_lowercase().as_str() {
+        "f64" | "float64" => Some(DType::F64),
+        "f32" | "float32" => Some(DType::F32),
+        "f16" | "float16" => Some(DType::F16),
+        "bf16" | "bfloat16" => Some(DType::BF16),
+        "i64" | "int64" => Some(DType::I64),
+        "i32" | "int32" => Some(DType::I32),
+        "u64" | "uint64" => Some(DType::U64),
+        "u32" | "uint32" => Some(DType::U32),
+        "bool" => Some(DType::Bool),
+        "complex64" | "c64" => Some(DType::Complex64),
+        "complex128" | "c128" => Some(DType::Complex128),
+        _ => None,
+    }
+}
+
+fn parse_custom_call_shape(spec: &str) -> Result<Vec<usize>, InterpreterError> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        let scalar_dims = Vec::new();
+        return Ok(scalar_dims);
+    }
+    trimmed
+        .split(',')
+        .map(|dim_str| {
+            dim_str.trim().parse::<usize>().map_err(|_| {
+                InterpreterError::Primitive(EvalError::Unsupported {
+                    primitive: Primitive::CustomCall,
+                    detail: format!("invalid custom_call output shape dimension {dim_str:?}"),
+                })
+            })
+        })
+        .collect()
+}
+
+fn evaluate_custom_call_equation(
+    equation: &Equation,
+    resolved: &[Value],
+) -> Result<Vec<Value>, InterpreterError> {
+    let target = equation
+        .params
+        .get("target")
+        .or_else(|| equation.params.get("call_target_name"))
+        .map(String::as_str)
+        .unwrap_or("")
+        .trim();
+    if target.is_empty() {
+        return Err(InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::CustomCall,
+            detail:
+                "custom_call requires non-empty params[\"target\"] or params[\"call_target_name\"]"
+                    .to_owned(),
+        }));
+    }
+
+    let mut input_buffers = Vec::with_capacity(resolved.len());
+    for value in resolved {
+        let buf = fj_ffi::value_to_buffer(value).map_err(|err| {
+            InterpreterError::Primitive(EvalError::Unsupported {
+                primitive: Primitive::CustomCall,
+                detail: format!("custom_call input marshalling failed: {err}"),
+            })
+        })?;
+        input_buffers.push(buf);
+    }
+
+    let out_count = equation.outputs.len();
+    let explicit_dtypes: Option<Vec<DType>> = if let Some(dtypes_str) = equation
+        .params
+        .get("out_dtypes")
+        .or_else(|| equation.params.get("out_dtype"))
+    {
+        let parsed: Result<Vec<DType>, InterpreterError> = dtypes_str
+            .split(';')
+            .flat_map(|part| part.split(','))
+            .filter(|tok| !tok.trim().is_empty())
+            .map(|tok| {
+                parse_custom_call_dtype(tok).ok_or_else(|| {
+                    InterpreterError::Primitive(EvalError::Unsupported {
+                        primitive: Primitive::CustomCall,
+                        detail: format!("invalid custom_call output dtype {tok:?}"),
+                    })
+                })
+            })
+            .collect();
+        Some(parsed?)
+    } else {
+        None
+    };
+
+    let explicit_shapes: Option<Vec<Vec<usize>>> = if let Some(shapes_str) = equation
+        .params
+        .get("out_shapes")
+        .or_else(|| equation.params.get("out_shape"))
+    {
+        let parts: Vec<&str> = if shapes_str.contains(';') {
+            shapes_str.split(';').collect()
+        } else {
+            vec![shapes_str.as_str()]
+        };
+        let parsed: Result<Vec<Vec<usize>>, InterpreterError> =
+            parts.into_iter().map(parse_custom_call_shape).collect();
+        Some(parsed?)
+    } else {
+        None
+    };
+
+    let mut output_buffers = Vec::with_capacity(out_count);
+    for out_idx in 0..out_count {
+        let out_dtype = if let Some(dtypes) = &explicit_dtypes {
+            dtypes
+                .get(out_idx)
+                .or_else(|| dtypes.first())
+                .copied()
+                .ok_or_else(|| {
+                    InterpreterError::Primitive(EvalError::Unsupported {
+                        primitive: Primitive::CustomCall,
+                        detail: "custom_call out_dtypes parameter is empty".to_owned(),
+                    })
+                })?
+        } else if let Some(val) = resolved.get(out_idx).or_else(|| resolved.first()) {
+            val.dtype()
+        } else {
+            return Err(InterpreterError::Primitive(EvalError::Unsupported {
+                primitive: Primitive::CustomCall,
+                detail: "zero-input custom_call requires params[\"out_dtype\"] or params[\"out_dtypes\"]"
+                    .to_owned(),
+            }));
+        };
+
+        let out_shape = if let Some(shapes) = &explicit_shapes {
+            shapes
+                .get(out_idx)
+                .or_else(|| shapes.first())
+                .cloned()
+                .unwrap_or_default()
+        } else if let Some(val) = resolved.get(out_idx).or_else(|| resolved.first()) {
+            match val {
+                Value::Scalar(_) => Vec::new(),
+                Value::Tensor(tensor) => tensor.shape.dims.iter().map(|&d| d as usize).collect(),
+            }
+        } else {
+            Vec::new()
+        };
+
+        let zeroed = fj_ffi::FfiBuffer::zeroed(out_shape, out_dtype).map_err(|err| {
+            InterpreterError::Primitive(EvalError::Unsupported {
+                primitive: Primitive::CustomCall,
+                detail: format!("custom_call output buffer allocation failed: {err}"),
+            })
+        })?;
+        output_buffers.push(zeroed);
+    }
+
+    let call = fj_ffi::FfiCall::new(target);
+    let invoke_res = SCOPED_FFI_REGISTRY.with(|slot| {
+        if let Some(scoped_reg) = slot.borrow().as_ref() {
+            call.invoke(scoped_reg, &input_buffers, &mut output_buffers)
+        } else {
+            call.invoke(
+                fj_ffi::global_ffi_registry(),
+                &input_buffers,
+                &mut output_buffers,
+            )
+        }
+    });
+    invoke_res.map_err(|err| {
+        InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::CustomCall,
+            detail: format!("custom_call dispatch failed: {err}"),
+        })
+    })?;
+
+    let mut outputs = Vec::with_capacity(output_buffers.len());
+    for buf in &output_buffers {
+        let val = fj_ffi::buffer_to_value(buf).map_err(|err| {
+            InterpreterError::Primitive(EvalError::Unsupported {
+                primitive: Primitive::CustomCall,
+                detail: format!("custom_call output unmarshalling failed: {err}"),
+            })
+        })?;
+        outputs.push(val);
+    }
+    Ok(outputs)
+}
+
+/// Core equation evaluator over already-resolved `Value` inputs.
+/// Both the hash-map environment and the dense
 /// slot-array environment share identical evaluation/dispatch semantics —
 /// they differ only in how inputs are resolved.
 fn eval_equation_outputs_from_resolved(
     equation: &Equation,
     resolved: &[Value],
 ) -> Result<Vec<Value>, InterpreterError> {
-    let outputs = if equation.sub_jaxprs.is_empty() {
+    let outputs = if equation.primitive == Primitive::CustomCall {
+        if !equation.sub_jaxprs.is_empty() {
+            return Err(InterpreterError::Primitive(EvalError::Unsupported {
+                primitive: Primitive::CustomCall,
+                detail: "sub_jaxprs are only valid for cond, scan, while, or switch; custom_call received sub_jaxprs"
+                    .to_owned(),
+            }));
+        }
+        evaluate_custom_call_equation(equation, resolved)?
+    } else if equation.sub_jaxprs.is_empty() {
         eval_primitive_multi(equation.primitive, resolved, &equation.params)?
     } else {
         match equation.primitive {
@@ -1084,7 +1310,8 @@ fn eval_equation_outputs_from_resolved(
 }
 
 /// True for the multi-output primitives whose `eval_primitive` (single-output)
-/// result would silently drop later outputs. The interpreter routes these
+/// result would silently drop later outputs, plus `Primitive::CustomCall` which
+/// routes through the FFI dispatcher. The interpreter routes these
 /// through the multi-output path; everything else can take the single-output
 /// fast path. Mirrors the list in [`eval_equation_single`].
 #[inline]
@@ -1098,6 +1325,7 @@ fn is_multi_output_primitive(primitive: Primitive) -> bool {
             | Primitive::TopK
             | Primitive::Slogdet
             | Primitive::Eig
+            | Primitive::CustomCall
     )
 }
 
@@ -1109,23 +1337,14 @@ fn is_multi_output_primitive(primitive: Primitive) -> bool {
 /// `eval_primitive_multi` allocates (it returns `vec![eval_primitive(..)]` for
 /// every non-multi-output primitive). The result is bit-for-bit identical to
 /// `eval_equation_outputs(equation, env)?` followed by taking its single
-/// element. Multi-output primitives (Qr/Lu/Svd/Eigh/TopK/Slogdet/Eig) and any
+/// element. Multi-output primitives (Qr/Lu/Svd/Eigh/TopK/Slogdet/Eig/CustomCall) and any
 /// equation carrying sub-jaxprs delegate to the multi path so semantics and
 /// arity validation are unchanged.
 pub fn eval_equation_single(
     equation: &Equation,
     env: &FxHashMap<VarId, Value>,
 ) -> Result<Value, InterpreterError> {
-    let is_multi_output = matches!(
-        equation.primitive,
-        Primitive::Qr
-            | Primitive::Lu
-            | Primitive::Svd
-            | Primitive::Eigh
-            | Primitive::TopK
-            | Primitive::Slogdet
-            | Primitive::Eig
-    );
+    let is_multi_output = is_multi_output_primitive(equation.primitive);
     if !equation.sub_jaxprs.is_empty() || is_multi_output {
         let outputs = eval_equation_outputs(equation, env)?;
         if outputs.len() != 1 {
@@ -30594,5 +30813,47 @@ mod tests {
                 "bit-exact mismatch at index {idx}: fused={f} vs unfused={u}"
             );
         }
+    }
+
+    #[test]
+    fn custom_call_evaluates_registered_ffi_target_and_fails_closed_for_missing() {
+        let registry = fj_ffi::FfiRegistry::new();
+        registry
+            .register(
+                "scale_f64_3x_plus_1",
+                fj_ffi::fj_ffi_builtin_affine3_plus1_vec3_f64,
+            )
+            .unwrap();
+
+        let mut params = BTreeMap::new();
+        params.insert("target".to_owned(), "scale_f64_3x_plus_1".to_owned());
+        params.insert("out_dtype".to_owned(), "f64".to_owned());
+        params.insert("out_shape".to_owned(), "3".to_owned());
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::CustomCall,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params,
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let input = Value::vector_f64(&[2.0, 4.0, -1.0]).unwrap();
+        let outputs =
+            crate::eval_jaxpr_with_ffi(&jaxpr, std::slice::from_ref(&input), &registry).unwrap();
+        assert_eq!(
+            outputs[0].as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![7.0, 13.0, -2.0]
+        );
+
+        let empty_registry = fj_ffi::FfiRegistry::new();
+        let err = crate::eval_jaxpr_with_ffi(&jaxpr, std::slice::from_ref(&input), &empty_registry)
+            .expect_err("unregistered custom_call target must fail closed");
+        assert!(err.to_string().contains("not found"));
     }
 }

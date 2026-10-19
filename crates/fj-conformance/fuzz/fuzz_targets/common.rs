@@ -290,7 +290,8 @@ pub fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::ReduceWindow
         | Primitive::PopulationCount
         | Primitive::CountLeadingZeros
-        | Primitive::CountTrailingZeros => 1,
+        | Primitive::CountTrailingZeros
+        | Primitive::CustomCall => 1,
         // Nullary ops
         Primitive::Iota | Primitive::BroadcastedIota | Primitive::AxisIndex => 0,
         // Parameterized primitives with fixed or minimum input counts.

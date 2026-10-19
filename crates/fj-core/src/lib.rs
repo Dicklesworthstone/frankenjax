@@ -265,6 +265,8 @@ pub enum Primitive {
     PopulationCount,
     CountLeadingZeros,
     CountTrailingZeros,
+    // Foreign function interface custom call
+    CustomCall,
 }
 
 impl Primitive {
@@ -443,6 +445,9 @@ impl Primitive {
         Self::AxisIndex,
     ];
 
+    /// Foreign function interface primitives dispatched through `fj-ffi`.
+    pub const FFI_PRIMITIVES: &[Self] = &[Self::CustomCall];
+
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -608,6 +613,7 @@ impl Primitive {
             Self::PopulationCount => "population_count",
             Self::CountLeadingZeros => "count_leading_zeros",
             Self::CountTrailingZeros => "count_trailing_zeros",
+            Self::CustomCall => "custom_call",
         }
     }
 }

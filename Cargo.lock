@@ -917,6 +917,8 @@ dependencies = [
  "fj-ad",
  "fj-dispatch",
  "fj-interpreters",
+ "fj-ledger",
+ "fj-runtime",
  "fj-trace",
  "frankenjax-core",
  "frankenjax-lax",
@@ -1002,6 +1004,7 @@ dependencies = [
  "fj-backend-cpu",
  "fj-cache",
  "fj-egraph",
+ "fj-ffi",
  "fj-interpreters",
  "fj-ledger",
  "fj-runtime",
@@ -1044,6 +1047,7 @@ name = "fj-interpreters"
 version = "0.1.0"
 dependencies = [
  "criterion 0.8.2",
+ "fj-ffi",
  "fj-trace",
  "frankenjax-core",
  "frankenjax-lax",
@@ -1072,8 +1076,11 @@ version = "0.1.0"
 dependencies = [
  "fj-ad",
  "fj-api",
+ "fj-dispatch",
+ "fj-interpreters",
  "fj-trace",
  "frankenjax-core",
+ "frankenjax-lax",
  "pyo3",
 ]
 

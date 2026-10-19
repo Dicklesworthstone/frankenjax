@@ -16,6 +16,9 @@ extension-module = ["pyo3/extension-module"]
 [dependencies]
 pyo3 = { version = "0.23" }
 fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
+fj-lax = { package = "frankenjax-lax", version = "=0.1.0", path = "../fj-lax" }
+fj-interpreters = { path = "../fj-interpreters" }
+fj-dispatch = { path = "../fj-dispatch" }
 fj-api = { path = "../fj-api" }
 fj-trace = { path = "../fj-trace" }
 fj-ad = { path = "../fj-ad" }

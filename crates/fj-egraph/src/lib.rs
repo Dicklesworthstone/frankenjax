@@ -3839,6 +3839,8 @@ fn excluded_primitive_reason(primitive: Primitive) -> Option<ExclusionReason> {
         | Primitive::AllGather
         | Primitive::AllToAll
         | Primitive::AxisIndex => Some(ExclusionReason::Collective),
+        // FFI custom calls cross a foreign boundary and must not be algebraically rewritten.
+        Primitive::CustomCall => Some(ExclusionReason::ControlFlow),
         _ => None,
     }
 }

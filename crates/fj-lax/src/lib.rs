@@ -821,6 +821,12 @@ fn eval_primitive_inner(
         | Primitive::CountTrailingZeros => eval_bitwise_unary(primitive, inputs),
         // Windowed reduction (pooling)
         Primitive::ReduceWindow => eval_reduce_window(primitive, inputs, params),
+        // Foreign function interface custom call (dispatched via fj-interpreters / fj-ffi)
+        Primitive::CustomCall => Err(EvalError::Unsupported {
+            primitive,
+            detail: "custom_call requires an active FfiRegistry target in fj-interpreters or fj-dispatch"
+                .to_owned(),
+        }),
     }
 }
 

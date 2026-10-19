@@ -2554,6 +2554,59 @@ impl SimpleTraceContext {
                     shape: Shape { dims: out_dims },
                 }])
             }
+
+            Primitive::CustomCall => {
+                let target = params
+                    .get("target")
+                    .or_else(|| params.get("call_target_name"))
+                    .map(String::as_str)
+                    .unwrap_or("");
+                if target.trim().is_empty() {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: "custom_call requires non-empty params[\"target\"] or params[\"call_target_name\"]".to_owned(),
+                    });
+                }
+                let out_dtype = if let Some(dtype_str) = params.get("out_dtype") {
+                    parse_dtype_name(primitive, "out_dtype", dtype_str)?
+                } else if let Some(first) = inputs.first() {
+                    first.dtype
+                } else {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: "zero-input custom_call requires params[\"out_dtype\"]".to_owned(),
+                    });
+                };
+                let out_shape = if let Some(shape_str) = params.get("out_shape") {
+                    let trimmed = shape_str.trim();
+                    if trimmed.is_empty() {
+                        Shape::scalar()
+                    } else {
+                        let dims = trimmed
+                            .split(',')
+                            .map(|tok| {
+                                tok.trim().parse::<u32>().map_err(|_| {
+                                    TraceError::ShapeInferenceFailed {
+                                        primitive,
+                                        detail: format!(
+                                            "invalid custom_call out_shape dimension: {tok:?}"
+                                        ),
+                                    }
+                                })
+                            })
+                            .collect::<Result<Vec<u32>, TraceError>>()?;
+                        Shape { dims }
+                    }
+                } else if let Some(first) = inputs.first() {
+                    first.shape.clone()
+                } else {
+                    Shape::scalar()
+                };
+                Ok(vec![ShapedArray {
+                    dtype: out_dtype,
+                    shape: out_shape,
+                }])
+            }
         }
     }
 
@@ -5701,6 +5754,17 @@ impl TracerRef {
         }
         self.single_output_with_params(Primitive::Irfft, &[], params)
     }
+
+    /// Record an FFI custom call (`Primitive::CustomCall`) targeting `target`.
+    pub fn custom_call(
+        &self,
+        target: &str,
+        other_inputs: &[&TracerRef],
+        mut params: BTreeMap<String, String>,
+    ) -> Result<TracerRef, TraceError> {
+        params.insert("target".to_owned(), target.to_owned());
+        self.single_output_with_params(Primitive::CustomCall, other_inputs, params)
+    }
 }
 
 macro_rules! impl_tracer_unary_methods {
@@ -6092,9 +6156,10 @@ where
         frame.last_output_ids = output_ids;
     }
 
-    let ctx_inner = Rc::try_unwrap(ctx)
-        .map_err(|_| TraceError::CompositionViolation)?
-        .into_inner();
+    let ctx_inner = match Rc::try_unwrap(ctx) {
+        Ok(cell) => cell.into_inner(),
+        Err(rc) => rc.borrow().clone(),
+    };
 
     ctx_inner.finalize()
 }

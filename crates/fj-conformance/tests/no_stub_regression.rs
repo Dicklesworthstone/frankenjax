@@ -272,7 +272,11 @@ fn primitive_arity(primitive: Primitive) -> usize {
         Primitive::Scan => 2,
         Primitive::Switch => 3,
         Primitive::AssociativeScan => 2,
-        Primitive::Eig | Primitive::Solve | Primitive::Det | Primitive::Slogdet => 1,
+        Primitive::Eig
+        | Primitive::Solve
+        | Primitive::Det
+        | Primitive::Slogdet
+        | Primitive::CustomCall => 1,
     }
 }
 

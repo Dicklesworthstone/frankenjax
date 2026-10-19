@@ -418,8 +418,14 @@ fn parse_static_argnums(
     num_invars: usize,
 ) -> Result<Vec<usize>, DispatchError> {
     match opts.get("static_argnums") {
-        None => Ok(Vec::new()),
-        Some(raw) if raw.trim().is_empty() => Ok(Vec::new()),
+        None => {
+            let no_static_args = Vec::new();
+            Ok(no_static_args)
+        }
+        Some(raw) if raw.trim().is_empty() => {
+            let no_static_args = Vec::new();
+            Ok(no_static_args)
+        }
         Some(raw) => {
             let mut argnums = Vec::new();
             for part in raw.split(',') {
@@ -1170,6 +1176,19 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
         response.composition_proof = proof;
     }
     Ok(response)
+}
+
+/// Execute `dispatch` with an explicit `FfiRegistry` installed for `Primitive::CustomCall` equations.
+pub fn dispatch_with_ffi(
+    mut request: DispatchRequest,
+    registry: &fj_ffi::FfiRegistry,
+) -> Result<DispatchResponse, DispatchError> {
+    let mut targets = registry.registered_names();
+    targets.sort();
+    request
+        .compile_options
+        .insert("ffi_registered_targets".to_owned(), targets.join(","));
+    fj_interpreters::with_ffi_registry(registry, || dispatch(request))
 }
 
 pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse, DispatchError> {
@@ -6292,5 +6311,68 @@ mod tests {
         assert!(stats.is_calibrated);
         assert!(stats.calibration_size >= 5);
         assert!(stats.ece.is_finite());
+    }
+
+    #[test]
+    fn dispatch_with_ffi_executes_custom_call_and_rejects_unregistered_target() {
+        let registry = fj_ffi::FfiRegistry::new();
+        registry
+            .register(
+                "double_plus_5",
+                fj_ffi::fj_ffi_builtin_double_plus5_scalar_f64,
+            )
+            .unwrap();
+
+        let mut params = BTreeMap::new();
+        params.insert("target".to_owned(), "double_plus_5".to_owned());
+        params.insert("out_dtype".to_owned(), "f64".to_owned());
+        params.insert("out_shape".to_owned(), String::new());
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::CustomCall,
+                inputs: smallvec::smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec::smallvec![VarId(2)],
+                params,
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let mut ttl = TraceTransformLedger::new(jaxpr);
+        ttl.push_transform(Transform::Jit, "jit-custom-call".to_owned());
+
+        let response = super::dispatch_with_ffi(
+            DispatchRequest {
+                mode: CompatibilityMode::Strict,
+                ledger: ttl.clone(),
+                args: vec![Value::scalar_f64(6.0)],
+                backend: "cpu".to_owned(),
+                compile_options: BTreeMap::new(),
+                custom_hook: None,
+                unknown_incompatible_features: vec![],
+            },
+            &registry,
+        )
+        .expect("custom_call dispatch with registered target should succeed");
+        assert_eq!(response.outputs, vec![Value::scalar_f64(17.0)]);
+
+        let empty_registry = fj_ffi::FfiRegistry::new();
+        let err = super::dispatch_with_ffi(
+            DispatchRequest {
+                mode: CompatibilityMode::Strict,
+                ledger: ttl,
+                args: vec![Value::scalar_f64(6.0)],
+                backend: "cpu".to_owned(),
+                compile_options: BTreeMap::new(),
+                custom_hook: None,
+                unknown_incompatible_features: vec![],
+            },
+            &empty_registry,
+        )
+        .expect_err("unregistered custom_call target must fail closed");
+        assert!(err.to_string().contains("not found"));
     }
 }

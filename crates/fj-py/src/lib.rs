@@ -528,6 +528,629 @@ struct PyUserContext {
 struct PyFloat0DType;
 
 #[pymethods]
+impl PyJaxpr {
+    #[getter]
+    fn num_equations(&self) -> usize {
+        self.inner.equations.len()
+    }
+
+    #[getter]
+    fn num_inputs(&self) -> usize {
+        self.inner.invars.len()
+    }
+
+    #[getter]
+    fn num_outputs(&self) -> usize {
+        self.inner.outvars.len()
+    }
+
+    #[getter]
+    fn primitives(&self) -> Vec<String> {
+        self.inner
+            .equations
+            .iter()
+            .map(|eq| eq.primitive.as_str().to_owned())
+            .collect()
+    }
+
+    fn pretty_print(&self) -> String {
+        self.inner.canonical_fingerprint().to_owned()
+    }
+
+    fn canonical_fingerprint(&self) -> String {
+        self.inner.canonical_fingerprint().to_owned()
+    }
+
+    fn __repr__(&self) -> String {
+        self.inner.canonical_fingerprint().to_owned()
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.canonical_fingerprint().to_owned()
+    }
+}
+
+#[pyclass(name = "Tracer", unsendable)]
+#[derive(Clone)]
+struct PyTracer {
+    inner: fj_trace::TracerRef,
+}
+
+impl PyTracer {
+    fn from_tracer(inner: fj_trace::TracerRef) -> Self {
+        Self { inner }
+    }
+
+    fn coerce_other(&self, other: &Bound<'_, PyAny>) -> PyResult<fj_trace::TracerRef> {
+        py_any_to_tracer(&self.inner, other)
+    }
+
+    fn unary_primitive(&self, primitive: fj_core::Primitive) -> PyResult<Self> {
+        self.inner
+            .unary_op(primitive)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn binary_primitive(
+        &self,
+        primitive: fj_core::Primitive,
+        rhs: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let rhs_tracer = self.coerce_other(rhs)?;
+        self.inner
+            .binary_op(primitive, &rhs_tracer)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn rbinary_primitive(
+        &self,
+        primitive: fj_core::Primitive,
+        lhs: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let lhs_tracer = self.coerce_other(lhs)?;
+        lhs_tracer
+            .binary_op(primitive, &self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+}
+
+#[pymethods]
+impl PyTracer {
+    #[classattr]
+    fn __array_priority__() -> i32 {
+        1000
+    }
+
+    #[getter]
+    fn shape(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        shape_to_py_tuple(py, &self.inner.aval().shape.dims)
+    }
+
+    #[getter]
+    fn dtype(&self) -> String {
+        format!("{:?}", self.inner.aval().dtype)
+    }
+
+    #[getter]
+    fn ndim(&self) -> usize {
+        self.inner.aval().shape.rank()
+    }
+
+    #[getter]
+    fn size(&self) -> u64 {
+        self.inner
+            .aval()
+            .shape
+            .dims
+            .iter()
+            .fold(1_u64, |acc, &d| acc.saturating_mul(u64::from(d)))
+    }
+
+    #[getter]
+    fn aval(&self) -> PyShapeDtypeStruct {
+        let aval = self.inner.aval();
+        PyShapeDtypeStruct {
+            shape: aval.shape.dims.clone(),
+            dtype: format!("{:?}", aval.dtype),
+            weak_type: false,
+            is_ref: false,
+            vma: None,
+            vma_hash: 0,
+            vma_len: 0,
+            vma_repr: None,
+        }
+    }
+
+    #[getter(T)]
+    fn transpose_property(&self) -> PyResult<Self> {
+        self.inner
+            .transpose(None)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn __add__(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Add, rhs)
+    }
+
+    fn __radd__(&self, lhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.rbinary_primitive(fj_core::Primitive::Add, lhs)
+    }
+
+    fn __sub__(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Sub, rhs)
+    }
+
+    fn __rsub__(&self, lhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.rbinary_primitive(fj_core::Primitive::Sub, lhs)
+    }
+
+    fn __mul__(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Mul, rhs)
+    }
+
+    fn __rmul__(&self, lhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.rbinary_primitive(fj_core::Primitive::Mul, lhs)
+    }
+
+    fn __truediv__(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Div, rhs)
+    }
+
+    fn __rtruediv__(&self, lhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.rbinary_primitive(fj_core::Primitive::Div, lhs)
+    }
+
+    fn __mod__(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Rem, rhs)
+    }
+
+    fn __rmod__(&self, lhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.rbinary_primitive(fj_core::Primitive::Rem, lhs)
+    }
+
+    fn __neg__(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Neg)
+    }
+
+    fn __pos__(&self) -> PyResult<Self> {
+        Ok(self.clone())
+    }
+
+    fn __abs__(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Abs)
+    }
+
+    fn __pow__(&self, exponent: &Bound<'_, PyAny>, modulo: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if !modulo.is_none() {
+            return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                "three-argument pow() is not supported on Tracer",
+            ));
+        }
+        self.binary_primitive(fj_core::Primitive::Pow, exponent)
+    }
+
+    fn __rpow__(&self, base: &Bound<'_, PyAny>, modulo: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if !modulo.is_none() {
+            return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                "three-argument pow() is not supported on Tracer",
+            ));
+        }
+        self.rbinary_primitive(fj_core::Primitive::Pow, base)
+    }
+
+    fn __matmul__(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let rhs_tracer = self.coerce_other(rhs)?;
+        self.inner
+            .dot(&rhs_tracer)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn __richcmp__(&self, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<Self> {
+        let prim = match op {
+            CompareOp::Eq => fj_core::Primitive::Eq,
+            CompareOp::Ne => fj_core::Primitive::Ne,
+            CompareOp::Lt => fj_core::Primitive::Lt,
+            CompareOp::Le => fj_core::Primitive::Le,
+            CompareOp::Gt => fj_core::Primitive::Gt,
+            CompareOp::Ge => fj_core::Primitive::Ge,
+        };
+        self.binary_primitive(prim, other)
+    }
+
+    fn neg(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Neg)
+    }
+
+    fn abs(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Abs)
+    }
+
+    fn sin(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Sin)
+    }
+
+    fn cos(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Cos)
+    }
+
+    fn tan(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Tan)
+    }
+
+    fn asin(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Asin)
+    }
+
+    fn acos(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Acos)
+    }
+
+    fn atan(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Atan)
+    }
+
+    fn sinh(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Sinh)
+    }
+
+    fn cosh(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Cosh)
+    }
+
+    fn tanh(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Tanh)
+    }
+
+    fn asinh(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Asinh)
+    }
+
+    fn acosh(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Acosh)
+    }
+
+    fn atanh(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Atanh)
+    }
+
+    fn exp(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Exp)
+    }
+
+    fn expm1(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Expm1)
+    }
+
+    fn exp2(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Exp2)
+    }
+
+    fn log(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Log)
+    }
+
+    fn log1p(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Log1p)
+    }
+
+    fn log2(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Log2)
+    }
+
+    fn sqrt(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Sqrt)
+    }
+
+    fn rsqrt(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Rsqrt)
+    }
+
+    fn cbrt(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Cbrt)
+    }
+
+    fn square(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Square)
+    }
+
+    fn reciprocal(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Reciprocal)
+    }
+
+    fn sign(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Sign)
+    }
+
+    fn floor(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Floor)
+    }
+
+    fn ceil(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Ceil)
+    }
+
+    fn round(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Round)
+    }
+
+    fn trunc(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Trunc)
+    }
+
+    fn erf(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Erf)
+    }
+
+    fn erfc(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Erfc)
+    }
+
+    fn erf_inv(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::ErfInv)
+    }
+
+    fn lgamma(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Lgamma)
+    }
+
+    fn digamma(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Digamma)
+    }
+
+    fn logistic(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Logistic)
+    }
+
+    fn sigmoid(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Logistic)
+    }
+
+    fn relu(&self) -> PyResult<Self> {
+        fj_api::nn::relu(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn silu(&self) -> PyResult<Self> {
+        fj_api::nn::silu(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn swish(&self) -> PyResult<Self> {
+        fj_api::nn::swish(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (approximate=true))]
+    fn gelu(&self, approximate: bool) -> PyResult<Self> {
+        fj_api::nn::gelu(&self.inner, approximate)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn softplus(&self) -> PyResult<Self> {
+        fj_api::nn::softplus(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (alpha=1.0))]
+    fn elu(&self, alpha: f64) -> PyResult<Self> {
+        fj_api::nn::elu(&self.inner, alpha)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (negative_slope=0.01))]
+    fn leaky_relu(&self, negative_slope: f64) -> PyResult<Self> {
+        fj_api::nn::leaky_relu(&self.inner, negative_slope)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn stop_gradient(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::StopGradient)
+    }
+
+    fn copy(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Copy)
+    }
+
+    fn dot(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.__matmul__(rhs)
+    }
+
+    fn matmul(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.__matmul__(rhs)
+    }
+
+    fn maximum(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Max, rhs)
+    }
+
+    fn minimum(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Min, rhs)
+    }
+
+    fn select(&self, on_true: &Bound<'_, PyAny>, on_false: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let t = self.coerce_other(on_true)?;
+        let f = self.coerce_other(on_false)?;
+        self.inner
+            .select(&t, &f)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn clamp(&self, min_val: &Bound<'_, PyAny>, max_val: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let lo = self.coerce_other(min_val)?;
+        let hi = self.coerce_other(max_val)?;
+        self.inner
+            .clamp(&lo, &hi)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None))]
+    fn sum(&self, py: Python<'_>, axis: Option<Py<PyAny>>) -> PyResult<Self> {
+        let axes = extract_optional_reduce_axes(py, axis)?;
+        self.inner
+            .reduce_sum(axes.as_deref())
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None))]
+    fn reduce_sum(&self, py: Python<'_>, axis: Option<Py<PyAny>>) -> PyResult<Self> {
+        self.sum(py, axis)
+    }
+
+    #[pyo3(signature = (axis=None))]
+    fn max(&self, py: Python<'_>, axis: Option<Py<PyAny>>) -> PyResult<Self> {
+        let axes = extract_optional_reduce_axes(py, axis)?;
+        self.inner
+            .reduce_max(axes.as_deref())
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None))]
+    fn reduce_max(&self, py: Python<'_>, axis: Option<Py<PyAny>>) -> PyResult<Self> {
+        self.max(py, axis)
+    }
+
+    #[pyo3(signature = (axis=None))]
+    fn min(&self, py: Python<'_>, axis: Option<Py<PyAny>>) -> PyResult<Self> {
+        let axes = extract_optional_reduce_axes(py, axis)?;
+        self.inner
+            .reduce_min(axes.as_deref())
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None))]
+    fn reduce_min(&self, py: Python<'_>, axis: Option<Py<PyAny>>) -> PyResult<Self> {
+        self.min(py, axis)
+    }
+
+    #[pyo3(signature = (axis=None))]
+    fn prod(&self, py: Python<'_>, axis: Option<Py<PyAny>>) -> PyResult<Self> {
+        let axes = extract_optional_reduce_axes(py, axis)?;
+        self.inner
+            .reduce_prod(axes.as_deref())
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None))]
+    fn reduce_prod(&self, py: Python<'_>, axis: Option<Py<PyAny>>) -> PyResult<Self> {
+        self.prod(py, axis)
+    }
+
+    #[pyo3(signature = (*args))]
+    fn reshape(&self, args: &Bound<'_, PyTuple>) -> PyResult<Self> {
+        let raw_shape = reshape_shape_from_py_args(args)?;
+        self.inner
+            .reshape_i64(&raw_shape)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn flatten(&self) -> PyResult<Self> {
+        self.inner
+            .reshape_i64(&[-1])
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn ravel(&self) -> PyResult<Self> {
+        self.flatten()
+    }
+
+    #[pyo3(signature = (*args))]
+    fn transpose(&self, args: &Bound<'_, PyTuple>) -> PyResult<Self> {
+        let rank = self.inner.aval().shape.rank();
+        let permutation = transpose_permutation_from_py_args(args, rank)?;
+        self.inner
+            .transpose(Some(&permutation))
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None))]
+    fn squeeze(&self, py: Python<'_>, axis: Option<Py<PyAny>>) -> PyResult<Self> {
+        let axes = extract_optional_reduce_axes(py, axis)?;
+        self.inner
+            .squeeze(axes.as_deref())
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn expand_dims(&self, axis: i64) -> PyResult<Self> {
+        self.inner
+            .expand_dims(axis)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn broadcast_in_dim(
+        &self,
+        shape: Vec<u32>,
+        broadcast_dimensions: Vec<usize>,
+    ) -> PyResult<Self> {
+        self.inner
+            .broadcast_in_dim(&shape, &broadcast_dimensions)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (start_indices, limit_indices, strides=None))]
+    fn slice(
+        &self,
+        start_indices: Vec<u32>,
+        limit_indices: Vec<u32>,
+        strides: Option<Vec<u32>>,
+    ) -> PyResult<Self> {
+        self.inner
+            .slice(&start_indices, &limit_indices, strides.as_deref())
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None, reverse=false))]
+    fn cumsum(&self, axis: Option<i64>, reverse: bool) -> PyResult<Self> {
+        self.inner
+            .cumsum(axis, reverse)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None, reverse=false))]
+    fn cumprod(&self, axis: Option<i64>, reverse: bool) -> PyResult<Self> {
+        self.inner
+            .cumprod(axis, reverse)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn __repr__(&self) -> String {
+        let aval = self.inner.aval();
+        format!(
+            "Tracer(id={:?}, shape={}, dtype={:?})",
+            self.inner.id(),
+            format_shape_tuple(&aval.shape.dims),
+            aval.dtype
+        )
+    }
+}
+
+#[pymethods]
 impl PyValue {
     #[classattr]
     fn __array_priority__() -> i32 {
@@ -1522,6 +2145,169 @@ impl PyShard {
     }
 }
 
+std::thread_local! {
+    static ACTIVE_NAMED_SCOPES: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn active_scope_bool(prefix: &str, default: bool) -> bool {
+    let true_tag = format!("{prefix}(true)");
+    let false_tag = format!("{prefix}(false)");
+    ACTIVE_NAMED_SCOPES.with(|stack| {
+        for entry in stack.borrow().iter().rev() {
+            if entry == &true_tag {
+                return true;
+            }
+            if entry == &false_tag {
+                return false;
+            }
+        }
+        default
+    })
+}
+
+fn trace_error_to_py_err(error: fj_trace::TraceError) -> PyErr {
+    match error {
+        fj_trace::TraceError::ShapeInferenceFailed { .. }
+        | fj_trace::TraceError::InvalidPrimitiveParam { .. }
+        | fj_trace::TraceError::MissingPrimitiveParam { .. } => {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(error.to_string())
+        }
+        _ => PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string()),
+    }
+}
+
+fn extract_optional_reduce_axes(
+    py: Python<'_>,
+    axis: Option<Py<PyAny>>,
+) -> PyResult<Option<Vec<i64>>> {
+    let Some(axis) = axis else {
+        return Ok(None);
+    };
+    let axis = axis.bind(py);
+    if axis.is_none() {
+        return Ok(None);
+    }
+    if let Ok(single) = axis.extract::<i64>() {
+        return Ok(Some(vec![single]));
+    }
+    axis.extract::<Vec<i64>>().map(Some).map_err(|_| {
+        PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "reduction axis must be None, an integer, or a sequence of integers",
+        )
+    })
+}
+
+fn literal_for_target_dtype(value_f64: f64, value_i64: Option<i64>, dtype: DType) -> Literal {
+    match dtype {
+        DType::BF16 => Literal::from_bf16_f32(value_f64 as f32),
+        DType::F16 => Literal::from_f16_f32(value_f64 as f32),
+        DType::F32 => Literal::from_f32(value_f64 as f32),
+        DType::F64 => Literal::from_f64(value_f64),
+        DType::I32 => Literal::I32(value_i64.unwrap_or(value_f64 as i64) as i32),
+        DType::I64 => Literal::I64(value_i64.unwrap_or(value_f64 as i64)),
+        DType::U32 => Literal::U32(value_i64.unwrap_or(value_f64 as i64) as u32),
+        DType::U64 => Literal::U64(value_i64.unwrap_or(value_f64 as i64) as u64),
+        DType::Bool => Literal::Bool(value_f64 != 0.0),
+        DType::Complex64 => Literal::from_complex64(value_f64 as f32, 0.0),
+        DType::Complex128 => Literal::from_complex128(value_f64, 0.0),
+    }
+}
+
+fn bind_rust_value_to_tracer(
+    anchor: &fj_trace::TracerRef,
+    value: &Value,
+) -> PyResult<fj_trace::TracerRef> {
+    let target_dtype = anchor.aval().dtype;
+    match value {
+        Value::Scalar(lit) => {
+            let coerced = match (*lit, target_dtype) {
+                (Literal::I64(v), DType::F64 | DType::F32 | DType::F16 | DType::BF16) => {
+                    literal_for_target_dtype(v as f64, Some(v), target_dtype)
+                }
+                (Literal::I32(v), DType::F64 | DType::F32 | DType::F16 | DType::BF16) => {
+                    literal_for_target_dtype(f64::from(v), Some(i64::from(v)), target_dtype)
+                }
+                (Literal::F64Bits(bits), DType::F32 | DType::F16 | DType::BF16) => {
+                    literal_for_target_dtype(f64::from_bits(bits), None, target_dtype)
+                }
+                _ => *lit,
+            };
+            anchor.bind_literal(coerced).map_err(trace_error_to_py_err)
+        }
+        Value::Tensor(tensor) => {
+            if tensor.elements.is_empty() {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "cannot bind empty tensor constant into traced expression",
+                ));
+            }
+            if tensor.elements.len() == 1 {
+                let scalar_tr = anchor
+                    .bind_literal(tensor.elements[0])
+                    .map_err(trace_error_to_py_err)?;
+                return scalar_tr
+                    .broadcast_in_dim(&tensor.shape.dims, &[])
+                    .map_err(trace_error_to_py_err);
+            }
+            let mut unit_tracers = Vec::with_capacity(tensor.elements.len());
+            for &lit in &tensor.elements {
+                let scalar_tr = anchor.bind_literal(lit).map_err(trace_error_to_py_err)?;
+                let unit_tr = scalar_tr.reshape(&[1]).map_err(trace_error_to_py_err)?;
+                unit_tracers.push(unit_tr);
+            }
+            let unit_refs: Vec<&fj_trace::TracerRef> = unit_tracers.iter().collect();
+            let flat_tr =
+                fj_trace::TracerRef::concatenate(&unit_refs, 0).map_err(trace_error_to_py_err)?;
+            if tensor.shape.dims.len() == 1 {
+                Ok(flat_tr)
+            } else {
+                flat_tr
+                    .reshape(&tensor.shape.dims)
+                    .map_err(trace_error_to_py_err)
+            }
+        }
+    }
+}
+
+fn py_any_to_tracer(
+    anchor: &fj_trace::TracerRef,
+    obj: &Bound<'_, PyAny>,
+) -> PyResult<fj_trace::TracerRef> {
+    if let Ok(tracer) = obj.extract::<PyRef<'_, PyTracer>>() {
+        return Ok(tracer.inner.clone());
+    }
+    if let Ok(pv) = obj.extract::<PyRef<'_, PyValue>>() {
+        pv.ensure_not_deleted()?;
+        return bind_rust_value_to_tracer(anchor, &pv.inner);
+    }
+    let target_dtype = anchor.aval().dtype;
+    if obj.is_instance_of::<PyBool>() {
+        let b = obj.extract::<bool>()?;
+        let lit = if target_dtype == DType::Bool {
+            Literal::Bool(b)
+        } else {
+            literal_for_target_dtype(if b { 1.0 } else { 0.0 }, Some(i64::from(b)), target_dtype)
+        };
+        return anchor.bind_literal(lit).map_err(trace_error_to_py_err);
+    }
+    if let Ok(int_val) = obj.extract::<i64>() {
+        let lit = literal_for_target_dtype(int_val as f64, Some(int_val), target_dtype);
+        return anchor.bind_literal(lit).map_err(trace_error_to_py_err);
+    }
+    if let Ok(float_val) = obj.extract::<f64>() {
+        let lit = literal_for_target_dtype(float_val, None, target_dtype);
+        return anchor.bind_literal(lit).map_err(trace_error_to_py_err);
+    }
+    if let Ok(float_vec) = obj.extract::<Vec<f64>>() {
+        let val = Value::vector_f64(&float_vec).map_err(value_error)?;
+        return bind_rust_value_to_tracer(anchor, &val);
+    }
+    let type_repr: String = obj.get_type().repr()?.extract()?;
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+        "unsupported operand type {type_repr} in traced FrankenJAX expression"
+    )))
+}
+
 #[pymethods]
 impl PyNamedScope {
     #[getter]
@@ -1529,7 +2315,9 @@ impl PyNamedScope {
         &self.name
     }
 
-    fn __enter__(&self) {}
+    fn __enter__(&self) {
+        ACTIVE_NAMED_SCOPES.with(|stack| stack.borrow_mut().push(self.name.clone()));
+    }
 
     fn __exit__(
         &self,
@@ -1537,6 +2325,9 @@ impl PyNamedScope {
         _exc_value: &Bound<'_, PyAny>,
         _traceback: &Bound<'_, PyAny>,
     ) -> bool {
+        ACTIVE_NAMED_SCOPES.with(|stack| {
+            let _ = stack.borrow_mut().pop();
+        });
         false
     }
 
@@ -2541,15 +3332,19 @@ fn round_literal(
             Ok(Literal::from_f64(round_f64(f64::from_bits(bits), decimals)))
         }
         (DType::BF16, Literal::BF16Bits(bits)) => {
-            let value = Literal::BF16Bits(bits)
-                .as_f64()
-                .expect("bf16 literal should convert to f64") as f32;
+            let value = Literal::BF16Bits(bits).as_f64().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "bf16 literal failed to convert to f64",
+                )
+            })? as f32;
             Ok(Literal::from_bf16_f32(round_f32(value, decimals)))
         }
         (DType::F16, Literal::F16Bits(bits)) => {
-            let value = Literal::F16Bits(bits)
-                .as_f64()
-                .expect("f16 literal should convert to f64") as f32;
+            let value = Literal::F16Bits(bits).as_f64().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "f16 literal failed to convert to f64",
+                )
+            })? as f32;
             Ok(Literal::from_f16_f32(round_f32(value, decimals)))
         }
         (DType::Complex64, Literal::Complex64Bits(re, im)) => Ok(Literal::from_complex64(
@@ -2653,7 +3448,7 @@ fn round_signed_integer(value: i64, decimals: i32) -> PyResult<i64> {
     };
     let rounded = round_unsigned_magnitude(magnitude, factor)?;
     if value < 0 {
-        let min_magnitude = u128::try_from(i64::MAX).expect("i64::MAX fits in u128") + 1;
+        let min_magnitude = u128::from(i64::MAX as u64) + 1;
         if rounded == min_magnitude {
             Ok(i64::MIN)
         } else if rounded < min_magnitude {
@@ -2735,11 +3530,14 @@ fn rounded_literal_to_i64(literal: Literal) -> PyResult<Literal> {
         }),
         Literal::F32Bits(bits) => rounded_float_to_i64(f64::from(f32::from_bits(bits))),
         Literal::F64Bits(bits) => rounded_float_to_i64(f64::from_bits(bits)),
-        Literal::BF16Bits(_) | Literal::F16Bits(_) => rounded_float_to_i64(
-            literal
-                .as_f64()
-                .expect("low-precision float literal should convert to f64"),
-        ),
+        Literal::BF16Bits(_) | Literal::F16Bits(_) => {
+            let value = literal.as_f64().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "low-precision float literal failed to convert to f64",
+                )
+            })?;
+            rounded_float_to_i64(value)
+        }
         Literal::Bool(value) => Ok(Literal::I64(i64::from(value))),
         Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
             Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
@@ -2796,23 +3594,27 @@ fn literal_to_py_object(py: Python<'_>, literal: Literal) -> PyResult<Py<PyAny>>
         Literal::U64(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
         Literal::Bool(value) => Ok(PyBool::new(py, value).to_owned().into_any().unbind()),
         Literal::BF16Bits(_) | Literal::F16Bits(_) | Literal::F32Bits(_) | Literal::F64Bits(_) => {
-            Ok(literal
-                .as_f64()
-                .expect("float literal should convert to f64")
-                .into_pyobject(py)?
-                .into_any()
-                .unbind())
+            let value = literal.as_f64().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "float literal failed to convert to f64",
+                )
+            })?;
+            Ok(value.into_pyobject(py)?.into_any().unbind())
         }
         Literal::Complex64Bits(..) => {
-            let (re, im) = literal
-                .as_complex64()
-                .expect("complex64 literal should convert to parts");
+            let (re, im) = literal.as_complex64().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "complex64 literal failed to convert to parts",
+                )
+            })?;
             complex_to_py_object(py, f64::from(re), f64::from(im))
         }
         Literal::Complex128Bits(..) => {
-            let (re, im) = literal
-                .as_complex128()
-                .expect("complex128 literal should convert to parts");
+            let (re, im) = literal.as_complex128().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "complex128 literal failed to convert to parts",
+                )
+            })?;
             complex_to_py_object(py, re, im)
         }
     }
@@ -3176,7 +3978,204 @@ fn program_spec_names() -> String {
         .join(", ")
 }
 
-#[pyfunction]
+fn literal_has_nan_or_inf(literal: Literal) -> (bool, bool) {
+    match literal {
+        Literal::F32Bits(bits) => {
+            let v = f32::from_bits(bits);
+            (v.is_nan(), v.is_infinite())
+        }
+        Literal::F64Bits(bits) => {
+            let v = f64::from_bits(bits);
+            (v.is_nan(), v.is_infinite())
+        }
+        Literal::BF16Bits(_) | Literal::F16Bits(_) => literal
+            .as_f64()
+            .map_or((false, false), |v| (v.is_nan(), v.is_infinite())),
+        Literal::Complex64Bits(re_bits, im_bits) => {
+            let re = f32::from_bits(re_bits);
+            let im = f32::from_bits(im_bits);
+            (
+                re.is_nan() || im.is_nan(),
+                re.is_infinite() || im.is_infinite(),
+            )
+        }
+        Literal::Complex128Bits(re_bits, im_bits) => {
+            let re = f64::from_bits(re_bits);
+            let im = f64::from_bits(im_bits);
+            (
+                re.is_nan() || im.is_nan(),
+                re.is_infinite() || im.is_infinite(),
+            )
+        }
+        _ => (false, false),
+    }
+}
+
+fn check_debug_nans_infs(outputs: &[Value]) -> PyResult<()> {
+    let check_nans = active_scope_bool("debug_nans", false);
+    let check_infs = active_scope_bool("debug_infs", false);
+    if !check_nans && !check_infs {
+        return Ok(());
+    }
+    for value in outputs {
+        match value {
+            Value::Scalar(lit) => {
+                let (has_nan, has_inf) = literal_has_nan_or_inf(*lit);
+                if check_nans && has_nan {
+                    return Err(PyErr::new::<pyo3::exceptions::PyFloatingPointError, _>(
+                        "Invalid value (nan) encountered in output while debug_nans(True) is active",
+                    ));
+                }
+                if check_infs && has_inf {
+                    return Err(PyErr::new::<pyo3::exceptions::PyFloatingPointError, _>(
+                        "Invalid value (inf) encountered in output while debug_infs(True) is active",
+                    ));
+                }
+            }
+            Value::Tensor(tensor) => {
+                for &lit in &tensor.elements {
+                    let (has_nan, has_inf) = literal_has_nan_or_inf(lit);
+                    if check_nans && has_nan {
+                        return Err(PyErr::new::<pyo3::exceptions::PyFloatingPointError, _>(
+                            "Invalid value (nan) encountered in output while debug_nans(True) is active",
+                        ));
+                    }
+                    if check_infs && has_inf {
+                        return Err(PyErr::new::<pyo3::exceptions::PyFloatingPointError, _>(
+                            "Invalid value (inf) encountered in output while debug_infs(True) is active",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn execute_jaxpr_with_scopes(jaxpr: Jaxpr, args: Vec<Value>) -> PyResult<Vec<Value>> {
+    if active_scope_bool("no_execution", false) {
+        return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+            "execution is disabled by active no_execution(True) scope",
+        ));
+    }
+    let outputs = if active_scope_bool("disable_jit", false) {
+        fj_interpreters::eval_jaxpr(&jaxpr, &args).map_err(runtime_error)?
+    } else {
+        fj_api::jit(jaxpr).call(args).map_err(runtime_error)?
+    };
+    check_debug_nans_infs(&outputs)?;
+    Ok(outputs)
+}
+
+fn resolve_target_to_jaxpr(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    example_args: Option<&[PyValue]>,
+) -> PyResult<Jaxpr> {
+    if let Ok(py_jaxpr) = target.extract::<PyRef<'_, PyJaxpr>>() {
+        return Ok(py_jaxpr.inner.clone());
+    }
+    if let Ok(name) = target.extract::<String>() {
+        let Some(spec) = program_spec_from_name(&name) else {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "unknown ProgramSpec {name:?}; expected one of {}",
+                program_spec_names()
+            )));
+        };
+        return Ok(build_program(spec));
+    }
+    if target.is_callable() {
+        if active_scope_bool("no_tracing", false) {
+            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "tracing is disabled by active no_tracing(True) scope",
+            ));
+        }
+        let Some(example_args) = example_args else {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "tracing a Python callable requires example_args to supply input shapes and dtypes",
+            ));
+        };
+        let mut avals = Vec::with_capacity(example_args.len());
+        for arg in example_args {
+            arg.ensure_not_deleted()?;
+            avals.push(fj_trace::ShapedArray::from_value(&arg.inner));
+        }
+        let mut captured_py_err: Option<PyErr> = None;
+        let trace_result = fj_trace::make_jaxpr_fallible(
+            |tracers| {
+                let run: PyResult<Vec<fj_trace::TracerRef>> = (|| {
+                    let mut py_tracers = Vec::with_capacity(tracers.len());
+                    for tr in tracers {
+                        py_tracers.push(Py::new(py, PyTracer::from_tracer(tr.clone()))?);
+                    }
+                    let call_args = PyTuple::new(py, py_tracers)?;
+                    let ret = target.call1(call_args)?;
+                    if let Ok(single) = ret.extract::<PyRef<'_, PyTracer>>() {
+                        return Ok(vec![single.inner.clone()]);
+                    }
+                    if let Ok(tuple) = ret.downcast::<PyTuple>() {
+                        let mut out = Vec::with_capacity(tuple.len());
+                        for item in tuple.iter() {
+                            if let Ok(tr) = item.extract::<PyRef<'_, PyTracer>>() {
+                                out.push(tr.inner.clone());
+                            } else if let Some(anchor) = tracers.first() {
+                                out.push(py_any_to_tracer(anchor, &item)?);
+                            } else {
+                                return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                                    "zero-argument traced Python callable must return Tracer outputs",
+                                ));
+                            }
+                        }
+                        return Ok(out);
+                    }
+                    if let Ok(list) = ret.downcast::<PyList>() {
+                        let mut out = Vec::with_capacity(list.len());
+                        for item in list.iter() {
+                            if let Ok(tr) = item.extract::<PyRef<'_, PyTracer>>() {
+                                out.push(tr.inner.clone());
+                            } else if let Some(anchor) = tracers.first() {
+                                out.push(py_any_to_tracer(anchor, &item)?);
+                            } else {
+                                return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                                    "zero-argument traced Python callable must return Tracer outputs",
+                                ));
+                            }
+                        }
+                        return Ok(out);
+                    }
+                    if let Some(anchor) = tracers.first() {
+                        return Ok(vec![py_any_to_tracer(anchor, &ret)?]);
+                    }
+                    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                        "traced Python callable must return a Tracer or sequence of Tracers",
+                    ))
+                })();
+                match run {
+                    Ok(out_tracers) => Ok(out_tracers),
+                    Err(py_err) => {
+                        captured_py_err = Some(py_err);
+                        Err(fj_trace::TraceError::CompositionViolation)
+                    }
+                }
+            },
+            avals,
+        );
+        return match trace_result {
+            Ok(closed_jaxpr) => Ok(closed_jaxpr.jaxpr),
+            Err(trace_err) => {
+                if let Some(py_err) = captured_py_err {
+                    Err(py_err)
+                } else {
+                    Err(trace_error_to_py_err(trace_err))
+                }
+            }
+        };
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "expected a PyJaxpr, ProgramSpec name (str), or Python callable",
+    ))
+}
+
 fn make_jaxpr(name: &str) -> PyResult<PyJaxpr> {
     let Some(spec) = program_spec_from_name(name) else {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
@@ -3188,6 +4187,16 @@ fn make_jaxpr(name: &str) -> PyResult<PyJaxpr> {
     Ok(PyJaxpr {
         inner: build_program(spec),
     })
+}
+
+#[pyfunction(name = "make_jaxpr", signature = (target, example_args=None))]
+fn py_make_jaxpr(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    example_args: Option<Vec<PyValue>>,
+) -> PyResult<PyJaxpr> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, example_args.as_deref())?;
+    Ok(PyJaxpr { inner: jaxpr })
 }
 
 #[pyfunction]
@@ -3211,25 +4220,36 @@ fn make_jaxpr_add_one() -> PyJaxpr {
     }
 }
 
-#[pyfunction]
 fn jit(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
     let rust_args = py_values_to_rust(args);
-    fj_api::jit(jaxpr.inner.clone())
-        .call(rust_args)
-        .map(py_values_from_rust)
-        .map_err(runtime_error)
+    execute_jaxpr_with_scopes(jaxpr.inner.clone(), rust_args).map(py_values_from_rust)
 }
 
-#[pyfunction]
+#[pyfunction(name = "jit")]
+fn py_jit(py: Python<'_>, target: &Bound<'_, PyAny>, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    jit(&PyJaxpr { inner: jaxpr }, args)
+}
+
 fn grad(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
     let rust_args = py_values_to_rust(args);
-    fj_api::grad(jaxpr.inner.clone())
+    let grads = fj_api::grad(jaxpr.inner.clone())
         .call(rust_args)
-        .map(py_values_from_rust)
-        .map_err(runtime_error)
+        .map_err(runtime_error)?;
+    check_debug_nans_infs(&grads)?;
+    Ok(py_values_from_rust(grads))
 }
 
-#[pyfunction]
+#[pyfunction(name = "grad")]
+fn py_grad(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    args: Vec<PyValue>,
+) -> PyResult<Vec<PyValue>> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    grad(&PyJaxpr { inner: jaxpr }, args)
+}
+
 fn jvp(
     jaxpr: &PyJaxpr,
     primals: Vec<PyValue>,
@@ -3237,22 +4257,40 @@ fn jvp(
 ) -> PyResult<(Vec<PyValue>, Vec<PyValue>)> {
     let rust_primals = py_values_to_rust(primals);
     let rust_tangents = py_values_to_rust(tangents);
-    fj_ad::jvp(&jaxpr.inner, &rust_primals, &rust_tangents)
-        .map(|result| {
-            (
-                py_values_from_rust(result.primals),
-                py_values_from_rust(result.tangents),
-            )
-        })
-        .map_err(runtime_error)
+    let result = fj_ad::jvp(&jaxpr.inner, &rust_primals, &rust_tangents).map_err(runtime_error)?;
+    check_debug_nans_infs(&result.primals)?;
+    check_debug_nans_infs(&result.tangents)?;
+    Ok((
+        py_values_from_rust(result.primals),
+        py_values_from_rust(result.tangents),
+    ))
 }
 
-#[pyfunction]
+#[pyfunction(name = "jvp")]
+fn py_jvp(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    primals: Vec<PyValue>,
+    tangents: Vec<PyValue>,
+) -> PyResult<(Vec<PyValue>, Vec<PyValue>)> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&primals))?;
+    jvp(&PyJaxpr { inner: jaxpr }, primals, tangents)
+}
+
 fn vjp(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<(Vec<PyValue>, PyVjpPullback)> {
     vjp_outputs_and_pullback(&jaxpr.inner, args)
 }
 
-#[pyfunction]
+#[pyfunction(name = "vjp")]
+fn py_vjp(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    args: Vec<PyValue>,
+) -> PyResult<(Vec<PyValue>, PyVjpPullback)> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    vjp(&PyJaxpr { inner: jaxpr }, args)
+}
+
 fn linear_transpose(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyVjpPullback {
     PyVjpPullback {
         jaxpr: jaxpr.inner.clone(),
@@ -3260,21 +4298,36 @@ fn linear_transpose(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyVjpPullback {
     }
 }
 
-#[pyfunction]
+#[pyfunction(name = "linear_transpose")]
+fn py_linear_transpose(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    args: Vec<PyValue>,
+) -> PyResult<PyVjpPullback> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    Ok(linear_transpose(&PyJaxpr { inner: jaxpr }, args))
+}
+
 fn linearize(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<(Vec<PyValue>, PyLinearizedJvp)> {
     let rust_args = py_values_to_rust(args);
-    fj_api::jit(jaxpr.inner.clone())
-        .call(rust_args.clone())
-        .map(|outputs| {
-            (
-                py_values_from_rust(outputs),
-                PyLinearizedJvp {
-                    jaxpr: jaxpr.inner.clone(),
-                    primals: rust_args,
-                },
-            )
-        })
-        .map_err(runtime_error)
+    let outputs = execute_jaxpr_with_scopes(jaxpr.inner.clone(), rust_args.clone())?;
+    Ok((
+        py_values_from_rust(outputs),
+        PyLinearizedJvp {
+            jaxpr: jaxpr.inner.clone(),
+            primals: rust_args,
+        },
+    ))
+}
+
+#[pyfunction(name = "linearize")]
+fn py_linearize(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    args: Vec<PyValue>,
+) -> PyResult<(Vec<PyValue>, PyLinearizedJvp)> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    linearize(&PyJaxpr { inner: jaxpr }, args)
 }
 
 #[pyfunction]
@@ -3287,13 +4340,32 @@ fn fwd_and_bwd(jaxpr: &PyJaxpr) -> (PyForwardPass, PyBackwardPass) {
     )
 }
 
-#[pyfunction]
 fn eval_shape(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyShapeDtypeStruct>> {
     let rust_args = py_values_to_rust(args);
-    fj_api::jit(jaxpr.inner.clone())
-        .call(rust_args)
-        .map(|outputs| outputs.iter().map(py_shape_dtype_from_rust).collect())
-        .map_err(runtime_error)
+    let abstract_eval = fj_api::eval_shape(&jaxpr.inner, &rust_args).map_err(runtime_error)?;
+    Ok(abstract_eval
+        .into_iter()
+        .map(|aval| PyShapeDtypeStruct {
+            shape: aval.shape.dims,
+            dtype: format!("{:?}", aval.dtype),
+            weak_type: false,
+            is_ref: false,
+            vma: None,
+            vma_hash: 0,
+            vma_len: 0,
+            vma_repr: None,
+        })
+        .collect())
+}
+
+#[pyfunction(name = "eval_shape")]
+fn py_eval_shape(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    args: Vec<PyValue>,
+) -> PyResult<Vec<PyShapeDtypeStruct>> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    eval_shape(&PyJaxpr { inner: jaxpr }, args)
 }
 
 #[pyfunction(name = "typeof")]
@@ -3352,13 +4424,26 @@ fn copy_to_host_async(value: PyValue) -> PyResult<PyValue> {
 fn effects_barrier() {}
 
 #[pyfunction]
-fn clear_caches() {}
+fn clear_caches() {
+    fj_dispatch::clear_dispatch_cache();
+}
 
 #[pyfunction]
-fn clear_backends() {}
+fn clear_backends() {
+    fj_dispatch::clear_dispatch_cache();
+}
 
 #[pyfunction]
-fn clean_up() {}
+fn clean_up() {
+    fj_dispatch::clear_dispatch_cache();
+    fj_dispatch::reset_dispatch_governance();
+}
+
+#[pyfunction]
+fn dispatch_cache_stats() -> (usize, u64) {
+    let stats = fj_dispatch::dispatch_cache_stats();
+    (stats.entry_count, stats.total_bytes)
+}
 
 #[pyfunction(signature = (platform=None))]
 fn live_arrays(platform: Option<String>) -> PyResult<Vec<PyValue>> {
@@ -3767,16 +4852,43 @@ fn print_environment_info(py: Python<'_>, return_string: bool) -> PyResult<Optio
     }
 }
 
-#[pyfunction]
 fn vmap(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
     let rust_args = py_values_to_rust(args);
-    fj_api::vmap(jaxpr.inner.clone())
+    let outputs = fj_api::vmap(jaxpr.inner.clone())
         .call(rust_args)
-        .map(py_values_from_rust)
-        .map_err(runtime_error)
+        .map_err(runtime_error)?;
+    check_debug_nans_infs(&outputs)?;
+    Ok(py_values_from_rust(outputs))
 }
 
-#[pyfunction]
+#[pyfunction(name = "vmap")]
+fn py_vmap(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    args: Vec<PyValue>,
+) -> PyResult<Vec<PyValue>> {
+    if let Ok(py_jaxpr) = target.extract::<PyRef<'_, PyJaxpr>>() {
+        return vmap(&py_jaxpr, args);
+    }
+    if let Ok(name) = target.extract::<String>() {
+        let jaxpr = make_jaxpr(&name)?;
+        return vmap(&jaxpr, args);
+    }
+    let mut unbatched_args = Vec::with_capacity(args.len());
+    for arg in &args {
+        arg.ensure_not_deleted()?;
+        match &arg.inner {
+            Value::Tensor(tensor) if !tensor.shape.dims.is_empty() => {
+                let slice = tensor.slice_axis0(0).map_err(value_error)?;
+                unbatched_args.push(PyValue::from_value(slice));
+            }
+            _ => unbatched_args.push(arg.clone()),
+        }
+    }
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&unbatched_args))?;
+    vmap(&PyJaxpr { inner: jaxpr }, args)
+}
+
 fn pmap(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
     let rust_args = py_values_to_rust(args);
     fj_api::pmap(jaxpr.inner.clone())
@@ -3785,41 +4897,84 @@ fn pmap(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
         .map_err(runtime_error)
 }
 
-#[pyfunction]
+#[pyfunction(name = "pmap")]
+fn py_pmap(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    args: Vec<PyValue>,
+) -> PyResult<Vec<PyValue>> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    pmap(&PyJaxpr { inner: jaxpr }, args)
+}
+
 fn value_and_grad(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<(Vec<PyValue>, Vec<PyValue>)> {
     let rust_args = py_values_to_rust(args);
-    fj_api::value_and_grad(jaxpr.inner.clone())
+    let (values, grads) = fj_api::value_and_grad(jaxpr.inner.clone())
         .call(rust_args)
-        .map(|(values, grads)| (py_values_from_rust(values), py_values_from_rust(grads)))
-        .map_err(runtime_error)
+        .map_err(runtime_error)?;
+    check_debug_nans_infs(&values)?;
+    check_debug_nans_infs(&grads)?;
+    Ok((py_values_from_rust(values), py_values_from_rust(grads)))
 }
 
-#[pyfunction]
+#[pyfunction(name = "value_and_grad")]
+fn py_value_and_grad(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    args: Vec<PyValue>,
+) -> PyResult<(Vec<PyValue>, Vec<PyValue>)> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    value_and_grad(&PyJaxpr { inner: jaxpr }, args)
+}
+
 fn jacobian(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
     let rust_args = py_values_to_rust(args);
-    fj_api::jacobian(jaxpr.inner.clone())
+    let jac = fj_api::jacobian(jaxpr.inner.clone())
         .call(rust_args)
-        .map(PyValue::from_value)
-        .map_err(runtime_error)
+        .map_err(runtime_error)?;
+    check_debug_nans_infs(std::slice::from_ref(&jac))?;
+    Ok(PyValue::from_value(jac))
 }
 
-#[pyfunction]
+#[pyfunction(name = "jacobian")]
+fn py_jacobian(py: Python<'_>, target: &Bound<'_, PyAny>, args: Vec<PyValue>) -> PyResult<PyValue> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    jacobian(&PyJaxpr { inner: jaxpr }, args)
+}
+
 fn jacrev(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
     jacobian(jaxpr, args)
 }
 
-#[pyfunction]
+#[pyfunction(name = "jacrev")]
+fn py_jacrev(py: Python<'_>, target: &Bound<'_, PyAny>, args: Vec<PyValue>) -> PyResult<PyValue> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    jacrev(&PyJaxpr { inner: jaxpr }, args)
+}
+
 fn jacfwd(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
     jacobian(jaxpr, args)
 }
 
-#[pyfunction]
+#[pyfunction(name = "jacfwd")]
+fn py_jacfwd(py: Python<'_>, target: &Bound<'_, PyAny>, args: Vec<PyValue>) -> PyResult<PyValue> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    jacfwd(&PyJaxpr { inner: jaxpr }, args)
+}
+
 fn hessian(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
     let rust_args = py_values_to_rust(args);
-    fj_api::hessian(jaxpr.inner.clone())
+    let hess = fj_api::hessian(jaxpr.inner.clone())
         .call(rust_args)
-        .map(PyValue::from_value)
-        .map_err(runtime_error)
+        .map_err(runtime_error)?;
+    check_debug_nans_infs(std::slice::from_ref(&hess))?;
+    Ok(PyValue::from_value(hess))
+}
+
+#[pyfunction(name = "hessian")]
+fn py_hessian(py: Python<'_>, target: &Bound<'_, PyAny>, args: Vec<PyValue>) -> PyResult<PyValue> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    hessian(&PyJaxpr { inner: jaxpr }, args)
 }
 
 #[pyfunction]
@@ -3842,6 +4997,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyValue>()?;
     m.add("Array", m.getattr("PyValue")?)?;
     m.add_class::<PyJaxpr>()?;
+    m.add_class::<PyTracer>()?;
     m.add_class::<PyCheckpoint>()?;
     m.add_class::<PyVjpPullback>()?;
     m.add_class::<PyLinearizedJvp>()?;
@@ -3854,18 +5010,18 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyUserContext>()?;
     m.add_class::<PyFloat0DType>()?;
     m.add("float0", Py::new(m.py(), PyFloat0DType)?)?;
-    m.add_function(wrap_pyfunction!(make_jaxpr, m)?)?;
+    m.add_function(wrap_pyfunction!(py_make_jaxpr, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_square, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add2, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add_one, m)?)?;
-    m.add_function(wrap_pyfunction!(jit, m)?)?;
-    m.add_function(wrap_pyfunction!(grad, m)?)?;
-    m.add_function(wrap_pyfunction!(jvp, m)?)?;
-    m.add_function(wrap_pyfunction!(vjp, m)?)?;
-    m.add_function(wrap_pyfunction!(linear_transpose, m)?)?;
-    m.add_function(wrap_pyfunction!(linearize, m)?)?;
+    m.add_function(wrap_pyfunction!(py_jit, m)?)?;
+    m.add_function(wrap_pyfunction!(py_grad, m)?)?;
+    m.add_function(wrap_pyfunction!(py_jvp, m)?)?;
+    m.add_function(wrap_pyfunction!(py_vjp, m)?)?;
+    m.add_function(wrap_pyfunction!(py_linear_transpose, m)?)?;
+    m.add_function(wrap_pyfunction!(py_linearize, m)?)?;
     m.add_function(wrap_pyfunction!(fwd_and_bwd, m)?)?;
-    m.add_function(wrap_pyfunction!(eval_shape, m)?)?;
+    m.add_function(wrap_pyfunction!(py_eval_shape, m)?)?;
     m.add_function(wrap_pyfunction!(typeof_value, m)?)?;
     m.add_function(wrap_pyfunction!(device_put, m)?)?;
     m.add_function(wrap_pyfunction!(device_put_replicated, m)?)?;
@@ -3877,6 +5033,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(clear_caches, m)?)?;
     m.add_function(wrap_pyfunction!(clear_backends, m)?)?;
     m.add_function(wrap_pyfunction!(clean_up, m)?)?;
+    m.add_function(wrap_pyfunction!(dispatch_cache_stats, m)?)?;
     m.add_function(wrap_pyfunction!(live_arrays, m)?)?;
     m.add_function(wrap_pyfunction!(default_device, m)?)?;
     m.add_function(wrap_pyfunction!(default_backend, m)?)?;
@@ -3925,13 +5082,13 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(disable_jit, m)?)?;
     m.add_function(wrap_pyfunction!(ensure_compile_time_eval, m)?)?;
     m.add_function(wrap_pyfunction!(print_environment_info, m)?)?;
-    m.add_function(wrap_pyfunction!(vmap, m)?)?;
-    m.add_function(wrap_pyfunction!(pmap, m)?)?;
-    m.add_function(wrap_pyfunction!(value_and_grad, m)?)?;
-    m.add_function(wrap_pyfunction!(jacobian, m)?)?;
-    m.add_function(wrap_pyfunction!(jacrev, m)?)?;
-    m.add_function(wrap_pyfunction!(jacfwd, m)?)?;
-    m.add_function(wrap_pyfunction!(hessian, m)?)?;
+    m.add_function(wrap_pyfunction!(py_vmap, m)?)?;
+    m.add_function(wrap_pyfunction!(py_pmap, m)?)?;
+    m.add_function(wrap_pyfunction!(py_value_and_grad, m)?)?;
+    m.add_function(wrap_pyfunction!(py_jacobian, m)?)?;
+    m.add_function(wrap_pyfunction!(py_jacrev, m)?)?;
+    m.add_function(wrap_pyfunction!(py_jacfwd, m)?)?;
+    m.add_function(wrap_pyfunction!(py_hessian, m)?)?;
     m.add_function(wrap_pyfunction!(checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(remat, m)?)?;
     Ok(())
@@ -5193,5 +6350,108 @@ mod tests {
         let message = err.to_string().to_ascii_lowercase();
         assert!(message.contains("pmap unavailable"), "{message}");
         assert!(message.contains("multi-device"), "{message}");
+    }
+
+    #[test]
+    fn python_callable_make_jaxpr_jit_grad_and_vmap_execute_real_traced_ir() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                pyo3::ffi::c_str!(
+                    "def poly(x):\n    return (x * x) + (2.0 * x) + 1.0\n\ndef bad_reshape(x):\n    return x.reshape([5])\n"
+                ),
+                None,
+                Some(&locals),
+            )
+            .unwrap();
+            let poly_fn = locals.get_item("poly").unwrap().unwrap();
+            let bad_reshape_fn = locals.get_item("bad_reshape").unwrap().unwrap();
+
+            let x3 = PyValue::scalar_f64(3.0);
+            let traced = py_make_jaxpr(py, &poly_fn, Some(vec![x3.clone()])).unwrap();
+            assert!(traced.num_equations() >= 3);
+            assert_eq!(traced.num_inputs(), 1);
+            assert_eq!(traced.num_outputs(), 1);
+            assert!(traced.primitives().contains(&"mul".to_owned()));
+            assert!(traced.primitives().contains(&"add".to_owned()));
+
+            let jit_out = py_jit(py, &poly_fn, vec![x3.clone()]).unwrap();
+            assert_eq!(jit_out.len(), 1);
+            assert!((jit_out[0].as_f64().unwrap() - 16.0).abs() < 1e-12);
+
+            let grad_out = py_grad(py, &poly_fn, vec![x3.clone()]).unwrap();
+            assert_eq!(grad_out.len(), 1);
+            assert!((grad_out[0].as_f64().unwrap() - 8.0).abs() < 1e-9);
+
+            let (vals, grads) = py_value_and_grad(py, &poly_fn, vec![x3.clone()]).unwrap();
+            assert!((vals[0].as_f64().unwrap() - 16.0).abs() < 1e-12);
+            assert!((grads[0].as_f64().unwrap() - 8.0).abs() < 1e-9);
+
+            let vec_arg = PyValue::vector_f64(vec![1.0, 2.0, 3.0]).unwrap();
+            let vmap_out = py_vmap(py, &poly_fn, vec![vec_arg.clone()]).unwrap();
+            assert_eq!(vmap_out[0].as_f64_list().unwrap(), vec![4.0, 9.0, 16.0]);
+
+            let shape_out = py_eval_shape(py, &poly_fn, vec![x3]).unwrap();
+            assert_eq!(shape_out.len(), 1);
+            assert_eq!(shape_out[0].shape_vec(), Vec::<u32>::new());
+            assert_eq!(shape_out[0].dtype(), "F64");
+
+            let bad_trace = py_make_jaxpr(py, &bad_reshape_fn, Some(vec![vec_arg]));
+            assert!(
+                bad_trace.is_err(),
+                "invalid reshape inside Python callable must raise ValueError"
+            );
+        });
+    }
+
+    #[test]
+    fn clear_caches_and_active_scopes_enforce_runtime_policies() {
+        pyo3::prepare_freethreaded_python();
+        clear_caches();
+        assert_eq!(dispatch_cache_stats().0, 0);
+
+        let jaxpr = make_jaxpr_square();
+        let out = jit(&jaxpr, vec![PyValue::scalar_f64(4.0)]).unwrap();
+        assert!((out[0].as_f64().unwrap() - 16.0).abs() < 1e-12);
+        assert!(dispatch_cache_stats().0 >= 1);
+
+        clear_caches();
+        assert_eq!(dispatch_cache_stats().0, 0);
+
+        let scope_disable_jit = disable_jit(true);
+        scope_disable_jit.__enter__();
+        let eager_out = jit(&jaxpr, vec![PyValue::scalar_f64(5.0)]).unwrap();
+        Python::with_gil(|py| {
+            let none = py.None().into_bound(py);
+            scope_disable_jit.__exit__(&none, &none, &none);
+        });
+        assert!((eager_out[0].as_f64().unwrap() - 25.0).abs() < 1e-12);
+        assert_eq!(
+            dispatch_cache_stats().0,
+            0,
+            "disable_jit(true) must bypass dispatch cache"
+        );
+
+        let scope_no_exec = no_execution(true);
+        scope_no_exec.__enter__();
+        let blocked_exec = jit(&jaxpr, vec![PyValue::scalar_f64(2.0)]);
+        Python::with_gil(|py| {
+            let none = py.None().into_bound(py);
+            scope_no_exec.__exit__(&none, &none, &none);
+        });
+        assert!(blocked_exec.is_err());
+
+        let scope_nans = debug_nans(true);
+        scope_nans.__enter__();
+        let nan_exec = jit(&jaxpr, vec![PyValue::scalar_f64(f64::NAN)]);
+        Python::with_gil(|py| {
+            let none = py.None().into_bound(py);
+            scope_nans.__exit__(&none, &none, &none);
+        });
+        assert!(
+            nan_exec.is_err(),
+            "debug_nans(true) must fail closed on NaN output"
+        );
     }
 }
