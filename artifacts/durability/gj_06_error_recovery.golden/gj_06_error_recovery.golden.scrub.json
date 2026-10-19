@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/gj_06_error_recovery.golden/gj_06_error_recovery.golden.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/golden_journeys/gj_06_error_recovery.golden.json",
-  "expected_sha256_hex": "18e63d86dd4c520d5ac660652cf60b57ff1385aa3edb59961c8df8dd2e56a68b",
-  "decoded_sha256_hex": "18e63d86dd4c520d5ac660652cf60b57ff1385aa3edb59961c8df8dd2e56a68b",
+  "sidecar_path": "artifacts/durability/gj_06_error_recovery.golden/gj_06_error_recovery.golden.sidecar.json",
+  "artifact_path": "artifacts/e2e/golden_journeys/gj_06_error_recovery.golden.json",
+  "expected_sha256_hex": "b55df48f32b48add22f93b15e40432365b686047f22d4eab5e8b22f4f8aa6691",
+  "decoded_sha256_hex": "b55df48f32b48add22f93b15e40432365b686047f22d4eab5e8b22f4f8aa6691",
   "decoded_matches_expected": true,
   "total_symbols": 7,
   "source_symbols": 6,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773316180397
+  "generated_at_unix_ms": 1792431052732
 }

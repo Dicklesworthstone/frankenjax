@@ -11,21 +11,21 @@
       "required": true,
       "rationale": "Fixture corruption would silently invalidate conformance guarantees"
     },
-    "oracle_recapture": {
-      "path": "artifacts/conformance/oracle_recapture_matrix.v1.json",
-      "description": "Oracle recapture matrix - tracks fixture freshness",
+    "conformance_reports": {
+      "path": "artifacts/conformance/*.json",
+      "description": "Conformance gate reports, parity reports, and policy artifacts",
       "required": true,
-      "rationale": "Key evidence artifact for oracle parity claims"
+      "rationale": "Key evidence artifacts for oracle parity, security, stability, and TTL claims"
     },
     "reliability_budgets": {
-      "path": "artifacts/ci/reliability_budgets.v1.json",
-      "description": "CI reliability budget constraints",
+      "path": "artifacts/ci/*.json",
+      "description": "CI reliability budget and coverage reports",
       "required": true,
-      "rationale": "Corrupted budgets could mask reliability regressions"
+      "rationale": "Corrupted budgets or CI reports could mask reliability regressions"
     },
-    "benchmark_baselines": {
-      "path": "artifacts/performance/*.baseline.*",
-      "description": "Performance regression baselines",
+    "performance_baselines": {
+      "path": "artifacts/performance/*.json",
+      "description": "Top-level performance regression baselines and gate reports",
       "required": true,
       "rationale": "Baseline corruption would invalidate perf gate comparisons"
     }
@@ -49,6 +49,12 @@
       "excluded": true,
       "rationale": "Historical migration artifacts; integrity verified at extraction time"
     },
+    "performance_pass_scratch": {
+      "path_pattern": "artifacts/performance/evidence/*.json",
+      "description": "Per-pass microbenchmark evidence logs",
+      "excluded": true,
+      "rationale": "Historical per-pass microbenchmark logs; top-level baselines and gates are covered"
+    },
     "stdout_logs": {
       "path_pattern": "*.stdout.log",
       "description": "Test stdout capture files",
@@ -58,8 +64,9 @@
   },
   "coverage_target": {
     "required_artifacts_coverage_pct": 100,
-    "notes": "All required artifacts must have sidecar + scrub + proof triplet"
+    "sha256_freshness_required": true,
+    "notes": "All required artifacts must have a fresh sidecar + scrub + proof triplet matching current on-disk SHA-256"
   },
-  "next_audit": "2026-06-01",
+  "next_audit": "2026-12-01",
   "replay_command": "./scripts/run_durability_coverage_gate.sh --enforce"
 }

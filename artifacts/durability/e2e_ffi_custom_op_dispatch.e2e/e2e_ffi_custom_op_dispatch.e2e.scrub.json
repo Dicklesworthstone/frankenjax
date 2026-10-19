@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_ffi_custom_op_dispatch.e2e/e2e_ffi_custom_op_dispatch.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_ffi_custom_op_dispatch.e2e.json",
-  "expected_sha256_hex": "65422073bc817fc2d7947f68a8d76bf14f4fe01f5d1fddccf8d65a2f1ed6e8f2",
-  "decoded_sha256_hex": "65422073bc817fc2d7947f68a8d76bf14f4fe01f5d1fddccf8d65a2f1ed6e8f2",
+  "sidecar_path": "artifacts/durability/e2e_ffi_custom_op_dispatch.e2e/e2e_ffi_custom_op_dispatch.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_ffi_custom_op_dispatch.e2e.json",
+  "expected_sha256_hex": "d8578c659da588e86ec47b79e4e54da9e2f8d8d364042bd2515373307a43ffb1",
+  "decoded_sha256_hex": "d8578c659da588e86ec47b79e4e54da9e2f8d8d364042bd2515373307a43ffb1",
   "decoded_matches_expected": true,
-  "total_symbols": 3,
-  "source_symbols": 2,
+  "total_symbols": 10,
+  "source_symbols": 9,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773316180000
+  "generated_at_unix_ms": 1792431051414
 }

@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-0aeb612b2b61a062",
+  "sidecar_path": "artifacts/durability/memory_performance_gate.v1/memory_performance_gate.v1.sidecar.json",
+  "artifact_path": "artifacts/performance/memory_performance_gate.v1.json",
+  "expected_sha256_hex": "8c0e8b30d0582f04cf1708ae2af76245f8a2cc4cf40ffe267ac2df2e216ef86f",
+  "decoded_sha256_hex": "8c0e8b30d0582f04cf1708ae2af76245f8a2cc4cf40ffe267ac2df2e216ef86f",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 30,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431102397
+}

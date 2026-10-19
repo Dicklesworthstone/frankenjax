@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_rng_determinism.e2e/e2e_rng_determinism.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_rng_determinism.e2e.json",
-  "expected_sha256_hex": "a3f5ba3d817b53be77f0ec4600ea67f708970935c4e0aefc1aa97988d2410fa5",
-  "decoded_sha256_hex": "a3f5ba3d817b53be77f0ec4600ea67f708970935c4e0aefc1aa97988d2410fa5",
+  "sidecar_path": "artifacts/durability/e2e_rng_determinism.e2e/e2e_rng_determinism.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_rng_determinism.e2e.json",
+  "expected_sha256_hex": "f67133bd1e55a8c4ec17bd9bf8e6f71e260b646112393d0d32f0051965527d11",
+  "decoded_sha256_hex": "f67133bd1e55a8c4ec17bd9bf8e6f71e260b646112393d0d32f0051965527d11",
   "decoded_matches_expected": true,
   "total_symbols": 53,
   "source_symbols": 48,
   "repair_symbols": 5,
-  "generated_at_unix_ms": 1773316179658
+  "generated_at_unix_ms": 1792431052405
 }

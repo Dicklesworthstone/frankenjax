@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-546c578c7921433e",
+  "sidecar_path": "artifacts/durability/composition_oracle.v1/composition_oracle.v1.sidecar.json",
+  "artifact_path": "crates/fj-conformance/fixtures/composition_oracle.v1.json",
+  "expected_sha256_hex": "fd3696b14561994d5e6ce9b61e4020ba5c6ac1a99930b30f0252cee5d60adfbc",
+  "decoded_sha256_hex": "fd3696b14561994d5e6ce9b61e4020ba5c6ac1a99930b30f0252cee5d60adfbc",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 24,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431076933
+}

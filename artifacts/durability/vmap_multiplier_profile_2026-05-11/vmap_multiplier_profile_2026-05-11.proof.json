@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-a651272c3fbc0786",
+  "sidecar_path": "artifacts/durability/vmap_multiplier_profile_2026-05-11/vmap_multiplier_profile_2026-05-11.sidecar.json",
+  "artifact_path": "artifacts/performance/vmap_multiplier_profile_2026-05-11.json",
+  "expected_sha256_hex": "96099b8a86a3abd913a82b09ca018183c34b14cfead73ad7a3d72fed804d9119",
+  "decoded_sha256_hex": "96099b8a86a3abd913a82b09ca018183c34b14cfead73ad7a3d72fed804d9119",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 17,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431102472
+}

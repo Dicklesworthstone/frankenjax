@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/ttl_semantic_proof_matrix.v1/ttl_semantic_proof_matrix.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/ttl_semantic_proof_matrix.v1.json",
+  "expected_sha256_hex": "0b5d42a7a87979e739a2c4ea4ec9ea2a97a840987812cfde43a73133d3dae327",
+  "decoded_sha256_hex": "0b5d42a7a87979e739a2c4ea4ec9ea2a97a840987812cfde43a73133d3dae327",
+  "decoded_matches_expected": true,
+  "total_symbols": 111,
+  "source_symbols": 100,
+  "repair_symbols": 11,
+  "generated_at_unix_ms": 1792431101424
+}

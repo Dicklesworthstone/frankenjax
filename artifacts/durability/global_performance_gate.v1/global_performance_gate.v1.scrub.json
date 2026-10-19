@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/global_performance_gate.v1/global_performance_gate.v1.sidecar.json",
+  "artifact_path": "artifacts/performance/global_performance_gate.v1.json",
+  "expected_sha256_hex": "4d10c5697f8970277e3527f5ca8b1eea2defb022c74a705a7ed174a1f2bcccee",
+  "decoded_sha256_hex": "4d10c5697f8970277e3527f5ca8b1eea2defb022c74a705a7ed174a1f2bcccee",
+  "decoded_matches_expected": true,
+  "total_symbols": 48,
+  "source_symbols": 43,
+  "repair_symbols": 5,
+  "generated_at_unix_ms": 1792431102333
+}

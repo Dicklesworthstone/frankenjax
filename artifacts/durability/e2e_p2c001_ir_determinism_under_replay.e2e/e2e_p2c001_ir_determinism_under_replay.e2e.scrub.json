@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c001_ir_determinism_under_replay.e2e/e2e_p2c001_ir_determinism_under_replay.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c001_ir_determinism_under_replay.e2e.json",
-  "expected_sha256_hex": "30309a306ffd11784ca63a44c2d8178333893548fe592d19842e88fce7561a03",
-  "decoded_sha256_hex": "30309a306ffd11784ca63a44c2d8178333893548fe592d19842e88fce7561a03",
+  "sidecar_path": "artifacts/durability/e2e_p2c001_ir_determinism_under_replay.e2e/e2e_p2c001_ir_determinism_under_replay.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_p2c001_ir_determinism_under_replay.e2e.json",
+  "expected_sha256_hex": "fe7af302388faf1bc0ecb8f77166d3aa0e11e5f41b5f09ff57175650abb8797a",
+  "decoded_sha256_hex": "fe7af302388faf1bc0ecb8f77166d3aa0e11e5f41b5f09ff57175650abb8797a",
   "decoded_matches_expected": true,
-  "total_symbols": 8,
-  "source_symbols": 7,
+  "total_symbols": 9,
+  "source_symbols": 8,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773316179007
+  "generated_at_unix_ms": 1792431051622
 }

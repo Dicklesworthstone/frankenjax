@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-7a30cc523f9cf30b",
+  "sidecar_path": "artifacts/durability/ttl_semantic_proof_matrix.v1/ttl_semantic_proof_matrix.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/ttl_semantic_proof_matrix.v1.json",
+  "expected_sha256_hex": "0b5d42a7a87979e739a2c4ea4ec9ea2a97a840987812cfde43a73133d3dae327",
+  "decoded_sha256_hex": "0b5d42a7a87979e739a2c4ea4ec9ea2a97a840987812cfde43a73133d3dae327",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 109,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431101457
+}

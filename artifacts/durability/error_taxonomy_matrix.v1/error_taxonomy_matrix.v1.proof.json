@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-660c903a2a46f78c",
+  "sidecar_path": "artifacts/durability/error_taxonomy_matrix.v1/error_taxonomy_matrix.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/error_taxonomy_matrix.v1.json",
+  "expected_sha256_hex": "b097b49230743b162d0abd1f91c42772e9e4cf9ec7280b3ce953cfc0c3d57ecc",
+  "decoded_sha256_hex": "b097b49230743b162d0abd1f91c42772e9e4cf9ec7280b3ce953cfc0c3d57ecc",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 69,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431100781
+}

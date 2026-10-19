@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/cache_lifecycle_report.v1/cache_lifecycle_report.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/cache_lifecycle_report.v1.json",
+  "expected_sha256_hex": "059cf6ee19cc3c13de0ef3264b4b65823862851190a416c0c04872d30e507ae6",
+  "decoded_sha256_hex": "059cf6ee19cc3c13de0ef3264b4b65823862851190a416c0c04872d30e507ae6",
+  "decoded_matches_expected": true,
+  "total_symbols": 22,
+  "source_symbols": 20,
+  "repair_symbols": 2,
+  "generated_at_unix_ms": 1792431100629
+}

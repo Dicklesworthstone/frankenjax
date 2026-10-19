@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-9494fa5d3a01990e",
+  "sidecar_path": "artifacts/durability/linalg_fft_oracle.v1/linalg_fft_oracle.v1.sidecar.json",
+  "artifact_path": "crates/fj-conformance/fixtures/linalg_fft_oracle.v1.json",
+  "expected_sha256_hex": "9c4ef3631526e2aa555df3cda3c2347b10a26dbc5f93b5cc282e3de6d5cd5455",
+  "decoded_sha256_hex": "9c4ef3631526e2aa555df3cda3c2347b10a26dbc5f93b5cc282e3de6d5cd5455",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 129,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431076883
+}

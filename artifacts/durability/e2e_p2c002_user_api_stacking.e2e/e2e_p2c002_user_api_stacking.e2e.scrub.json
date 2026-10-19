@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c002_user_api_stacking.e2e/e2e_p2c002_user_api_stacking.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c002_user_api_stacking.e2e.json",
-  "expected_sha256_hex": "edc8baf72bd8341ae0c78efbb56cd2c139f4153a18b8f5539a1f30c5e73146e5",
-  "decoded_sha256_hex": "edc8baf72bd8341ae0c78efbb56cd2c139f4153a18b8f5539a1f30c5e73146e5",
+  "sidecar_path": "artifacts/durability/e2e_p2c002_user_api_stacking.e2e/e2e_p2c002_user_api_stacking.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_p2c002_user_api_stacking.e2e.json",
+  "expected_sha256_hex": "c323cc043fff30c383238a326a6addb8a45cdf50bf05fe0b76aba3b7525f3966",
+  "decoded_sha256_hex": "c323cc043fff30c383238a326a6addb8a45cdf50bf05fe0b76aba3b7525f3966",
   "decoded_matches_expected": true,
   "total_symbols": 7,
   "source_symbols": 6,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773316179254
+  "generated_at_unix_ms": 1792431052003
 }

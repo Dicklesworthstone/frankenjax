@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/gj_04_transform_composition.golden/gj_04_transform_composition.golden.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/golden_journeys/gj_04_transform_composition.golden.json",
-  "expected_sha256_hex": "108a9b19d7bf1048cfea64db7e9762e53a28e231d937c45b85f368ffb04212e7",
-  "decoded_sha256_hex": "108a9b19d7bf1048cfea64db7e9762e53a28e231d937c45b85f368ffb04212e7",
+  "sidecar_path": "artifacts/durability/gj_04_transform_composition.golden/gj_04_transform_composition.golden.sidecar.json",
+  "artifact_path": "artifacts/e2e/golden_journeys/gj_04_transform_composition.golden.json",
+  "expected_sha256_hex": "d4a1eaf7b263302dc2bcb861f505aea2246162b1ae8836ed5e3b60ecb70c9739",
+  "decoded_sha256_hex": "d4a1eaf7b263302dc2bcb861f505aea2246162b1ae8836ed5e3b60ecb70c9739",
   "decoded_matches_expected": true,
-  "total_symbols": 6,
-  "source_symbols": 5,
+  "total_symbols": 7,
+  "source_symbols": 6,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773316180365
+  "generated_at_unix_ms": 1792431052682
 }

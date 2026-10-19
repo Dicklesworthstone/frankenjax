@@ -1,0 +1,14 @@
+{
+  "proof_id": "decode-proof-1f586b3587eb494c",
+  "sidecar_path": "artifacts/durability/smoke_case/smoke_case.sidecar.json",
+  "artifact_path": "crates/fj-conformance/fixtures/smoke_case.json",
+  "expected_sha256_hex": "eb6620f12d4b56100cc2b0ec9453cd53f85918fb5005697ff83ddc1aa2650211",
+  "decoded_sha256_hex": "eb6620f12d4b56100cc2b0ec9453cd53f85918fb5005697ff83ddc1aa2650211",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0"
+  ],
+  "attempted_symbol_count": 1,
+  "recovered": true,
+  "details": "drop-kind=source count=1; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431076904
+}

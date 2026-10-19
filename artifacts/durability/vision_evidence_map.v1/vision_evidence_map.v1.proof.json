@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-b586edbe5f244314",
+  "sidecar_path": "artifacts/durability/vision_evidence_map.v1/vision_evidence_map.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/vision_evidence_map.v1.json",
+  "expected_sha256_hex": "761da12874a96894a5b17b4dba3791ef76f6e5c0b3e7e4be1e3993dce5d27a81",
+  "decoded_sha256_hex": "761da12874a96894a5b17b4dba3791ef76f6e5c0b3e7e4be1e3993dce5d27a81",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 68,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431102241
+}

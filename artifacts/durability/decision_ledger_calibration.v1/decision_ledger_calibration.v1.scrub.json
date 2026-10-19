@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/decision_ledger_calibration.v1/decision_ledger_calibration.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/decision_ledger_calibration.v1.json",
+  "expected_sha256_hex": "84936b1dfa9ef1ce047c78cf266288f0b313f6f8d10a0ed20b8e4d21143cb533",
+  "decoded_sha256_hex": "84936b1dfa9ef1ce047c78cf266288f0b313f6f8d10a0ed20b8e4d21143cb533",
+  "decoded_matches_expected": true,
+  "total_symbols": 74,
+  "source_symbols": 67,
+  "repair_symbols": 7,
+  "generated_at_unix_ms": 1792431100674
+}

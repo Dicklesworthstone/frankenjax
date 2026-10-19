@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/composition_oracle.v1/composition_oracle.v1.sidecar.json",
+  "artifact_path": "crates/fj-conformance/fixtures/composition_oracle.v1.json",
+  "expected_sha256_hex": "fd3696b14561994d5e6ce9b61e4020ba5c6ac1a99930b30f0252cee5d60adfbc",
+  "decoded_sha256_hex": "fd3696b14561994d5e6ce9b61e4020ba5c6ac1a99930b30f0252cee5d60adfbc",
+  "decoded_matches_expected": true,
+  "total_symbols": 26,
+  "source_symbols": 23,
+  "repair_symbols": 3,
+  "generated_at_unix_ms": 1792431076925
+}

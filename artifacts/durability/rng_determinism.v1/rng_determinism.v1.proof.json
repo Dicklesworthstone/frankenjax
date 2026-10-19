@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-3f73464f9c7ce231",
+  "sidecar_path": "artifacts/durability/rng_determinism.v1/rng_determinism.v1.sidecar.json",
+  "artifact_path": "crates/fj-conformance/fixtures/rng/rng_determinism.v1.json",
+  "expected_sha256_hex": "cff6d36dfdbeaecbe7589ef17c98874dcf8d24c15b6d443a81d8a783057f42fd",
+  "decoded_sha256_hex": "cff6d36dfdbeaecbe7589ef17c98874dcf8d24c15b6d443a81d8a783057f42fd",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 55,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431076982
+}

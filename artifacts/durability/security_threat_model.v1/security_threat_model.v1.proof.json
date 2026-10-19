@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-05cc5dd749d61d38",
+  "sidecar_path": "artifacts/durability/security_threat_model.v1/security_threat_model.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/security_threat_model.v1.json",
+  "expected_sha256_hex": "8f3122aeb4ff17be77c985c03c46aa28d264fa6fd4687ffb5e6602c2e8ce215f",
+  "decoded_sha256_hex": "8f3122aeb4ff17be77c985c03c46aa28d264fa6fd4687ffb5e6602c2e8ce215f",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 36,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431101239
+}

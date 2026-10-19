@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-f93584da53668e15",
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c001_ir_determinism_under_replay.e2e/e2e_p2c001_ir_determinism_under_replay.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c001_ir_determinism_under_replay.e2e.json",
-  "expected_sha256_hex": "30309a306ffd11784ca63a44c2d8178333893548fe592d19842e88fce7561a03",
-  "decoded_sha256_hex": "30309a306ffd11784ca63a44c2d8178333893548fe592d19842e88fce7561a03",
+  "proof_id": "decode-proof-37db274b45c60330",
+  "sidecar_path": "artifacts/durability/e2e_p2c001_ir_determinism_under_replay.e2e/e2e_p2c001_ir_determinism_under_replay.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_p2c001_ir_determinism_under_replay.e2e.json",
+  "expected_sha256_hex": "fe7af302388faf1bc0ecb8f77166d3aa0e11e5f41b5f09ff57175650abb8797a",
+  "decoded_sha256_hex": "fe7af302388faf1bc0ecb8f77166d3aa0e11e5f41b5f09ff57175650abb8797a",
   "dropped_symbols": [
-    "kind:repair:sbn:0:esi:7"
+    "kind:repair:sbn:0:esi:8"
   ],
-  "attempted_symbol_count": 7,
+  "attempted_symbol_count": 8,
   "recovered": true,
   "details": "drop-kind=repair count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773316179009
+  "generated_at_unix_ms": 1792431051622
 }

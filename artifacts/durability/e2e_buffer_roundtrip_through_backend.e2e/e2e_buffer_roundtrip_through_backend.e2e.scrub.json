@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_buffer_roundtrip_through_backend.e2e/e2e_buffer_roundtrip_through_backend.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_buffer_roundtrip_through_backend.e2e.json",
-  "expected_sha256_hex": "1867b55694d2e444c8eea90e961661aea8616c066d32b68e6d7daa3912ed6157",
-  "decoded_sha256_hex": "1867b55694d2e444c8eea90e961661aea8616c066d32b68e6d7daa3912ed6157",
+  "sidecar_path": "artifacts/durability/e2e_buffer_roundtrip_through_backend.e2e/e2e_buffer_roundtrip_through_backend.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_buffer_roundtrip_through_backend.e2e.json",
+  "expected_sha256_hex": "3bb4710e9d9e147ffe02fda7a4c4d5ba2655a4917708b721ff46bcd7c57ece38",
+  "decoded_sha256_hex": "3bb4710e9d9e147ffe02fda7a4c4d5ba2655a4917708b721ff46bcd7c57ece38",
   "decoded_matches_expected": true,
-  "total_symbols": 3,
-  "source_symbols": 2,
+  "total_symbols": 10,
+  "source_symbols": 9,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773316179869
+  "generated_at_unix_ms": 1792431051015
 }

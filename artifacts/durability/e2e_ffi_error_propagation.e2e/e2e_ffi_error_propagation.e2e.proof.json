@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-0d8d4bb488c7e007",
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_ffi_error_propagation.e2e/e2e_ffi_error_propagation.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_ffi_error_propagation.e2e.json",
-  "expected_sha256_hex": "46be6f4c5e7f284d7d3cddb2f3361c59434c892152441fdf80bb3dfc0b38885d",
-  "decoded_sha256_hex": "46be6f4c5e7f284d7d3cddb2f3361c59434c892152441fdf80bb3dfc0b38885d",
+  "proof_id": "decode-proof-6d970ace0b4b5f55",
+  "sidecar_path": "artifacts/durability/e2e_ffi_error_propagation.e2e/e2e_ffi_error_propagation.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_ffi_error_propagation.e2e.json",
+  "expected_sha256_hex": "7d4ed82b13953da6fb996f921048e2ea70797ebe122fbe7f6ce91cb3c80da572",
+  "decoded_sha256_hex": "7d4ed82b13953da6fb996f921048e2ea70797ebe122fbe7f6ce91cb3c80da572",
   "dropped_symbols": [
-    "kind:repair:sbn:0:esi:2"
+    "kind:repair:sbn:0:esi:9"
   ],
-  "attempted_symbol_count": 2,
+  "attempted_symbol_count": 9,
   "recovered": true,
   "details": "drop-kind=repair count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773316180017
+  "generated_at_unix_ms": 1792431051440
 }

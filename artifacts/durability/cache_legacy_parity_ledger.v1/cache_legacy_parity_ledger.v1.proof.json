@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-85d8c37f70ce86f3",
+  "sidecar_path": "artifacts/durability/cache_legacy_parity_ledger.v1/cache_legacy_parity_ledger.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/cache_legacy_parity_ledger.v1.json",
+  "expected_sha256_hex": "24f807c9b74b73290914490206586fbc4e8850e4c79ef30ba3e61cff744a1ba7",
+  "decoded_sha256_hex": "24f807c9b74b73290914490206586fbc4e8850e4c79ef30ba3e61cff744a1ba7",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 51,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431100608
+}

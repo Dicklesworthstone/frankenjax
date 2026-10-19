@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-5d8ba1158be1cde6",
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/gj_06_error_recovery.golden/gj_06_error_recovery.golden.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/golden_journeys/gj_06_error_recovery.golden.json",
-  "expected_sha256_hex": "18e63d86dd4c520d5ac660652cf60b57ff1385aa3edb59961c8df8dd2e56a68b",
-  "decoded_sha256_hex": "18e63d86dd4c520d5ac660652cf60b57ff1385aa3edb59961c8df8dd2e56a68b",
+  "proof_id": "decode-proof-9fd1f7b2b41bcaa6",
+  "sidecar_path": "artifacts/durability/gj_06_error_recovery.golden/gj_06_error_recovery.golden.sidecar.json",
+  "artifact_path": "artifacts/e2e/golden_journeys/gj_06_error_recovery.golden.json",
+  "expected_sha256_hex": "b55df48f32b48add22f93b15e40432365b686047f22d4eab5e8b22f4f8aa6691",
+  "decoded_sha256_hex": "b55df48f32b48add22f93b15e40432365b686047f22d4eab5e8b22f4f8aa6691",
   "dropped_symbols": [
     "kind:repair:sbn:0:esi:6"
   ],
   "attempted_symbol_count": 6,
   "recovered": true,
   "details": "drop-kind=repair count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773316180399
+  "generated_at_unix_ms": 1792431052733
 }

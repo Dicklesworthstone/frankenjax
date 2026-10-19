@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/security_adversarial_gate.v1/security_adversarial_gate.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/security_adversarial_gate.v1.json",
+  "expected_sha256_hex": "85abe21ef2a12b691c114ae168a39b03db7c4cf986eb38bf1d54066059ae7ec9",
+  "decoded_sha256_hex": "85abe21ef2a12b691c114ae168a39b03db7c4cf986eb38bf1d54066059ae7ec9",
+  "decoded_matches_expected": true,
+  "total_symbols": 178,
+  "source_symbols": 161,
+  "repair_symbols": 17,
+  "generated_at_unix_ms": 1792431101135
+}

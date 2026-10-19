@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/egraph_saturation_profile_2026-05-11/egraph_saturation_profile_2026-05-11.sidecar.json",
+  "artifact_path": "artifacts/performance/egraph_saturation_profile_2026-05-11.json",
+  "expected_sha256_hex": "ad8cea45d4bef41ed503011a10be89163622491cc38aaef22a7de7e5eaa648ef",
+  "decoded_sha256_hex": "ad8cea45d4bef41ed503011a10be89163622491cc38aaef22a7de7e5eaa648ef",
+  "decoded_matches_expected": true,
+  "total_symbols": 20,
+  "source_symbols": 18,
+  "repair_symbols": 2,
+  "generated_at_unix_ms": 1792431102300
+}

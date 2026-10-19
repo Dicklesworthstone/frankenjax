@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/smoke_case/smoke_case.sidecar.json",
+  "artifact_path": "crates/fj-conformance/fixtures/smoke_case.json",
+  "expected_sha256_hex": "eb6620f12d4b56100cc2b0ec9453cd53f85918fb5005697ff83ddc1aa2650211",
+  "decoded_sha256_hex": "eb6620f12d4b56100cc2b0ec9453cd53f85918fb5005697ff83ddc1aa2650211",
+  "decoded_matches_expected": true,
+  "total_symbols": 2,
+  "source_symbols": 1,
+  "repair_symbols": 1,
+  "generated_at_unix_ms": 1792431076901
+}

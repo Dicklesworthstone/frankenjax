@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-41161002a0f22263",
+  "sidecar_path": "artifacts/durability/numerical_stability_matrix.v1/numerical_stability_matrix.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/numerical_stability_matrix.v1.json",
+  "expected_sha256_hex": "d19cc531dbfe306ef93e51f08cd103040debab5b660cbf1bff8a0319ffc7172e",
+  "decoded_sha256_hex": "d19cc531dbfe306ef93e51f08cd103040debab5b660cbf1bff8a0319ffc7172e",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 80,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431100886
+}

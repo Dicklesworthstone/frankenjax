@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/cache_legacy_parity_ledger.v1/cache_legacy_parity_ledger.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/cache_legacy_parity_ledger.v1.json",
+  "expected_sha256_hex": "24f807c9b74b73290914490206586fbc4e8850e4c79ef30ba3e61cff744a1ba7",
+  "decoded_sha256_hex": "24f807c9b74b73290914490206586fbc4e8850e4c79ef30ba3e61cff744a1ba7",
+  "decoded_matches_expected": true,
+  "total_symbols": 53,
+  "source_symbols": 48,
+  "repair_symbols": 5,
+  "generated_at_unix_ms": 1792431100589
+}

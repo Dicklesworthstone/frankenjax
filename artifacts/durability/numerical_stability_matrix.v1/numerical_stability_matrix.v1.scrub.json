@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/numerical_stability_matrix.v1/numerical_stability_matrix.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/numerical_stability_matrix.v1.json",
+  "expected_sha256_hex": "d19cc531dbfe306ef93e51f08cd103040debab5b660cbf1bff8a0319ffc7172e",
+  "decoded_sha256_hex": "d19cc531dbfe306ef93e51f08cd103040debab5b660cbf1bff8a0319ffc7172e",
+  "decoded_matches_expected": true,
+  "total_symbols": 82,
+  "source_symbols": 74,
+  "repair_symbols": 8,
+  "generated_at_unix_ms": 1792431100857
+}

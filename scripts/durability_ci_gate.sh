@@ -67,10 +67,12 @@ echo "[durability] drop-source count: $DROP_SOURCE"
 
 # Define protected artifact directories
 declare -a ARTIFACT_DIRS=(
-  "$ROOT_DIR/artifacts/e2e"
-  "$ROOT_DIR/artifacts/e2e/golden_journeys"
+  "$ROOT_DIR/crates/fj-conformance/fixtures"
+  "$ROOT_DIR/crates/fj-conformance/fixtures/rng"
+  "$ROOT_DIR/crates/fj-conformance/fixtures/transforms"
+  "$ROOT_DIR/artifacts/conformance"
   "$ROOT_DIR/artifacts/ci"
-  "$ROOT_DIR/artifacts/performance/evidence"
+  "$ROOT_DIR/artifacts/performance"
 )
 
 DURABILITY_DIR="$ROOT_DIR/artifacts/durability"

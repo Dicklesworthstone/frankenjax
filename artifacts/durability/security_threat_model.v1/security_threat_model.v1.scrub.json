@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/security_threat_model.v1/security_threat_model.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/security_threat_model.v1.json",
+  "expected_sha256_hex": "8f3122aeb4ff17be77c985c03c46aa28d264fa6fd4687ffb5e6602c2e8ce215f",
+  "decoded_sha256_hex": "8f3122aeb4ff17be77c985c03c46aa28d264fa6fd4687ffb5e6602c2e8ce215f",
+  "decoded_matches_expected": true,
+  "total_symbols": 38,
+  "source_symbols": 34,
+  "repair_symbols": 4,
+  "generated_at_unix_ms": 1792431101229
+}

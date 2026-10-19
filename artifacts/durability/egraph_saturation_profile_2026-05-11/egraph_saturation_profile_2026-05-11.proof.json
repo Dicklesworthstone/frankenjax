@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-fda1ccb783b70065",
+  "sidecar_path": "artifacts/durability/egraph_saturation_profile_2026-05-11/egraph_saturation_profile_2026-05-11.sidecar.json",
+  "artifact_path": "artifacts/performance/egraph_saturation_profile_2026-05-11.json",
+  "expected_sha256_hex": "ad8cea45d4bef41ed503011a10be89163622491cc38aaef22a7de7e5eaa648ef",
+  "decoded_sha256_hex": "ad8cea45d4bef41ed503011a10be89163622491cc38aaef22a7de7e5eaa648ef",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 18,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431102306
+}

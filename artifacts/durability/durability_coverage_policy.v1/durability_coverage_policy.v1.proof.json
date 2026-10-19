@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-df94649137e35450",
+  "sidecar_path": "artifacts/durability/durability_coverage_policy.v1/durability_coverage_policy.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/durability_coverage_policy.v1.json",
+  "expected_sha256_hex": "05c8fd4b250d5e0a0c2e55a3147776c2154609960088dfbc1bf18d582c5684b8",
+  "decoded_sha256_hex": "05c8fd4b250d5e0a0c2e55a3147776c2154609960088dfbc1bf18d582c5684b8",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 12,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431100720
+}

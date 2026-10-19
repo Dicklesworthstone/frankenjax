@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/rng_determinism.v1/rng_determinism.v1.sidecar.json",
+  "artifact_path": "crates/fj-conformance/fixtures/rng/rng_determinism.v1.json",
+  "expected_sha256_hex": "cff6d36dfdbeaecbe7589ef17c98874dcf8d24c15b6d443a81d8a783057f42fd",
+  "decoded_sha256_hex": "cff6d36dfdbeaecbe7589ef17c98874dcf8d24c15b6d443a81d8a783057f42fd",
+  "decoded_matches_expected": true,
+  "total_symbols": 57,
+  "source_symbols": 51,
+  "repair_symbols": 6,
+  "generated_at_unix_ms": 1792431076964
+}

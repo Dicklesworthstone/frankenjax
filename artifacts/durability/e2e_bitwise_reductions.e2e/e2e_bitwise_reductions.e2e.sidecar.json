@@ -1,11 +1,11 @@
 {
   "schema_version": "frankenjax.sidecar.v1",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_bitwise_reductions.e2e.json",
-  "artifact_sha256_hex": "a64ca7663ad71a6a5d0f111019582cbbaba3bbfae8bc907e86f62741a4890a0e",
+  "artifact_path": "artifacts/e2e/e2e_bitwise_reductions.e2e.json",
+  "artifact_sha256_hex": "124db669e2ab59545c0cec0a3d8b3c2df19450922699dfb34150ac46516e6b96",
   "artifact_size": 570,
-  "generated_at_unix_ms": 1773316179568,
-  "object_id_high": 11983136766041725546,
-  "object_id_low": 6705597131020315835,
+  "generated_at_unix_ms": 1792431050978,
+  "object_id_high": 1318910831780125012,
+  "object_id_low": 6632935879936261165,
   "symbol_size": 256,
   "max_block_size": 1048576,
   "repair_overhead": 1.1,
@@ -19,7 +19,7 @@
       "sbn": 0,
       "esi": 0,
       "kind": "source",
-      "data_b64": "eyJzY2VuYXJpbyI6ImUyZV9iaXR3aXNlX3JlZHVjdGlvbnNfb3JhY2xlIiwiZ2VuZXJhdGVkX2F0X3VuaXgiOjE3NzMzMTQ0MzcsImFsbF9wYXNzZWQiOnRydWUsImNhc2VzIjpbeyJ0ZXN0X25hbWUiOiJ0ZXN0X3JlZHVjZV9hbmRfYWxsX3RydWUiLCJyZWR1Y3Rpb24iOiJyZWR1Y2VfYW5kIiwiaW5wdXRfZHR5cGUiOiJCb29sIiwiaW5wdXRfc2hhcGUiOlszXSwiYXhpcyI6bnVsbCwiZXhwZWN0ZWQiOnRydWUsImFjdHVhbCI6dHJ1ZSwicGFzcyI6dA=="
+      "data_b64": "eyJzY2VuYXJpbyI6ImUyZV9iaXR3aXNlX3JlZHVjdGlvbnNfb3JhY2xlIiwiZ2VuZXJhdGVkX2F0X3VuaXgiOjE3OTIyNjU0OTEsImFsbF9wYXNzZWQiOnRydWUsImNhc2VzIjpbeyJ0ZXN0X25hbWUiOiJ0ZXN0X3JlZHVjZV9hbmRfYWxsX3RydWUiLCJyZWR1Y3Rpb24iOiJyZWR1Y2VfYW5kIiwiaW5wdXRfZHR5cGUiOiJCb29sIiwiaW5wdXRfc2hhcGUiOlszXSwiYXhpcyI6bnVsbCwiZXhwZWN0ZWQiOnRydWUsImFjdHVhbCI6dHJ1ZSwicGFzcyI6dA=="
     },
     {
       "sbn": 0,
@@ -37,7 +37,7 @@
       "sbn": 0,
       "esi": 3,
       "kind": "repair",
-      "data_b64": "Q4RWAPtrURb+24bB+Qnhy1V1zKiCcgX3/sKX+8ohc13oqQip49Cm5H3t7202VbsjAL7w2dQUCbrHjNXjoVzo9rpqnaVJZ/B+yLc/Q7/nfeTXxojZ2O1yye+9cnO8itWq1K79tyrTbqLKNWQDcibRqEFY+4p6OGQD5DD9lwjVok+V+F7wFCItB3aDHMB+eQvua4O3HO8gIt5XlQvua4O3HPHr+Kte6FwhH5mi5OAHJwN9NB0h9vzH1h//6D+GuVzocjEta712IEHnySSqJYE1vya5uguaq8EiiYE1ol1a2AgDrXRP+788HH5IIbND4DbGwYs9vL3aQUQ5axSit1cmdg=="
+      "data_b64": "L9X9nEU7cbrn0lqi51AblwbMerz59gu3J2Ctk7rt6cbPP8gSQART2TQnxSZcM2YTKZQSi8GSjsFk6+cbLYKwdxv8W1NQdPgsfZJhV8L4dM0SvhHfT048WBUQN6g0ZsAsX8BaOqg5pNQn+xIWdh0jQQf992ZqexIWzQF99o/A9yoDsceUJf4NPV2I1iELMkCtxq8x8RULd0cOFkCtxq8x8Uo+JgzHsACBJKNZjOY9uxba4kmBd+nQGiuWsGFRQ6U9N7n84SnzuwdDWJChKGjYwjpDvkDlDL7+GWjY9zUDT6gWBAZg92w21ihZgfV75he+DtE1qBAUB27vaCXQPg6fXQ=="
     }
   ]
 }

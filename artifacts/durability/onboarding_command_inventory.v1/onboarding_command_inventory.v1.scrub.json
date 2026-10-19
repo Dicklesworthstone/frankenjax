@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/onboarding_command_inventory.v1/onboarding_command_inventory.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/onboarding_command_inventory.v1.json",
+  "expected_sha256_hex": "ccc2024f6b20bc20e4a2714298dedd058c6fe1fcf55c3e5bc7d25e632ef4bc57",
+  "decoded_sha256_hex": "ccc2024f6b20bc20e4a2714298dedd058c6fe1fcf55c3e5bc7d25e632ef4bc57",
+  "decoded_matches_expected": true,
+  "total_symbols": 108,
+  "source_symbols": 98,
+  "repair_symbols": 10,
+  "generated_at_unix_ms": 1792431100938
+}

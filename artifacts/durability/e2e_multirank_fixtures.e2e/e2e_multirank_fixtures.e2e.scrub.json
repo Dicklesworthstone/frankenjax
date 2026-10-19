@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_multirank_fixtures.e2e/e2e_multirank_fixtures.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_multirank_fixtures.e2e.json",
-  "expected_sha256_hex": "8d669825efba9694ca229ec43310758a2b317a327185fde5c228b43e768d81fd",
-  "decoded_sha256_hex": "8d669825efba9694ca229ec43310758a2b317a327185fde5c228b43e768d81fd",
+  "sidecar_path": "artifacts/durability/e2e_multirank_fixtures.e2e/e2e_multirank_fixtures.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_multirank_fixtures.e2e.json",
+  "expected_sha256_hex": "de7e43265b52af049771848c07a391cfd9073f0536679c213d23deba4eb58491",
+  "decoded_sha256_hex": "de7e43265b52af049771848c07a391cfd9073f0536679c213d23deba4eb58491",
   "decoded_matches_expected": true,
   "total_symbols": 69,
   "source_symbols": 62,
   "repair_symbols": 7,
-  "generated_at_unix_ms": 1773316180214
+  "generated_at_unix_ms": 1792431051529
 }

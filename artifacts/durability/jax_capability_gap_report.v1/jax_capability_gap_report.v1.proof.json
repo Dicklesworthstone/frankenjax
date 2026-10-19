@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-c3b29b12d6fc161f",
+  "sidecar_path": "artifacts/durability/jax_capability_gap_report.v1/jax_capability_gap_report.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/jax_capability_gap_report.v1.json",
+  "expected_sha256_hex": "36e2ed5ce9dfca79564e67d9aa75fb753e06f4cd95b99db4b499d413f1798c08",
+  "decoded_sha256_hex": "36e2ed5ce9dfca79564e67d9aa75fb753e06f4cd95b99db4b499d413f1798c08",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 38,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431100817
+}

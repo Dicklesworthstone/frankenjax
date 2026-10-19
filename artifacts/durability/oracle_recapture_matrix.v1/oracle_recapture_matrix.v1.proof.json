@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-78cedccdc6fc47ba",
+  "sidecar_path": "artifacts/durability/oracle_recapture_matrix.v1/oracle_recapture_matrix.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/oracle_recapture_matrix.v1.json",
+  "expected_sha256_hex": "9b47ffae2a90029e4f2b4dd56282285aed80cc7725935eabad542f34462980c2",
+  "decoded_sha256_hex": "9b47ffae2a90029e4f2b4dd56282285aed80cc7725935eabad542f34462980c2",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 33,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431101025
+}

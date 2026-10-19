@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/linalg_fft_oracle.v1/linalg_fft_oracle.v1.sidecar.json",
+  "artifact_path": "crates/fj-conformance/fixtures/linalg_fft_oracle.v1.json",
+  "expected_sha256_hex": "9c4ef3631526e2aa555df3cda3c2347b10a26dbc5f93b5cc282e3de6d5cd5455",
+  "decoded_sha256_hex": "9c4ef3631526e2aa555df3cda3c2347b10a26dbc5f93b5cc282e3de6d5cd5455",
+  "decoded_matches_expected": true,
+  "total_symbols": 131,
+  "source_symbols": 119,
+  "repair_symbols": 12,
+  "generated_at_unix_ms": 1792431076838
+}

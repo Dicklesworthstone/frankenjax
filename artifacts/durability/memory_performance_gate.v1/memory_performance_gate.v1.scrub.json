@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/memory_performance_gate.v1/memory_performance_gate.v1.sidecar.json",
+  "artifact_path": "artifacts/performance/memory_performance_gate.v1.json",
+  "expected_sha256_hex": "8c0e8b30d0582f04cf1708ae2af76245f8a2cc4cf40ffe267ac2df2e216ef86f",
+  "decoded_sha256_hex": "8c0e8b30d0582f04cf1708ae2af76245f8a2cc4cf40ffe267ac2df2e216ef86f",
+  "decoded_matches_expected": true,
+  "total_symbols": 32,
+  "source_symbols": 29,
+  "repair_symbols": 3,
+  "generated_at_unix_ms": 1792431102388
+}

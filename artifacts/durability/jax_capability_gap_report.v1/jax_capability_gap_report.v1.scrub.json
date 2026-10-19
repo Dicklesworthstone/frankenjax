@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/jax_capability_gap_report.v1/jax_capability_gap_report.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/jax_capability_gap_report.v1.json",
+  "expected_sha256_hex": "36e2ed5ce9dfca79564e67d9aa75fb753e06f4cd95b99db4b499d413f1798c08",
+  "decoded_sha256_hex": "36e2ed5ce9dfca79564e67d9aa75fb753e06f4cd95b99db4b499d413f1798c08",
+  "decoded_matches_expected": true,
+  "total_symbols": 40,
+  "source_symbols": 36,
+  "repair_symbols": 4,
+  "generated_at_unix_ms": 1792431100806
+}

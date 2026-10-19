@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c001_strict_vs_hardened_mode_split.e2e/e2e_p2c001_strict_vs_hardened_mode_split.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c001_strict_vs_hardened_mode_split.e2e.json",
-  "expected_sha256_hex": "0e6fd34c752572a466559795ba4172a9179d786e8d9679e145f561a663ac3506",
-  "decoded_sha256_hex": "0e6fd34c752572a466559795ba4172a9179d786e8d9679e145f561a663ac3506",
+  "sidecar_path": "artifacts/durability/e2e_p2c001_strict_vs_hardened_mode_split.e2e/e2e_p2c001_strict_vs_hardened_mode_split.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_p2c001_strict_vs_hardened_mode_split.e2e.json",
+  "expected_sha256_hex": "b19bf577171abd00c43d532f881cecee85dd409efdb0412c5b3ec117ba469cdc",
+  "decoded_sha256_hex": "b19bf577171abd00c43d532f881cecee85dd409efdb0412c5b3ec117ba469cdc",
   "decoded_matches_expected": true,
   "total_symbols": 8,
   "source_symbols": 7,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773316179095
+  "generated_at_unix_ms": 1792431051769
 }

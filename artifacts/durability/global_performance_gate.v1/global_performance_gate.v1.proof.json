@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-8927cb295c5f9a01",
+  "sidecar_path": "artifacts/durability/global_performance_gate.v1/global_performance_gate.v1.sidecar.json",
+  "artifact_path": "artifacts/performance/global_performance_gate.v1.json",
+  "expected_sha256_hex": "4d10c5697f8970277e3527f5ca8b1eea2defb022c74a705a7ed174a1f2bcccee",
+  "decoded_sha256_hex": "4d10c5697f8970277e3527f5ca8b1eea2defb022c74a705a7ed174a1f2bcccee",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 46,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431102347
+}

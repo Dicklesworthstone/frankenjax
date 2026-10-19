@@ -57,15 +57,33 @@ while IFS= read -r -d '' sidecar; do
   stem=$(basename "$sidecar" .sidecar.json)
   parent=$(dirname "$sidecar")
 
-  # Try to find the original artifact
+  # Resolve the original artifact from the sidecar's recorded artifact_path or fallback directories
   artifact=""
-  for dir in "$ROOT_DIR/artifacts/e2e" "$ROOT_DIR/artifacts/e2e/golden_journeys" "$ROOT_DIR/artifacts/ci" "$ROOT_DIR/artifacts/performance/evidence"; do
-    candidate="$dir/${stem}.json"
-    if [[ -f "$candidate" ]]; then
-      artifact="$candidate"
-      break
-    fi
-  done
+  recorded_path=$(jq -r '.artifact_path // empty' "$sidecar" 2>/dev/null || true)
+  recorded_rel="${recorded_path#/data/projects/frankenjax/}"
+  recorded_rel="${recorded_rel#/dp/frankenjax/}"
+  if [[ -n "$recorded_rel" && -f "$ROOT_DIR/$recorded_rel" ]]; then
+    artifact="$ROOT_DIR/$recorded_rel"
+  elif [[ -n "$recorded_path" && -f "$recorded_path" ]]; then
+    artifact="$recorded_path"
+  else
+    for dir in \
+      "$ROOT_DIR/crates/fj-conformance/fixtures" \
+      "$ROOT_DIR/crates/fj-conformance/fixtures/rng" \
+      "$ROOT_DIR/crates/fj-conformance/fixtures/transforms" \
+      "$ROOT_DIR/artifacts/conformance" \
+      "$ROOT_DIR/artifacts/ci" \
+      "$ROOT_DIR/artifacts/performance" \
+      "$ROOT_DIR/artifacts/e2e" \
+      "$ROOT_DIR/artifacts/e2e/golden_journeys" \
+      "$ROOT_DIR/artifacts/performance/evidence"; do
+      candidate="$dir/${stem}.json"
+      if [[ -f "$candidate" ]]; then
+        artifact="$candidate"
+        break
+      fi
+    done
+  fi
 
   if [[ -z "$artifact" ]]; then
     MISSING=$((MISSING + 1))

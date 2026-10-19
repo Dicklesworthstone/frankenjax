@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-03413016f4444ffe",
+  "sidecar_path": "artifacts/durability/transform_control_flow_matrix.v1/transform_control_flow_matrix.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/transform_control_flow_matrix.v1.json",
+  "expected_sha256_hex": "91cab66ca8d0b36b49cf4745a14b1710e555d09fd6a5860a5ae4e7ddfa9ff4d4",
+  "decoded_sha256_hex": "91cab66ca8d0b36b49cf4745a14b1710e555d09fd6a5860a5ae4e7ddfa9ff4d4",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 143,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431101372
+}

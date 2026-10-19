@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_backend_fallback_to_cpu.e2e/e2e_backend_fallback_to_cpu.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_backend_fallback_to_cpu.e2e.json",
-  "expected_sha256_hex": "d5d4b790daa679158b3fcf206865be5c756cfd1f00aafc54d755f2d8fc788d44",
-  "decoded_sha256_hex": "d5d4b790daa679158b3fcf206865be5c756cfd1f00aafc54d755f2d8fc788d44",
+  "sidecar_path": "artifacts/durability/e2e_backend_fallback_to_cpu.e2e/e2e_backend_fallback_to_cpu.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_backend_fallback_to_cpu.e2e.json",
+  "expected_sha256_hex": "74c018d3c108aa5a1dfde941fabc4e02e29960047b7a40ea722e4367cb69e190",
+  "decoded_sha256_hex": "74c018d3c108aa5a1dfde941fabc4e02e29960047b7a40ea722e4367cb69e190",
   "decoded_matches_expected": true,
-  "total_symbols": 3,
-  "source_symbols": 2,
+  "total_symbols": 10,
+  "source_symbols": 9,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773316179853
+  "generated_at_unix_ms": 1792431050944
 }

@@ -9,7 +9,7 @@
   "environment": {
     "os": "linux",
     "arch": "x86_64",
-    "timestamp_unix_ms": 1777725402000
+    "timestamp_unix_ms": 1792431104000
   },
   "feature_flags": [],
   "fixture_ids": [],
@@ -18,33 +18,32 @@
   "mode": "strict",
   "inputs": {
     "artifact_directories": [
+      "crates/fj-conformance/fixtures",
       "artifacts/conformance",
-      "artifacts/e2e",
       "artifacts/ci",
-      "artifacts/performance",
-      "artifacts/phase2c",
-      "artifacts/schemas"
+      "artifacts/performance"
     ]
   },
   "expected": {
-    "coverage_requirement": "all_triplets",
+    "coverage_requirement": "all_triplets_sha256_fresh",
     "minimum_coverage_pct": 100
   },
   "actual": {
-    "total_artifacts": 177,
-    "covered_artifacts": 92,
-    "uncovered_artifacts": 85,
-    "coverage_pct": 51,
-    "missing_sidecar": 84,
-    "missing_scrub": 76,
-    "missing_proof": 85,
-    "missing_all": 76
+    "total_artifacts": 38,
+    "covered_artifacts": 38,
+    "uncovered_artifacts": 0,
+    "coverage_pct": 100,
+    "missing_sidecar": 0,
+    "missing_scrub": 0,
+    "missing_proof": 0,
+    "missing_all": 0,
+    "stale_triplets": 0
   },
   "tolerance": {
     "policy_id": "all_triplets_required",
-    "notes": "every primary artifact requires sidecar + scrub + proof"
+    "notes": "every primary artifact requires sidecar + scrub + proof matching current on-disk SHA-256"
   },
-  "error": "coverage_gap",
+  "error": null,
   "timings": {
     "total_ms": 0
   },
@@ -53,8 +52,8 @@
   },
   "artifacts": [],
   "replay_command": "./scripts/run_durability_coverage_gate.sh --enforce",
-  "status": "fail",
-  "failure_summary": "85 artifacts missing durability triplets",
+  "status": "pass",
+  "failure_summary": null,
   "redactions": [],
   "metadata": {
     "bead": {

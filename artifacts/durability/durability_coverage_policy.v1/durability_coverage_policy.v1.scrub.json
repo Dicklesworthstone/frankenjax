@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/durability_coverage_policy.v1/durability_coverage_policy.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/durability_coverage_policy.v1.json",
+  "expected_sha256_hex": "05c8fd4b250d5e0a0c2e55a3147776c2154609960088dfbc1bf18d582c5684b8",
+  "decoded_sha256_hex": "05c8fd4b250d5e0a0c2e55a3147776c2154609960088dfbc1bf18d582c5684b8",
+  "decoded_matches_expected": true,
+  "total_symbols": 14,
+  "source_symbols": 12,
+  "repair_symbols": 2,
+  "generated_at_unix_ms": 1792431100715
+}

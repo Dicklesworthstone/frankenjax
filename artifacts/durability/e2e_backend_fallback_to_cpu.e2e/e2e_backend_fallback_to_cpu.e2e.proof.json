@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-9082e3aa5e9b0a5d",
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_backend_fallback_to_cpu.e2e/e2e_backend_fallback_to_cpu.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_backend_fallback_to_cpu.e2e.json",
-  "expected_sha256_hex": "d5d4b790daa679158b3fcf206865be5c756cfd1f00aafc54d755f2d8fc788d44",
-  "decoded_sha256_hex": "d5d4b790daa679158b3fcf206865be5c756cfd1f00aafc54d755f2d8fc788d44",
+  "proof_id": "decode-proof-a01e880df1bd8805",
+  "sidecar_path": "artifacts/durability/e2e_backend_fallback_to_cpu.e2e/e2e_backend_fallback_to_cpu.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_backend_fallback_to_cpu.e2e.json",
+  "expected_sha256_hex": "74c018d3c108aa5a1dfde941fabc4e02e29960047b7a40ea722e4367cb69e190",
+  "decoded_sha256_hex": "74c018d3c108aa5a1dfde941fabc4e02e29960047b7a40ea722e4367cb69e190",
   "dropped_symbols": [
-    "kind:repair:sbn:0:esi:2"
+    "kind:repair:sbn:0:esi:9"
   ],
-  "attempted_symbol_count": 2,
+  "attempted_symbol_count": 9,
   "recovered": true,
   "details": "drop-kind=repair count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773316179854
+  "generated_at_unix_ms": 1792431050944
 }

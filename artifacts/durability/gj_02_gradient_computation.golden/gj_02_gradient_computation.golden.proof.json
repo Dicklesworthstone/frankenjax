@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-d13cea0285af405f",
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/gj_02_gradient_computation.golden/gj_02_gradient_computation.golden.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/golden_journeys/gj_02_gradient_computation.golden.json",
-  "expected_sha256_hex": "dbd1195ec100a5237e8cc63643bce07176130dad10d5fdc96b3b56d32b21747b",
-  "decoded_sha256_hex": "dbd1195ec100a5237e8cc63643bce07176130dad10d5fdc96b3b56d32b21747b",
+  "proof_id": "decode-proof-069cbb1582359613",
+  "sidecar_path": "artifacts/durability/gj_02_gradient_computation.golden/gj_02_gradient_computation.golden.sidecar.json",
+  "artifact_path": "artifacts/e2e/golden_journeys/gj_02_gradient_computation.golden.json",
+  "expected_sha256_hex": "953632d138fdaa5e18ad0f1ba885a22fc2f95d3eafa85c4495cea738724ebb8f",
+  "decoded_sha256_hex": "953632d138fdaa5e18ad0f1ba885a22fc2f95d3eafa85c4495cea738724ebb8f",
   "dropped_symbols": [
     "kind:repair:sbn:0:esi:5"
   ],
   "attempted_symbol_count": 5,
   "recovered": true,
   "details": "drop-kind=repair count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773316180334
+  "generated_at_unix_ms": 1792431052633
 }

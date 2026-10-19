@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-4c14ed84b9aabb64",
+  "sidecar_path": "artifacts/durability/decision_ledger_calibration.v1/decision_ledger_calibration.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/decision_ledger_calibration.v1.json",
+  "expected_sha256_hex": "84936b1dfa9ef1ce047c78cf266288f0b313f6f8d10a0ed20b8e4d21143cb533",
+  "decoded_sha256_hex": "84936b1dfa9ef1ce047c78cf266288f0b313f6f8d10a0ed20b8e4d21143cb533",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 72,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431100696
+}

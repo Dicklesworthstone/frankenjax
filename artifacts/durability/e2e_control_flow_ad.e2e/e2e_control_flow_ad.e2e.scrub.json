@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_control_flow_ad.e2e/e2e_control_flow_ad.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_control_flow_ad.e2e.json",
-  "expected_sha256_hex": "c0d06a0dccbcd89d7238c6517c26fc8ece5d0197c9ccacf80da826197f19c188",
-  "decoded_sha256_hex": "c0d06a0dccbcd89d7238c6517c26fc8ece5d0197c9ccacf80da826197f19c188",
+  "sidecar_path": "artifacts/durability/e2e_control_flow_ad.e2e/e2e_control_flow_ad.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_control_flow_ad.e2e.json",
+  "expected_sha256_hex": "f48c764e0326aacc7d9d9fb579c9d39366b7d59e35ce48363b7531a26b53e586",
+  "decoded_sha256_hex": "f48c764e0326aacc7d9d9fb579c9d39366b7d59e35ce48363b7531a26b53e586",
   "decoded_matches_expected": true,
   "total_symbols": 7,
   "source_symbols": 6,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773316179676
+  "generated_at_unix_ms": 1792431051120
 }

@@ -1,0 +1,31 @@
+{
+  "schema_version": "frankenjax.sidecar.v1",
+  "artifact_path": "crates/fj-conformance/fixtures/smoke_case.json",
+  "artifact_sha256_hex": "eb6620f12d4b56100cc2b0ec9453cd53f85918fb5005697ff83ddc1aa2650211",
+  "artifact_size": 129,
+  "generated_at_unix_ms": 1792431076900,
+  "object_id_high": 16962281266756670992,
+  "object_id_low": 919491804084292947,
+  "symbol_size": 256,
+  "max_block_size": 1048576,
+  "repair_overhead": 1.1,
+  "source_blocks": 1,
+  "symbols_per_block": 1,
+  "total_symbols": 2,
+  "source_symbols": 1,
+  "repair_symbols": 1,
+  "symbols": [
+    {
+      "sbn": 0,
+      "esi": 0,
+      "kind": "source",
+      "data_b64": "ewogICJzdWl0ZSI6ICJzbW9rZSIsCiAgIm9yYWNsZSI6ICJsZWdhY3lfamF4X2NvZGUvamF4IiwKICAibm90ZXMiOiAiQm9vdHN0cmFwIGZpeHR1cmUgZm9yIGZpcnN0IHJ1bm5hYmxlIGNvbmZvcm1hbmNlIGhhcm5lc3MiCn0KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    },
+    {
+      "sbn": 0,
+      "esi": 1,
+      "kind": "repair",
+      "data_b64": "ewogICJzdWl0ZSI6ICJzbW9rZSIsCiAgIm9yYWNsZSI6ICJsZWdhY3lfamF4X2NvZGUvamF4IiwKICAibm90ZXMiOiAiQm9vdHN0cmFwIGZpeHR1cmUgZm9yIGZpcnN0IHJ1bm5hYmxlIGNvbmZvcm1hbmNlIGhhcm5lc3MiCn0KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    }
+  ]
+}

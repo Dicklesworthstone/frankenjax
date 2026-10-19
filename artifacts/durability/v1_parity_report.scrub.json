@@ -1,11 +1,11 @@
 {
   "sidecar_path": "artifacts/durability/v1_parity_report.sidecar.json",
   "artifact_path": "artifacts/conformance/v1_parity_report.json",
-  "expected_sha256_hex": "002ccb657d24edbd3a0833fae26e4e4b5a65b5d2e10c5b0fd1e535850fc2e99e",
-  "decoded_sha256_hex": "002ccb657d24edbd3a0833fae26e4e4b5a65b5d2e10c5b0fd1e535850fc2e99e",
+  "expected_sha256_hex": "84975e4e21c670f8480272ceeddaa2010ec54093997b8ef65ae22a45f910594f",
+  "decoded_sha256_hex": "84975e4e21c670f8480272ceeddaa2010ec54093997b8ef65ae22a45f910594f",
   "decoded_matches_expected": true,
-  "total_symbols": 167,
-  "source_symbols": 151,
-  "repair_symbols": 16,
-  "generated_at_unix_ms": 1773293817101
+  "total_symbols": 369,
+  "source_symbols": 335,
+  "repair_symbols": 34,
+  "generated_at_unix_ms": 1792431076547
 }

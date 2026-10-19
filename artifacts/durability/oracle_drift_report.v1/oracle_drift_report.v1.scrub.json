@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/oracle_drift_report.v1/oracle_drift_report.v1.sidecar.json",
+  "artifact_path": "artifacts/conformance/oracle_drift_report.v1.json",
+  "expected_sha256_hex": "41707aca0aea03d9cda655022035cd4633c7cadfcb0eaab2b2ab68d623213b08",
+  "decoded_sha256_hex": "41707aca0aea03d9cda655022035cd4633c7cadfcb0eaab2b2ab68d623213b08",
+  "decoded_matches_expected": true,
+  "total_symbols": 9,
+  "source_symbols": 8,
+  "repair_symbols": 1,
+  "generated_at_unix_ms": 1792431100988
+}

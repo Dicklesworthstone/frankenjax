@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/dtype_promotion_oracle.v1/dtype_promotion_oracle.v1.sidecar.json",
+  "artifact_path": "crates/fj-conformance/fixtures/dtype_promotion_oracle.v1.json",
+  "expected_sha256_hex": "44b826de9373ffaa253470c4ba8dd24f83ebbb998338977947ac3a02489310b1",
+  "decoded_sha256_hex": "44b826de9373ffaa253470c4ba8dd24f83ebbb998338977947ac3a02489310b1",
+  "decoded_matches_expected": true,
+  "total_symbols": 129,
+  "source_symbols": 117,
+  "repair_symbols": 12,
+  "generated_at_unix_ms": 1792431100305
+}

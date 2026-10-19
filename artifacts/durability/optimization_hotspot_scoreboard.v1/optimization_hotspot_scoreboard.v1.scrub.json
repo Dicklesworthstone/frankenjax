@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/optimization_hotspot_scoreboard.v1/optimization_hotspot_scoreboard.v1.sidecar.json",
+  "artifact_path": "artifacts/performance/optimization_hotspot_scoreboard.v1.json",
+  "expected_sha256_hex": "2bc2bdcf9196cff2e1f303d05cc80b21a91dff161190dad36dd43e7ac39648ea",
+  "decoded_sha256_hex": "2bc2bdcf9196cff2e1f303d05cc80b21a91dff161190dad36dd43e7ac39648ea",
+  "decoded_matches_expected": true,
+  "total_symbols": 66,
+  "source_symbols": 60,
+  "repair_symbols": 6,
+  "generated_at_unix_ms": 1792431102427
+}

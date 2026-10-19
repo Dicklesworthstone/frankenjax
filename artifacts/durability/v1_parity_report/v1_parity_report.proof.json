@@ -1,0 +1,15 @@
+{
+  "proof_id": "decode-proof-db4d80a5621267c0",
+  "sidecar_path": "artifacts/durability/v1_parity_report/v1_parity_report.sidecar.json",
+  "artifact_path": "artifacts/conformance/v1_parity_report.json",
+  "expected_sha256_hex": "84975e4e21c670f8480272ceeddaa2010ec54093997b8ef65ae22a45f910594f",
+  "decoded_sha256_hex": "84975e4e21c670f8480272ceeddaa2010ec54093997b8ef65ae22a45f910594f",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0",
+    "kind:source:sbn:0:esi:1"
+  ],
+  "attempted_symbol_count": 367,
+  "recovered": true,
+  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792431102181
+}

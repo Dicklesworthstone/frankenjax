@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_control_flow_conformance.e2e/e2e_control_flow_conformance.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_control_flow_conformance.e2e.json",
-  "expected_sha256_hex": "ef6aad1f2ff185e98a8da52f4af478b6ea6a7764f4b832b33bc20c6302634229",
-  "decoded_sha256_hex": "ef6aad1f2ff185e98a8da52f4af478b6ea6a7764f4b832b33bc20c6302634229",
+  "sidecar_path": "artifacts/durability/e2e_control_flow_conformance.e2e/e2e_control_flow_conformance.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_control_flow_conformance.e2e.json",
+  "expected_sha256_hex": "cb8937effe252cea518a0114d86c3cc8c9c26dc2f2bf356d1a8ce3a101b476b6",
+  "decoded_sha256_hex": "cb8937effe252cea518a0114d86c3cc8c9c26dc2f2bf356d1a8ce3a101b476b6",
   "decoded_matches_expected": true,
-  "total_symbols": 22,
-  "source_symbols": 20,
-  "repair_symbols": 2,
-  "generated_at_unix_ms": 1773316179708
+  "total_symbols": 28,
+  "source_symbols": 25,
+  "repair_symbols": 3,
+  "generated_at_unix_ms": 1792431051148
 }

@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/vmap_multiplier_profile_2026-05-11/vmap_multiplier_profile_2026-05-11.sidecar.json",
+  "artifact_path": "artifacts/performance/vmap_multiplier_profile_2026-05-11.json",
+  "expected_sha256_hex": "96099b8a86a3abd913a82b09ca018183c34b14cfead73ad7a3d72fed804d9119",
+  "decoded_sha256_hex": "96099b8a86a3abd913a82b09ca018183c34b14cfead73ad7a3d72fed804d9119",
+  "decoded_matches_expected": true,
+  "total_symbols": 19,
+  "source_symbols": 17,
+  "repair_symbols": 2,
+  "generated_at_unix_ms": 1792431102466
+}

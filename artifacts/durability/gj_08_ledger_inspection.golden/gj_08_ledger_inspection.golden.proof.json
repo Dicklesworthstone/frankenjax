@@ -1,9 +1,9 @@
 {
-  "proof_id": "decode-proof-be639e257cdf2bb3",
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/gj_08_ledger_inspection.golden/gj_08_ledger_inspection.golden.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/golden_journeys/gj_08_ledger_inspection.golden.json",
-  "expected_sha256_hex": "06ddc9052526473d5d88e4a7553c7f5fdac2a17d34212ee5a1540c458cea8886",
-  "decoded_sha256_hex": "06ddc9052526473d5d88e4a7553c7f5fdac2a17d34212ee5a1540c458cea8886",
+  "proof_id": "decode-proof-00c0d8c17c670336",
+  "sidecar_path": "artifacts/durability/gj_08_ledger_inspection.golden/gj_08_ledger_inspection.golden.sidecar.json",
+  "artifact_path": "artifacts/e2e/golden_journeys/gj_08_ledger_inspection.golden.json",
+  "expected_sha256_hex": "5b58a3869ec45b62c035b1aaa09967b402e002480d82a392509b6d3cb9859f93",
+  "decoded_sha256_hex": "5b58a3869ec45b62c035b1aaa09967b402e002480d82a392509b6d3cb9859f93",
   "dropped_symbols": [
     "kind:source:sbn:0:esi:0",
     "kind:source:sbn:0:esi:1"
@@ -11,5 +11,5 @@
   "attempted_symbol_count": 11,
   "recovered": true,
   "details": "drop-kind=source count=2; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773316180433
+  "generated_at_unix_ms": 1792431052786
 }

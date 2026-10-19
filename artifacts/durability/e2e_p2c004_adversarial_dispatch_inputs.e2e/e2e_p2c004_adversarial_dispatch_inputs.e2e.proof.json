@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-f2998c1e35b42613",
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c004_adversarial_dispatch_inputs.e2e/e2e_p2c004_adversarial_dispatch_inputs.e2e.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c004_adversarial_dispatch_inputs.e2e.json",
-  "expected_sha256_hex": "2a263c3a61258b9dcbc8f1349102e24c06825f00ccf8c96270d1dd661efb4195",
-  "decoded_sha256_hex": "2a263c3a61258b9dcbc8f1349102e24c06825f00ccf8c96270d1dd661efb4195",
+  "proof_id": "decode-proof-10c041699b7e1860",
+  "sidecar_path": "artifacts/durability/e2e_p2c004_adversarial_dispatch_inputs.e2e/e2e_p2c004_adversarial_dispatch_inputs.e2e.sidecar.json",
+  "artifact_path": "artifacts/e2e/e2e_p2c004_adversarial_dispatch_inputs.e2e.json",
+  "expected_sha256_hex": "8e45dcbe6594fa3a0cfe5ac7f214dadb0312b86e2f21b6312b4c59a8eb3e390c",
+  "decoded_sha256_hex": "8e45dcbe6594fa3a0cfe5ac7f214dadb0312b86e2f21b6312b4c59a8eb3e390c",
   "dropped_symbols": [
     "kind:repair:sbn:0:esi:5"
   ],
   "attempted_symbol_count": 5,
   "recovered": true,
   "details": "drop-kind=repair count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773316179388
+  "generated_at_unix_ms": 1792431052207
 }
