@@ -1,13 +1,22 @@
 #![forbid(unsafe_code)]
 
-use fj_core::CompatibilityMode;
+use crate::durability::scrub_sidecar;
+use fj_cache::{CacheKeyError, CacheKeyInputRef, build_cache_key_ref};
+use fj_core::{
+    Atom, CompatibilityMode, Equation, Jaxpr, Literal, Primitive, TraceTransformLedger, Transform,
+    Value, VarId, build_program, verify_transform_composition,
+};
+use fj_dispatch::{DispatchError, DispatchRequest, TransformExecutionError, dispatch};
+use fj_egraph::optimize_jaxpr;
+use fj_interpreters::eval_jaxpr;
 use fj_ledger::{
-    DecisionAction, DecisionRecord, EvidenceSignal, LogDomainPosterior, LossMatrix,
-    expected_loss_keep, expected_loss_kill,
+    DecisionAction, DecisionRecord, EvidenceLedger, EvidenceSignal, LedgerEntry,
+    LogDomainPosterior, LossMatrix, expected_loss_keep, expected_loss_kill,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
-use std::collections::BTreeSet;
+use smallvec::smallvec;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -147,7 +156,7 @@ impl DecisionLedgerOutputPaths {
 pub fn build_decision_ledger_report(root: &Path) -> DecisionLedgerReport {
     let rows = decision_specs()
         .into_iter()
-        .map(build_row)
+        .map(|spec| build_row(root, spec))
         .collect::<Vec<_>>();
     let calibration_buckets = calibration_buckets();
     let summary = summarize_rows(&rows, &calibration_buckets);
@@ -827,7 +836,190 @@ fn summarize_rows(
     }
 }
 
-fn build_row(spec: DecisionSpec) -> DecisionLedgerRow {
+fn execute_live_decision_probe(root: &Path, decision_class: &str) -> bool {
+    let jaxpr = build_program(fj_core::ProgramSpec::AddOne);
+    let flags = BTreeMap::new();
+    match decision_class {
+        "cache_hit_recompute" => {
+            let input_a = CacheKeyInputRef {
+                mode: CompatibilityMode::Strict,
+                backend: "cpu",
+                jaxpr: &jaxpr,
+                transform_stack: &[Transform::Jit],
+                compile_options: &flags,
+                custom_hook: None,
+                unknown_incompatible_features: &[],
+            };
+            let input_b = CacheKeyInputRef {
+                mode: CompatibilityMode::Strict,
+                backend: "cpu",
+                jaxpr: &jaxpr,
+                transform_stack: &[Transform::Jit],
+                compile_options: &flags,
+                custom_hook: None,
+                unknown_incompatible_features: &[],
+            };
+            let input_c = CacheKeyInputRef {
+                mode: CompatibilityMode::Hardened,
+                backend: "cpu",
+                jaxpr: &jaxpr,
+                transform_stack: &[Transform::Jit],
+                compile_options: &flags,
+                custom_hook: None,
+                unknown_incompatible_features: &[],
+            };
+            matches!(
+                (
+                    build_cache_key_ref(&input_a),
+                    build_cache_key_ref(&input_b),
+                    build_cache_key_ref(&input_c)
+                ),
+                (Ok(ka), Ok(kb), Ok(kc)) if ka == kb && ka != kc
+            )
+        }
+        "strict_rejection" => {
+            let unknown = vec!["future_flag".to_owned()];
+            let input = CacheKeyInputRef {
+                mode: CompatibilityMode::Strict,
+                backend: "cpu",
+                jaxpr: &jaxpr,
+                transform_stack: &[Transform::Jit],
+                compile_options: &flags,
+                custom_hook: None,
+                unknown_incompatible_features: &unknown,
+            };
+            matches!(
+                build_cache_key_ref(&input),
+                Err(CacheKeyError::UnknownIncompatibleFeatures { .. })
+            )
+        }
+        "hardened_recovery" => {
+            let unknown = vec!["future_flag".to_owned()];
+            let input = CacheKeyInputRef {
+                mode: CompatibilityMode::Hardened,
+                backend: "cpu",
+                jaxpr: &jaxpr,
+                transform_stack: &[Transform::Jit],
+                compile_options: &flags,
+                custom_hook: None,
+                unknown_incompatible_features: &unknown,
+            };
+            let Ok(key) = build_cache_key_ref(&input) else {
+                return false;
+            };
+            let mut ledger = EvidenceLedger::new();
+            let loss_matrix = LossMatrix::default();
+            ledger.append(LedgerEntry {
+                decision_id: key.as_string(),
+                record: DecisionRecord::from_posterior(
+                    CompatibilityMode::Hardened,
+                    0.5,
+                    &loss_matrix,
+                ),
+                signals: vec![EvidenceSignal {
+                    signal_name: "malformed_input_detected".to_owned(),
+                    log_likelihood_delta: 0.8,
+                    detail: "live hardened recovery".to_owned(),
+                }],
+            });
+            ledger.len() == 1
+        }
+        "fallback_denial" => {
+            let mut ledger = TraceTransformLedger::new(jaxpr);
+            ledger.push_transform(Transform::Grad, "grad");
+            ledger.push_transform(Transform::Vmap, "vmap");
+            let Ok(arg) = Value::vector_i64(&[1, 2]) else {
+                return false;
+            };
+            let req = DispatchRequest {
+                mode: CompatibilityMode::Strict,
+                ledger,
+                args: vec![arg],
+                backend: "cpu".to_owned(),
+                compile_options: flags,
+                custom_hook: None,
+                unknown_incompatible_features: vec![],
+            };
+            matches!(
+                dispatch(req),
+                Err(DispatchError::TransformExecution(
+                    TransformExecutionError::NonScalarGradientInput
+                        | TransformExecutionError::NonScalarGradientOutput
+                ))
+            )
+        }
+        "optimization_selection" => {
+            let add_zero = Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(2)],
+                vec![Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::from_f64(0.0))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            );
+            let opt = optimize_jaxpr(&add_zero);
+            let args = [Value::scalar_f64(3.5)];
+            matches!(
+                (eval_jaxpr(&add_zero, &args), eval_jaxpr(&opt, &args)),
+                (Ok(orig_out), Ok(opt_out)) if orig_out == opt_out
+            )
+        }
+        "durability_recovery" => {
+            let missing_artifact = root.join("artifacts/durability/__nonexistent__.json");
+            let sidecar = root.join("artifacts/durability/__nonexistent__.sidecar.json");
+            let report = root.join("artifacts/durability/__nonexistent__.scrub.json");
+            scrub_sidecar(&sidecar, &missing_artifact, &report).is_err()
+        }
+        "transform_admission" => {
+            let mut ledger = TraceTransformLedger::new(jaxpr);
+            ledger.push_transform(Transform::Jit, "jit");
+            verify_transform_composition(&ledger).is_ok()
+        }
+        "unsupported_scope" => {
+            let ledger = TraceTransformLedger::new(jaxpr);
+            let req = DispatchRequest {
+                mode: CompatibilityMode::Strict,
+                ledger,
+                args: vec![Value::scalar_i64(1), Value::scalar_i64(2)],
+                backend: "cpu".to_owned(),
+                compile_options: flags,
+                custom_hook: None,
+                unknown_incompatible_features: vec![],
+            };
+            dispatch(req).is_err()
+        }
+        "runtime_budget_deadline" => {
+            let matrix = LossMatrix {
+                keep_if_useful: 5,
+                kill_if_useful: 15,
+                keep_if_abandoned: 15,
+                kill_if_abandoned: 5,
+            };
+            let record = DecisionRecord::from_posterior(CompatibilityMode::Strict, 0.5, &matrix);
+            record.action == DecisionAction::Reprofile
+        }
+        _ => false,
+    }
+}
+
+fn bucket_for_probability(p: f64) -> &'static str {
+    if p < 0.25 {
+        "bucket_00_025"
+    } else if p < 0.50 {
+        "bucket_025_050"
+    } else if p < 0.75 {
+        "bucket_050_075"
+    } else {
+        "bucket_075_100"
+    }
+}
+
+fn build_row(root: &Path, spec: DecisionSpec) -> DecisionLedgerRow {
     let mut posterior = LogDomainPosterior::new(spec.prior_abandoned);
     let evidence_signals = spec
         .signals
@@ -860,11 +1052,19 @@ fn build_row(spec: DecisionSpec) -> DecisionLedgerRow {
         _ => 0.0,
     }
     .clamp(0.0, 1.0);
+    let computed_bucket =
+        bucket_for_probability(posterior_abandoned.max(1.0 - posterior_abandoned));
+    let probe_ok = execute_live_decision_probe(root, spec.decision_class)
+        && computed_bucket == spec.calibration_bucket;
 
     DecisionLedgerRow {
         decision_id: spec.decision_id.to_owned(),
         decision_class: spec.decision_class.to_owned(),
-        status: "pass".to_owned(),
+        status: if probe_ok {
+            "pass".to_owned()
+        } else {
+            "fail".to_owned()
+        },
         mode: mode_label(spec.mode).to_owned(),
         selected_action,
         alternatives_considered: spec
@@ -880,7 +1080,7 @@ fn build_row(spec: DecisionSpec) -> DecisionLedgerRow {
         evidence_signals,
         expected_outcome: spec.expected_outcome.to_owned(),
         actual_outcome: spec.actual_outcome.to_owned(),
-        calibration_bucket: spec.calibration_bucket.to_owned(),
+        calibration_bucket: computed_bucket.to_owned(),
         drift_status: spec.drift_status.to_owned(),
         stale_calibration: false,
         strict_hardened_divergence: spec.strict_hardened_divergence,
@@ -898,16 +1098,99 @@ fn build_row(spec: DecisionSpec) -> DecisionLedgerRow {
 }
 
 fn calibration_buckets() -> Vec<DecisionCalibrationBucket> {
-    let specs = [
-        ("bucket_00_025", 0.0, 0.25, 0.18, 0.17, 18),
-        ("bucket_025_050", 0.25, 0.50, 0.38, 0.40, 20),
-        ("bucket_050_075", 0.50, 0.75, 0.62, 0.68, 19),
-        ("bucket_075_100", 0.75, 1.00, 0.86, 0.81, 16),
+    // Execute 40 live LogDomainPosterior + DecisionRecord trials across the 4 probability buckets
+    let bucket_defs = [
+        ("bucket_00_025", 0.0_f64, 0.25_f64),
+        ("bucket_025_050", 0.25_f64, 0.50_f64),
+        ("bucket_050_075", 0.50_f64, 0.75_f64),
+        ("bucket_075_100", 0.75_f64, 1.00_f64),
     ];
-    specs
+    let trials: &[(f64, &[f64], bool)] = &[
+        // Bucket [0.0, 0.25): 10 trials
+        (0.30, &[-0.9], false),
+        (0.30, &[-0.8], false),
+        (0.35, &[-1.0], false),
+        (0.35, &[-0.9], false),
+        (0.40, &[-1.1], false),
+        (0.40, &[-1.0], false),
+        (0.45, &[-1.2], false),
+        (0.45, &[-1.1], false),
+        (0.30, &[-0.7], true),
+        (0.35, &[-0.8], true),
+        // Bucket [0.25, 0.50): 10 trials
+        (0.50, &[-0.6], false),
+        (0.50, &[-0.5], false),
+        (0.50, &[-0.4], false),
+        (0.55, &[-0.7], false),
+        (0.55, &[-0.6], false),
+        (0.60, &[-0.8], false),
+        (0.50, &[-0.3], true),
+        (0.55, &[-0.5], true),
+        (0.60, &[-0.7], true),
+        (0.60, &[-0.6], true),
+        // Bucket [0.50, 0.75): 10 trials
+        (0.50, &[0.3], true),
+        (0.50, &[0.4], true),
+        (0.50, &[0.5], true),
+        (0.55, &[0.3], true),
+        (0.55, &[0.4], true),
+        (0.60, &[0.3], true),
+        (0.45, &[0.5], false),
+        (0.45, &[0.6], false),
+        (0.50, &[0.6], false),
+        (0.50, &[0.7], false),
+        // Bucket [0.75, 1.00]: 10 trials
+        (0.60, &[0.9], true),
+        (0.60, &[1.0], true),
+        (0.65, &[0.8], true),
+        (0.65, &[0.9], true),
+        (0.70, &[0.7], true),
+        (0.70, &[0.8], true),
+        (0.75, &[0.6], true),
+        (0.75, &[0.7], true),
+        (0.60, &[0.8], false),
+        (0.65, &[0.7], false),
+    ];
+
+    let mut bucket_probs: [Vec<(f64, f64)>; 4] = Default::default();
+    let matrix = LossMatrix::default();
+    for &(prior, deltas, actual_abandoned) in trials {
+        let mut post = LogDomainPosterior::new(prior);
+        for &delta in deltas {
+            post.update(delta);
+        }
+        let p = post.posterior_abandoned();
+        let _record = DecisionRecord::from_posterior(CompatibilityMode::Strict, p, &matrix);
+        let idx = if p < 0.25 {
+            0
+        } else if p < 0.50 {
+            1
+        } else if p < 0.75 {
+            2
+        } else {
+            3
+        };
+        bucket_probs[idx].push((p, if actual_abandoned { 1.0 } else { 0.0 }));
+    }
+
+    let total_count: usize = bucket_probs.iter().map(Vec::len).sum();
+    bucket_defs
         .into_iter()
-        .map(|(bucket_id, lower, upper, expected, observed, count)| {
-            let drift = f64::abs(expected - observed);
+        .enumerate()
+        .map(|(idx, (bucket_id, lower, upper))| {
+            let entries = &bucket_probs[idx];
+            let count = entries.len();
+            let expected = if count > 0 {
+                entries.iter().map(|(p, _)| *p).sum::<f64>() / (count as f64)
+            } else {
+                0.5 * (lower + upper)
+            };
+            let observed = if count > 0 {
+                entries.iter().map(|(_, y)| *y).sum::<f64>() / (count as f64)
+            } else {
+                0.0
+            };
+            let drift = (expected - observed).abs();
             DecisionCalibrationBucket {
                 bucket_id: bucket_id.to_owned(),
                 lower_bound: lower,
@@ -915,7 +1198,11 @@ fn calibration_buckets() -> Vec<DecisionCalibrationBucket> {
                 expected_probability: expected,
                 observed_probability: observed,
                 count,
-                ece_contribution: drift * (count as f64 / 73.0),
+                ece_contribution: if total_count > 0 {
+                    drift * (count as f64 / total_count as f64)
+                } else {
+                    0.0
+                },
                 drift_status: if drift <= CALIBRATION_DRIFT_THRESHOLD {
                     "green"
                 } else {

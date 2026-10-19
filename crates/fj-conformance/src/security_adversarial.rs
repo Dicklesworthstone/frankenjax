@@ -1,10 +1,24 @@
 #![forbid(unsafe_code)]
 
+use crate::durability::{SidecarConfig, encode_artifact_to_sidecar, scrub_sidecar};
+use fj_cache::{CacheKeyInput, build_cache_key};
+use fj_core::{
+    Atom, CompatibilityMode, DType, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Shape,
+    TensorValue, TraceTransformLedger, Transform, Value, VarId, build_program,
+    verify_transform_composition,
+};
+use fj_dispatch::{DispatchRequest, TransformExecutionError, dispatch};
+use fj_lax::eval_primitive;
+use fj_ledger::{
+    DecisionRecord, EvidenceLedger, EvidenceSignal, LedgerEntry, LogDomainPosterior, LossMatrix,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use sha2::{Digest, Sha256};
+use smallvec::smallvec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -215,7 +229,7 @@ pub fn build_security_adversarial_report_for_outputs(
     markdown_path: &Path,
 ) -> SecurityAdversarialReport {
     let fuzz_families = build_fuzz_families(root);
-    let adversarial_rows = build_adversarial_rows();
+    let adversarial_rows = build_adversarial_rows(root);
     let threat_categories = build_categories(&fuzz_families, &adversarial_rows);
     let crash_index = build_crash_index(root);
 
@@ -1072,7 +1086,30 @@ fn build_fuzz_families(root: &Path) -> Vec<SecurityFuzzFamily> {
     fuzz_specs()
         .into_iter()
         .map(|spec| {
-            let observed_seed_count = count_corpus_files(root, spec.corpus_path);
+            let mut seed_files = Vec::new();
+            collect_corpus_files(&root.join(spec.corpus_path), &mut seed_files);
+            seed_files.sort();
+            let observed_seed_count = seed_files.len();
+            let mut deterministic_replay_count = 0usize;
+            let mut panicked_count = 0usize;
+            let mut observed_class = None;
+            for seed_path in &seed_files {
+                let Ok(bytes) = fs::read(seed_path) else {
+                    continue;
+                };
+                match catch_unwind(AssertUnwindSafe(|| {
+                    replay_fuzz_seed(spec.family_id, &bytes)
+                })) {
+                    Ok(class) => {
+                        deterministic_replay_count += 1;
+                        observed_class = Some(class);
+                    }
+                    Err(_) => {
+                        panicked_count += 1;
+                    }
+                }
+            }
+
             let mut artifact_hashes = BTreeMap::new();
             for hash_path in spec.hash_paths {
                 let full_path = root.join(hash_path);
@@ -1081,6 +1118,14 @@ fn build_fuzz_families(root: &Path) -> Vec<SecurityFuzzFamily> {
                 }
             }
 
+            let actual_error_class = if panicked_count > 0 {
+                "fuzz_replay_panicked".to_owned()
+            } else if observed_seed_count < spec.seed_floor {
+                "missing_seed_corpus".to_owned()
+            } else {
+                observed_class.unwrap_or("missing_seed_corpus").to_owned()
+            };
+
             SecurityFuzzFamily {
                 family_id: spec.family_id.to_owned(),
                 target: spec.target.to_owned(),
@@ -1088,14 +1133,14 @@ fn build_fuzz_families(root: &Path) -> Vec<SecurityFuzzFamily> {
                 target_source: spec.target_source.to_owned(),
                 seed_floor: spec.seed_floor,
                 observed_seed_count,
-                deterministic_replay_count: observed_seed_count,
+                deterministic_replay_count,
                 expected_error_class: spec.expected_error_class.to_owned(),
-                actual_error_class: if observed_seed_count >= spec.seed_floor {
-                    spec.expected_error_class.to_owned()
+                actual_error_class,
+                panic_status: if panicked_count == 0 {
+                    "no_panic".to_owned()
                 } else {
-                    "missing_seed_corpus".to_owned()
+                    "panicked".to_owned()
                 },
-                panic_status: "no_panic".to_owned(),
                 crash_status: "no_crash".to_owned(),
                 timeout_status: "no_timeout".to_owned(),
                 minimized_repro_path: None,
@@ -1109,28 +1154,410 @@ fn build_fuzz_families(root: &Path) -> Vec<SecurityFuzzFamily> {
         .collect()
 }
 
-fn build_adversarial_rows() -> Vec<SecurityAdversarialRow> {
+fn replay_fuzz_seed(family_id: &str, bytes: &[u8]) -> &'static str {
+    match family_id {
+        "ff_cache_key_builder" => {
+            let unknown = if let Ok(val) = serde_json::from_slice::<JsonValue>(bytes) {
+                val.get("unknown_incompatible_features")
+                    .and_then(JsonValue::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(JsonValue::as_str)
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_else(|| vec![String::from_utf8_lossy(bytes).into_owned()])
+            } else {
+                vec![String::from_utf8_lossy(bytes).into_owned()]
+            };
+            let strict_in = CacheKeyInput {
+                mode: CompatibilityMode::Strict,
+                backend: "cpu".to_owned(),
+                jaxpr: build_program(ProgramSpec::Add2),
+                transform_stack: vec![Transform::Jit],
+                compile_options: BTreeMap::new(),
+                custom_hook: None,
+                unknown_incompatible_features: unknown.clone(),
+            };
+            let _ = build_cache_key(&strict_in);
+            let hardened_in = CacheKeyInput {
+                mode: CompatibilityMode::Hardened,
+                ..strict_in
+            };
+            let _ = build_cache_key(&hardened_in);
+            "typed_cache_key_result"
+        }
+        "ff_transform_composition_verifier" => {
+            if let Ok(ledger) = serde_json::from_slice::<TraceTransformLedger>(bytes) {
+                let _ = verify_transform_composition(&ledger);
+            } else {
+                let mut ledger = TraceTransformLedger::new(build_program(ProgramSpec::Square));
+                let evidence = String::from_utf8_lossy(bytes).into_owned();
+                ledger.push_transform(Transform::Jit, evidence);
+                let _ = verify_transform_composition(&ledger);
+            }
+            "typed_transform_proof_result"
+        }
+        "ff_ir_deserializer" => {
+            if let Ok(jaxpr) = serde_json::from_slice::<Jaxpr>(bytes) {
+                let _ = jaxpr.validate_well_formed();
+            }
+            "typed_ir_deserialize_result"
+        }
+        "ff_shape_inference_engine" => {
+            let n = bytes.first().copied().unwrap_or(1) as i64;
+            let rhs_len = (bytes.get(1).copied().unwrap_or(2) % 4) as usize + 1;
+            let rhs: Vec<i64> = (0..rhs_len).map(|idx| n + idx as i64).collect();
+            if let (Ok(lhs_v), Ok(rhs_v)) =
+                (Value::vector_i64(&[n, n + 1]), Value::vector_i64(&rhs))
+            {
+                let _ = eval_primitive(Primitive::Add, &[lhs_v, rhs_v], &BTreeMap::new());
+            }
+            "typed_shape_inference_result"
+        }
+        "ff_value_deserializer" => {
+            let _ = serde_json::from_slice::<Value>(bytes);
+            let dim = u32::from(bytes.first().copied().unwrap_or(2));
+            let _ = TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![dim, dim],
+                },
+                vec![Literal::I64(1)],
+            );
+            "typed_value_deserialize_result"
+        }
+        "ff_dispatch_request_builder" => {
+            let mut ledger = TraceTransformLedger::new(build_program(ProgramSpec::Add2));
+            ledger.push_transform(Transform::Jit, "fuzz-jit");
+            let mode = if bytes.first().copied().unwrap_or(0) % 2 == 0 {
+                CompatibilityMode::Strict
+            } else {
+                CompatibilityMode::Hardened
+            };
+            let _ = dispatch(DispatchRequest {
+                mode,
+                ledger,
+                args: vec![Value::scalar_i64(2), Value::scalar_i64(3)],
+                backend: "cpu".to_owned(),
+                compile_options: BTreeMap::new(),
+                custom_hook: None,
+                unknown_incompatible_features: Vec::new(),
+            });
+            "typed_dispatch_request_result"
+        }
+        "ff_fixture_bundle_loader" => {
+            let _ = serde_json::from_slice::<crate::TransformFixtureBundle>(bytes);
+            "typed_fixture_bundle_result"
+        }
+        "ff_smoke_harness_json" => {
+            let _ = serde_json::from_slice::<crate::ParityReportV1>(bytes);
+            let _ = serde_json::from_slice::<JsonValue>(bytes);
+            "typed_smoke_harness_result"
+        }
+        "ff_cache_persistence_format" => {
+            let _ = serde_json::from_slice::<JsonValue>(bytes);
+            "typed_cache_persistence_result"
+        }
+        "ff_primitive_eval_fuzzer" => {
+            let a = i64::from(bytes.first().copied().unwrap_or(1));
+            let b = i64::from(bytes.get(1).copied().unwrap_or(0));
+            let _ = eval_primitive(
+                Primitive::Div,
+                &[Value::scalar_i64(a), Value::scalar_i64(b)],
+                &BTreeMap::new(),
+            );
+            "typed_primitive_eval_result"
+        }
+        "ff_partial_eval_fuzzer" => {
+            let jaxpr = build_program(ProgramSpec::Add2);
+            let u0 = bytes.first().copied().unwrap_or(0) % 2 == 0;
+            let u1 = bytes.get(1).copied().unwrap_or(1) % 2 == 0;
+            let _ = fj_interpreters::partial_eval::partial_eval_jaxpr(&jaxpr, &[u0, u1]);
+            "typed_partial_eval_result"
+        }
+        "ff_egraph_rewrite_rules" => {
+            let jaxpr = build_program(ProgramSpec::SquarePlusLinear);
+            let _ = fj_egraph::optimize_jaxpr(&jaxpr);
+            "typed_egraph_rewrite_result"
+        }
+        "ff_ad_gradient_computation" => {
+            let jaxpr = build_program(ProgramSpec::Square);
+            let x = f64::from(bytes.first().copied().unwrap_or(3));
+            let _ = fj_ad::grad_jaxpr(&jaxpr, &[Value::scalar_f64(x)]);
+            "typed_ad_gradient_result"
+        }
+        "ff_primitive_params_fuzzer" => {
+            let mut params = BTreeMap::new();
+            params.insert(
+                "axes".to_owned(),
+                String::from_utf8_lossy(bytes).into_owned(),
+            );
+            if let Ok(v) = Value::vector_i64(&[1, 2, 3]) {
+                let _ = eval_primitive(Primitive::ReduceSum, &[v], &params);
+            }
+            "typed_primitive_params_result"
+        }
+        "ff_proc_status_parser" => {
+            let text = String::from_utf8_lossy(bytes);
+            let _ = text
+                .lines()
+                .filter(|line| line.starts_with("VmRSS:") || line.starts_with("VmHWM:"))
+                .count();
+            "typed_proc_status_parse_result"
+        }
+        "ff_jaxpr_serde_roundtrip" => {
+            if let Ok(jaxpr) = serde_json::from_slice::<Jaxpr>(bytes) {
+                let _ = jaxpr.validate_well_formed();
+                let _ = serde_json::to_vec(&jaxpr);
+            }
+            "typed_jaxpr_serde_roundtrip_result"
+        }
+        "ff_fft_roundtrip" => {
+            let x0 = f64::from(bytes.first().copied().unwrap_or(1));
+            let x1 = f64::from(bytes.get(1).copied().unwrap_or(2));
+            if let Ok(input) = TensorValue::new(
+                DType::Complex128,
+                Shape { dims: vec![2] },
+                vec![
+                    Literal::from_complex128(x0, 0.0),
+                    Literal::from_complex128(x1, 0.0),
+                ],
+            ) && let Ok(freq) =
+                eval_primitive(Primitive::Fft, &[Value::Tensor(input)], &BTreeMap::new())
+            {
+                let _ = eval_primitive(Primitive::Ifft, &[freq], &BTreeMap::new());
+            }
+            "typed_fft_roundtrip_result"
+        }
+        "ff_raptorq_decoder" => {
+            let _ = serde_json::from_slice::<crate::durability::SidecarManifest>(bytes);
+            "typed_durability_decode_result"
+        }
+        "ff_ledger_deserializer" => {
+            let _ = serde_json::from_slice::<EvidenceLedger>(bytes);
+            let _ = serde_json::from_slice::<DecisionRecord>(bytes);
+            "typed_ledger_deserialize_result"
+        }
+        _ => "unknown_fuzz_family",
+    }
+}
+
+/// Executes the adversarial probe for `row_id` against live FrankenJAX crates and returns
+/// `(actual_error_class, panic_status)`.
+#[must_use]
+pub fn execute_adversarial_row(root: &Path, row_id: &str) -> (String, &'static str) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        execute_adversarial_row_inner(root, row_id)
+    })) {
+        Ok(actual_class) => (actual_class, "no_panic"),
+        Err(_) => ("panicked".to_owned(), "panicked"),
+    }
+}
+
+fn execute_adversarial_row_inner(root: &Path, row_id: &str) -> String {
+    match row_id {
+        "adv_cache_unknown_feature" => {
+            let strict_res = build_cache_key(&CacheKeyInput {
+                mode: CompatibilityMode::Strict,
+                backend: "cpu".to_owned(),
+                jaxpr: build_program(ProgramSpec::Add2),
+                transform_stack: vec![Transform::Jit],
+                compile_options: BTreeMap::new(),
+                custom_hook: None,
+                unknown_incompatible_features: vec!["hostile_unknown_feature".to_owned()],
+            });
+            let hardened_res = build_cache_key(&CacheKeyInput {
+                mode: CompatibilityMode::Hardened,
+                backend: "cpu".to_owned(),
+                jaxpr: build_program(ProgramSpec::Add2),
+                transform_stack: vec![Transform::Jit],
+                compile_options: BTreeMap::new(),
+                custom_hook: None,
+                unknown_incompatible_features: vec!["hostile_unknown_feature".to_owned()],
+            });
+            match (strict_res, hardened_res) {
+                (Err(fj_cache::CacheKeyError::UnknownIncompatibleFeatures { .. }), Ok(_)) => {
+                    "CacheKeyError::StrictUnknownFeatures".to_owned()
+                }
+                (other_strict, other_hardened) => {
+                    format!("unexpected_cache_result:{other_strict:?}/{other_hardened:?}")
+                }
+            }
+        }
+        "adv_transform_duplicate_evidence" => {
+            let mut ledger = TraceTransformLedger::new(build_program(ProgramSpec::Square));
+            ledger.push_transform(Transform::Jit, "jit-grad-dup-evidence-id");
+            ledger.push_transform(Transform::Grad, "jit-grad-dup-evidence-id");
+            match verify_transform_composition(&ledger) {
+                Err(fj_core::TransformCompositionError::DuplicateEvidence { .. }) => {
+                    "TransformCompositionError".to_owned()
+                }
+                other => format!("unexpected_transform_proof_result:{other:?}"),
+            }
+        }
+        "adv_ir_unknown_outvar" => {
+            let malformed = Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(999)],
+                vec![Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                }],
+            );
+            match malformed.validate_well_formed() {
+                Err(fj_core::JaxprValidationError::UnknownOutvar { .. }) => {
+                    "JaxprValidationError".to_owned()
+                }
+                other => format!("unexpected_ir_validation_result:{other:?}"),
+            }
+        }
+        "adv_shape_broadcast_mismatch" => {
+            let lhs = Value::vector_i64(&[1, 2, 3]).expect("valid 3-element vector");
+            let rhs = Value::vector_i64(&[4, 5]).expect("valid 2-element vector");
+            match eval_primitive(Primitive::Add, &[lhs, rhs], &BTreeMap::new()) {
+                Err(fj_lax::EvalError::ShapeMismatch { .. }) => "EvalError".to_owned(),
+                other => format!("unexpected_eval_result:{other:?}"),
+            }
+        }
+        "adv_value_count_overflow" => {
+            match TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![u32::MAX, u32::MAX],
+                },
+                vec![Literal::I64(1)],
+            ) {
+                Err(
+                    fj_core::ValueError::ShapeOverflow { .. }
+                    | fj_core::ValueError::ElementCountMismatch { .. },
+                ) => "TensorValueError".to_owned(),
+                other => format!("unexpected_tensor_value_result:{other:?}"),
+            }
+        }
+        "adv_control_flow_unsupported_grad_vmap" => {
+            let mut ledger = TraceTransformLedger::new(build_program(ProgramSpec::AddOne));
+            ledger.push_transform(Transform::Grad, "grad-ev");
+            ledger.push_transform(Transform::Vmap, "vmap-ev");
+            let arg = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("valid vector_f64");
+            match dispatch(DispatchRequest {
+                mode: CompatibilityMode::Strict,
+                ledger,
+                args: vec![arg],
+                backend: "cpu".to_owned(),
+                compile_options: BTreeMap::new(),
+                custom_hook: None,
+                unknown_incompatible_features: Vec::new(),
+            }) {
+                Err(fj_dispatch::DispatchError::TransformExecution(
+                    TransformExecutionError::NonScalarGradientInput
+                    | TransformExecutionError::NonScalarGradientOutput,
+                )) => "TransformExecutionError::GradRequiresScalar".to_owned(),
+                other => format!("unexpected_dispatch_result:{other:?}"),
+            }
+        }
+        "adv_fixture_truncated_json" => {
+            let truncated_path = root.join(
+                "crates/fj-conformance/fuzz/corpus/fixture_bundle_loader/malformed_truncated.json",
+            );
+            let raw = fs::read_to_string(&truncated_path)
+                .unwrap_or_else(|_| "{\"schema_version\": \"truncated".to_owned());
+            match serde_json::from_str::<crate::TransformFixtureBundle>(&raw) {
+                Err(_) => "serde_json::Error".to_owned(),
+                Ok(_) => "unexpected_fixture_parse_ok".to_owned(),
+            }
+        }
+        "adv_ffi_clean_error" => {
+            let invalid_buf =
+                TensorValue::new_half_float_values(DType::I64, Shape { dims: vec![1] }, vec![0]);
+            let e2e_ok = fs::read_to_string(
+                root.join("artifacts/e2e/e2e_ffi_adversarial_clean_errors.e2e.json"),
+            )
+            .ok()
+            .and_then(|raw| serde_json::from_str::<JsonValue>(&raw).ok())
+            .is_some_and(|v| v["status"] == "pass");
+            match (invalid_buf, e2e_ok) {
+                (Err(fj_core::ValueError::InvalidArgument { .. }), true) => "FfiError".to_owned(),
+                other => format!("unexpected_ffi_result:{other:?}"),
+            }
+        }
+        "adv_durability_missing_artifact" => {
+            let missing_artifact =
+                root.join("artifacts/durability/__nonexistent_adversarial__.json");
+            let unused_sidecar = root.join("artifacts/durability/__unused__.sidecar.json");
+            let unused_report = root.join("artifacts/durability/__unused__.scrub.json");
+            let res = encode_artifact_to_sidecar(
+                &missing_artifact,
+                &unused_sidecar,
+                &SidecarConfig::default(),
+            );
+            let scrub_res = scrub_sidecar(&unused_sidecar, &missing_artifact, &unused_report);
+            match (res, scrub_res) {
+                (Err(crate::durability::DurabilityError::Io { .. }), Err(_)) => {
+                    "DurabilityError".to_owned()
+                }
+                other => format!("unexpected_durability_result:{other:?}"),
+            }
+        }
+        "adv_ledger_audit_recovery" => {
+            let mut ledger = EvidenceLedger::new();
+            let mut posterior = LogDomainPosterior::new(0.45);
+            let signal = EvidenceSignal {
+                signal_name: "malformed_input_detected".to_owned(),
+                log_likelihood_delta: 0.8,
+                detail: "hardened mode detected bounded malformed input".to_owned(),
+            };
+            posterior.update(signal.log_likelihood_delta);
+            let record = DecisionRecord::from_posterior(
+                CompatibilityMode::Hardened,
+                posterior.posterior_abandoned(),
+                &LossMatrix::default(),
+            );
+            ledger.append(LedgerEntry {
+                decision_id: "adv_ledger_audit_recovery".to_owned(),
+                record,
+                signals: vec![signal],
+            });
+            if ledger.len() == 1 {
+                "DecisionRecord".to_owned()
+            } else {
+                "empty_decision_ledger".to_owned()
+            }
+        }
+        _ => "unknown_adversarial_row".to_owned(),
+    }
+}
+
+fn build_adversarial_rows(root: &Path) -> Vec<SecurityAdversarialRow> {
     row_specs()
         .into_iter()
-        .map(|spec| SecurityAdversarialRow {
-            row_id: spec.row_id.to_owned(),
-            category_id: spec.category_id.to_owned(),
-            input_family: spec.input_family.to_owned(),
-            target_subsystem: spec.target_subsystem.to_owned(),
-            expected_error_class: spec.expected_error_class.to_owned(),
-            actual_error_class: spec.expected_error_class.to_owned(),
-            strict_behavior: spec.strict_behavior.to_owned(),
-            hardened_behavior: spec.hardened_behavior.to_owned(),
-            panic_status: "no_panic".to_owned(),
-            crash_status: "no_crash".to_owned(),
-            timeout_status: "no_timeout".to_owned(),
-            fuzz_family_id: spec.fuzz_family_id.to_owned(),
-            evidence_refs: spec
-                .evidence_refs
-                .iter()
-                .map(|reference| (*reference).to_owned())
-                .collect(),
-            replay_command: spec.replay_command.to_owned(),
+        .map(|spec| {
+            let (actual_error_class, panic_status) = execute_adversarial_row(root, spec.row_id);
+            SecurityAdversarialRow {
+                row_id: spec.row_id.to_owned(),
+                category_id: spec.category_id.to_owned(),
+                input_family: spec.input_family.to_owned(),
+                target_subsystem: spec.target_subsystem.to_owned(),
+                expected_error_class: spec.expected_error_class.to_owned(),
+                actual_error_class,
+                strict_behavior: spec.strict_behavior.to_owned(),
+                hardened_behavior: spec.hardened_behavior.to_owned(),
+                panic_status: panic_status.to_owned(),
+                crash_status: "no_crash".to_owned(),
+                timeout_status: "no_timeout".to_owned(),
+                fuzz_family_id: spec.fuzz_family_id.to_owned(),
+                evidence_refs: spec
+                    .evidence_refs
+                    .iter()
+                    .map(|reference| (*reference).to_owned())
+                    .collect(),
+                replay_command: spec.replay_command.to_owned(),
+            }
         })
         .collect()
 }
@@ -1793,13 +2220,7 @@ fn row_specs() -> Vec<RowSpec> {
     ]
 }
 
-fn count_corpus_files(root: &Path, rel_path: &str) -> usize {
-    let mut count = 0usize;
-    count_corpus_files_inner(&root.join(rel_path), &mut count);
-    count
-}
-
-fn count_corpus_files_inner(path: &Path, count: &mut usize) {
+fn collect_corpus_files(path: &Path, out: &mut Vec<PathBuf>) {
     let Ok(metadata) = fs::metadata(path) else {
         return;
     };
@@ -1809,7 +2230,7 @@ fn count_corpus_files_inner(path: &Path, count: &mut usize) {
             .and_then(|name| name.to_str())
             .is_some_and(|name| name != ".gitkeep")
         {
-            *count += 1;
+            out.push(path.to_path_buf());
         }
         return;
     }
@@ -1819,8 +2240,10 @@ fn count_corpus_files_inner(path: &Path, count: &mut usize) {
     let Ok(entries) = fs::read_dir(path) else {
         return;
     };
-    for entry in entries.flatten() {
-        count_corpus_files_inner(&entry.path(), count);
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    for entry_path in paths {
+        collect_corpus_files(&entry_path, out);
     }
 }
 

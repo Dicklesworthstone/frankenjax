@@ -351,3 +351,38 @@ fn drift_report_schema_round_trips_and_validates() {
     assert_eq!(decoded.schema_version, ORACLE_DRIFT_REPORT_SCHEMA_VERSION);
     assert!(validate_oracle_drift_report(&decoded).len() >= decoded.issues.len());
 }
+
+#[test]
+fn committed_on_disk_recapture_matrix_matches_live_fixture_hashes() {
+    let root = repo_root();
+    let live = build_oracle_recapture_matrix(&root);
+    let committed_path = root.join("artifacts/conformance/oracle_recapture_matrix.v1.json");
+    let raw = fs::read_to_string(&committed_path)
+        .expect("committed oracle_recapture_matrix.v1.json should exist");
+    let committed: fj_conformance::oracle_recapture::OracleRecaptureMatrix =
+        serde_json::from_str(&raw).expect("committed matrix should deserialize");
+
+    assert_eq!(committed.rows.len(), live.rows.len());
+    for (committed_row, live_row) in committed.rows.iter().zip(live.rows.iter()) {
+        assert_eq!(committed_row.family_id, live_row.family_id);
+        assert_eq!(
+            committed_row.fixture_sha256, live_row.fixture_sha256,
+            "stale fixture_sha256 in oracle_recapture_matrix.v1.json for {}",
+            live_row.family_id
+        );
+        assert_eq!(committed_row.actual_case_count, live_row.actual_case_count);
+    }
+
+    let drift = oracle_drift_report(
+        &live,
+        Some(&committed),
+        Some("artifacts/conformance/oracle_recapture_matrix.v1.json".to_owned()),
+        true,
+    );
+    assert!(
+        drift.changed.is_empty(),
+        "committed oracle_recapture_matrix.v1.json has drifted families: {:?}",
+        drift.changed
+    );
+    assert_eq!(drift.gate_status, "pass");
+}

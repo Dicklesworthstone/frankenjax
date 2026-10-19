@@ -1,9 +1,13 @@
 #![forbid(unsafe_code)]
 
 use crate::ToleranceTier;
-use fj_core::{DType, Literal};
+use fj_ad::grad_jaxpr;
+use fj_core::{Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
+use fj_interpreters::eval_jaxpr;
+use fj_lax::eval_primitive;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
+use smallvec::smallvec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -939,6 +943,670 @@ fn tolerance_policies() -> Vec<StabilityTolerancePolicy> {
     ]
 }
 
+struct LiveStabilityMeasurement {
+    max_abs_error: f64,
+    max_rel_error: f64,
+    max_ulp_error: Option<u64>,
+    non_finite_classification: String,
+    deterministic_replay_count: usize,
+    passed: bool,
+}
+
+fn measure_special_math_tails() -> LiveStabilityMeasurement {
+    let params = BTreeMap::new();
+    let cases = [
+        (Primitive::Erf, 3.0_f64, 0.999_977_909_503_001_4_f64),
+        (
+            Primitive::Logistic,
+            -20.0_f64,
+            1.0_f64 / (1.0_f64 + 20.0_f64.exp()),
+        ),
+        (Primitive::Log1p, 1e-12_f64, 1e-12_f64 - 0.5_f64 * 1e-24_f64),
+    ];
+    let mut max_abs_error = 0.0_f64;
+    let mut max_rel_error = 0.0_f64;
+    let mut replay_ok = true;
+    let mut all_finite = true;
+    for (primitive, input, reference) in cases {
+        let mut first_bits = None;
+        for _ in 0..3 {
+            let Ok(Value::Scalar(lit)) =
+                eval_primitive(primitive, &[Value::scalar_f64(input)], &params)
+            else {
+                return LiveStabilityMeasurement {
+                    max_abs_error: f64::INFINITY,
+                    max_rel_error: f64::INFINITY,
+                    max_ulp_error: None,
+                    non_finite_classification: "unclassified".to_owned(),
+                    deterministic_replay_count: 0,
+                    passed: false,
+                };
+            };
+            let Some(actual) = lit.as_f64() else {
+                return LiveStabilityMeasurement {
+                    max_abs_error: f64::INFINITY,
+                    max_rel_error: f64::INFINITY,
+                    max_ulp_error: None,
+                    non_finite_classification: "unclassified".to_owned(),
+                    deterministic_replay_count: 0,
+                    passed: false,
+                };
+            };
+            if !actual.is_finite() {
+                all_finite = false;
+            }
+            let bits = actual.to_bits();
+            if let Some(prev) = first_bits {
+                if prev != bits {
+                    replay_ok = false;
+                }
+            } else {
+                first_bits = Some(bits);
+            }
+            let abs_err = (actual - reference).abs();
+            let rel_err = if reference.abs() > 0.0 {
+                abs_err / reference.abs()
+            } else {
+                abs_err
+            };
+            max_abs_error = max_abs_error.max(abs_err);
+            max_rel_error = max_rel_error.max(rel_err);
+        }
+    }
+    LiveStabilityMeasurement {
+        max_abs_error,
+        max_rel_error,
+        max_ulp_error: None,
+        non_finite_classification: if all_finite {
+            "finite".to_owned()
+        } else {
+            "non_finite_detected".to_owned()
+        },
+        deterministic_replay_count: if replay_ok { 3 } else { 1 },
+        passed: replay_ok && all_finite,
+    }
+}
+
+fn measure_linalg_near_singular() -> LiveStabilityMeasurement {
+    // 3x3 near-singular SPD matrix: sum(cholesky(A))
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(3)],
+        vec![
+            Equation {
+                primitive: Primitive::Cholesky,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    );
+    let base_vals = [1.0, 0.99, 0.98, 0.99, 1.0, 0.99, 0.98, 0.99, 1.0];
+    let make_tensor = |vals: &[f64; 9]| {
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3, 3] },
+            vals.iter().copied().map(Literal::from_f64).collect(),
+        )
+        .map(Value::Tensor)
+    };
+    let Ok(base_input) = make_tensor(&base_vals) else {
+        return LiveStabilityMeasurement {
+            max_abs_error: f64::INFINITY,
+            max_rel_error: f64::INFINITY,
+            max_ulp_error: None,
+            non_finite_classification: "unclassified".to_owned(),
+            deterministic_replay_count: 0,
+            passed: false,
+        };
+    };
+    let mut first_grad: Option<Vec<f64>> = None;
+    let mut replay_ok = true;
+    for _ in 0..3 {
+        let Ok(grad_res) = grad_jaxpr(&jaxpr, &[base_input.clone()]) else {
+            return LiveStabilityMeasurement {
+                max_abs_error: f64::INFINITY,
+                max_rel_error: f64::INFINITY,
+                max_ulp_error: None,
+                non_finite_classification: "unclassified".to_owned(),
+                deterministic_replay_count: 0,
+                passed: false,
+            };
+        };
+        let Some(grad_vec) = grad_res
+            .first()
+            .and_then(|v| v.as_tensor().and_then(|t| t.to_f64_vec()))
+        else {
+            return LiveStabilityMeasurement {
+                max_abs_error: f64::INFINITY,
+                max_rel_error: f64::INFINITY,
+                max_ulp_error: None,
+                non_finite_classification: "unclassified".to_owned(),
+                deterministic_replay_count: 0,
+                passed: false,
+            };
+        };
+        if let Some(prev) = &first_grad {
+            if prev
+                .iter()
+                .zip(&grad_vec)
+                .any(|(a, b)| a.to_bits() != b.to_bits())
+            {
+                replay_ok = false;
+            }
+        } else {
+            first_grad = Some(grad_vec);
+        }
+    }
+    let Some(analytical) = first_grad else {
+        return LiveStabilityMeasurement {
+            max_abs_error: f64::INFINITY,
+            max_rel_error: f64::INFINITY,
+            max_ulp_error: None,
+            non_finite_classification: "unclassified".to_owned(),
+            deterministic_replay_count: 0,
+            passed: false,
+        };
+    };
+    // Compare diagonal gradient entries against central finite difference
+    let h = 1e-6_f64;
+    let mut max_abs_error = 0.0_f64;
+    let mut max_rel_error = 0.0_f64;
+    for diag_idx in [0usize, 4, 8] {
+        let mut plus_vals = base_vals;
+        let mut minus_vals = base_vals;
+        plus_vals[diag_idx] += h;
+        minus_vals[diag_idx] -= h;
+        let (Ok(plus_in), Ok(minus_in)) = (make_tensor(&plus_vals), make_tensor(&minus_vals))
+        else {
+            continue;
+        };
+        let (Ok(plus_out), Ok(minus_out)) = (
+            eval_jaxpr(&jaxpr, &[plus_in]),
+            eval_jaxpr(&jaxpr, &[minus_in]),
+        ) else {
+            continue;
+        };
+        if let (Some(f_plus), Some(f_minus)) = (
+            plus_out.first().and_then(Value::as_f64_scalar),
+            minus_out.first().and_then(Value::as_f64_scalar),
+        ) {
+            let fd = (f_plus - f_minus) / (2.0 * h);
+            let abs_err = (analytical[diag_idx] - fd).abs();
+            let rel_err = if fd.abs() > 0.0 {
+                abs_err / fd.abs()
+            } else {
+                abs_err
+            };
+            max_abs_error = max_abs_error.max(abs_err);
+            max_rel_error = max_rel_error.max(rel_err);
+        }
+    }
+    let all_finite = analytical.iter().all(|v| v.is_finite());
+    LiveStabilityMeasurement {
+        max_abs_error,
+        max_rel_error,
+        max_ulp_error: None,
+        non_finite_classification: if all_finite {
+            "finite".to_owned()
+        } else {
+            "non_finite_detected".to_owned()
+        },
+        deterministic_replay_count: if replay_ok { 3 } else { 1 },
+        passed: replay_ok && all_finite,
+    }
+}
+
+fn measure_ad_gradient_check() -> LiveStabilityMeasurement {
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2)],
+        vec![Equation {
+            primitive: Primitive::Sin,
+            inputs: smallvec![Atom::Var(VarId(1))],
+            outputs: smallvec![VarId(2)],
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        }],
+    );
+    let x = 0.7_f64;
+    let h = finite_difference_step(1.0);
+    let fd = ((x + h).sin() - (x - h).sin()) / (2.0 * h);
+    let mut first_bits = None;
+    let mut replay_ok = true;
+    let mut max_abs_error = 0.0_f64;
+    let mut max_rel_error = 0.0_f64;
+    for _ in 0..3 {
+        let Ok(grad_res) = grad_jaxpr(&jaxpr, &[Value::scalar_f64(x)]) else {
+            return LiveStabilityMeasurement {
+                max_abs_error: f64::INFINITY,
+                max_rel_error: f64::INFINITY,
+                max_ulp_error: None,
+                non_finite_classification: "unclassified".to_owned(),
+                deterministic_replay_count: 0,
+                passed: false,
+            };
+        };
+        let Some(actual) = grad_res.first().and_then(Value::as_f64_scalar) else {
+            return LiveStabilityMeasurement {
+                max_abs_error: f64::INFINITY,
+                max_rel_error: f64::INFINITY,
+                max_ulp_error: None,
+                non_finite_classification: "unclassified".to_owned(),
+                deterministic_replay_count: 0,
+                passed: false,
+            };
+        };
+        if let Some(prev) = first_bits {
+            if prev != actual.to_bits() {
+                replay_ok = false;
+            }
+        } else {
+            first_bits = Some(actual.to_bits());
+        }
+        let abs_err = (actual - fd).abs();
+        let rel_err = abs_err / fd.abs().max(1.0);
+        max_abs_error = max_abs_error.max(abs_err);
+        max_rel_error = max_rel_error.max(rel_err);
+    }
+    LiveStabilityMeasurement {
+        max_abs_error,
+        max_rel_error,
+        max_ulp_error: None,
+        non_finite_classification: "finite".to_owned(),
+        deterministic_replay_count: if replay_ok { 3 } else { 1 },
+        passed: replay_ok,
+    }
+}
+
+fn measure_fft_scaling() -> LiveStabilityMeasurement {
+    let samples = [(1.0, 0.5), (-0.5, 1.25), (0.25, -0.75), (2.0, -1.0)];
+    let Ok(input_tensor) = TensorValue::new(
+        DType::Complex128,
+        Shape { dims: vec![4] },
+        samples
+            .iter()
+            .map(|&(re, im)| Literal::from_complex128(re, im))
+            .collect(),
+    ) else {
+        return LiveStabilityMeasurement {
+            max_abs_error: f64::INFINITY,
+            max_rel_error: f64::INFINITY,
+            max_ulp_error: None,
+            non_finite_classification: "unclassified".to_owned(),
+            deterministic_replay_count: 0,
+            passed: false,
+        };
+    };
+    let input = Value::Tensor(input_tensor);
+    let params = BTreeMap::new();
+    let mut max_abs_error = 0.0_f64;
+    let mut max_rel_error = 0.0_f64;
+    let mut max_ulp_error = 0_u64;
+    let mut first_elements: Option<Vec<Literal>> = None;
+    let mut replay_ok = true;
+    for _ in 0..3 {
+        let Ok(freq) = eval_primitive(Primitive::Fft, std::slice::from_ref(&input), &params) else {
+            return LiveStabilityMeasurement {
+                max_abs_error: f64::INFINITY,
+                max_rel_error: f64::INFINITY,
+                max_ulp_error: None,
+                non_finite_classification: "unclassified".to_owned(),
+                deterministic_replay_count: 0,
+                passed: false,
+            };
+        };
+        let Ok(Value::Tensor(recovered)) = eval_primitive(Primitive::Ifft, &[freq], &params) else {
+            return LiveStabilityMeasurement {
+                max_abs_error: f64::INFINITY,
+                max_rel_error: f64::INFINITY,
+                max_ulp_error: None,
+                non_finite_classification: "unclassified".to_owned(),
+                deterministic_replay_count: 0,
+                passed: false,
+            };
+        };
+        if let Some(prev) = &first_elements {
+            if prev.as_slice() != recovered.elements.as_slice() {
+                replay_ok = false;
+            }
+        } else {
+            first_elements = Some(recovered.elements.to_vec());
+        }
+        for (lit, &(ref_re, ref_im)) in recovered.elements.iter().zip(samples.iter()) {
+            let Some((re, im)) = lit.as_complex128() else {
+                continue;
+            };
+            for (actual_c, ref_c) in [(re, ref_re), (im, ref_im)] {
+                let abs_err = (actual_c - ref_c).abs();
+                let rel_err = abs_err / ref_c.abs().max(1.0);
+                max_abs_error = max_abs_error.max(abs_err);
+                max_rel_error = max_rel_error.max(rel_err);
+                if let Some(ulp) = f64_ulp_distance(actual_c, ref_c) {
+                    max_ulp_error = max_ulp_error.max(ulp);
+                }
+            }
+        }
+    }
+    LiveStabilityMeasurement {
+        max_abs_error,
+        max_rel_error,
+        max_ulp_error: Some(max_ulp_error),
+        non_finite_classification: "finite".to_owned(),
+        deterministic_replay_count: if replay_ok { 3 } else { 1 },
+        passed: replay_ok,
+    }
+}
+
+fn measure_dtype_promotion() -> LiveStabilityMeasurement {
+    let params = BTreeMap::new();
+    let lhs = Value::vector_i64(&[1, 2]).expect("valid i64 vector");
+    let rhs = Value::vector_i64(&[3, 4]).expect("valid i64 vector");
+    let mut replay_ok = true;
+    for _ in 0..3 {
+        let Ok(Value::Tensor(out)) =
+            eval_primitive(Primitive::Add, &[lhs.clone(), rhs.clone()], &params)
+        else {
+            replay_ok = false;
+            break;
+        };
+        if out.dtype != DType::I64 || out.elements != vec![Literal::I64(4), Literal::I64(6)] {
+            replay_ok = false;
+        }
+    }
+    LiveStabilityMeasurement {
+        max_abs_error: if replay_ok { 0.0 } else { 1.0 },
+        max_rel_error: if replay_ok { 0.0 } else { 1.0 },
+        max_ulp_error: Some(if replay_ok { 0 } else { 1 }),
+        non_finite_classification: "not_applicable".to_owned(),
+        deterministic_replay_count: if replay_ok { 3 } else { 1 },
+        passed: replay_ok,
+    }
+}
+
+fn measure_complex_branch_values() -> LiveStabilityMeasurement {
+    let params = BTreeMap::new();
+    let Ok(re_tensor) = TensorValue::new(
+        DType::F64,
+        Shape { dims: vec![2] },
+        vec![Literal::from_f64(-0.0), Literal::from_f64(1.5)],
+    ) else {
+        return LiveStabilityMeasurement {
+            max_abs_error: f64::INFINITY,
+            max_rel_error: f64::INFINITY,
+            max_ulp_error: None,
+            non_finite_classification: "unclassified".to_owned(),
+            deterministic_replay_count: 0,
+            passed: false,
+        };
+    };
+    let Ok(im_tensor) = TensorValue::new(
+        DType::F64,
+        Shape { dims: vec![2] },
+        vec![Literal::from_f64(1.0), Literal::from_f64(-2.5)],
+    ) else {
+        return LiveStabilityMeasurement {
+            max_abs_error: f64::INFINITY,
+            max_rel_error: f64::INFINITY,
+            max_ulp_error: None,
+            non_finite_classification: "unclassified".to_owned(),
+            deterministic_replay_count: 0,
+            passed: false,
+        };
+    };
+    let mut max_abs_error = 0.0_f64;
+    let mut max_rel_error = 0.0_f64;
+    let mut max_ulp_error = 0_u64;
+    let mut replay_ok = true;
+    for _ in 0..3 {
+        let Ok(cplx) = eval_primitive(
+            Primitive::Complex,
+            &[
+                Value::Tensor(re_tensor.clone()),
+                Value::Tensor(im_tensor.clone()),
+            ],
+            &params,
+        ) else {
+            replay_ok = false;
+            break;
+        };
+        let Ok(Value::Tensor(conj)) = eval_primitive(Primitive::Conj, &[cplx], &params) else {
+            replay_ok = false;
+            break;
+        };
+        let expected = [(-0.0_f64, -1.0_f64), (1.5_f64, 2.5_f64)];
+        for (lit, &(exp_re, exp_im)) in conj.elements.iter().zip(expected.iter()) {
+            let Some((re, im)) = lit.as_complex128() else {
+                replay_ok = false;
+                break;
+            };
+            for (act, exp) in [(re, exp_re), (im, exp_im)] {
+                let abs_err = (act - exp).abs();
+                let rel_err = abs_err / exp.abs().max(1.0);
+                max_abs_error = max_abs_error.max(abs_err);
+                max_rel_error = max_rel_error.max(rel_err);
+                if let Some(ulp) = f64_ulp_distance(act, exp) {
+                    max_ulp_error = max_ulp_error.max(ulp);
+                }
+            }
+        }
+    }
+    LiveStabilityMeasurement {
+        max_abs_error,
+        max_rel_error,
+        max_ulp_error: Some(max_ulp_error),
+        non_finite_classification: "finite".to_owned(),
+        deterministic_replay_count: if replay_ok { 3 } else { 1 },
+        passed: replay_ok,
+    }
+}
+
+fn measure_rng_determinism() -> LiveStabilityMeasurement {
+    let key = fj_lax::threefry::random_key(42);
+    let mut first_split = None;
+    let mut replay_ok = true;
+    for _ in 0..25 {
+        let split = fj_lax::threefry::random_split(key);
+        if let Some(prev) = first_split {
+            if prev != split {
+                replay_ok = false;
+            }
+        } else {
+            first_split = Some(split);
+        }
+    }
+    LiveStabilityMeasurement {
+        max_abs_error: if replay_ok { 0.0 } else { 1.0 },
+        max_rel_error: if replay_ok { 0.0 } else { 1.0 },
+        max_ulp_error: Some(if replay_ok { 0 } else { 1 }),
+        non_finite_classification: "deterministic_seed_stream".to_owned(),
+        deterministic_replay_count: if replay_ok { 25 } else { 1 },
+        passed: replay_ok,
+    }
+}
+
+fn measure_literal_bit_roundtrip() -> LiveStabilityMeasurement {
+    let nan_bits = 0x7ff8_0000_0000_1234_u64;
+    let mut replay_ok = true;
+    for _ in 0..3 {
+        if !literal_f64_bits_roundtrip(nan_bits)
+            || !literal_f64_bits_roundtrip((-0.0_f64).to_bits())
+            || !literal_f64_bits_roundtrip(f64::INFINITY.to_bits())
+        {
+            replay_ok = false;
+        }
+    }
+    LiveStabilityMeasurement {
+        max_abs_error: if replay_ok { 0.0 } else { 1.0 },
+        max_rel_error: if replay_ok { 0.0 } else { 1.0 },
+        max_ulp_error: Some(if replay_ok { 0 } else { 1 }),
+        non_finite_classification: classify_non_finite_f64(f64::from_bits(nan_bits)),
+        deterministic_replay_count: if replay_ok { 3 } else { 1 },
+        passed: replay_ok,
+    }
+}
+
+fn measure_non_finite_division() -> LiveStabilityMeasurement {
+    let params = BTreeMap::new();
+    let mut replay_ok = true;
+    for _ in 0..3 {
+        let zero_div_zero = eval_primitive(
+            Primitive::Div,
+            &[Value::scalar_f64(0.0), Value::scalar_f64(0.0)],
+            &params,
+        )
+        .ok()
+        .and_then(|v| v.as_f64_scalar());
+        let pos_div_zero = eval_primitive(
+            Primitive::Div,
+            &[Value::scalar_f64(1.0), Value::scalar_f64(0.0)],
+            &params,
+        )
+        .ok()
+        .and_then(|v| v.as_f64_scalar());
+        let neg_div_zero = eval_primitive(
+            Primitive::Div,
+            &[Value::scalar_f64(-1.0), Value::scalar_f64(0.0)],
+            &params,
+        )
+        .ok()
+        .and_then(|v| v.as_f64_scalar());
+        if !zero_div_zero.is_some_and(f64::is_nan)
+            || !pos_div_zero.is_some_and(|v| v.is_infinite() && v.is_sign_positive())
+            || !neg_div_zero.is_some_and(|v| v.is_infinite() && v.is_sign_negative())
+        {
+            replay_ok = false;
+        }
+    }
+    LiveStabilityMeasurement {
+        max_abs_error: if replay_ok { 0.0 } else { 1.0 },
+        max_rel_error: if replay_ok { 0.0 } else { 1.0 },
+        max_ulp_error: Some(if replay_ok { 0 } else { 1 }),
+        non_finite_classification: if replay_ok {
+            "nan_and_signed_infinity_classified".to_owned()
+        } else {
+            "unclassified".to_owned()
+        },
+        deterministic_replay_count: if replay_ok { 3 } else { 1 },
+        passed: replay_ok,
+    }
+}
+
+fn measure_finite_diff_policy() -> LiveStabilityMeasurement {
+    // Evaluate grad(exp(x) * cos(x)) at x = 0.5 and compare against finite difference with step 1e-5
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(4)],
+        vec![
+            Equation {
+                primitive: Primitive::Exp,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Cos,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(3))],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    );
+    let x = 0.5_f64;
+    let h = 1e-5_f64;
+    let f = |v: f64| v.exp() * v.cos();
+    let fd = (f(x + h) - f(x - h)) / (2.0 * h);
+    let mut first_bits = None;
+    let mut replay_ok = true;
+    let mut max_abs_error = 0.0_f64;
+    let mut max_rel_error = 0.0_f64;
+    for _ in 0..3 {
+        let Ok(grad_res) = grad_jaxpr(&jaxpr, &[Value::scalar_f64(x)]) else {
+            return LiveStabilityMeasurement {
+                max_abs_error: f64::INFINITY,
+                max_rel_error: f64::INFINITY,
+                max_ulp_error: None,
+                non_finite_classification: "unclassified".to_owned(),
+                deterministic_replay_count: 0,
+                passed: false,
+            };
+        };
+        let Some(actual) = grad_res.first().and_then(Value::as_f64_scalar) else {
+            return LiveStabilityMeasurement {
+                max_abs_error: f64::INFINITY,
+                max_rel_error: f64::INFINITY,
+                max_ulp_error: None,
+                non_finite_classification: "unclassified".to_owned(),
+                deterministic_replay_count: 0,
+                passed: false,
+            };
+        };
+        if let Some(prev) = first_bits {
+            if prev != actual.to_bits() {
+                replay_ok = false;
+            }
+        } else {
+            first_bits = Some(actual.to_bits());
+        }
+        let abs_err = (actual - fd).abs();
+        let rel_err = abs_err / fd.abs().max(1.0);
+        max_abs_error = max_abs_error.max(abs_err);
+        max_rel_error = max_rel_error.max(rel_err);
+    }
+    LiveStabilityMeasurement {
+        max_abs_error,
+        max_rel_error,
+        max_ulp_error: None,
+        non_finite_classification: "finite_diff_guarded".to_owned(),
+        deterministic_replay_count: if replay_ok { 3 } else { 1 },
+        passed: replay_ok,
+    }
+}
+
+fn measure_platform_metadata(platform_id: &str) -> LiveStabilityMeasurement {
+    let mut replay_ok = true;
+    for _ in 0..3 {
+        let fp = capture_platform_fingerprint();
+        if fp.platform_id != platform_id || !fp.deterministic_serialization {
+            replay_ok = false;
+        }
+    }
+    LiveStabilityMeasurement {
+        max_abs_error: if replay_ok { 0.0 } else { 1.0 },
+        max_rel_error: if replay_ok { 0.0 } else { 1.0 },
+        max_ulp_error: Some(if replay_ok { 0 } else { 1 }),
+        non_finite_classification: "not_applicable".to_owned(),
+        deterministic_replay_count: if replay_ok { 3 } else { 1 },
+        passed: replay_ok,
+    }
+}
+
 fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
     vec![
         row(StabilitySpec {
@@ -955,11 +1623,7 @@ fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
             stability_guard: "named_polynomial_or_series_approximation",
             expected_behavior: "tail values stay within the explicit special-function envelope",
             actual_behavior: "existing special-math numerical tests stay inside the declared envelope",
-            max_abs_error: 8e-8,
-            max_rel_error: 7e-8,
-            max_ulp_error: None,
-            non_finite_classification: "finite",
-            deterministic_replay_count: 3,
+            measurement: measure_special_math_tails(),
             platform_fingerprint_id: platform_id,
             artifact_refs: &[
                 "crates/fj-conformance/tests/ad_numerical_verification.rs",
@@ -982,11 +1646,7 @@ fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
             stability_guard: "diagonal_and_eigenvalue_gap_guards",
             expected_behavior: "ill-conditioned rows stay finite and within the named wider envelope",
             actual_behavior: "near-singular Cholesky/SVD/Eigh rows use explicit guard paths",
-            max_abs_error: 1.6e-2,
-            max_rel_error: 8.0e-5,
-            max_ulp_error: None,
-            non_finite_classification: "finite",
-            deterministic_replay_count: 3,
+            measurement: measure_linalg_near_singular(),
             platform_fingerprint_id: platform_id,
             artifact_refs: &["crates/fj-conformance/tests/ad_numerical_verification.rs"],
             replay_command: "cargo test -p fj-conformance --test ad_numerical_verification cholesky_vjp_near_singular -- --nocapture",
@@ -1005,11 +1665,7 @@ fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
             stability_guard: "sqrt_epsilon_step_clamped_to_safe_range",
             expected_behavior: "finite-difference comparisons use one documented step policy",
             actual_behavior: "AD tests record and validate the bounded step envelope",
-            max_abs_error: 4.0e-5,
-            max_rel_error: 3.0e-5,
-            max_ulp_error: None,
-            non_finite_classification: "finite",
-            deterministic_replay_count: 3,
+            measurement: measure_ad_gradient_check(),
             platform_fingerprint_id: platform_id,
             artifact_refs: &["crates/fj-conformance/tests/ad_numerical_verification.rs"],
             replay_command: "cargo test -p fj-conformance --test ad_numerical_verification sin_vjp_numerical -- --nocapture",
@@ -1028,11 +1684,7 @@ fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
             stability_guard: "exact_inverse_length_scaling",
             expected_behavior: "inverse FFT and real FFT gradients preserve scaling",
             actual_behavior: "FFT and IRFFT VJP tests stay in complex128 tolerance",
-            max_abs_error: 5.0e-13,
-            max_rel_error: 5.0e-13,
-            max_ulp_error: Some(3),
-            non_finite_classification: "finite",
-            deterministic_replay_count: 3,
+            measurement: measure_fft_scaling(),
             platform_fingerprint_id: platform_id,
             artifact_refs: &[
                 "crates/fj-conformance/tests/ad_numerical_verification.rs",
@@ -1054,11 +1706,7 @@ fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
             stability_guard: "dtype_lattice_row_must_match_oracle",
             expected_behavior: "integer and bool rows compare exactly; float/complex rows use dtype tier",
             actual_behavior: "mixed-dtype conformance log records stable promotion outputs",
-            max_abs_error: 0.0,
-            max_rel_error: 0.0,
-            max_ulp_error: Some(0),
-            non_finite_classification: "not_applicable",
-            deterministic_replay_count: 3,
+            measurement: measure_dtype_promotion(),
             platform_fingerprint_id: platform_id,
             artifact_refs: &["artifacts/e2e/e2e_mixed_dtype.e2e.json"],
             replay_command: "./scripts/run_e2e.sh --scenario e2e_mixed_dtype",
@@ -1077,11 +1725,7 @@ fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
             stability_guard: "componentwise_real_imag_comparison",
             expected_behavior: "complex branch-sensitive rows preserve componentwise finite behavior",
             actual_behavior: "complex oracle tests compare real and imaginary components directly",
-            max_abs_error: 6.0e-13,
-            max_rel_error: 6.0e-13,
-            max_ulp_error: Some(4),
-            non_finite_classification: "finite",
-            deterministic_replay_count: 3,
+            measurement: measure_complex_branch_values(),
             platform_fingerprint_id: platform_id,
             artifact_refs: &["crates/fj-conformance/tests/complex_ops_oracle.rs"],
             replay_command: "cargo test -p fj-conformance --test complex_ops_oracle -- --nocapture",
@@ -1100,11 +1744,7 @@ fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
             stability_guard: "threefry_constants_and_counter_order",
             expected_behavior: "same seed and fold-in stream produce bit-identical words",
             actual_behavior: "25 RNG oracle fixtures pass with exact words",
-            max_abs_error: 0.0,
-            max_rel_error: 0.0,
-            max_ulp_error: Some(0),
-            non_finite_classification: "deterministic_seed_stream",
-            deterministic_replay_count: 25,
+            measurement: measure_rng_determinism(),
             platform_fingerprint_id: platform_id,
             artifact_refs: &[
                 "crates/fj-conformance/fixtures/rng/rng_determinism.v1.json",
@@ -1126,11 +1766,7 @@ fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
             stability_guard: "store_float_literals_as_raw_bits",
             expected_behavior: "f64 NaN payload, infinities, and signed zeros survive serialization",
             actual_behavior: "serde round-trip preserves Literal::F64Bits payloads",
-            max_abs_error: 0.0,
-            max_rel_error: 0.0,
-            max_ulp_error: Some(0),
-            non_finite_classification: "nan_payload_preserved:0008000000001234",
-            deterministic_replay_count: 3,
+            measurement: measure_literal_bit_roundtrip(),
             platform_fingerprint_id: platform_id,
             artifact_refs: &["crates/fj-core/src/lib.rs"],
             replay_command: "cargo test -p fj-core literal -- --nocapture",
@@ -1149,11 +1785,7 @@ fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
             stability_guard: "ieee_754_non_finite_classification",
             expected_behavior: "0/0 produces NaN and x/0 produces signed infinity where IEEE requires it",
             actual_behavior: "LAX oracle rows classify NaN and signed infinity without panics",
-            max_abs_error: 0.0,
-            max_rel_error: 0.0,
-            max_ulp_error: Some(0),
-            non_finite_classification: "nan_and_signed_infinity_classified",
-            deterministic_replay_count: 3,
+            measurement: measure_non_finite_division(),
             platform_fingerprint_id: platform_id,
             artifact_refs: &[
                 "crates/fj-conformance/tests/lax_oracle.rs",
@@ -1176,11 +1808,7 @@ fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
             stability_guard: "fallback_policy_can_be_denied_or_replayed",
             expected_behavior: "fallback rows name the step, tolerance, and deny path",
             actual_behavior: "V1 transform-control rows expose finite-difference fallback policy",
-            max_abs_error: 5.0e-5,
-            max_rel_error: 4.0e-5,
-            max_ulp_error: None,
-            non_finite_classification: "finite_diff_guarded",
-            deterministic_replay_count: 3,
+            measurement: measure_finite_diff_policy(),
             platform_fingerprint_id: platform_id,
             artifact_refs: &[
                 "artifacts/conformance/transform_control_flow_matrix.v1.json",
@@ -1202,11 +1830,7 @@ fn stability_rows(platform_id: &str) -> Vec<NumericalStabilityRow> {
             stability_guard: "os_arch_endian_rust_cargo_target_fingerprint",
             expected_behavior: "every gate log carries enough metadata to detect platform drift",
             actual_behavior: "numerical stability gate binds rows to an explicit platform fingerprint",
-            max_abs_error: 0.0,
-            max_rel_error: 0.0,
-            max_ulp_error: Some(0),
-            non_finite_classification: "not_applicable",
-            deterministic_replay_count: 3,
+            measurement: measure_platform_metadata(platform_id),
             platform_fingerprint_id: platform_id,
             artifact_refs: &["artifacts/schemas/e2e_forensic_log.v1.schema.json"],
             replay_command: "./scripts/run_numerical_stability_gate.sh --enforce",
@@ -1228,11 +1852,7 @@ struct StabilitySpec<'a> {
     stability_guard: &'a str,
     expected_behavior: &'a str,
     actual_behavior: &'a str,
-    max_abs_error: f64,
-    max_rel_error: f64,
-    max_ulp_error: Option<u64>,
-    non_finite_classification: &'a str,
-    deterministic_replay_count: usize,
+    measurement: LiveStabilityMeasurement,
     platform_fingerprint_id: &'a str,
     artifact_refs: &'a [&'a str],
     replay_command: &'a str,
@@ -1253,11 +1873,11 @@ fn row(spec: StabilitySpec<'_>) -> NumericalStabilityRow {
         stability_guard: spec.stability_guard.to_owned(),
         expected_behavior: spec.expected_behavior.to_owned(),
         actual_behavior: spec.actual_behavior.to_owned(),
-        max_abs_error: spec.max_abs_error,
-        max_rel_error: spec.max_rel_error,
-        max_ulp_error: spec.max_ulp_error,
-        non_finite_classification: spec.non_finite_classification.to_owned(),
-        deterministic_replay_count: spec.deterministic_replay_count,
+        max_abs_error: spec.measurement.max_abs_error,
+        max_rel_error: spec.measurement.max_rel_error,
+        max_ulp_error: spec.measurement.max_ulp_error,
+        non_finite_classification: spec.measurement.non_finite_classification,
+        deterministic_replay_count: spec.measurement.deterministic_replay_count,
         platform_fingerprint_id: spec.platform_fingerprint_id.to_owned(),
         artifact_refs: spec
             .artifact_refs
@@ -1266,9 +1886,13 @@ fn row(spec: StabilitySpec<'_>) -> NumericalStabilityRow {
             .collect(),
         replay_command: spec.replay_command.to_owned(),
         dashboard_row: format!("stability/{}", spec.family),
-        status: "pass".to_owned(),
+        status: if spec.measurement.passed {
+            "pass".to_owned()
+        } else {
+            "fail".to_owned()
+        },
         stale: false,
-        regression: false,
+        regression: !spec.measurement.passed,
     }
 }
 

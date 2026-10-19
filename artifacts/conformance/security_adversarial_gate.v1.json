@@ -1,21 +1,21 @@
 {
   "schema_version": "frankenjax.security-adversarial-gate.v1",
   "bead_id": "frankenjax-cstq.17",
-  "generated_at_unix_ms": 1777775067054,
+  "generated_at_unix_ms": 1792430679268,
   "status": "pass",
   "matrix_policy": "Security green requires every V1 threat category to have existing evidence refs, every cargo-fuzz manifest target represented as a fuzz family, complete deterministic fuzz seed coverage, typed panic-free adversarial rows, no open crash index entries, stable replay commands, and shared E2E log validation.",
   "coverage": {
     "required_category_count": 9,
     "observed_category_count": 9,
     "green_category_count": 9,
-    "fuzz_family_count": 12,
-    "fuzz_complete_count": 12,
+    "fuzz_family_count": 19,
+    "fuzz_complete_count": 19,
     "adversarial_row_count": 10,
     "typed_error_row_count": 10,
     "panic_free_row_count": 10,
-    "crash_free_family_count": 12,
-    "timeout_free_family_count": 12,
-    "evidence_ref_count": 43
+    "crash_free_family_count": 19,
+    "timeout_free_family_count": 19,
+    "evidence_ref_count": 44
   },
   "threat_categories": [
     {
@@ -273,7 +273,8 @@
         "artifacts/e2e/e2e_p2c004_strict_hardened_divergence.e2e.json"
       ],
       "required_fuzz_families": [
-        "ff_dispatch_request_builder"
+        "ff_dispatch_request_builder",
+        "ff_ledger_deserializer"
       ],
       "required_adversarial_rows": [
         "adv_ledger_audit_recovery"
@@ -298,7 +299,7 @@
       "timeout_status": "no_timeout",
       "minimized_repro_path": null,
       "artifact_hashes": {
-        "crates/fj-conformance/fuzz/corpus/cache_key_builder/seed_strict_unknown_feature.json": "4acf9e9934c44a38a88e159bc479155da02d8dbcc5c765db7321fa870fbdbacd"
+        "crates/fj-conformance/fuzz/corpus/cache_key_builder/seed_strict_unknown_feature.json": "b1d1f5fd18f42b0dc04ca5caf36e267f890a6475c7ea3998616119772fb88c9b"
       },
       "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run cache_key_builder corpus/cache_key_builder -runs=3"
     },
@@ -308,8 +309,8 @@
       "corpus_path": "crates/fj-conformance/fuzz/corpus/transform_composition_verifier",
       "target_source": "crates/fj-conformance/fuzz/fuzz_targets/transform_composition_verifier.rs",
       "seed_floor": 8,
-      "observed_seed_count": 12,
-      "deterministic_replay_count": 12,
+      "observed_seed_count": 15,
+      "deterministic_replay_count": 15,
       "expected_error_class": "typed_transform_proof_result",
       "actual_error_class": "typed_transform_proof_result",
       "panic_status": "no_panic",
@@ -319,7 +320,7 @@
       "artifact_hashes": {
         "crates/fj-conformance/fuzz/corpus/transform_composition_verifier/single_jit_empty_evidence": "af3adfb47e2529240efa80612f4b59705d0c062bfd9778ffda4b02a9c765e311"
       },
-      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run transform_composition_verifier corpus/transform_composition_verifier -runs=12"
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run transform_composition_verifier corpus/transform_composition_verifier -runs=15"
     },
     {
       "family_id": "ff_ir_deserializer",
@@ -336,7 +337,7 @@
       "timeout_status": "no_timeout",
       "minimized_repro_path": null,
       "artifact_hashes": {
-        "crates/fj-conformance/fuzz/corpus/seed/ir_deserializer/seed_duplicate_var.json": "18f5d02f536004096b9c8f70447f84c31091d7b801f5bd78f59f9c98c93c6bc8"
+        "crates/fj-conformance/fuzz/corpus/seed/ir_deserializer/seed_duplicate_var.json": "63765fa9a48d149fd6353e44e9b7be0e92895b762d25ae92d5d9eafff0d9a991"
       },
       "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run ir_deserializer corpus/seed/ir_deserializer -runs=3"
     },
@@ -346,8 +347,8 @@
       "corpus_path": "crates/fj-conformance/fuzz/corpus/shape_inference_engine",
       "target_source": "crates/fj-conformance/fuzz/fuzz_targets/shape_inference_engine.rs",
       "seed_floor": 32,
-      "observed_seed_count": 55,
-      "deterministic_replay_count": 55,
+      "observed_seed_count": 67,
+      "deterministic_replay_count": 67,
       "expected_error_class": "typed_shape_inference_result",
       "actual_error_class": "typed_shape_inference_result",
       "panic_status": "no_panic",
@@ -358,7 +359,7 @@
         "crates/fj-conformance/fuzz/corpus/shape_inference_engine/reduce_sum_axes": "b5b651c938d3d76990fb16927cdb0a0dda9af290add68e530b9a019424c0d0f7",
         "crates/fj-conformance/fuzz/corpus/shape_inference_engine/while_loop": "2d449aee8af43555f261bee5523ae3b1088d37713b01791f4b3e3a6526abe197"
       },
-      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run shape_inference_engine corpus/shape_inference_engine -runs=55"
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run shape_inference_engine corpus/shape_inference_engine -runs=67"
     },
     {
       "family_id": "ff_value_deserializer",
@@ -366,8 +367,8 @@
       "corpus_path": "crates/fj-conformance/fuzz/corpus/value_deserializer",
       "target_source": "crates/fj-conformance/fuzz/fuzz_targets/value_deserializer.rs",
       "seed_floor": 8,
-      "observed_seed_count": 13,
-      "deterministic_replay_count": 13,
+      "observed_seed_count": 37,
+      "deterministic_replay_count": 37,
       "expected_error_class": "typed_value_deserialize_result",
       "actual_error_class": "typed_value_deserialize_result",
       "panic_status": "no_panic",
@@ -378,7 +379,7 @@
         "crates/fj-conformance/fuzz/corpus/value_deserializer/tensor_dtype_element_mismatch": "f29c4073a189527ce2d91fb3f1648d02f84606ecf5782f5ed466283b986e0838",
         "crates/fj-conformance/fuzz/corpus/value_deserializer/tensor_shape_count_overflow": "57ff62e9fec159188903822b7f6976258c26bcf6ecc7e9f2771470e95b8f0336"
       },
-      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run value_deserializer corpus/value_deserializer -runs=13"
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run value_deserializer corpus/value_deserializer -runs=37"
     },
     {
       "family_id": "ff_dispatch_request_builder",
@@ -405,8 +406,8 @@
       "corpus_path": "crates/fj-conformance/fuzz/corpus/fixture_bundle_loader",
       "target_source": "crates/fj-conformance/fuzz/fuzz_targets/fixture_bundle_loader.rs",
       "seed_floor": 8,
-      "observed_seed_count": 13,
-      "deterministic_replay_count": 13,
+      "observed_seed_count": 16,
+      "deterministic_replay_count": 16,
       "expected_error_class": "typed_fixture_bundle_result",
       "actual_error_class": "typed_fixture_bundle_result",
       "panic_status": "no_panic",
@@ -416,7 +417,7 @@
       "artifact_hashes": {
         "crates/fj-conformance/fuzz/corpus/fixture_bundle_loader/malformed_truncated.json": "a82e57984ee0196b8ff48af4a4d863765d03ebe8d132fe78ed1a976446472df5"
       },
-      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run fixture_bundle_loader corpus/fixture_bundle_loader -runs=13"
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run fixture_bundle_loader corpus/fixture_bundle_loader -runs=16"
     },
     {
       "family_id": "ff_smoke_harness_json",
@@ -464,8 +465,8 @@
       "corpus_path": "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer",
       "target_source": "crates/fj-conformance/fuzz/fuzz_targets/primitive_eval_fuzzer.rs",
       "seed_floor": 32,
-      "observed_seed_count": 91,
-      "deterministic_replay_count": 91,
+      "observed_seed_count": 101,
+      "deterministic_replay_count": 101,
       "expected_error_class": "typed_primitive_eval_result",
       "actual_error_class": "typed_primitive_eval_result",
       "panic_status": "no_panic",
@@ -476,7 +477,7 @@
         "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer/conv_simple": "a2cc869c2f20c3ca0420750d0d27f2e531c52fbd9a6b1a6a05773770c2f56d9c",
         "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer/div_by_zero": "9633bfcbbc761269cebc076df63bed2821704ac0486b04824d073de955161b0a"
       },
-      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run primitive_eval_fuzzer corpus/primitive_eval_fuzzer -runs=91"
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run primitive_eval_fuzzer corpus/primitive_eval_fuzzer -runs=101"
     },
     {
       "family_id": "ff_partial_eval_fuzzer",
@@ -484,8 +485,8 @@
       "corpus_path": "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer",
       "target_source": "crates/fj-conformance/fuzz/fuzz_targets/partial_eval_fuzzer.rs",
       "seed_floor": 8,
-      "observed_seed_count": 16,
-      "deterministic_replay_count": 16,
+      "observed_seed_count": 20,
+      "deterministic_replay_count": 20,
       "expected_error_class": "typed_partial_eval_result",
       "actual_error_class": "typed_partial_eval_result",
       "panic_status": "no_panic",
@@ -496,7 +497,122 @@
         "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer/add2_all_known": "709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c",
         "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer/random_mix_1": "2cce524fd648301c82e6eef108606bbeea38b3316577b5ee410f889bb2094be1"
       },
-      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run partial_eval_fuzzer corpus/partial_eval_fuzzer -runs=16"
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run partial_eval_fuzzer corpus/partial_eval_fuzzer -runs=20"
+    },
+    {
+      "family_id": "ff_egraph_rewrite_rules",
+      "target": "egraph_rewrite_rules",
+      "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/egraph_rewrite_rules",
+      "target_source": "crates/fj-conformance/fuzz/fuzz_targets/egraph_rewrite_rules.rs",
+      "seed_floor": 1,
+      "observed_seed_count": 1,
+      "deterministic_replay_count": 1,
+      "expected_error_class": "typed_egraph_rewrite_result",
+      "actual_error_class": "typed_egraph_rewrite_result",
+      "panic_status": "no_panic",
+      "crash_status": "no_crash",
+      "timeout_status": "no_timeout",
+      "minimized_repro_path": null,
+      "artifact_hashes": {
+        "crates/fj-conformance/fuzz/corpus/seed/egraph_rewrite_rules/basic_chain": "3beecec2eb5eecc709bf790fe4c739d8b4645f7971a3d0ad57cff6fa4b99dd69"
+      },
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run egraph_rewrite_rules corpus/seed/egraph_rewrite_rules -runs=1"
+    },
+    {
+      "family_id": "ff_ad_gradient_computation",
+      "target": "ad_gradient_computation",
+      "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/ad_gradient_computation",
+      "target_source": "crates/fj-conformance/fuzz/fuzz_targets/ad_gradient_computation.rs",
+      "seed_floor": 1,
+      "observed_seed_count": 1,
+      "deterministic_replay_count": 1,
+      "expected_error_class": "typed_ad_gradient_result",
+      "actual_error_class": "typed_ad_gradient_result",
+      "panic_status": "no_panic",
+      "crash_status": "no_crash",
+      "timeout_status": "no_timeout",
+      "minimized_repro_path": null,
+      "artifact_hashes": {
+        "crates/fj-conformance/fuzz/corpus/seed/ad_gradient_computation/basic_gradient": "8675d3998821e82310a21a6fe3b2c8018a22112fbe92480c2d831c217ef6400c"
+      },
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run ad_gradient_computation corpus/seed/ad_gradient_computation -runs=1"
+    },
+    {
+      "family_id": "ff_primitive_params_fuzzer",
+      "target": "primitive_params_fuzzer",
+      "corpus_path": "crates/fj-conformance/fuzz/corpus/primitive_params_fuzzer",
+      "target_source": "crates/fj-conformance/fuzz/fuzz_targets/primitive_params_fuzzer.rs",
+      "seed_floor": 3,
+      "observed_seed_count": 3,
+      "deterministic_replay_count": 3,
+      "expected_error_class": "typed_primitive_params_result",
+      "actual_error_class": "typed_primitive_params_result",
+      "panic_status": "no_panic",
+      "crash_status": "no_crash",
+      "timeout_status": "no_timeout",
+      "minimized_repro_path": null,
+      "artifact_hashes": {
+        "crates/fj-conformance/fuzz/corpus/primitive_params_fuzzer/seed_reduce": "22cb4df00cddd6067ad5cfa2bba9857f21a06843e1a6e39ad1a68cb9a45ab8b7",
+        "crates/fj-conformance/fuzz/corpus/primitive_params_fuzzer/seed_slice": "8491cc53e5942905e133f8c22cc4436e96030c5ef2fdc1099ebf200276b2d0f0"
+      },
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run primitive_params_fuzzer corpus/primitive_params_fuzzer -runs=3"
+    },
+    {
+      "family_id": "ff_proc_status_parser",
+      "target": "proc_status_parser",
+      "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/proc_status_parser",
+      "target_source": "crates/fj-conformance/fuzz/fuzz_targets/proc_status_parser.rs",
+      "seed_floor": 3,
+      "observed_seed_count": 3,
+      "deterministic_replay_count": 3,
+      "expected_error_class": "typed_proc_status_parse_result",
+      "actual_error_class": "typed_proc_status_parse_result",
+      "panic_status": "no_panic",
+      "crash_status": "no_crash",
+      "timeout_status": "no_timeout",
+      "minimized_repro_path": null,
+      "artifact_hashes": {
+        "crates/fj-conformance/fuzz/corpus/seed/proc_status_parser/linux_status": "6c48a039c78f7532eb0f8ff3fc27449b26fec01fdf24d033cb6ec2fe11a4ee96"
+      },
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run proc_status_parser corpus/seed/proc_status_parser -runs=3"
+    },
+    {
+      "family_id": "ff_jaxpr_serde_roundtrip",
+      "target": "jaxpr_serde_roundtrip",
+      "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/jaxpr_serde_roundtrip",
+      "target_source": "crates/fj-conformance/fuzz/fuzz_targets/jaxpr_serde_roundtrip.rs",
+      "seed_floor": 2,
+      "observed_seed_count": 2,
+      "deterministic_replay_count": 2,
+      "expected_error_class": "typed_jaxpr_serde_roundtrip_result",
+      "actual_error_class": "typed_jaxpr_serde_roundtrip_result",
+      "panic_status": "no_panic",
+      "crash_status": "no_crash",
+      "timeout_status": "no_timeout",
+      "minimized_repro_path": null,
+      "artifact_hashes": {
+        "crates/fj-conformance/fuzz/corpus/seed/jaxpr_serde_roundtrip/valid_add.json": "a5aeef887377d84079967f3c4a06f306920fc4d7e73b4d38c82172ee4093b4df"
+      },
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run jaxpr_serde_roundtrip corpus/seed/jaxpr_serde_roundtrip -runs=2"
+    },
+    {
+      "family_id": "ff_fft_roundtrip",
+      "target": "fft_roundtrip",
+      "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/fft_roundtrip",
+      "target_source": "crates/fj-conformance/fuzz/fuzz_targets/fft_roundtrip.rs",
+      "seed_floor": 1,
+      "observed_seed_count": 1,
+      "deterministic_replay_count": 1,
+      "expected_error_class": "typed_fft_roundtrip_result",
+      "actual_error_class": "typed_fft_roundtrip_result",
+      "panic_status": "no_panic",
+      "crash_status": "no_crash",
+      "timeout_status": "no_timeout",
+      "minimized_repro_path": null,
+      "artifact_hashes": {
+        "crates/fj-conformance/fuzz/corpus/seed/fft_roundtrip/basic_signal": "e64c4dc9b0b7aff28c450e5d798b6be64c15c087d036746fa107d6961d22081e"
+      },
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run fft_roundtrip corpus/seed/fft_roundtrip -runs=1"
     },
     {
       "family_id": "ff_raptorq_decoder",
@@ -517,6 +633,25 @@
         "crates/fj-conformance/fuzz/corpus/seed/raptorq_decoder/min_symbol_size": "481637b185d343339f684466aa97a89844b67f04ff248310e472ac04936faa10"
       },
       "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run raptorq_decoder corpus/seed/raptorq_decoder -runs=15"
+    },
+    {
+      "family_id": "ff_ledger_deserializer",
+      "target": "ledger_deserializer",
+      "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/ledger_deserializer",
+      "target_source": "crates/fj-conformance/fuzz/fuzz_targets/ledger_deserializer.rs",
+      "seed_floor": 3,
+      "observed_seed_count": 3,
+      "deterministic_replay_count": 3,
+      "expected_error_class": "typed_ledger_deserialize_result",
+      "actual_error_class": "typed_ledger_deserialize_result",
+      "panic_status": "no_panic",
+      "crash_status": "no_crash",
+      "timeout_status": "no_timeout",
+      "minimized_repro_path": null,
+      "artifact_hashes": {
+        "crates/fj-conformance/fuzz/corpus/seed/ledger_deserializer/valid_ledger_with_signals.json": "98f905c6d44c661c6ea6bea22bc37f38697afa8d31dd0d7ab84a53ce0c668a26"
+      },
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run ledger_deserializer corpus/seed/ledger_deserializer -runs=3"
     }
   ],
   "adversarial_rows": [
@@ -703,12 +838,13 @@
       "panic_status": "no_panic",
       "crash_status": "no_crash",
       "timeout_status": "no_timeout",
-      "fuzz_family_id": "ff_dispatch_request_builder",
+      "fuzz_family_id": "ff_ledger_deserializer",
       "evidence_refs": [
         "artifacts/e2e/e2e_p2c004_evidence_ledger_audit_trail.e2e.json",
-        "artifacts/e2e/e2e_p2c004_strict_hardened_divergence.e2e.json"
+        "artifacts/e2e/e2e_p2c004_strict_hardened_divergence.e2e.json",
+        "crates/fj-conformance/fuzz/corpus/seed/ledger_deserializer/valid_ledger_with_signals.json"
       ],
-      "replay_command": "cargo test -p fj-conformance --test e2e_p2c004 -- e2e_p2c004_evidence_ledger_audit_trail --exact --nocapture"
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run ledger_deserializer corpus/seed/ledger_deserializer -runs=3"
     }
   ],
   "crash_index": {

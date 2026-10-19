@@ -458,3 +458,30 @@ fn security_e2e_log_schema_accepts_gate_shape() -> Result<(), Box<dyn std::error
     );
     Ok(())
 }
+
+#[test]
+fn committed_on_disk_security_artifact_matches_live_execution_and_tamper_fails() {
+    let root = repo_root();
+    let live = build_security_adversarial_report(&root);
+    let committed_path = root.join("artifacts/conformance/security_adversarial_gate.v1.json");
+    let raw = std::fs::read_to_string(&committed_path)
+        .expect("committed security_adversarial_gate.v1.json should exist");
+    let committed: SecurityAdversarialReport =
+        serde_json::from_str(&raw).expect("committed security report should deserialize");
+
+    assert_eq!(committed.status, "pass");
+    assert!(validate_security_adversarial_report(&root, &committed).is_empty());
+    assert_eq!(committed.adversarial_rows, live.adversarial_rows);
+    assert_eq!(committed.fuzz_families, live.fuzz_families);
+
+    // Negative test: mutating an adversarial row's actual_error_class fails validation
+    let mut tampered = live.clone();
+    tampered.adversarial_rows[0].actual_error_class = "unexpected_ok".to_owned();
+    let issues = validate_security_adversarial_report(&root, &tampered);
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.code == "bad_row_error_class"),
+        "tampering with adversarial row error class must fail security gate validation"
+    );
+}

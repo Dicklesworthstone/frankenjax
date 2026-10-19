@@ -5,29 +5,20 @@
   "test_id": "fj_architecture_boundary_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target/debug/fj_architecture_boundary_gate",
-    "--root",
-    "/data/projects/frankenjax",
-    "--report",
-    "/data/projects/frankenjax/artifacts/conformance/architecture_boundary_decision.v1.json",
-    "--markdown",
-    "/data/projects/frankenjax/artifacts/conformance/architecture_boundary_decision.v1.md",
-    "--e2e",
-    "/data/projects/frankenjax/artifacts/e2e/e2e_architecture_boundary_gate.e2e.json",
+    "/dev/shm/cargo-target-frankenjax/debug/fj_architecture_boundary_gate",
     "--enforce"
   ],
   "working_dir": "/data/projects/frankenjax",
   "environment": {
     "os": "linux",
     "arch": "x86_64",
-    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
-    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target",
+    "rust_version": "rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "cargo_version": "cargo 1.100.0-nightly (e8cb624d5 2026-08-22)",
+    "cargo_target_dir": "/dev/shm/cargo-target-frankenjax",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target",
-      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+      "CARGO_TARGET_DIR": "/dev/shm/cargo-target-frankenjax"
     },
-    "timestamp_unix_ms": 1777630894711
+    "timestamp_unix_ms": 1792389770203
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -39,8 +30,8 @@
     "conformance_harness"
   ],
   "oracle_ids": [
-    "EXISTING_JAX_STRUCTURE.md",
-    "PROPOSED_ARCHITECTURE.md",
+    "docs/planning/EXISTING_JAX_STRUCTURE.md",
+    "docs/planning/PROPOSED_ARCHITECTURE.md",
     "cargo metadata --no-deps"
   ],
   "transform_stack": [
@@ -51,7 +42,7 @@
   ],
   "mode": "strict",
   "inputs": {
-    "crate_count": 15,
+    "crate_count": 17,
     "decision_ids": [
       "user_api_facade",
       "transform_stack",
@@ -60,7 +51,7 @@
       "ffi_boundary",
       "conformance_harness"
     ],
-    "normal_edge_count": 36,
+    "normal_edge_count": 55,
     "workspace_root": "/data/projects/frankenjax"
   },
   "expected": {
@@ -70,7 +61,7 @@
     "missing_decision_fields": 0
   },
   "actual": {
-    "crate_count": 15,
+    "crate_count": 17,
     "decision_count": 6,
     "decisions": [
       {
@@ -78,7 +69,8 @@
         "decision": "keep_current_boundary",
         "owners": [
           "fj-api",
-          "fj-trace"
+          "fj-trace",
+          "fj-py"
         ],
         "status": "accepted"
       },
@@ -101,6 +93,7 @@
           "fj-interpreters",
           "fj-dispatch",
           "fj-backend-cpu",
+          "fj-backend-gpu",
           "fj-runtime"
         ],
         "status": "accepted"
@@ -132,7 +125,7 @@
       }
     ],
     "issue_count": 0,
-    "normal_edge_count": 36,
+    "normal_edge_count": 55,
     "status": "pass"
   },
   "tolerance": {
@@ -165,13 +158,13 @@
     {
       "kind": "architecture_boundary_report",
       "path": "artifacts/conformance/architecture_boundary_decision.v1.json",
-      "sha256": "0c78b2bd32b500db773dc11915b2b33c2a08c8e79edd7cb02d6b4ff6b9c4e788",
+      "sha256": "3698257f59bda92323ad450b325b08369a75e794416316cc4d474caa48e90101",
       "required": true
     },
     {
       "kind": "architecture_boundary_markdown",
       "path": "artifacts/conformance/architecture_boundary_decision.v1.md",
-      "sha256": "67b6c3e8fd357c305b488471dc5ac35b6ffe356444d013623af2ec364a186abb",
+      "sha256": "c4fd47dd5c033515c2ae2c34340ae24e5024c90b4a54b796b20fbccf7f225817",
       "required": true
     }
   ],

@@ -276,3 +276,39 @@ fn numerical_stability_markdown_is_dashboard_ready() {
     assert!(markdown.contains("special_math_tails"));
     assert!(markdown.contains("No numerical-stability issues found."));
 }
+
+#[test]
+fn numerical_stability_on_disk_artifact_is_fresh_and_tamper_fails_validation() {
+    use fj_conformance::numerical_stability::{
+        NumericalStabilityOutputPaths, NumericalStabilityReport,
+    };
+
+    let root = repo_root();
+    let paths = NumericalStabilityOutputPaths::for_root(&root);
+    let raw = std::fs::read_to_string(&paths.report)
+        .expect("committed numerical_stability_matrix.v1.json must exist on disk");
+    let mut on_disk: NumericalStabilityReport =
+        serde_json::from_str(&raw).expect("valid NumericalStabilityReport JSON");
+    assert_eq!(on_disk.status, "pass", "issues: {:#?}", on_disk.issues);
+    assert!(
+        validate_numerical_stability_report(&root, &on_disk).is_empty(),
+        "committed numerical_stability_matrix.v1.json failed validation"
+    );
+
+    let live = build_numerical_stability_report(&root);
+    let live_roundtrip: NumericalStabilityReport = serde_json::from_str(
+        &serde_json::to_string_pretty(&live).expect("serialize live numerical stability report"),
+    )
+    .expect("deserialize live numerical stability report");
+    assert_eq!(on_disk.summary, live_roundtrip.summary);
+    assert_eq!(on_disk.rows, live_roundtrip.rows);
+
+    // Negative test: tampering with a stability row triggers validation failure
+    on_disk.rows[0].max_abs_error = 100.0;
+    on_disk.rows[0].status = "fail".to_owned();
+    let issues = validate_numerical_stability_report(&root, &on_disk);
+    assert!(
+        !issues.is_empty(),
+        "tampered numerical stability report must fail validation"
+    );
+}

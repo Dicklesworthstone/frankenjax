@@ -176,6 +176,15 @@ pub fn capture_workspace_snapshot(root: &Path) -> Result<WorkspaceSnapshot, Stri
     snapshot_from_metadata_json(&String::from_utf8_lossy(&output.stdout))
 }
 
+fn canonical_crate_name(name: &str) -> &str {
+    match name {
+        "frankenjax-core" => "fj-core",
+        "frankenjax-lax" => "fj-lax",
+        "frankenjax-test-utils" => "fj-test-utils",
+        other => other,
+    }
+}
+
 pub fn snapshot_from_metadata_json(raw: &str) -> Result<WorkspaceSnapshot, String> {
     let metadata = serde_json::from_str::<CargoMetadata>(raw)
         .map_err(|err| format!("cargo metadata JSON did not parse: {err}"))?;
@@ -198,20 +207,22 @@ pub fn snapshot_from_metadata_json(raw: &str) -> Result<WorkspaceSnapshot, Strin
         .iter()
         .filter(|package| member_ids.contains(&package.id))
     {
+        let pkg_name = canonical_crate_name(&package.name).to_owned();
         let mut normal_deps = Vec::new();
         let mut dev_deps = Vec::new();
         for dep in &package.dependencies {
             if dep.path.is_none() || !member_names.contains(&dep.name) {
                 continue;
             }
+            let dep_name = canonical_crate_name(&dep.name).to_owned();
             if dep.kind.as_deref() == Some("dev") {
-                dev_deps.push(dep.name.clone());
+                dev_deps.push(dep_name);
             } else {
                 normal_edges.push(WorkspaceEdge {
-                    from: package.name.clone(),
-                    to: dep.name.clone(),
+                    from: pkg_name.clone(),
+                    to: dep_name.clone(),
                 });
-                normal_deps.push(dep.name.clone());
+                normal_deps.push(dep_name);
             }
         }
         normal_deps.sort();
@@ -233,11 +244,11 @@ pub fn snapshot_from_metadata_json(raw: &str) -> Result<WorkspaceSnapshot, Strin
         target_kinds.dedup();
 
         crates.push(WorkspaceCrate {
-            name: package.name.clone(),
+            layer: layer_for_crate(&pkg_name)
+                .ok_or_else(|| format!("workspace crate `{pkg_name}` has no layer policy"))?,
+            name: pkg_name,
             manifest_path: package.manifest_path.clone(),
             lib_path,
-            layer: layer_for_crate(&package.name)
-                .ok_or_else(|| format!("workspace crate `{}` has no layer policy", package.name))?,
             normal_deps,
             dev_deps,
             target_kinds,
@@ -614,9 +625,9 @@ fn write_markdown(path: &Path, markdown: &str) -> Result<(), std::io::Error> {
 fn layer_for_crate(name: &str) -> Option<CrateLayer> {
     Some(match name {
         "fj-core" | "fj-test-utils" => CrateLayer::Model,
-        "fj-trace" | "fj-lax" | "fj-cache" | "fj-ledger" => CrateLayer::Semantics,
+        "fj-trace" | "fj-lax" | "fj-cache" | "fj-ledger" | "fj-ffi" => CrateLayer::Semantics,
         "fj-interpreters" | "fj-ad" | "fj-runtime" | "fj-egraph" => CrateLayer::Execution,
-        "fj-dispatch" | "fj-api" | "fj-backend-cpu" | "fj-backend-gpu" | "fj-ffi" | "fj-py" => {
+        "fj-dispatch" | "fj-api" | "fj-backend-cpu" | "fj-backend-gpu" | "fj-py" => {
             CrateLayer::FacadeBackend
         }
         "fj-conformance" => CrateLayer::OpsHarness,

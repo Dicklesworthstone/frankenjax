@@ -5,29 +5,20 @@
   "test_id": "fj_decision_ledger_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target-frankenjax-codex-cstq19/debug/fj_decision_ledger_gate",
-    "--root",
-    "/data/projects/frankenjax",
-    "--report",
-    "/data/projects/frankenjax/artifacts/conformance/decision_ledger_calibration.v1.json",
-    "--markdown",
-    "/data/projects/frankenjax/artifacts/conformance/decision_ledger_calibration.v1.md",
-    "--e2e",
-    "/data/projects/frankenjax/artifacts/e2e/e2e_decision_ledger_gate.e2e.json",
+    "/dev/shm/cargo-target-frankenjax/debug/fj_decision_ledger_gate",
     "--enforce"
   ],
   "working_dir": "/data/projects/frankenjax",
   "environment": {
     "os": "linux",
     "arch": "x86_64",
-    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
-    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq19",
+    "rust_version": "rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "cargo_version": "cargo 1.100.0-nightly (e8cb624d5 2026-08-22)",
+    "cargo_target_dir": "/dev/shm/cargo-target-frankenjax",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq19",
-      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+      "CARGO_TARGET_DIR": "/dev/shm/cargo-target-frankenjax"
     },
-    "timestamp_unix_ms": 1777731686334
+    "timestamp_unix_ms": 1792430485726
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -231,7 +222,7 @@
     {
       "kind": "decision_ledger_calibration_report",
       "path": "artifacts/conformance/decision_ledger_calibration.v1.json",
-      "sha256": "b7b2ecf9f450ac20fa5e8ebc0ab46ac1cf6c9920cad9ac0cb13e53c181e29b79",
+      "sha256": "84936b1dfa9ef1ce047c78cf266288f0b313f6f8d10a0ed20b8e4d21143cb533",
       "required": true
     },
     {

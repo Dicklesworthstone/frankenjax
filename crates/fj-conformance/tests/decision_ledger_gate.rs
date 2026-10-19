@@ -175,3 +175,40 @@ fn decision_ledger_markdown_is_dashboard_ready() {
     assert!(markdown.contains("cache_hit_recompute"));
     assert!(markdown.contains("No decision-ledger calibration issues found."));
 }
+
+#[test]
+fn decision_ledger_on_disk_artifact_is_fresh_and_tamper_fails_validation() {
+    use fj_conformance::decision_ledger::{DecisionLedgerOutputPaths, DecisionLedgerReport};
+
+    let root = repo_root();
+    let paths = DecisionLedgerOutputPaths::for_root(&root);
+    let raw = std::fs::read_to_string(&paths.report)
+        .expect("committed decision_ledger_calibration.v1.json must exist on disk");
+    let mut on_disk: DecisionLedgerReport =
+        serde_json::from_str(&raw).expect("valid DecisionLedgerReport JSON");
+    assert_eq!(on_disk.status, "pass", "issues: {:#?}", on_disk.issues);
+    assert!(
+        validate_decision_ledger_report(&root, &on_disk).is_empty(),
+        "committed decision_ledger_calibration.v1.json failed validation"
+    );
+
+    let live = build_decision_ledger_report(&root);
+    let live_roundtrip: DecisionLedgerReport = serde_json::from_str(
+        &serde_json::to_string_pretty(&live).expect("serialize live decision ledger report"),
+    )
+    .expect("deserialize live decision ledger report");
+    assert_eq!(on_disk.summary, live_roundtrip.summary);
+    assert_eq!(on_disk.rows, live_roundtrip.rows);
+    assert_eq!(
+        on_disk.calibration_buckets,
+        live_roundtrip.calibration_buckets
+    );
+
+    // Negative test: tampering with a decision row triggers validation failure
+    on_disk.rows[0].selected_action = "kill".to_owned();
+    let issues = validate_decision_ledger_report(&root, &on_disk);
+    assert!(
+        !issues.is_empty(),
+        "tampered decision ledger report must fail validation"
+    );
+}

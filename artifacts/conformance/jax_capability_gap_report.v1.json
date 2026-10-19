@@ -23,7 +23,7 @@
       "capability": "grad",
       "jax_module": "jax.grad",
       "status": "parity_green",
-      "evidence": "Tape-based reverse-mode AD, 110 primitives with VJP/JVP rules",
+      "evidence": "Symbolic reverse-mode AD and tape-based VJP/JVP rules across 157 V1 local primitives (162 total including 5 pmap collective primitives)",
       "evidence_refs": ["crates/fj-ad/src/lib.rs"]
     },
     {
@@ -65,7 +65,7 @@
       "capability": "lax_primitives",
       "jax_module": "jax.lax.*",
       "status": "parity_green",
-      "evidence": "110 primitives implemented with evaluation and shape inference",
+      "evidence": "157 V1 local primitives implemented (162 total including 5 pmap collective primitives) with evaluation and shape inference",
       "evidence_refs": ["crates/fj-lax/src/lib.rs", "crates/fj-core/src/lib.rs"]
     },
     {

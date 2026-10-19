@@ -3,7 +3,7 @@
   "bead_id": "frankenjax-cstq.12",
   "status": "pass",
   "workspace_root": "/data/projects/frankenjax",
-  "crate_count": 15,
+  "crate_count": 17,
   "workspace_crates": [
     {
       "name": "fj-ad",
@@ -19,6 +19,7 @@
         "fj-test-utils"
       ],
       "target_kinds": [
+        "bench",
         "lib"
       ]
     },
@@ -31,14 +32,18 @@
         "fj-ad",
         "fj-core",
         "fj-dispatch",
+        "fj-interpreters",
+        "fj-lax",
+        "fj-ledger",
+        "fj-runtime",
         "fj-trace"
       ],
       "dev_deps": [
-        "fj-interpreters",
         "fj-test-utils"
       ],
       "target_kinds": [
         "bench",
+        "example",
         "lib",
         "test"
       ]
@@ -59,6 +64,21 @@
       ],
       "target_kinds": [
         "bench",
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-backend-gpu",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-backend-gpu/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-backend-gpu/src/lib.rs",
+      "layer": "facade_backend",
+      "normal_deps": [
+        "fj-core",
+        "fj-interpreters",
+        "fj-runtime"
+      ],
+      "dev_deps": [],
+      "target_kinds": [
         "lib"
       ]
     },
@@ -88,13 +108,14 @@
         "fj-cache",
         "fj-core",
         "fj-dispatch",
+        "fj-egraph",
         "fj-interpreters",
-        "fj-lax"
+        "fj-lax",
+        "fj-ledger"
       ],
       "dev_deps": [
         "fj-api",
         "fj-backend-cpu",
-        "fj-egraph",
         "fj-ffi",
         "fj-runtime",
         "fj-test-utils"
@@ -115,6 +136,7 @@
         "fj-test-utils"
       ],
       "target_kinds": [
+        "bench",
         "lib"
       ]
     },
@@ -129,6 +151,7 @@
         "fj-cache",
         "fj-core",
         "fj-egraph",
+        "fj-ffi",
         "fj-interpreters",
         "fj-lax",
         "fj-ledger",
@@ -157,14 +180,15 @@
         "fj-test-utils"
       ],
       "target_kinds": [
+        "bench",
         "lib"
       ]
     },
     {
       "name": "fj-ffi",
       "manifest_path": "/data/projects/frankenjax/crates/fj-ffi/Cargo.toml",
-      "lib_path": "/data/projects/frankenjax/crates/fj-ffi/src/lib.rs",
-      "layer": "facade_backend",
+      "lib_path": null,
+      "layer": "semantics",
       "normal_deps": [
         "fj-core"
       ],
@@ -173,7 +197,8 @@
       ],
       "target_kinds": [
         "bench",
-        "lib"
+        "cdylib",
+        "rlib"
       ]
     },
     {
@@ -183,7 +208,9 @@
       "layer": "execution",
       "normal_deps": [
         "fj-core",
-        "fj-lax"
+        "fj-ffi",
+        "fj-lax",
+        "fj-trace"
       ],
       "dev_deps": [
         "fj-test-utils"
@@ -222,6 +249,26 @@
       ],
       "target_kinds": [
         "lib"
+      ]
+    },
+    {
+      "name": "fj-py",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-py/Cargo.toml",
+      "lib_path": null,
+      "layer": "facade_backend",
+      "normal_deps": [
+        "fj-ad",
+        "fj-api",
+        "fj-core",
+        "fj-dispatch",
+        "fj-interpreters",
+        "fj-lax",
+        "fj-trace"
+      ],
+      "dev_deps": [],
+      "target_kinds": [
+        "cdylib",
+        "rlib"
       ]
     },
     {
@@ -264,6 +311,7 @@
         "fj-test-utils"
       ],
       "target_kinds": [
+        "bench",
         "lib",
         "test"
       ]
@@ -292,6 +340,22 @@
     },
     {
       "from": "fj-api",
+      "to": "fj-interpreters"
+    },
+    {
+      "from": "fj-api",
+      "to": "fj-lax"
+    },
+    {
+      "from": "fj-api",
+      "to": "fj-ledger"
+    },
+    {
+      "from": "fj-api",
+      "to": "fj-runtime"
+    },
+    {
+      "from": "fj-api",
       "to": "fj-trace"
     },
     {
@@ -308,6 +372,18 @@
     },
     {
       "from": "fj-backend-cpu",
+      "to": "fj-runtime"
+    },
+    {
+      "from": "fj-backend-gpu",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-backend-gpu",
+      "to": "fj-interpreters"
+    },
+    {
+      "from": "fj-backend-gpu",
       "to": "fj-runtime"
     },
     {
@@ -332,11 +408,19 @@
     },
     {
       "from": "fj-conformance",
+      "to": "fj-egraph"
+    },
+    {
+      "from": "fj-conformance",
       "to": "fj-interpreters"
     },
     {
       "from": "fj-conformance",
       "to": "fj-lax"
+    },
+    {
+      "from": "fj-conformance",
+      "to": "fj-ledger"
     },
     {
       "from": "fj-dispatch",
@@ -357,6 +441,10 @@
     {
       "from": "fj-dispatch",
       "to": "fj-egraph"
+    },
+    {
+      "from": "fj-dispatch",
+      "to": "fj-ffi"
     },
     {
       "from": "fj-dispatch",
@@ -392,7 +480,15 @@
     },
     {
       "from": "fj-interpreters",
+      "to": "fj-ffi"
+    },
+    {
+      "from": "fj-interpreters",
       "to": "fj-lax"
+    },
+    {
+      "from": "fj-interpreters",
+      "to": "fj-trace"
     },
     {
       "from": "fj-lax",
@@ -401,6 +497,34 @@
     {
       "from": "fj-ledger",
       "to": "fj-core"
+    },
+    {
+      "from": "fj-py",
+      "to": "fj-ad"
+    },
+    {
+      "from": "fj-py",
+      "to": "fj-api"
+    },
+    {
+      "from": "fj-py",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-py",
+      "to": "fj-dispatch"
+    },
+    {
+      "from": "fj-py",
+      "to": "fj-interpreters"
+    },
+    {
+      "from": "fj-py",
+      "to": "fj-lax"
+    },
+    {
+      "from": "fj-py",
+      "to": "fj-trace"
     },
     {
       "from": "fj-runtime",
@@ -421,12 +545,13 @@
       "title": "User API facade",
       "owner_crates": [
         "fj-api",
-        "fj-trace"
+        "fj-trace",
+        "fj-py"
       ],
-      "current_state": "fj-api is the V1 user-facing transform facade for jit, grad, vmap, value_and_grad, jacobian, hessian, and make_jaxpr.",
+      "current_state": "fj-api is the V1 Rust transform facade for jit, grad, vmap, value_and_grad, jacobian, hessian, and make_jaxpr; fj-py is the Python binding facade over that surface.",
       "decision": "keep_current_boundary",
       "user_outcome": "Users get one explicit Rust transform facade now; no extra compatibility wrapper or package rename is introduced in this bead.",
-      "dependency_graph_impact": "fj-api depends only on trace/core/dispatch/ad plus dev-only test helpers, so it remains above semantic crates without reverse edges.",
+      "dependency_graph_impact": "fj-api depends only on trace/core/dispatch/ad plus dev-only test helpers, and fj-py stays at the facade layer above api/trace/ad/core without reverse edges.",
       "compile_time_impact": "Keeping the facade avoids adding another workspace crate and keeps incremental compile churn lower while public examples are still being proven.",
       "public_api_impact": "The public import path remains fj_api::* for V1 evidence; frankenjax package naming is deferred until release packaging work.",
       "testability_impact": "Facade tests stay in fj-api and public example replay is owned by frankenjax-cstq.9.",
@@ -492,9 +617,10 @@
         "fj-interpreters",
         "fj-dispatch",
         "fj-backend-cpu",
+        "fj-backend-gpu",
         "fj-runtime"
       ],
-      "current_state": "V1 lowers to canonical IR evaluated by interpreter/dispatch paths; fj-backend-cpu owns dependency-wave CPU execution and fj-runtime owns admission policy.",
+      "current_state": "V1 lowers to canonical IR evaluated by interpreter/dispatch paths; fj-backend-cpu owns dependency-wave CPU execution, fj-backend-gpu owns fail-closed GPU admission, and fj-runtime owns backend policy.",
       "decision": "defer_extraction",
       "user_outcome": "Users keep the documented CPU-only interpreter/backend semantics without an invented XLA-like lowering layer.",
       "dependency_graph_impact": "A new fj-lowering crate would be mostly policy glue today and would increase cross-crate coupling with dispatch/backend.",

@@ -198,3 +198,20 @@ fn output_files_round_trip_as_json_and_markdown() {
     let markdown = std::fs::read_to_string(&markdown_path).expect("markdown should be readable");
     assert!(markdown.contains("No architecture boundary issues found."));
 }
+
+#[test]
+fn committed_on_disk_architecture_boundary_artifact_matches_live_workspace() {
+    let live = current_report();
+    let committed_path =
+        repo_root().join("artifacts/conformance/architecture_boundary_decision.v1.json");
+    let raw = fs::read_to_string(&committed_path)
+        .expect("committed architecture_boundary_decision.v1.json should exist");
+    let committed: fj_conformance::architecture_decision::ArchitectureBoundaryReport =
+        serde_json::from_str(&raw).expect("committed architecture report should deserialize");
+
+    assert_eq!(committed.status, "pass");
+    assert_eq!(committed.crate_count, live.crate_count);
+    assert_eq!(committed.workspace_crates, live.workspace_crates);
+    assert_eq!(committed.normal_edges, live.normal_edges);
+    assert!(validate_architecture_boundary_report(&committed).is_empty());
+}

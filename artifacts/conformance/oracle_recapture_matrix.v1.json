@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.oracle-recapture-matrix.v1",
-  "generated_at_unix_ms": 1777773011574,
+  "generated_at_unix_ms": 1792389769250,
   "repo_root": "/data/projects/frankenjax",
   "expected_total_cases": 861,
   "actual_total_cases": 861,
@@ -58,7 +58,7 @@
         "crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json",
         "--strict"
       ],
-      "fixture_sha256": "d96f4c324b7f403d093d0255a4d7ade381d12cbd44af16ff8a75b6c7ed0a316a",
+      "fixture_sha256": "8e2bb5f8ecc1c098aa480a9f7202d38323a63abfe3ddb96189772a871fb06edb",
       "duplicate_case_ids": [],
       "issue_codes": [],
       "status": "pass"
@@ -96,7 +96,7 @@
         "crates/fj-conformance/fixtures/rng/rng_determinism.v1.json",
         "--strict"
       ],
-      "fixture_sha256": "857e785ee8985c7b4de6883982d5221437358c8ced3d61fe646ed1f278fbeeb7",
+      "fixture_sha256": "cff6d36dfdbeaecbe7589ef17c98874dcf8d24c15b6d443a81d8a783057f42fd",
       "duplicate_case_ids": [],
       "issue_codes": [],
       "status": "pass"
@@ -136,7 +136,7 @@
         "--output",
         "crates/fj-conformance/fixtures/linalg_fft_oracle.v1.json"
       ],
-      "fixture_sha256": "8b10f18497ed16afc698fdb1078f9a5f53a7abc8ecfa10f89a5bfa016766f3df",
+      "fixture_sha256": "9c4ef3631526e2aa555df3cda3c2347b10a26dbc5f93b5cc282e3de6d5cd5455",
       "duplicate_case_ids": [],
       "issue_codes": [],
       "status": "pass"
@@ -176,7 +176,7 @@
         "--output",
         "crates/fj-conformance/fixtures/composition_oracle.v1.json"
       ],
-      "fixture_sha256": "a7bc864e046565e66cb89655c1e5765287803bd711ef9b69045d3c27ae382bfe",
+      "fixture_sha256": "fd3696b14561994d5e6ce9b61e4020ba5c6ac1a99930b30f0252cee5d60adfbc",
       "duplicate_case_ids": [],
       "issue_codes": [],
       "status": "pass"
