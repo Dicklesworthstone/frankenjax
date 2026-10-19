@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-b0b3f90d62513b4c",
+  "proof_id": "decode-proof-916d0d6323e285ef",
   "sidecar_path": "artifacts/durability/vision_evidence_map.v1/vision_evidence_map.v1.sidecar.json",
   "artifact_path": "artifacts/conformance/vision_evidence_map.v1.json",
-  "expected_sha256_hex": "0c1c23cf898cdbabee9b1d1570ced09bb88d3007817ee2352a7b5fd378098578",
-  "decoded_sha256_hex": "0c1c23cf898cdbabee9b1d1570ced09bb88d3007817ee2352a7b5fd378098578",
+  "expected_sha256_hex": "ef2a227e66d1789c485c10744666eb0eb1d68fd9c532bb21752fb0b1580a9bb9",
+  "decoded_sha256_hex": "ef2a227e66d1789c485c10744666eb0eb1d68fd9c532bb21752fb0b1580a9bb9",
   "dropped_symbols": [
     "kind:source:sbn:0:esi:0"
   ],
   "attempted_symbol_count": 105,
   "recovered": true,
   "details": "drop-kind=source count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1792442049895
+  "generated_at_unix_ms": 1792442310030
 }

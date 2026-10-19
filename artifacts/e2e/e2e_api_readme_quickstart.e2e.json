@@ -22,7 +22,7 @@
       "kind": "readme_quick_example",
       "path": "README.md",
       "required": true,
-      "sha256": "a0d12704e64920d479e480536a380838d86d44b47da564a503f75ede5f74f502"
+      "sha256": "6293dcbd25de71d594284f08a1feacaf219daf29d6cb1c965dada313ef1e7ac7"
     },
     {
       "kind": "executable_readme_quickstart",
@@ -46,7 +46,7 @@
     },
     "os": "linux",
     "rust_version": "rustc 1.100.0-nightly (908501772 2026-08-30)",
-    "timestamp_unix_ms": 1792441999097
+    "timestamp_unix_ms": 1792442309703
   },
   "error": {
     "actual": null,

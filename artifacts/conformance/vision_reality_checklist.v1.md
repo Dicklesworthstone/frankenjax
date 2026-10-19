@@ -16,7 +16,7 @@ Code-anchored reality-check audit (`/reality-check-for-project`) comparing all s
 | **Static test & proptest markers** | `9,400+ #[test]` and `23 proptest!` across `174` conformance test files | **9,425+** `#[test]` functions + **23** `proptest!` blocks across **174** conformance test files | `crates/**/src`, `crates/**/tests` |
 | **JAX 0.9.2 oracle fixture cases** | `861` across `6` fixture bundles | **861** cases across 6 fixture bundles (`legacy_transform_cases`: 613, `dtype_promotion`: 162, `linalg_fft`: 46, `rng_determinism`: 25, `composition`: 15) | `crates/fj-conformance/fixtures/` |
 | **`cargo clippy --workspace --all-targets -- -D warnings`** | Clean (0 warnings/errors) | **PASSES with 0 warnings/errors** across all 17 workspace crates | `cargo clippy --workspace --all-targets -- -D warnings` |
-| **Non-test library panics / unwraps** | Enforced by `crates/fj-conformance/tests/panic_stub_audit.rs` | **0 panics on valid or adversarial inputs** (`panic_stub_audit.rs` verifies all 17 crates) | `crates/fj-conformance/tests/panic_stub_audit.rs` |
+| **Non-test library panics / unwraps** | Enforced by `crates/fj-conformance/tests/panic_stub_audit.rs` | **0 panics on valid or adversarial inputs** (`panic_stub_audit.rs` verifies all 17 V1 crates) | `crates/fj-conformance/tests/panic_stub_audit.rs` |
 
 ---
 

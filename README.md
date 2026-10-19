@@ -1109,7 +1109,7 @@ enum EvalError {
 }
 ```
 
-No panics on valid or adversarial inputs in library code. All fallible paths return `Result`, enforced by the workspace panic/stub audit gate (`crates/fj-conformance/tests/panic_stub_audit.rs`).
+No panics on valid or adversarial inputs in V1 library code. All fallible paths return `Result`, enforced by the workspace no-stub and library safety regression gate (`crates/fj-conformance/tests/no_stub_regression.rs`).
 
 ## Numerical Stability
 
@@ -1160,7 +1160,7 @@ Both primitives have VJP and JVP rules. Gather's VJP produces a scatter (adjoint
 
 ## Limitations
 
-- **CPU + CPU-emulated multi-device backends.** Hardware GPU/TPU kernel backends are not yet implemented. `fj-backend-cpu` uses Rayon for wave-parallel execution, and `fj-backend-gpu` provides multi-device CPU-emulated sharding (`DevicePlacement`, `ShardingSpec`, `BufferPool`).
+- **CPU + CPU-emulated multi-device backends (V1 CPU-only kernel scope).** Hardware GPU/TPU kernel backends are out-of-scope for V1 (future roadmap). `fj-backend-cpu` uses Rayon for wave-parallel execution, and `fj-backend-gpu` provides multi-device CPU-emulated sharding (`DevicePlacement`, `ShardingSpec`, `BufferPool`).
 - **No XLA lowering.** FrankenJAX evaluates through its own interpreter (`fj-lax` + `fj-backend-cpu`), not through XLA. This means we match JAX's mathematical semantics and achieve sub-millisecond dispatch latency, while XLA's vectorized C++/Eigen/LAPACK kernels are faster on large dense tensors (see `artifacts/performance/vs_jax_benchmark_scoreboard.v1.json`).
 - **Symbolic AD composition with fail-closed fallback policy.** `grad(jit(f))`, `grad(grad(f))`, `vmap(grad(f))`, scalar-output `grad(vmap(f))`, and `hessian(f)` execute symbolically via `grad_to_jaxpr` and `hessian_jaxpr`. Finite-difference fallback is disabled by default (`allow_finite_diff_grad_fallback=false` / `deny`) and only permitted when explicitly enabled via compile options.
 - **Explicit V1 transform/control-flow boundary.** `artifacts/conformance/transform_control_flow_matrix.v1.json` gates 21 rows across `jit`, `grad`, `vmap`, `value_and_grad`, `jacobian`, `hessian`, nested grad/vmap, `cond`, `scan`, `while`, `switch`, scalar/tensor inputs, multi-carry state, multi-output returns, dtype-mixed promotion, and error rows. Supported rows execute under strict mode; unsupported V1 rows fail closed with deterministic typed errors for non-scalar-output `grad(vmap(...))`, empty `vmap`, and nonconstant `out_axes=none`.
