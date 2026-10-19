@@ -1,11 +1,11 @@
 {
   "sidecar_path": "artifacts/durability/vision_evidence_map.v1/vision_evidence_map.v1.sidecar.json",
   "artifact_path": "artifacts/conformance/vision_evidence_map.v1.json",
-  "expected_sha256_hex": "ef2a227e66d1789c485c10744666eb0eb1d68fd9c532bb21752fb0b1580a9bb9",
-  "decoded_sha256_hex": "ef2a227e66d1789c485c10744666eb0eb1d68fd9c532bb21752fb0b1580a9bb9",
+  "expected_sha256_hex": "6f6c1a97736ed0b3fc4f79b0e68b8995d87fe31e4038382323c3910be7de25a0",
+  "decoded_sha256_hex": "6f6c1a97736ed0b3fc4f79b0e68b8995d87fe31e4038382323c3910be7de25a0",
   "decoded_matches_expected": true,
   "total_symbols": 106,
   "source_symbols": 96,
   "repair_symbols": 10,
-  "generated_at_unix_ms": 1792442309990
+  "generated_at_unix_ms": 1792442542300
 }

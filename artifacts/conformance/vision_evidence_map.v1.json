@@ -1,10 +1,10 @@
 {
   "schema_version": "frankenjax.vision-evidence-map.v1",
   "bead_id": "frankenjax-cstq.14",
-  "generated_at_unix_ms": 1792442307000,
+  "generated_at_unix_ms": 1792442540000,
   "source_docs": [
-  {"path": "FEATURE_PARITY.md", "sha256": "615746756118b12135685e965120e87cdce3746a85f30cbad290caae6a54465c", "scanned_at_unix_ms": 1792442307000},
-  {"path": "README.md", "sha256": "6293dcbd25de71d594284f08a1feacaf219daf29d6cb1c965dada313ef1e7ac7", "scanned_at_unix_ms": 1792442307000}
+  {"path": "FEATURE_PARITY.md", "sha256": "615746756118b12135685e965120e87cdce3746a85f30cbad290caae6a54465c", "scanned_at_unix_ms": 1792442540000},
+  {"path": "README.md", "sha256": "71570d9908ad3715eed7ced361b609e420ff77332e46b083ce9fae78d00db9be", "scanned_at_unix_ms": 1792442540000}
 ],
   "claims": [
   {
