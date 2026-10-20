@@ -33,14 +33,14 @@ pub use transforms::{
 pub use transforms::{
     ShapedArray, checkpoint, compose, custom_jvp, custom_vjp, eval_shape, eval_shape_avals,
     eval_shape_fn, grad, grad_fn, hessian, hessian_fn, jacobian, jacobian_fn, jit, jit_fn, jvp,
-    linear_transpose, linearize, pmap, trace_jaxpr_for_values, value_and_grad, value_and_grad_fn,
-    vjp, vmap, vmap_fn,
+    jvp_fn, linear_transpose, linearize, linearize_fn, pmap, pmap_fn, trace_jaxpr_for_values,
+    value_and_grad, value_and_grad_fn, vjp, vjp_fn, vmap, vmap_fn,
 };
 
 // Re-export make_jaxpr, ClosedJaxpr, and control-flow tracing API from fj-trace
 pub use fj_trace::{
     ClosedJaxpr, TracerRef, make_jaxpr, make_jaxpr_fallible, trace_cond, trace_scan, trace_switch,
-    trace_while_loop,
+    trace_while_loop, with_pmap_trace_context,
 };
 
 /// Neural-network activations, normalizations, and loss helpers (`jax.nn` parity).

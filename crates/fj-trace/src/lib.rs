@@ -2571,10 +2571,100 @@ impl SimpleTraceContext {
             | Primitive::Pmean
             | Primitive::AllGather
             | Primitive::AllToAll
-            | Primitive::AxisIndex => Err(TraceError::ShapeInferenceFailed {
-                primitive,
-                detail: "collective operation requires an active pmap context".to_owned(),
-            }),
+            | Primitive::AxisIndex => {
+                let axis_size = ACTIVE_PMAP_AXIS_SIZE
+                    .with(std::cell::Cell::get)
+                    .or_else(|| {
+                        params
+                            .get("axis_size")
+                            .and_then(|s| s.trim().parse::<u32>().ok())
+                    })
+                    .filter(|&n| n > 0)
+                    .ok_or_else(|| TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: "collective operation requires an active pmap context".to_owned(),
+                    })?;
+                match primitive {
+                    Primitive::AxisIndex => {
+                        if !inputs.is_empty() {
+                            return Err(TraceError::ShapeInferenceFailed {
+                                primitive,
+                                detail: "axis_index expects 0 inputs".to_owned(),
+                            });
+                        }
+                        Ok(vec![ShapedArray {
+                            dtype: DType::I64,
+                            shape: Shape::scalar(),
+                        }])
+                    }
+                    Primitive::Psum => {
+                        if inputs.len() != 1 {
+                            return Err(TraceError::ShapeInferenceFailed {
+                                primitive,
+                                detail: "psum expects 1 input".to_owned(),
+                            });
+                        }
+                        Ok(vec![inputs[0].clone()])
+                    }
+                    Primitive::Pmean => {
+                        if inputs.len() != 1 {
+                            return Err(TraceError::ShapeInferenceFailed {
+                                primitive,
+                                detail: "pmean expects 1 input".to_owned(),
+                            });
+                        }
+                        let out_dtype = match inputs[0].dtype {
+                            DType::F32
+                            | DType::F16
+                            | DType::BF16
+                            | DType::Complex64
+                            | DType::Complex128 => inputs[0].dtype,
+                            _ => DType::F64,
+                        };
+                        Ok(vec![ShapedArray {
+                            dtype: out_dtype,
+                            shape: inputs[0].shape.clone(),
+                        }])
+                    }
+                    Primitive::AllGather => {
+                        if inputs.len() != 1 {
+                            return Err(TraceError::ShapeInferenceFailed {
+                                primitive,
+                                detail: "all_gather expects 1 input".to_owned(),
+                            });
+                        }
+                        let mut dims = Vec::with_capacity(inputs[0].shape.dims.len() + 1);
+                        dims.push(axis_size);
+                        dims.extend_from_slice(&inputs[0].shape.dims);
+                        Ok(vec![ShapedArray {
+                            dtype: inputs[0].dtype,
+                            shape: Shape { dims },
+                        }])
+                    }
+                    Primitive::AllToAll => {
+                        if inputs.len() != 1 {
+                            return Err(TraceError::ShapeInferenceFailed {
+                                primitive,
+                                detail: "all_to_all expects 1 input".to_owned(),
+                            });
+                        }
+                        if inputs[0].shape.dims.first().copied() != Some(axis_size) {
+                            return Err(TraceError::ShapeInferenceFailed {
+                                primitive,
+                                detail: format!(
+                                    "all_to_all requires leading dimension equal to pmap axis_size ({axis_size}), got {:?}",
+                                    inputs[0].shape.dims
+                                ),
+                            });
+                        }
+                        Ok(vec![inputs[0].clone()])
+                    }
+                    _ => Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: "collective operation requires an active pmap context".to_owned(),
+                    }),
+                }
+            }
 
             Primitive::ReduceWindow => {
                 if inputs.is_empty() {
@@ -4882,6 +4972,37 @@ fn parse_axis_insert_param(
 std::thread_local! {
     static ACTIVE_TRACE_CTX_STACK: RefCell<Vec<Rc<RefCell<SimpleTraceContext>>>> =
         const { RefCell::new(Vec::new()) };
+    static ACTIVE_PMAP_AXIS_SIZE: std::cell::Cell<Option<u32>> =
+        const { std::cell::Cell::new(None) };
+}
+
+struct ActivePmapAxisSizeGuard {
+    prev: Option<u32>,
+}
+
+impl ActivePmapAxisSizeGuard {
+    fn set(axis_size: u32) -> Self {
+        let prev = ACTIVE_PMAP_AXIS_SIZE.with(|cell| {
+            let old = cell.get();
+            cell.set(Some(axis_size));
+            old
+        });
+        Self { prev }
+    }
+}
+
+impl Drop for ActivePmapAxisSizeGuard {
+    fn drop(&mut self) {
+        ACTIVE_PMAP_AXIS_SIZE.with(|cell| cell.set(self.prev));
+    }
+}
+
+/// Execute `f` inside an active `pmap` trace context with the given `axis_size`,
+/// enabling collective primitive shape inference (`Psum`, `Pmean`, `AllGather`,
+/// `AllToAll`, `AxisIndex`).
+pub fn with_pmap_trace_context<R>(axis_size: u32, f: impl FnOnce() -> R) -> R {
+    let _guard = ActivePmapAxisSizeGuard::set(axis_size);
+    f()
 }
 
 struct ActiveTraceCtxGuard;
@@ -6935,6 +7056,72 @@ impl TracerRef {
             reverse,
         )?;
         Ok((carries.remove(0), ys))
+    }
+
+    fn collective_unary_op(
+        &self,
+        primitive: Primitive,
+        axis_name: &str,
+    ) -> Result<TracerRef, TraceError> {
+        self.validate_against_ctx(&self.ctx)?;
+        let mut params = BTreeMap::new();
+        if !axis_name.is_empty() {
+            params.insert("axis_name".to_owned(), axis_name.to_owned());
+        }
+        let output_ids = self
+            .ctx
+            .borrow_mut()
+            .process_primitive(primitive, &[self.id], params)?;
+        let ctx = self.ctx.borrow();
+        let out_id = output_ids[0];
+        let aval = ctx.tracer_aval(out_id)?.clone();
+        Ok(TracerRef {
+            id: out_id,
+            aval,
+            ctx: Rc::clone(&self.ctx),
+        })
+    }
+
+    /// Record `Primitive::Psum` across the active `pmap` axis.
+    pub fn psum(&self, axis_name: &str) -> Result<TracerRef, TraceError> {
+        self.collective_unary_op(Primitive::Psum, axis_name)
+    }
+
+    /// Record `Primitive::Pmean` across the active `pmap` axis.
+    pub fn pmean(&self, axis_name: &str) -> Result<TracerRef, TraceError> {
+        self.collective_unary_op(Primitive::Pmean, axis_name)
+    }
+
+    /// Record `Primitive::AllGather` across the active `pmap` axis.
+    pub fn all_gather(&self, axis_name: &str) -> Result<TracerRef, TraceError> {
+        self.collective_unary_op(Primitive::AllGather, axis_name)
+    }
+
+    /// Record `Primitive::AllToAll` across the active `pmap` axis.
+    pub fn all_to_all(&self, axis_name: &str) -> Result<TracerRef, TraceError> {
+        self.collective_unary_op(Primitive::AllToAll, axis_name)
+    }
+
+    /// Record `Primitive::AxisIndex` in the same trace context as `self`.
+    pub fn bind_axis_index(&self, axis_name: &str) -> Result<TracerRef, TraceError> {
+        self.validate_against_ctx(&self.ctx)?;
+        let mut params = BTreeMap::new();
+        if !axis_name.is_empty() {
+            params.insert("axis_name".to_owned(), axis_name.to_owned());
+        }
+        let mut outs = Self::nullary_primitive_in(&self.ctx, Primitive::AxisIndex, params)?;
+        Ok(outs.remove(0))
+    }
+
+    /// Record `Primitive::AxisIndex` in the currently active `make_jaxpr` trace.
+    pub fn axis_index(axis_name: &str) -> Result<TracerRef, TraceError> {
+        let ctx = active_trace_ctx()?;
+        let mut params = BTreeMap::new();
+        if !axis_name.is_empty() {
+            params.insert("axis_name".to_owned(), axis_name.to_owned());
+        }
+        let mut outs = Self::nullary_primitive_in(&ctx, Primitive::AxisIndex, params)?;
+        Ok(outs.remove(0))
     }
 }
 

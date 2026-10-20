@@ -9,9 +9,10 @@ pub mod batching;
 use fj_cache::{CacheKey, CacheKeyError, CacheKeyInputRef, build_cache_key_ref};
 use fj_core::{
     AbstractValue, Atom, CompatibilityMode, DType, GradWitness, Jaxpr, JitWitness, Literal,
-    Primitive, Shape, TensorValue, TraceTransformLedger, Transform, TransformCompositionError,
-    TransformCompositionProof, TransformProofStep, TransformRewriteWitness, Value, VmapWitness,
-    jaxpr_fingerprint_sha256, verify_transform_composition, verify_transform_composition_parts,
+    PmapWitness, Primitive, Shape, TensorValue, TraceTransformLedger, Transform,
+    TransformCompositionError, TransformCompositionProof, TransformProofStep,
+    TransformRewriteWitness, Value, VmapWitness, jaxpr_fingerprint_sha256,
+    verify_transform_composition, verify_transform_composition_parts,
     verify_transform_composition_steps,
 };
 pub use fj_core::{
@@ -343,6 +344,67 @@ fn parse_vmap_out_axes(
             let specs = s
                 .split(',')
                 .map(|part| parse_axis_spec(part, "vmap_out_axes"))
+                .collect::<Result<Vec<_>, _>>()?;
+            if specs.len() == 1 {
+                Ok(vec![specs[0]; num_outputs])
+            } else {
+                Ok(specs)
+            }
+        }
+    }
+}
+
+fn parse_pmap_devices(opts: &BTreeMap<String, String>) -> Result<Option<usize>, DispatchError> {
+    let Some(raw) = opts.get("pmap_devices") else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let devices = trimmed.parse::<usize>().map_err(|_| {
+        TransformExecutionError::TensorBuild(format!("invalid pmap_devices count {trimmed:?}"))
+    })?;
+    if devices == 0 {
+        return Err(
+            TransformExecutionError::TensorBuild("pmap_devices must be > 0".to_owned()).into(),
+        );
+    }
+    Ok(Some(devices))
+}
+
+fn parse_pmap_in_axes(
+    opts: &BTreeMap<String, String>,
+    num_args: usize,
+) -> Result<Vec<AxisSpec>, DispatchError> {
+    match opts.get("pmap_in_axes") {
+        None => Ok(vec![AxisSpec::Batched(0); num_args]),
+        Some(s) if s.trim().is_empty() => Ok(vec![AxisSpec::Batched(0); num_args]),
+        Some(s) => {
+            let specs = s
+                .split(',')
+                .map(|part| parse_axis_spec(part, "pmap_in_axes"))
+                .collect::<Result<Vec<_>, _>>()?;
+            if specs.len() == 1 {
+                Ok(vec![specs[0]; num_args])
+            } else {
+                Ok(specs)
+            }
+        }
+    }
+}
+
+fn parse_pmap_out_axes(
+    opts: &BTreeMap<String, String>,
+    num_outputs: usize,
+) -> Result<Vec<AxisSpec>, DispatchError> {
+    match opts.get("pmap_out_axes") {
+        None => Ok(vec![AxisSpec::Batched(0); num_outputs]),
+        Some(s) if s.trim().is_empty() => Ok(vec![AxisSpec::Batched(0); num_outputs]),
+        Some(s) => {
+            let specs = s
+                .split(',')
+                .map(|part| parse_axis_spec(part, "pmap_out_axes"))
                 .collect::<Result<Vec<_>, _>>()?;
             if specs.len() == 1 {
                 Ok(vec![specs[0]; num_outputs])
@@ -777,18 +839,9 @@ struct DispatchGovernanceState {
     e_process: EProcess,
     memory_budget: MemoryBudget,
     cancellation_token: CancellationToken,
+    nondefault: bool,
     total_admissions: u64,
     total_rejections: u64,
-}
-
-static GLOBAL_CANCELLATION_TOKEN: std::sync::OnceLock<CancellationToken> =
-    std::sync::OnceLock::new();
-static GOVERNANCE_NONDEFAULT: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-static FAST_PATH_ADMISSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn global_cancellation_token() -> &'static CancellationToken {
-    GLOBAL_CANCELLATION_TOKEN.get_or_init(CancellationToken::new)
 }
 
 impl DispatchGovernanceState {
@@ -798,7 +851,8 @@ impl DispatchGovernanceState {
             calibration: CalibrationReport::new(10),
             e_process: EProcess::new(20.0),
             memory_budget: MemoryBudget::default(),
-            cancellation_token: global_cancellation_token().clone(),
+            cancellation_token: CancellationToken::new(),
+            nondefault: false,
             total_admissions: 0,
             total_rejections: 0,
         }
@@ -814,60 +868,57 @@ impl DispatchGovernanceState {
             e_process_observations: self.e_process.observations(),
             e_process_rejected: self.e_process.rejected(),
             memory_budget: self.memory_budget,
-            total_admissions: self.total_admissions
-                + FAST_PATH_ADMISSIONS.load(std::sync::atomic::Ordering::Relaxed),
+            total_admissions: self.total_admissions,
             total_rejections: self.total_rejections,
         }
     }
 }
 
-static DISPATCH_GOVERNANCE_STATE: std::sync::OnceLock<std::sync::Mutex<DispatchGovernanceState>> =
-    std::sync::OnceLock::new();
-
-fn governance_state() -> &'static std::sync::Mutex<DispatchGovernanceState> {
-    DISPATCH_GOVERNANCE_STATE.get_or_init(|| std::sync::Mutex::new(DispatchGovernanceState::new()))
+thread_local! {
+    static DISPATCH_GOVERNANCE_STATE: std::cell::RefCell<DispatchGovernanceState> =
+        std::cell::RefCell::new(DispatchGovernanceState::new());
 }
 
-/// Return a snapshot of the process-wide `fj-ledger` + `fj-runtime` governance state.
+/// Return a snapshot of the current thread's `fj-ledger` + `fj-runtime` governance state.
 #[must_use]
 pub fn dispatch_governance_stats() -> DispatchGovernanceSnapshot {
-    let guard = governance_state().lock().unwrap_or_else(|e| e.into_inner());
-    guard.snapshot()
+    DISPATCH_GOVERNANCE_STATE.with(|state| state.borrow().snapshot())
 }
 
-/// Reset the process-wide `ConformalPredictor`, `CalibrationReport`, `EProcess`,
+/// Reset the current thread's `ConformalPredictor`, `CalibrationReport`, `EProcess`,
 /// `MemoryBudget`, and `CancellationToken` to their clean initial state.
 pub fn reset_dispatch_governance() {
-    global_cancellation_token().reset();
-    GOVERNANCE_NONDEFAULT.store(false, std::sync::atomic::Ordering::SeqCst);
-    FAST_PATH_ADMISSIONS.store(0, std::sync::atomic::Ordering::SeqCst);
-    let mut guard = governance_state().lock().unwrap_or_else(|e| e.into_inner());
-    *guard = DispatchGovernanceState::new();
+    DISPATCH_GOVERNANCE_STATE.with(|state| {
+        let mut guard = state.borrow_mut();
+        guard.cancellation_token.reset();
+        *guard = DispatchGovernanceState::new();
+    });
 }
 
-/// Override the process-wide [`MemoryBudget`] enforced before dispatch execution.
+/// Override the [`MemoryBudget`] enforced before dispatch execution.
 pub fn set_dispatch_memory_budget(budget: MemoryBudget) {
-    let mut guard = governance_state().lock().unwrap_or_else(|e| e.into_inner());
-    guard.memory_budget = budget;
-    GOVERNANCE_NONDEFAULT.store(
-        budget != MemoryBudget::default() || guard.e_process.rejected(),
-        std::sync::atomic::Ordering::SeqCst,
-    );
+    DISPATCH_GOVERNANCE_STATE.with(|state| {
+        let mut guard = state.borrow_mut();
+        guard.memory_budget = budget;
+        guard.nondefault = budget != MemoryBudget::default() || guard.e_process.rejected();
+    });
 }
 
-/// Feed a likelihood ratio observation into the process-wide sequential drift [`EProcess`].
+/// Feed a likelihood ratio observation into the sequential drift [`EProcess`].
 pub fn observe_dispatch_drift_likelihood_ratio(likelihood_ratio: f64) {
-    let mut guard = governance_state().lock().unwrap_or_else(|e| e.into_inner());
-    guard.e_process.update(likelihood_ratio);
-    if guard.e_process.rejected() {
-        GOVERNANCE_NONDEFAULT.store(true, std::sync::atomic::Ordering::SeqCst);
-    }
+    DISPATCH_GOVERNANCE_STATE.with(|state| {
+        let mut guard = state.borrow_mut();
+        guard.e_process.update(likelihood_ratio);
+        if guard.e_process.rejected() {
+            guard.nondefault = true;
+        }
+    });
 }
 
-/// Return a handle to the process-wide [`CancellationToken`] checked before dispatch execution.
+/// Return a handle to the [`CancellationToken`] checked before dispatch execution.
 #[must_use]
 pub fn dispatch_cancellation_token() -> CancellationToken {
-    global_cancellation_token().clone()
+    DISPATCH_GOVERNANCE_STATE.with(|state| state.borrow().cancellation_token.clone())
 }
 
 /// Evaluate pre-execution admission for fast-path callers (`JitWrapped` / `GradWrapped` /
@@ -879,46 +930,50 @@ pub fn check_fast_path_admission(
     args: &[Value],
     mode: CompatibilityMode,
 ) -> Result<(), DispatchError> {
-    if mode == CompatibilityMode::Strict
-        && !GOVERNANCE_NONDEFAULT.load(std::sync::atomic::Ordering::Relaxed)
-        && !global_cancellation_token().is_cancelled()
-        && jaxpr.equations.len() <= 256
-        && transform_stack.len() <= 16
-        && args.iter().all(|v| match v {
-            Value::Scalar(_) => true,
-            Value::Tensor(t) => t.elements.len() <= 4096,
-        })
-    {
-        FAST_PATH_ADMISSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return Ok(());
-    }
-
-    let posterior_abandoned = heuristic_posterior_abandoned_parts(jaxpr, transform_stack);
-    let has_parallel_wave = jaxpr_has_parallel_heavy_wave(jaxpr);
-    let model = RuntimeAdmissionModel::new(mode);
-    let mut guard = governance_state().lock().unwrap_or_else(|e| e.into_inner());
-    match model.evaluate_admission(
-        jaxpr,
-        args,
-        transform_stack.len(),
-        posterior_abandoned,
-        &guard.memory_budget,
-        Some(&guard.cancellation_token),
-        &guard.conformal,
-        &guard.e_process,
-        has_parallel_wave,
-        false,
-        false,
-    ) {
-        Ok(_decision) => {
+    DISPATCH_GOVERNANCE_STATE.with(|state| {
+        let mut guard = state.borrow_mut();
+        if mode == CompatibilityMode::Strict
+            && !guard.nondefault
+            && !guard.cancellation_token.is_cancelled()
+            && jaxpr.equations.len() <= 256
+            && transform_stack.len() <= 16
+            && args.iter().all(|v| match v {
+                Value::Scalar(_) => true,
+                Value::Tensor(t) => t.elements.len() <= 4096,
+            })
+        {
             guard.total_admissions += 1;
-            Ok(())
+            return Ok(());
         }
-        Err(rejection) => {
-            guard.total_rejections += 1;
-            Err(DispatchError::AdmissionRejected(rejection))
+
+        let posterior_abandoned = heuristic_posterior_abandoned_parts(jaxpr, transform_stack);
+        let has_parallel_wave = jaxpr_has_parallel_heavy_wave(jaxpr);
+        let model = RuntimeAdmissionModel::new(mode);
+        let memory_budget = guard.memory_budget;
+        let cancellation_token = guard.cancellation_token.clone();
+        match model.evaluate_admission(
+            jaxpr,
+            args,
+            transform_stack.len(),
+            posterior_abandoned,
+            &memory_budget,
+            Some(&cancellation_token),
+            &guard.conformal,
+            &guard.e_process,
+            has_parallel_wave,
+            false,
+            false,
+        ) {
+            Ok(_decision) => {
+                guard.total_admissions += 1;
+                Ok(())
+            }
+            Err(rejection) => {
+                guard.total_rejections += 1;
+                Err(DispatchError::AdmissionRejected(rejection))
+            }
         }
-    }
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1336,12 +1391,15 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
         .get("reject_on_kill")
         .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
 
-    let admission_decision = {
-        let mut gov = governance_state().lock().unwrap_or_else(|e| e.into_inner());
+    let admission_decision = DISPATCH_GOVERNANCE_STATE.with(|state| {
+        let mut gov = state.borrow_mut();
         if let Some(raw_lr) = request.compile_options.get("drift_likelihood_ratio")
             && let Ok(lr) = raw_lr.trim().parse::<f64>()
         {
             gov.e_process.update(lr);
+            if gov.e_process.rejected() {
+                gov.nondefault = true;
+            }
         }
         let mut effective_budget = gov.memory_budget;
         if let Some(raw_bytes) = request.compile_options.get("max_working_set_bytes")
@@ -1361,13 +1419,14 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
         }
 
         let admission_model = RuntimeAdmissionModel::new(request.mode);
+        let cancellation_token = gov.cancellation_token.clone();
         match admission_model.evaluate_admission(
             request.root_jaxpr,
             &request.args,
             request.transform_stack.len(),
             posterior_abandoned,
             &effective_budget,
-            Some(&gov.cancellation_token),
+            Some(&cancellation_token),
             &gov.conformal,
             &gov.e_process,
             has_parallel_heavy_wave,
@@ -1376,14 +1435,14 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
         ) {
             Ok(decision) => {
                 gov.total_admissions += 1;
-                decision
+                Ok(decision)
             }
             Err(rejection) => {
                 gov.total_rejections += 1;
-                return Err(DispatchError::AdmissionRejected(rejection));
+                Err(DispatchError::AdmissionRejected(rejection))
             }
         }
-    };
+    })?;
 
     let mut evidence_ledger = EvidenceLedger::new();
     evidence_ledger.append(LedgerEntry {
@@ -1609,8 +1668,8 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
     let exec_elapsed_secs = exec_start.elapsed().as_secs_f64();
 
     // Post-execution calibration feedback into ConformalPredictor and CalibrationReport.
-    let (post_e_value, post_ece) = {
-        let mut gov = governance_state().lock().unwrap_or_else(|e| e.into_inner());
+    let (post_e_value, post_ece) = DISPATCH_GOVERNANCE_STATE.with(|state| {
+        let mut gov = state.borrow_mut();
         let observed_latency_ratio = (exec_elapsed_secs / 0.05).clamp(0.0, 1.0);
         let nonconformity = (posterior_abandoned - observed_latency_ratio).abs();
         gov.conformal.observe(nonconformity);
@@ -1625,7 +1684,7 @@ pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse,
             gov.e_process.update(benign_lr);
         }
         (gov.e_process.e_value(), gov.calibration.compute_ece())
-    };
+    });
 
     let lowered_proof = build_lowered_composition_proof(&request, &plan, &static_argnums, &outputs)
         .unwrap_or_else(|| composition_proof.into_owned());
@@ -1720,6 +1779,7 @@ fn build_lowered_composition_proof(
 
     // Peel outer Vmap/Pmap dimensions from outer_in_avals to recover root_input_avals.
     let mut vmap_meta: Vec<Option<(u32, Vec<Option<usize>>)>> = vec![None; n];
+    let mut pmap_meta: Vec<Option<(u32, Vec<Option<usize>>)>> = vec![None; n];
     let mut current_peeled_in = outer_in_avals;
     for (stack_idx, &transform) in request.transform_stack.iter().enumerate() {
         if transform == Transform::Vmap {
@@ -1769,6 +1829,45 @@ fn build_lowered_composition_proof(
             let axis_size = axis_size_opt?;
             vmap_meta[stack_idx] = Some((axis_size, resolved_axes));
             current_peeled_in = next_peeled;
+        } else if transform == Transform::Pmap {
+            let configured_devices = parse_pmap_devices(&request.compile_options).ok()??;
+            let expected_axis_size = u32::try_from(configured_devices).ok()?;
+            if expected_axis_size == 0 {
+                return None;
+            }
+            let specs =
+                parse_pmap_in_axes(&request.compile_options, current_peeled_in.len()).ok()?;
+            if specs.len() != current_peeled_in.len() {
+                return None;
+            }
+            let mut next_peeled = Vec::with_capacity(current_peeled_in.len());
+            let mut resolved_axes = Vec::with_capacity(current_peeled_in.len());
+            for (aval, spec) in current_peeled_in.iter().zip(specs.iter()) {
+                match spec {
+                    AxisSpec::NotBatched => {
+                        resolved_axes.push(None);
+                        next_peeled.push(aval.clone());
+                    }
+                    AxisSpec::Batched(_) => {
+                        let ndim = aval.shape.rank();
+                        let ax = spec.resolve(ndim)?;
+                        if ax >= ndim || aval.shape.dims[ax] != expected_axis_size {
+                            return None;
+                        }
+                        let mut stripped_dims = aval.shape.dims.clone();
+                        stripped_dims.remove(ax);
+                        resolved_axes.push(Some(ax));
+                        next_peeled.push(AbstractValue {
+                            dtype: aval.dtype,
+                            shape: Shape {
+                                dims: stripped_dims,
+                            },
+                        });
+                    }
+                }
+            }
+            pmap_meta[stack_idx] = Some((expected_axis_size, resolved_axes));
+            current_peeled_in = next_peeled;
         }
     }
 
@@ -1789,6 +1888,33 @@ fn build_lowered_composition_proof(
                 let (axis_size, _) = vmap_meta[stack_idx].as_ref()?;
                 let out_specs =
                     parse_vmap_out_axes(&request.compile_options, current_peeled_out.len()).ok()?;
+                if out_specs.len() != current_peeled_out.len() {
+                    return None;
+                }
+                let mut next_out = Vec::with_capacity(current_peeled_out.len());
+                for (aval, spec) in current_peeled_out.iter().zip(out_specs.iter()) {
+                    match spec {
+                        AxisSpec::NotBatched => next_out.push(aval.clone()),
+                        AxisSpec::Batched(_) => {
+                            let ndim = aval.shape.rank();
+                            let ax = spec.resolve(ndim)?;
+                            if ax >= ndim || aval.shape.dims[ax] != *axis_size {
+                                return None;
+                            }
+                            let mut dims = aval.shape.dims.clone();
+                            dims.remove(ax);
+                            next_out.push(AbstractValue {
+                                dtype: aval.dtype,
+                                shape: Shape { dims },
+                            });
+                        }
+                    }
+                }
+                current_peeled_out = next_out;
+            } else if transform == Transform::Pmap {
+                let (axis_size, _) = pmap_meta[stack_idx].as_ref()?;
+                let out_specs =
+                    parse_pmap_out_axes(&request.compile_options, current_peeled_out.len()).ok()?;
                 if out_specs.len() != current_peeled_out.len() {
                     return None;
                 }
@@ -2006,7 +2132,66 @@ fn build_lowered_composition_proof(
                 current_out_avals = next_out_avals;
             }
             Transform::Pmap => {
-                return None;
+                let (axis_size, in_axes_opt) = pmap_meta.get(stack_idx)?.clone()?;
+                let next_in_avals: Vec<AbstractValue> = current_in_avals
+                    .iter()
+                    .zip(in_axes_opt.iter())
+                    .map(|(aval, ax)| match ax {
+                        Some(a) => insert_aval_dim(aval, *a, axis_size),
+                        None => aval.clone(),
+                    })
+                    .collect();
+                let out_specs =
+                    parse_pmap_out_axes(&request.compile_options, current_out_avals.len()).ok()?;
+                if out_specs.len() != current_out_avals.len() {
+                    return None;
+                }
+                let mut next_out_avals = Vec::with_capacity(current_out_avals.len());
+                for (aval, spec) in current_out_avals.iter().zip(out_specs.iter()) {
+                    if has_outer_grad {
+                        next_out_avals.push(aval.clone());
+                    } else {
+                        match spec {
+                            AxisSpec::NotBatched => next_out_avals.push(aval.clone()),
+                            AxisSpec::Batched(_) => {
+                                let out_ndim = aval.shape.rank() + 1;
+                                let ax = spec.resolve(out_ndim)?;
+                                if ax >= out_ndim {
+                                    return None;
+                                }
+                                next_out_avals.push(insert_aval_dim(aval, ax, axis_size));
+                            }
+                        }
+                    }
+                }
+                let mut pmapped_jaxpr = Jaxpr::new(
+                    current_jaxpr.invars.clone(),
+                    current_jaxpr.constvars.clone(),
+                    current_jaxpr.outvars.clone(),
+                    current_jaxpr.equations.clone(),
+                );
+                pmapped_jaxpr.effects = current_jaxpr.effects.clone();
+                if !pmapped_jaxpr.equations.is_empty() {
+                    pmapped_jaxpr.equations[0].params.insert(
+                        "__ttl_pmap_axis_size".to_owned(),
+                        format!("{axis_size}:{in_axes_opt:?}"),
+                    );
+                }
+                let output_sha256 = jaxpr_fingerprint_sha256(&pmapped_jaxpr);
+                let witness = TransformRewriteWitness::Pmap(PmapWitness { axis_size });
+                steps.push(TransformProofStep {
+                    step_index,
+                    transform,
+                    evidence,
+                    input_jaxpr_fingerprint_sha256: input_sha256,
+                    output_jaxpr_fingerprint_sha256: output_sha256,
+                    input_avals: next_in_avals.clone(),
+                    output_avals: next_out_avals.clone(),
+                    witness,
+                });
+                current_jaxpr = Cow::Owned(pmapped_jaxpr);
+                current_in_avals = next_in_avals;
+                current_out_avals = next_out_avals;
             }
         }
     }
@@ -2050,10 +2235,416 @@ fn execute_with_transforms(
         }
         Transform::Grad => execute_grad(root_jaxpr, tail, args, backend, device, compile_options),
         Transform::Vmap => execute_vmap(root_jaxpr, tail, args, backend, device, compile_options),
-        Transform::Pmap => Err(DispatchError::TransformExecution(
-            TransformExecutionError::PmapUnavailable,
-        )),
+        Transform::Pmap => execute_pmap(root_jaxpr, tail, args, backend, device, compile_options),
     }
+}
+
+fn execute_pmap(
+    root_jaxpr: &Jaxpr,
+    tail: &[Transform],
+    args: &[Value],
+    backend: &dyn Backend,
+    device: DeviceId,
+    compile_options: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, DispatchError> {
+    let Some(num_devices) = parse_pmap_devices(compile_options)? else {
+        return Err(DispatchError::TransformExecution(
+            TransformExecutionError::PmapUnavailable,
+        ));
+    };
+    if args.is_empty() {
+        return Err(TransformExecutionError::EmptyArgumentList {
+            transform: Transform::Pmap,
+        }
+        .into());
+    }
+
+    let in_axes = parse_pmap_in_axes(compile_options, args.len())?;
+    if in_axes.len() != args.len() {
+        return Err(TransformExecutionError::VmapAxesCountMismatch {
+            expected: args.len(),
+            actual: in_axes.len(),
+        }
+        .into());
+    }
+
+    for (arg, axis_spec) in args.iter().zip(in_axes.iter()) {
+        if let AxisSpec::Batched(axis) = axis_spec {
+            match arg {
+                Value::Tensor(tensor) => {
+                    let rank = tensor.rank();
+                    let resolved = axis_spec.resolve(rank).ok_or(
+                        TransformExecutionError::VmapAxesOutOfBounds {
+                            axis: *axis,
+                            ndim: rank,
+                        },
+                    )?;
+                    if resolved >= rank {
+                        return Err(TransformExecutionError::VmapAxesOutOfBounds {
+                            axis: *axis,
+                            ndim: rank,
+                        }
+                        .into());
+                    }
+                    let dim_size = tensor.shape.dims[resolved] as usize;
+                    if dim_size != num_devices {
+                        return Err(TransformExecutionError::VmapMismatchedLeadingDimension {
+                            expected: num_devices,
+                            actual: dim_size,
+                        }
+                        .into());
+                    }
+                }
+                Value::Scalar(_) => {
+                    return Err(TransformExecutionError::VmapRequiresRankOneLeadingArgument.into());
+                }
+            }
+        }
+    }
+
+    let non_jit_tail: Vec<Transform> = tail
+        .iter()
+        .copied()
+        .filter(|&t| t != Transform::Jit)
+        .collect();
+
+    let mut shard_args = Vec::with_capacity(num_devices);
+    for dev_idx in 0..num_devices {
+        shard_args.push(map_vmap_args_at_index(args, &in_axes, dev_idx)?);
+    }
+
+    let per_device_outputs: Vec<Vec<Value>> = if non_jit_tail.is_empty() {
+        execute_pmap_spmd_jaxpr(root_jaxpr, &shard_args, num_devices)?
+    } else {
+        let mut tail_opts = compile_options.clone();
+        tail_opts.remove("pmap_devices");
+        tail_opts.remove("pmap_in_axes");
+        tail_opts.remove("pmap_out_axes");
+        tail_opts.remove("pmap_axis_name");
+        let mut dev_outs = Vec::with_capacity(num_devices);
+        for dev_args in &shard_args {
+            dev_outs.push(execute_with_transforms(
+                root_jaxpr,
+                &non_jit_tail,
+                dev_args,
+                backend,
+                device,
+                &tail_opts,
+            )?);
+        }
+        dev_outs
+    };
+
+    let Some(first_dev_out) = per_device_outputs.first() else {
+        return Err(TransformExecutionError::EmptyVmapOutput.into());
+    };
+    let out_arity = first_dev_out.len();
+    let mut per_output_values = vec![Vec::with_capacity(num_devices); out_arity];
+    for dev_out in per_device_outputs {
+        if dev_out.len() != out_arity {
+            return Err(TransformExecutionError::VmapInconsistentOutputArity {
+                expected: out_arity,
+                actual: dev_out.len(),
+            }
+            .into());
+        }
+        for (out_idx, val) in dev_out.into_iter().enumerate() {
+            per_output_values[out_idx].push(val);
+        }
+    }
+
+    let out_axes = parse_pmap_out_axes(compile_options, out_arity)?;
+    if out_axes.len() != out_arity {
+        return Err(TransformExecutionError::VmapAxesCountMismatch {
+            expected: out_arity,
+            actual: out_axes.len(),
+        }
+        .into());
+    }
+
+    let mut outputs = Vec::with_capacity(out_arity);
+    for (out_idx, values) in per_output_values.iter().enumerate() {
+        let out_axis = out_axes
+            .get(out_idx)
+            .copied()
+            .unwrap_or(AxisSpec::Batched(0));
+        match out_axis {
+            AxisSpec::Batched(0) => {
+                let tensor = TensorValue::stack_axis0(values)
+                    .map_err(|err| TransformExecutionError::TensorBuild(err.to_string()))?;
+                outputs.push(Value::Tensor(tensor));
+            }
+            AxisSpec::NotBatched => {
+                let Some(first) = values.first() else {
+                    return Err(TransformExecutionError::EmptyVmapOutput.into());
+                };
+                if values.iter().skip(1).any(|value| value != first) {
+                    return Err(TransformExecutionError::VmapUnmappedOutputMismatch.into());
+                }
+                outputs.push(first.clone());
+            }
+            AxisSpec::Batched(target_axis) => {
+                let tensor = TensorValue::stack_axis0(values)
+                    .map_err(|err| TransformExecutionError::TensorBuild(err.to_string()))?;
+                let rank = tensor.rank();
+                let resolved = AxisSpec::Batched(target_axis).resolve(rank).ok_or(
+                    TransformExecutionError::VmapAxesOutOfBounds {
+                        axis: target_axis,
+                        ndim: rank,
+                    },
+                )?;
+                if resolved >= rank {
+                    return Err(TransformExecutionError::VmapAxesOutOfBounds {
+                        axis: target_axis,
+                        ndim: rank,
+                    }
+                    .into());
+                }
+                if resolved == 0 {
+                    outputs.push(Value::Tensor(tensor));
+                } else {
+                    let mut perm: Vec<usize> = (0..rank).collect();
+                    perm.remove(0);
+                    perm.insert(resolved, 0);
+                    let perm_str = perm
+                        .iter()
+                        .map(usize::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let mut params = BTreeMap::new();
+                    params.insert("permutation".to_owned(), perm_str);
+                    let transposed = fj_lax::eval_primitive(
+                        Primitive::Transpose,
+                        &[Value::Tensor(tensor)],
+                        &params,
+                    )
+                    .map_err(|err| TransformExecutionError::TensorBuild(err.to_string()))?;
+                    outputs.push(transposed);
+                }
+            }
+        }
+    }
+
+    Ok(outputs)
+}
+
+fn resolve_spmd_atom(
+    atom: &Atom,
+    env: &rustc_hash::FxHashMap<fj_core::VarId, Value>,
+) -> Result<Value, DispatchError> {
+    match atom {
+        Atom::Var(var) => env
+            .get(var)
+            .cloned()
+            .ok_or_else(|| InterpreterError::MissingVariable(*var).into()),
+        Atom::Lit(lit) => Ok(Value::Scalar(*lit)),
+    }
+}
+
+fn execute_pmap_spmd_jaxpr(
+    jaxpr: &Jaxpr,
+    shard_args: &[Vec<Value>],
+    num_devices: usize,
+) -> Result<Vec<Vec<Value>>, DispatchError> {
+    use rustc_hash::FxHashMap;
+
+    if !jaxpr.constvars.is_empty() {
+        return Err(InterpreterError::ConstArity {
+            expected: jaxpr.constvars.len(),
+            actual: 0,
+        }
+        .into());
+    }
+
+    let mut envs: Vec<FxHashMap<fj_core::VarId, Value>> = (0..num_devices)
+        .map(|dev_idx| {
+            let args = &shard_args[dev_idx];
+            let mut env = FxHashMap::with_capacity_and_hasher(
+                jaxpr.invars.len() + jaxpr.equations.len(),
+                Default::default(),
+            );
+            for (var, val) in jaxpr.invars.iter().zip(args.iter()) {
+                env.insert(*var, val.clone());
+            }
+            env
+        })
+        .collect();
+
+    for dev_args in shard_args {
+        if dev_args.len() != jaxpr.invars.len() {
+            return Err(InterpreterError::InputArity {
+                expected: jaxpr.invars.len(),
+                actual: dev_args.len(),
+            }
+            .into());
+        }
+    }
+
+    let empty_params = BTreeMap::new();
+    for eqn in &jaxpr.equations {
+        match eqn.primitive {
+            Primitive::AxisIndex => {
+                if !eqn.inputs.is_empty() || eqn.outputs.len() != 1 {
+                    return Err(TransformExecutionError::TensorBuild(
+                        "axis_index expects 0 inputs and 1 output".to_owned(),
+                    )
+                    .into());
+                }
+                let out_var = eqn.outputs[0];
+                for (dev_idx, env) in envs.iter_mut().enumerate() {
+                    env.insert(out_var, Value::scalar_i64(dev_idx as i64));
+                }
+            }
+            Primitive::Psum => {
+                if eqn.inputs.len() != 1 || eqn.outputs.len() != 1 {
+                    return Err(TransformExecutionError::TensorBuild(
+                        "psum expects 1 input and 1 output".to_owned(),
+                    )
+                    .into());
+                }
+                let mut acc: Option<Value> = None;
+                for env in &envs {
+                    let val = resolve_spmd_atom(&eqn.inputs[0], env)?;
+                    acc = Some(match acc {
+                        None => val,
+                        Some(prev) => {
+                            fj_lax::eval_primitive(Primitive::Add, &[prev, val], &empty_params)
+                                .map_err(|e| TransformExecutionError::TensorBuild(e.to_string()))?
+                        }
+                    });
+                }
+                let sum_val = acc.ok_or(TransformExecutionError::EmptyVmapOutput)?;
+                let out_var = eqn.outputs[0];
+                for env in &mut envs {
+                    env.insert(out_var, sum_val.clone());
+                }
+            }
+            Primitive::Pmean => {
+                if eqn.inputs.len() != 1 || eqn.outputs.len() != 1 {
+                    return Err(TransformExecutionError::TensorBuild(
+                        "pmean expects 1 input and 1 output".to_owned(),
+                    )
+                    .into());
+                }
+                let mut acc: Option<Value> = None;
+                for env in &envs {
+                    let val = resolve_spmd_atom(&eqn.inputs[0], env)?;
+                    acc = Some(match acc {
+                        None => val,
+                        Some(prev) => {
+                            fj_lax::eval_primitive(Primitive::Add, &[prev, val], &empty_params)
+                                .map_err(|e| TransformExecutionError::TensorBuild(e.to_string()))?
+                        }
+                    });
+                }
+                let sum_val = acc.ok_or(TransformExecutionError::EmptyVmapOutput)?;
+                let (float_sum, denom) = match sum_val.dtype() {
+                    DType::F32 => (sum_val, Value::scalar_f32(num_devices as f32)),
+                    DType::F64 => (sum_val, Value::scalar_f64(num_devices as f64)),
+                    _ => {
+                        let mut conv_params = BTreeMap::new();
+                        conv_params.insert("new_dtype".to_owned(), "f64".to_owned());
+                        let converted = fj_lax::eval_primitive(
+                            Primitive::ConvertElementType,
+                            &[sum_val],
+                            &conv_params,
+                        )
+                        .map_err(|e| TransformExecutionError::TensorBuild(e.to_string()))?;
+                        (converted, Value::scalar_f64(num_devices as f64))
+                    }
+                };
+                let mean_val =
+                    fj_lax::eval_primitive(Primitive::Div, &[float_sum, denom], &empty_params)
+                        .map_err(|e| TransformExecutionError::TensorBuild(e.to_string()))?;
+                let out_var = eqn.outputs[0];
+                for env in &mut envs {
+                    env.insert(out_var, mean_val.clone());
+                }
+            }
+            Primitive::AllGather => {
+                if eqn.inputs.len() != 1 || eqn.outputs.len() != 1 {
+                    return Err(TransformExecutionError::TensorBuild(
+                        "all_gather expects 1 input and 1 output".to_owned(),
+                    )
+                    .into());
+                }
+                let mut shard_vals = Vec::with_capacity(num_devices);
+                for env in &envs {
+                    shard_vals.push(resolve_spmd_atom(&eqn.inputs[0], env)?);
+                }
+                let gathered = TensorValue::stack_axis0(&shard_vals)
+                    .map(Value::Tensor)
+                    .map_err(|e| TransformExecutionError::TensorBuild(e.to_string()))?;
+                let out_var = eqn.outputs[0];
+                for env in &mut envs {
+                    env.insert(out_var, gathered.clone());
+                }
+            }
+            Primitive::AllToAll => {
+                if eqn.inputs.len() != 1 || eqn.outputs.len() != 1 {
+                    return Err(TransformExecutionError::TensorBuild(
+                        "all_to_all expects 1 input and 1 output".to_owned(),
+                    )
+                    .into());
+                }
+                let mut shard_tensors = Vec::with_capacity(num_devices);
+                for env in &envs {
+                    let val = resolve_spmd_atom(&eqn.inputs[0], env)?;
+                    let Value::Tensor(tensor) = val else {
+                        return Err(TransformExecutionError::TensorBuild(
+                            "all_to_all requires rank >= 1 tensor input".to_owned(),
+                        )
+                        .into());
+                    };
+                    if tensor.shape.dims.first().copied() != Some(num_devices as u32) {
+                        return Err(TransformExecutionError::TensorBuild(format!(
+                            "all_to_all requires leading dimension equal to num_devices ({num_devices}), got {:?}",
+                            tensor.shape.dims
+                        ))
+                        .into());
+                    }
+                    shard_tensors.push(tensor);
+                }
+                let out_var = eqn.outputs[0];
+                for (dst_dev, env) in envs.iter_mut().enumerate() {
+                    let mut pieces = Vec::with_capacity(num_devices);
+                    for src_tensor in &shard_tensors {
+                        pieces.push(
+                            src_tensor
+                                .slice_axis0(dst_dev)
+                                .map_err(|e| TransformExecutionError::TensorBuild(e.to_string()))?,
+                        );
+                    }
+                    let stacked = TensorValue::stack_axis0(&pieces)
+                        .map(Value::Tensor)
+                        .map_err(|e| TransformExecutionError::TensorBuild(e.to_string()))?;
+                    env.insert(out_var, stacked);
+                }
+            }
+            _ => {
+                for env in &mut envs {
+                    let outputs = fj_interpreters::eval_equation_outputs(eqn, env)?;
+                    for (out_var, out_val) in eqn.outputs.iter().zip(outputs) {
+                        env.insert(*out_var, out_val);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut per_device_outputs = Vec::with_capacity(num_devices);
+    for env in &envs {
+        let mut dev_out = Vec::with_capacity(jaxpr.outvars.len());
+        for out_var in &jaxpr.outvars {
+            let val = env
+                .get(out_var)
+                .cloned()
+                .ok_or(InterpreterError::MissingVariable(*out_var))?;
+            dev_out.push(val);
+        }
+        per_device_outputs.push(dev_out);
+    }
+    Ok(per_device_outputs)
 }
 
 fn execute_grad(

@@ -4915,22 +4915,62 @@ fn py_vmap(
     vmap(&PyJaxpr { inner: jaxpr }, args)
 }
 
+#[cfg(test)]
 fn pmap(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
+    pmap_with_devices(jaxpr, args, None)
+}
+
+fn pmap_with_devices(
+    jaxpr: &PyJaxpr,
+    args: Vec<PyValue>,
+    devices: Option<usize>,
+) -> PyResult<Vec<PyValue>> {
     let rust_args = py_values_to_rust(args);
-    fj_api::pmap(jaxpr.inner.clone())
+    let mut wrapped = fj_api::pmap(jaxpr.inner.clone());
+    if let Some(n) = devices {
+        wrapped = wrapped.with_devices(n);
+    }
+    wrapped
         .call(rust_args)
         .map(py_values_from_rust)
         .map_err(runtime_error)
 }
 
 #[pyfunction(name = "pmap")]
+#[pyo3(signature = (target, args, *, devices=None))]
 fn py_pmap(
     py: Python<'_>,
     target: &Bound<'_, PyAny>,
     args: Vec<PyValue>,
+    devices: Option<usize>,
 ) -> PyResult<Vec<PyValue>> {
+    if let Ok(py_jaxpr) = target.extract::<PyRef<'_, PyJaxpr>>() {
+        return pmap_with_devices(&py_jaxpr, args, devices);
+    }
+    if let Ok(name) = target.extract::<String>() {
+        let jaxpr = make_jaxpr(&name)?;
+        return pmap_with_devices(&jaxpr, args, devices);
+    }
+    if let Some(num_devices) = devices {
+        let mut unbatched_args = Vec::with_capacity(args.len());
+        for arg in &args {
+            arg.ensure_not_deleted()?;
+            match &arg.inner {
+                Value::Tensor(tensor) if !tensor.shape.dims.is_empty() => {
+                    let slice = tensor.slice_axis0(0).map_err(value_error)?;
+                    unbatched_args.push(PyValue::from_value(slice));
+                }
+                _ => unbatched_args.push(arg.clone()),
+            }
+        }
+        let axis_size = u32::try_from(num_devices).unwrap_or(1);
+        let jaxpr = fj_api::with_pmap_trace_context(axis_size, || {
+            resolve_target_to_jaxpr(py, target, Some(&unbatched_args))
+        })?;
+        return pmap_with_devices(&PyJaxpr { inner: jaxpr }, args, Some(num_devices));
+    }
     let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
-    pmap(&PyJaxpr { inner: jaxpr }, args)
+    pmap_with_devices(&PyJaxpr { inner: jaxpr }, args, None)
 }
 
 fn value_and_grad(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<(Vec<PyValue>, Vec<PyValue>)> {

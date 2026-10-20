@@ -50,6 +50,9 @@ pub struct GradWrapped {
     jaxpr: Jaxpr,
     backend: BackendName,
     mode: CompatibilityMode,
+    argnums: Vec<usize>,
+    precision_policy: Option<PrecisionPolicy>,
+    compile_options: BTreeMap<String, String>,
     custom_vjp_rule_key: Option<String>,
     /// Lazily-computed, args-independent dispatch metadata (composition proof +
     /// cache key) shared across repeated `call`s, mirroring [`ValueAndGradWrapped`].
@@ -69,6 +72,8 @@ pub struct VmapWrapped {
     mode: CompatibilityMode,
     in_axes: Option<String>,
     out_axes: Option<String>,
+    precision_policy: Option<PrecisionPolicy>,
+    compile_options: BTreeMap<String, String>,
     /// Lazily-computed, args-independent dispatch metadata (composition proof +
     /// cache key) shared across repeated `call`s, mirroring [`ValueAndGradWrapped`]
     /// and [`GradWrapped`]. Excluded from equality/Debug. Any builder that mutates
@@ -82,6 +87,9 @@ pub struct ValueAndGradWrapped {
     jaxpr: Jaxpr,
     backend: BackendName,
     mode: CompatibilityMode,
+    argnums: Vec<usize>,
+    precision_policy: Option<PrecisionPolicy>,
+    compile_options: BTreeMap<String, String>,
     custom_vjp_rule_key: Option<String>,
     /// Lazily-computed, args-independent dispatch metadata (composition proof +
     /// cache key) shared across repeated `call`s. Excluded from equality/Debug
@@ -267,14 +275,20 @@ pub struct CheckpointWrapped {
 
 /// Pmap wrapper for parallel map across multiple devices.
 ///
-/// V1: Fails closed until multi-device execution support lands.
-/// Requires multi-device backend infrastructure.
+/// V1: Fails closed unless explicit virtual device count (`with_devices`) is configured.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PmapWrapped {
     jaxpr: Jaxpr,
     backend: BackendName,
     mode: CompatibilityMode,
     axis_name: Option<String>,
+    devices: Option<usize>,
+    in_axes: Option<String>,
+    out_axes: Option<String>,
+    precision_policy: Option<PrecisionPolicy>,
+    compile_options: BTreeMap<String, String>,
+    meta_cache: DispatchMetaCache,
+    last_evidence: LastEvidenceCache,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -309,6 +323,9 @@ pub fn grad(jaxpr: Jaxpr) -> GradWrapped {
         jaxpr,
         backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
+        argnums: Vec::new(),
+        precision_policy: None,
+        compile_options: BTreeMap::new(),
         custom_vjp_rule_key: None,
         meta_cache: DispatchMetaCache::default(),
         compiled_ad_cache: CompiledAdCache::default(),
@@ -324,6 +341,8 @@ pub fn vmap(jaxpr: Jaxpr) -> VmapWrapped {
         mode: CompatibilityMode::Strict,
         in_axes: None,
         out_axes: None,
+        precision_policy: None,
+        compile_options: BTreeMap::new(),
         meta_cache: DispatchMetaCache::default(),
         last_evidence: LastEvidenceCache::default(),
     }
@@ -335,6 +354,9 @@ pub fn value_and_grad(jaxpr: Jaxpr) -> ValueAndGradWrapped {
         jaxpr,
         backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
+        argnums: Vec::new(),
+        precision_policy: None,
+        compile_options: BTreeMap::new(),
         custom_vjp_rule_key: None,
         meta_cache: DispatchMetaCache::default(),
         compiled_ad_cache: CompiledAdCache::default(),
@@ -344,8 +366,7 @@ pub fn value_and_grad(jaxpr: Jaxpr) -> ValueAndGradWrapped {
 
 /// Create a pmap (parallel map) transform wrapper.
 ///
-/// V1: Fails closed until multi-device support lands.
-/// Requires multi-device backend infrastructure for actual SPMD execution.
+/// V1: Fails closed unless explicit virtual device count (`with_devices`) is configured.
 #[must_use]
 pub fn pmap(jaxpr: Jaxpr) -> PmapWrapped {
     PmapWrapped {
@@ -353,6 +374,13 @@ pub fn pmap(jaxpr: Jaxpr) -> PmapWrapped {
         backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
         axis_name: None,
+        devices: None,
+        in_axes: None,
+        out_axes: None,
+        precision_policy: None,
+        compile_options: BTreeMap::new(),
+        meta_cache: DispatchMetaCache::default(),
+        last_evidence: LastEvidenceCache::default(),
     }
 }
 
@@ -1424,15 +1452,31 @@ impl JitWrapped {
 
 impl GradWrapped {
     fn build_compile_options(&self) -> BTreeMap<String, String> {
-        let mut compile_options = BTreeMap::new();
+        let mut compile_options = self.compile_options.clone();
         if let Some(rule_key) = &self.custom_vjp_rule_key {
             compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
+        }
+        if !self.argnums.is_empty() {
+            let formatted = self
+                .argnums
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            compile_options.insert("grad_argnums".to_owned(), formatted);
+        }
+        if let Some(policy) = self.precision_policy {
+            compile_options.insert("precision_policy".to_owned(), policy.as_str().to_owned());
         }
         compile_options
     }
 
     fn try_default_cpu_compiled_grad(&self, args: &[Value]) -> Result<Option<Value>, ApiError> {
-        if self.custom_vjp_rule_key.is_some() || self.backend.as_ref() != DEFAULT_BACKEND {
+        if self.custom_vjp_rule_key.is_some()
+            || self.backend.as_ref() != DEFAULT_BACKEND
+            || !self.argnums.is_empty()
+            || !self.compile_options.is_empty()
+        {
             return Ok(None);
         }
         check_fast_path_admission(&self.jaxpr, &[Transform::Grad], args, self.mode)?;
@@ -1444,7 +1488,11 @@ impl GradWrapped {
         else {
             return Ok(None);
         };
-        let Some(grads) = compiled.grad(args)? else {
+        let grads_opt = match self.precision_policy {
+            Some(policy) => with_precision_policy(policy, || compiled.grad(args))?,
+            None => compiled.grad(args)?,
+        };
+        let Some(grads) = grads_opt else {
             return Ok(None);
         };
         Ok(grads.into_iter().next())
@@ -1467,6 +1515,49 @@ impl GradWrapped {
         self.compiled_ad_cache = CompiledAdCache::default();
         self.last_evidence = LastEvidenceCache::default();
         self
+    }
+
+    /// Differentiate with respect to the specified 0-based input argument indices.
+    ///
+    /// When `argnums` is non-empty, [`GradWrapped::call`] returns one gradient per index in
+    /// `argnums` (in the order specified).
+    #[must_use]
+    pub fn with_argnums(mut self, argnums: &[usize]) -> Self {
+        self.argnums = argnums.to_vec();
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Configure the floating-point contraction / SIMD [`PrecisionPolicy`] for this gradient wrapper.
+    #[must_use]
+    pub fn with_precision_policy(mut self, policy: PrecisionPolicy) -> Self {
+        self.precision_policy = Some(policy);
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Set a dispatch compile option on this gradient wrapper.
+    #[must_use]
+    pub fn with_compile_option(mut self, key: &str, value: &str) -> Self {
+        self.compile_options
+            .insert(key.to_owned(), value.to_owned());
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Enable or disable dispatch-time e-graph optimization before differentiation.
+    #[must_use]
+    pub fn with_egraph_optimization(self, enabled: bool) -> Self {
+        self.with_compile_option("egraph_optimize", if enabled { "true" } else { "false" })
+    }
+
+    /// Return the effective compile options map configured on this wrapper.
+    #[must_use]
+    pub fn compile_options(&self) -> BTreeMap<String, String> {
+        self.build_compile_options()
     }
 
     /// Execute through the full dispatch + ledger + proof spine and return the
@@ -1553,16 +1644,67 @@ impl GradWrapped {
         }
         Ok(self.call_with_evidence(args)?.outputs)
     }
+
+    /// Compose: `grad(jit(f))`.
+    #[must_use]
+    pub fn compose_jit(self) -> ComposedTransform {
+        let mut compile_options = self.build_compile_options();
+        compile_options.remove(CUSTOM_VJP_RULE_KEY_OPTION);
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Grad, Transform::Jit],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: self.custom_vjp_rule_key,
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
+
+    /// Compose higher-order derivative: `grad(grad(f))`.
+    #[must_use]
+    pub fn compose_grad(self) -> ComposedTransform {
+        let mut compile_options = self.build_compile_options();
+        compile_options.remove(CUSTOM_VJP_RULE_KEY_OPTION);
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Grad, Transform::Grad],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: self.custom_vjp_rule_key,
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
+
+    /// Compose: `grad(vmap(f))`.
+    #[must_use]
+    pub fn compose_vmap(self) -> ComposedTransform {
+        let mut compile_options = self.build_compile_options();
+        compile_options.remove(CUSTOM_VJP_RULE_KEY_OPTION);
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Grad, Transform::Vmap],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: self.custom_vjp_rule_key,
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
 }
 
 impl VmapWrapped {
     fn build_compile_options(&self) -> BTreeMap<String, String> {
-        let mut compile_options = BTreeMap::new();
+        let mut compile_options = self.compile_options.clone();
         if let Some(ref in_axes) = self.in_axes {
             compile_options.insert("vmap_in_axes".to_owned(), in_axes.clone());
         }
         if let Some(ref out_axes) = self.out_axes {
             compile_options.insert("vmap_out_axes".to_owned(), out_axes.clone());
+        }
+        if let Some(policy) = self.precision_policy {
+            compile_options.insert("precision_policy".to_owned(), policy.as_str().to_owned());
         }
         compile_options
     }
@@ -1606,6 +1748,31 @@ impl VmapWrapped {
         self.meta_cache = DispatchMetaCache::default();
         self.last_evidence = LastEvidenceCache::default();
         self
+    }
+
+    /// Configure the floating-point contraction / SIMD [`PrecisionPolicy`] for this vmap wrapper.
+    #[must_use]
+    pub fn with_precision_policy(mut self, policy: PrecisionPolicy) -> Self {
+        self.precision_policy = Some(policy);
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Set a dispatch compile option on this vmap wrapper.
+    #[must_use]
+    pub fn with_compile_option(mut self, key: &str, value: &str) -> Self {
+        self.compile_options
+            .insert(key.to_owned(), value.to_owned());
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Enable or disable dispatch-time e-graph optimization.
+    #[must_use]
+    pub fn with_egraph_optimization(self, enabled: bool) -> Self {
+        self.with_compile_option("egraph_optimize", if enabled { "true" } else { "false" })
     }
 
     /// Execute through the full dispatch + ledger + proof spine and return the
@@ -1666,19 +1833,43 @@ impl VmapWrapped {
         Ok(self.call_with_evidence(args)?.outputs)
     }
 
+    /// Compose: `vmap(jit(f))`.
+    #[must_use]
+    pub fn compose_jit(self) -> ComposedTransform {
+        let compile_options = self.build_compile_options();
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Vmap, Transform::Jit],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: None,
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
+
     /// Compose: `vmap(grad(f))`.
     #[must_use]
     pub fn compose_grad(self) -> ComposedTransform {
-        let mut compile_options = BTreeMap::new();
-        if let Some(in_axes) = self.in_axes {
-            compile_options.insert("vmap_in_axes".to_owned(), in_axes);
-        }
-        if let Some(out_axes) = self.out_axes {
-            compile_options.insert("vmap_out_axes".to_owned(), out_axes);
-        }
+        let compile_options = self.build_compile_options();
         ComposedTransform {
             jaxpr: self.jaxpr,
             transforms: vec![Transform::Vmap, Transform::Grad],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: None,
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
+
+    /// Compose nested batching: `vmap(vmap(f))`.
+    #[must_use]
+    pub fn compose_vmap(self) -> ComposedTransform {
+        let compile_options = self.build_compile_options();
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Vmap, Transform::Vmap],
             backend: self.backend,
             mode: self.mode,
             compile_options,
@@ -1721,6 +1912,55 @@ impl ComposedTransform {
     #[must_use]
     pub fn with_vmap_out_axes(self, out_axes: &str) -> Self {
         self.with_compile_option("vmap_out_axes", out_axes)
+    }
+
+    /// Differentiate with respect to the specified 0-based input argument indices.
+    #[must_use]
+    pub fn with_grad_argnums(self, argnums: &[usize]) -> Self {
+        let formatted = argnums
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        self.with_compile_option("grad_argnums", &formatted)
+    }
+
+    /// Configure the virtual device count for `pmap` in this transform stack.
+    #[must_use]
+    pub fn with_pmap_devices(self, devices: usize) -> Self {
+        self.with_compile_option("pmap_devices", &devices.to_string())
+    }
+
+    /// Append `Transform::Jit` to the inner end of this transform stack.
+    #[must_use]
+    pub fn compose_jit(mut self) -> Self {
+        self.transforms.push(Transform::Jit);
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Append `Transform::Grad` to the inner end of this transform stack.
+    #[must_use]
+    pub fn compose_grad(mut self) -> Self {
+        self.transforms.push(Transform::Grad);
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Append `Transform::Vmap` to the inner end of this transform stack.
+    #[must_use]
+    pub fn compose_vmap(mut self) -> Self {
+        self.transforms.push(Transform::Vmap);
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Append `Transform::Pmap` to the inner end of this transform stack.
+    #[must_use]
+    pub fn compose_pmap(mut self) -> Self {
+        self.transforms.push(Transform::Pmap);
+        self.last_evidence = LastEvidenceCache::default();
+        self
     }
 
     /// Enable or disable the finite-difference compatibility fallback for composed `grad` tails.
@@ -1794,7 +2034,11 @@ impl ValueAndGradWrapped {
         &self,
         args: &[Value],
     ) -> Result<Option<ValueAndGradOutputs>, ApiError> {
-        if self.custom_vjp_rule_key.is_some() || self.backend.as_ref() != DEFAULT_BACKEND {
+        if self.custom_vjp_rule_key.is_some()
+            || self.backend.as_ref() != DEFAULT_BACKEND
+            || !self.argnums.is_empty()
+            || !self.compile_options.is_empty()
+        {
             return Ok(None);
         }
         check_fast_path_admission(&self.jaxpr, &[Transform::Grad], args, self.mode)?;
@@ -1806,7 +2050,11 @@ impl ValueAndGradWrapped {
         else {
             return Ok(None);
         };
-        compiled.value_and_grad(args).map_err(ApiError::from)
+        match self.precision_policy {
+            Some(policy) => with_precision_policy(policy, || compiled.value_and_grad(args))
+                .map_err(ApiError::from),
+            None => compiled.value_and_grad(args).map_err(ApiError::from),
+        }
     }
 
     #[must_use]
@@ -1829,13 +2077,59 @@ impl ValueAndGradWrapped {
         self
     }
 
+    /// Differentiate with respect to the specified 0-based input argument indices.
+    #[must_use]
+    pub fn with_argnums(mut self, argnums: &[usize]) -> Self {
+        self.argnums = argnums.to_vec();
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Configure the floating-point contraction / SIMD [`PrecisionPolicy`] for this value-and-grad wrapper.
+    #[must_use]
+    pub fn with_precision_policy(mut self, policy: PrecisionPolicy) -> Self {
+        self.precision_policy = Some(policy);
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Set a dispatch compile option on this value-and-grad wrapper.
+    #[must_use]
+    pub fn with_compile_option(mut self, key: &str, value: &str) -> Self {
+        self.compile_options
+            .insert(key.to_owned(), value.to_owned());
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Enable or disable dispatch-time e-graph optimization before differentiation.
+    #[must_use]
+    pub fn with_egraph_optimization(self, enabled: bool) -> Self {
+        self.with_compile_option("egraph_optimize", if enabled { "true" } else { "false" })
+    }
+
     /// Build the per-wrapper compile options. These are constant across calls,
     /// so the derived dispatch metadata can be memoized.
-    fn compile_options(&self) -> BTreeMap<String, String> {
-        let mut compile_options = BTreeMap::new();
+    pub fn compile_options(&self) -> BTreeMap<String, String> {
+        let mut compile_options = self.compile_options.clone();
         compile_options.insert("value_and_grad".to_owned(), "true".to_owned());
         if let Some(rule_key) = &self.custom_vjp_rule_key {
             compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
+        }
+        if !self.argnums.is_empty() {
+            let formatted = self
+                .argnums
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            compile_options.insert("grad_argnums".to_owned(), formatted);
+        }
+        if let Some(policy) = self.precision_policy {
+            compile_options.insert("precision_policy".to_owned(), policy.as_str().to_owned());
         }
         compile_options
     }
@@ -1965,6 +2259,9 @@ impl CustomVjpWrapped {
             jaxpr: self.jaxpr.clone(),
             backend: self.backend.clone(),
             mode: self.mode,
+            argnums: Vec::new(),
+            precision_policy: None,
+            compile_options: BTreeMap::new(),
             custom_vjp_rule_key: Some(self.rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
             compiled_ad_cache: CompiledAdCache::default(),
@@ -1978,6 +2275,9 @@ impl CustomVjpWrapped {
             jaxpr: self.jaxpr.clone(),
             backend: self.backend.clone(),
             mode: self.mode,
+            argnums: Vec::new(),
+            precision_policy: None,
+            compile_options: BTreeMap::new(),
             custom_vjp_rule_key: Some(self.rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
             compiled_ad_cache: CompiledAdCache::default(),
@@ -2079,6 +2379,9 @@ impl CheckpointWrapped {
             jaxpr: self.jaxpr.clone(),
             backend: self.backend.clone(),
             mode: self.mode,
+            argnums: Vec::new(),
+            precision_policy: None,
+            compile_options: BTreeMap::new(),
             custom_vjp_rule_key: Some(self.custom_vjp_rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
             compiled_ad_cache: CompiledAdCache::default(),
@@ -2092,6 +2395,9 @@ impl CheckpointWrapped {
             jaxpr: self.jaxpr.clone(),
             backend: self.backend.clone(),
             mode: self.mode,
+            argnums: Vec::new(),
+            precision_policy: None,
+            compile_options: BTreeMap::new(),
             custom_vjp_rule_key: Some(self.custom_vjp_rule_key.clone()),
             meta_cache: DispatchMetaCache::default(),
             compiled_ad_cache: CompiledAdCache::default(),
@@ -2110,15 +2416,39 @@ impl CheckpointWrapped {
 }
 
 impl PmapWrapped {
+    fn build_compile_options(&self) -> BTreeMap<String, String> {
+        let mut compile_options = self.compile_options.clone();
+        if let Some(devices) = self.devices {
+            compile_options.insert("pmap_devices".to_owned(), devices.to_string());
+        }
+        if let Some(ref axis_name) = self.axis_name {
+            compile_options.insert("pmap_axis_name".to_owned(), axis_name.clone());
+        }
+        if let Some(ref in_axes) = self.in_axes {
+            compile_options.insert("pmap_in_axes".to_owned(), in_axes.clone());
+        }
+        if let Some(ref out_axes) = self.out_axes {
+            compile_options.insert("pmap_out_axes".to_owned(), out_axes.clone());
+        }
+        if let Some(policy) = self.precision_policy {
+            compile_options.insert("precision_policy".to_owned(), policy.as_str().to_owned());
+        }
+        compile_options
+    }
+
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
         self.backend = Cow::Owned(backend.to_owned());
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
     #[must_use]
     pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
         self.mode = mode;
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
     }
 
@@ -2126,22 +2456,163 @@ impl PmapWrapped {
     #[must_use]
     pub fn with_axis_name(mut self, axis_name: &str) -> Self {
         self.axis_name = Some(axis_name.to_owned());
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
         self
+    }
+
+    /// Configure the number of virtual SPMD devices across which [`PmapWrapped::call`]
+    /// partitions the mapped axis and executes collective primitives (`Psum`, `Pmean`,
+    /// `AllGather`, `AllToAll`, `AxisIndex`).
+    #[must_use]
+    pub fn with_devices(mut self, num_devices: usize) -> Self {
+        self.devices = Some(num_devices);
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Set `in_axes` for this `pmap` (comma-separated axis indices or `"none"`).
+    #[must_use]
+    pub fn with_in_axes(mut self, in_axes: &str) -> Self {
+        self.in_axes = Some(in_axes.to_owned());
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Set `out_axes` for this `pmap` (comma-separated axis indices or `"none"`).
+    #[must_use]
+    pub fn with_out_axes(mut self, out_axes: &str) -> Self {
+        self.out_axes = Some(out_axes.to_owned());
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Configure the floating-point contraction / SIMD [`PrecisionPolicy`] for this pmap wrapper.
+    #[must_use]
+    pub fn with_precision_policy(mut self, policy: PrecisionPolicy) -> Self {
+        self.precision_policy = Some(policy);
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Set a dispatch compile option on this pmap wrapper.
+    #[must_use]
+    pub fn with_compile_option(mut self, key: &str, value: &str) -> Self {
+        self.compile_options
+            .insert(key.to_owned(), value.to_owned());
+        self.meta_cache = DispatchMetaCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Enable or disable dispatch-time e-graph optimization.
+    #[must_use]
+    pub fn with_egraph_optimization(self, enabled: bool) -> Self {
+        self.with_compile_option("egraph_optimize", if enabled { "true" } else { "false" })
+    }
+
+    /// Execute through the full dispatch + ledger + proof spine when `with_devices` is configured.
+    pub fn call_with_evidence(&self, args: Vec<Value>) -> Result<DispatchResponse, ApiError> {
+        let compile_options = self.build_compile_options();
+        if !compile_options.contains_key("pmap_devices") {
+            return Err(ApiError::UnsupportedFeature {
+                feature: "pmap".to_owned(),
+                reason: "requires multi-device backend infrastructure (GPU/TPU), device mesh \
+                         configuration, and collective execution support"
+                    .to_owned(),
+            });
+        }
+        let transforms = [Transform::Pmap];
+        let evidence = transform_evidence(&transforms);
+        let prepared = self
+            .meta_cache
+            .0
+            .get_or_init(|| {
+                prepare_dispatch_meta(
+                    self.mode,
+                    &self.jaxpr,
+                    &transforms,
+                    &evidence,
+                    self.backend.as_ref(),
+                    &compile_options,
+                    None,
+                    &[],
+                )
+                .ok()
+            })
+            .as_ref();
+        let response = dispatch_ref(DispatchRequestRef {
+            mode: self.mode,
+            root_jaxpr: &self.jaxpr,
+            transform_stack: &transforms,
+            transform_evidence: &evidence,
+            args,
+            backend: self.backend.as_ref(),
+            compile_options,
+            custom_hook: None,
+            unknown_incompatible_features: &[],
+            prepared,
+        })?;
+        self.last_evidence.store(
+            response.evidence_ledger.clone(),
+            response.composition_proof.clone(),
+        );
+        Ok(response)
+    }
+
+    /// Return the [`EvidenceLedger`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_evidence_ledger(&self) -> Option<EvidenceLedger> {
+        self.last_evidence.ledger()
+    }
+
+    /// Return the [`TransformCompositionProof`] from the most recent invocation of this wrapper.
+    #[must_use]
+    pub fn last_composition_proof(&self) -> Option<TransformCompositionProof> {
+        self.last_evidence.proof()
     }
 
     /// Execute the pmap transform.
     ///
-    /// V1: Fails closed. Actual pmap requires:
-    /// - Multi-device backend infrastructure
-    /// - Device mesh configuration
-    /// - Collective operation support (psum, pmean, etc.)
-    pub fn call(&self, _args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        Err(ApiError::UnsupportedFeature {
-            feature: "pmap".to_owned(),
-            reason: "requires multi-device backend infrastructure (GPU/TPU), device mesh \
-                     configuration, and collective execution support"
-                .to_owned(),
-        })
+    /// Fails closed when no virtual device count (`with_devices`) is configured.
+    /// When `with_devices(n)` is set, executes SPMD lockstep across `n` virtual devices
+    /// with collective primitive support (`Psum`, `Pmean`, `AllGather`, `AllToAll`, `AxisIndex`).
+    pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+        Ok(self.call_with_evidence(args)?.outputs)
+    }
+
+    /// Compose: `pmap(jit(f))`.
+    #[must_use]
+    pub fn compose_jit(self) -> ComposedTransform {
+        let compile_options = self.build_compile_options();
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Pmap, Transform::Jit],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: None,
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
+
+    /// Compose: `pmap(grad(f))`.
+    #[must_use]
+    pub fn compose_grad(self) -> ComposedTransform {
+        let compile_options = self.build_compile_options();
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Pmap, Transform::Grad],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: None,
+            last_evidence: LastEvidenceCache::default(),
+        }
     }
 }
 
@@ -2218,6 +2689,74 @@ where
     }
     let closed = fj_trace::make_jaxpr_fallible(f, elem_avals)?;
     vmap(closed.into_executable_jaxpr()).call(args)
+}
+
+/// Trace a per-device Rust closure inside an active `pmap` context of `num_devices` shards
+/// (supporting collective primitives like `psum`, `pmean`, `all_gather`, `all_to_all`, and
+/// `axis_index`) and execute it across `num_devices` virtual devices via [`pmap`].
+pub fn pmap_fn<F>(f: F, num_devices: usize, args: Vec<Value>) -> Result<Vec<Value>, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    if num_devices == 0 {
+        return Err(ApiError::EvalError {
+            detail: "pmap_fn requires num_devices > 0".to_owned(),
+        });
+    }
+    let mut shard_avals = Vec::with_capacity(args.len());
+    for arg in &args {
+        let aval = ShapedArray::from_value(arg);
+        if aval.shape.dims.is_empty() || aval.shape.dims[0] as usize != num_devices {
+            return Err(ApiError::EvalError {
+                detail: format!(
+                    "pmap_fn requires leading dimension equal to num_devices ({num_devices}), got {:?}",
+                    aval.shape.dims
+                ),
+            });
+        }
+        shard_avals.push(ShapedArray {
+            dtype: aval.dtype,
+            shape: fj_core::Shape {
+                dims: aval.shape.dims[1..].to_vec(),
+            },
+        });
+    }
+    let axis_size = u32::try_from(num_devices).map_err(|_| ApiError::EvalError {
+        detail: format!("pmap_fn num_devices {num_devices} overflows u32"),
+    })?;
+    let closed = fj_trace::with_pmap_trace_context(axis_size, || {
+        fj_trace::make_jaxpr_fallible(f, shard_avals)
+    })?;
+    pmap(closed.into_executable_jaxpr())
+        .with_devices(num_devices)
+        .call(args)
+}
+
+/// Trace a Rust closure against `primals` and compute its forward-mode JVP `(primals, tangents)`.
+pub fn jvp_fn<F>(f: F, primals: &[Value], tangents: &[Value]) -> Result<fj_ad::JvpResult, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let jaxpr = trace_jaxpr_for_values(f, primals)?;
+    jvp(&jaxpr, primals, tangents)
+}
+
+/// Trace a Rust closure against `primals` and return `(primal_outputs, VjpPullback)`.
+pub fn vjp_fn<F>(f: F, primals: &[Value]) -> Result<VjpResult, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let jaxpr = trace_jaxpr_for_values(f, primals)?;
+    vjp(jaxpr, primals.to_vec())
+}
+
+/// Trace a Rust closure against `primals` and return `(primal_outputs, LinearizedFunction)`.
+pub fn linearize_fn<F>(f: F, primals: &[Value]) -> Result<LinearizeResult, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let jaxpr = trace_jaxpr_for_values(f, primals)?;
+    linearize(jaxpr, primals.to_vec())
 }
 
 /// Trace a Rust closure against `args` and compute its Jacobian matrix via [`jacobian`].
@@ -3287,5 +3826,246 @@ mod tests {
             resp_portable.cache_key, resp_fma.cache_key,
             "different PrecisionPolicy settings must produce distinct cache keys"
         );
+    }
+
+    #[test]
+    fn grad_and_value_and_grad_with_argnums_and_fluent_composition() {
+        // f(x, y) = x^2 * y + 3 * y^2
+        // df/dx = 2 * x * y, df/dy = x^2 + 6 * y
+        // At (x=2.0, y=5.0): f=95.0, df/dx=20.0, df/dy=34.0
+        let jaxpr = crate::make_jaxpr_fallible(
+            |args| {
+                let x = &args[0];
+                let y = &args[1];
+                let x2 = x.mul_op(x)?;
+                let x2y = x2.mul_op(y)?;
+                let three = x.bind_literal(fj_core::Literal::from_f64(3.0))?;
+                let y2 = y.mul_op(y)?;
+                let term2 = three.mul_op(&y2)?;
+                Ok(vec![x2y.add_op(&term2)?])
+            },
+            vec![
+                ShapedArray {
+                    dtype: fj_core::DType::F64,
+                    shape: fj_core::Shape::scalar(),
+                },
+                ShapedArray {
+                    dtype: fj_core::DType::F64,
+                    shape: fj_core::Shape::scalar(),
+                },
+            ],
+        )
+        .expect("trace should succeed")
+        .into_executable_jaxpr();
+
+        let args = vec![Value::scalar_f64(2.0), Value::scalar_f64(5.0)];
+
+        let g_y = grad(jaxpr.clone())
+            .with_argnums(&[1])
+            .with_precision_policy(PrecisionPolicy::HardwareFmaAccelerated);
+        let dy = g_y
+            .call(args.clone())
+            .expect("grad argnum=1 should succeed");
+        assert_eq!(dy.len(), 1);
+        assert!((dy[0].as_f64_scalar().unwrap() - 34.0).abs() < 1e-12);
+        let proof = g_y
+            .last_composition_proof()
+            .expect("grad with_argnums should populate composition proof");
+        proof.verify().expect("grad argnums proof should verify");
+
+        let g_both = grad(jaxpr.clone()).with_argnums(&[0, 1]);
+        let d_both = g_both
+            .call(args.clone())
+            .expect("grad argnums=[0,1] should succeed");
+        assert_eq!(d_both.len(), 2);
+        assert!((d_both[0].as_f64_scalar().unwrap() - 20.0).abs() < 1e-12);
+        assert!((d_both[1].as_f64_scalar().unwrap() - 34.0).abs() < 1e-12);
+
+        let (vals, vg_y) = value_and_grad(jaxpr.clone())
+            .with_argnums(&[1])
+            .call(args.clone())
+            .expect("value_and_grad argnum=1 should succeed");
+        assert!((vals[0].as_f64_scalar().unwrap() - 95.0).abs() < 1e-12);
+        assert_eq!(vg_y.len(), 1);
+        assert!((vg_y[0].as_f64_scalar().unwrap() - 34.0).abs() < 1e-12);
+
+        // Higher-order fluent composition: grad(f).compose_grad() -> d^2f/dx^2 = 2 * y = 10.0
+        let d2x = grad(jaxpr)
+            .compose_grad()
+            .call(args)
+            .expect("grad.compose_grad should succeed");
+        assert!((d2x[0].as_f64_scalar().unwrap() - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pmap_with_devices_executes_spmd_collectives_and_verifies_proof() {
+        // Build a collective Jaxpr via pmap_fn:
+        // Each device has x_i. Compute:
+        //   out0 = psum(x_i) + x_i
+        //   out1 = pmean(x_i)
+        //   out2 = all_gather(x_i)
+        let batch = Value::Tensor(
+            fj_core::TensorValue::new_f64_values(
+                fj_core::Shape::vector(4),
+                vec![1.0, 2.0, 3.0, 4.0],
+            )
+            .unwrap(),
+        );
+
+        let outs = pmap_fn(
+            |args| {
+                let x = &args[0];
+                let s = x.psum("devices")?;
+                let m = x.pmean("devices")?;
+                let g = x.all_gather("devices")?;
+                Ok(vec![s.add_op(x)?, m, g])
+            },
+            4,
+            vec![batch.clone()],
+        )
+        .expect("pmap_fn across 4 virtual devices should succeed");
+
+        assert_eq!(outs.len(), 3);
+        // psum([1,2,3,4]) = 10 -> out0 = [11, 12, 13, 14]
+        let out0 = outs[0].as_tensor().unwrap().to_f64_vec().unwrap();
+        assert_eq!(out0, vec![11.0, 12.0, 13.0, 14.0]);
+        // pmean([1,2,3,4]) = 2.5 -> out1 = [2.5, 2.5, 2.5, 2.5]
+        let out1 = outs[1].as_tensor().unwrap().to_f64_vec().unwrap();
+        assert_eq!(out1, vec![2.5, 2.5, 2.5, 2.5]);
+        // all_gather([1,2,3,4]) on each of 4 devices -> shape [4, 4]
+        let out2_t = outs[2].as_tensor().unwrap();
+        assert_eq!(out2_t.shape.dims, vec![4, 4]);
+        assert_eq!(
+            out2_t.to_f64_vec().unwrap(),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0
+            ]
+        );
+
+        // Also test PmapWrapped::with_devices + call_with_evidence + PmapWitness proof verification
+        let psum_jaxpr = fj_trace::with_pmap_trace_context(4, || {
+            crate::make_jaxpr_fallible(
+                |args| Ok(vec![args[0].psum("i")?]),
+                vec![ShapedArray {
+                    dtype: fj_core::DType::F64,
+                    shape: fj_core::Shape::scalar(),
+                }],
+            )
+        })
+        .expect("trace psum should succeed")
+        .into_executable_jaxpr();
+
+        let wrapped = pmap(psum_jaxpr).with_axis_name("i").with_devices(4);
+        let resp = wrapped
+            .call_with_evidence(vec![batch])
+            .expect("pmap with_devices(4) should succeed");
+        assert_eq!(
+            resp.outputs[0].as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![10.0, 10.0, 10.0, 10.0]
+        );
+        resp.composition_proof
+            .verify()
+            .expect("pmap composition proof must cryptographically verify");
+        assert_eq!(
+            resp.composition_proof.steps[0].witness,
+            fj_core::TransformRewriteWitness::Pmap(fj_core::PmapWitness { axis_size: 4 })
+        );
+
+        // Test AllToAll and AxisIndex across 2 virtual devices
+        let mat = Value::Tensor(
+            fj_core::TensorValue::new_f64_values(
+                fj_core::Shape { dims: vec![2, 2] },
+                vec![1.0, 2.0, 3.0, 4.0],
+            )
+            .unwrap(),
+        );
+        let a2a = pmap_fn(|args| Ok(vec![args[0].all_to_all("i")?]), 2, vec![mat])
+            .expect("pmap_fn all_to_all should succeed");
+        assert_eq!(
+            a2a[0].as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![1.0, 3.0, 2.0, 4.0]
+        );
+
+        let idx_vec = Value::Tensor(
+            fj_core::TensorValue::new(
+                fj_core::DType::I64,
+                fj_core::Shape::vector(3),
+                vec![
+                    fj_core::Literal::I64(10),
+                    fj_core::Literal::I64(20),
+                    fj_core::Literal::I64(30),
+                ],
+            )
+            .unwrap(),
+        );
+        let with_idx = pmap_fn(
+            |args| {
+                let idx = args[0].bind_axis_index("i")?;
+                Ok(vec![args[0].add_op(&idx)?])
+            },
+            3,
+            vec![idx_vec],
+        )
+        .expect("pmap_fn axis_index should succeed");
+        let idx_elems: Vec<i64> = with_idx[0]
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_i64().unwrap())
+            .collect();
+        assert_eq!(idx_elems, vec![10, 21, 32]);
+    }
+
+    #[test]
+    fn jvp_fn_vjp_fn_and_linearize_fn_closure_helpers() {
+        // f(x) = x^3 -> f(2) = 8, f'(2) = 12
+        let primals = [Value::scalar_f64(2.0)];
+        let tangents = [Value::scalar_f64(3.0)];
+
+        let jvp_res = jvp_fn(
+            |args| {
+                let x = &args[0];
+                let x2 = x.mul_op(x)?;
+                Ok(vec![x2.mul_op(x)?])
+            },
+            &primals,
+            &tangents,
+        )
+        .expect("jvp_fn should succeed");
+        assert!((jvp_res.primals[0].as_f64_scalar().unwrap() - 8.0).abs() < 1e-12);
+        assert!((jvp_res.tangents[0].as_f64_scalar().unwrap() - 36.0).abs() < 1e-12);
+
+        let vjp_res = vjp_fn(
+            |args| {
+                let x = &args[0];
+                let x2 = x.mul_op(x)?;
+                Ok(vec![x2.mul_op(x)?])
+            },
+            &primals,
+        )
+        .expect("vjp_fn should succeed");
+        assert!((vjp_res.primal_outputs[0].as_f64_scalar().unwrap() - 8.0).abs() < 1e-12);
+        let cot = vjp_res
+            .pullback
+            .call(Value::scalar_f64(2.0))
+            .expect("vjp_fn pullback should succeed");
+        assert!((cot[0].as_f64_scalar().unwrap() - 24.0).abs() < 1e-12);
+
+        let lin_res = linearize_fn(
+            |args| {
+                let x = &args[0];
+                let x2 = x.mul_op(x)?;
+                Ok(vec![x2.mul_op(x)?])
+            },
+            &primals,
+        )
+        .expect("linearize_fn should succeed");
+        assert!((lin_res.primal_outputs[0].as_f64_scalar().unwrap() - 8.0).abs() < 1e-12);
+        let t_out = lin_res
+            .linearized
+            .call(vec![Value::scalar_f64(5.0)])
+            .expect("linearize_fn tangent pushforward should succeed");
+        assert!((t_out[0].as_f64_scalar().unwrap() - 60.0).abs() < 1e-12);
     }
 }
