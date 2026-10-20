@@ -1,15 +1,14 @@
 {
-  "proof_id": "decode-proof-31fa7ce6d0fcd80a",
+  "proof_id": "decode-proof-17911d47500d3516",
   "sidecar_path": "artifacts/durability/architecture_boundary_decision.v1/architecture_boundary_decision.v1.sidecar.json",
   "artifact_path": "artifacts/conformance/architecture_boundary_decision.v1.json",
-  "expected_sha256_hex": "3698257f59bda92323ad450b325b08369a75e794416316cc4d474caa48e90101",
-  "decoded_sha256_hex": "3698257f59bda92323ad450b325b08369a75e794416316cc4d474caa48e90101",
+  "expected_sha256_hex": "67093f3a7f122b659c9cb71e4263315bc64b4a55cafa1c08283c76fc9cd00059",
+  "decoded_sha256_hex": "67093f3a7f122b659c9cb71e4263315bc64b4a55cafa1c08283c76fc9cd00059",
   "dropped_symbols": [
-    "kind:source:sbn:0:esi:0",
-    "kind:source:sbn:0:esi:1"
+    "kind:source:sbn:0:esi:0"
   ],
-  "attempted_symbol_count": 94,
+  "attempted_symbol_count": 95,
   "recovered": true,
-  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1792431100558
+  "details": "drop-kind=source count=1; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1792469685644
 }

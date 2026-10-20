@@ -1141,6 +1141,46 @@ impl PyTracer {
             .map_err(trace_error_to_py_err)
     }
 
+    #[pyo3(signature = (axis_name="i"))]
+    fn psum(&self, axis_name: &str) -> PyResult<Self> {
+        self.inner
+            .psum(axis_name)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis_name="i"))]
+    fn pmean(&self, axis_name: &str) -> PyResult<Self> {
+        self.inner
+            .pmean(axis_name)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis_name="i"))]
+    fn all_gather(&self, axis_name: &str) -> PyResult<Self> {
+        self.inner
+            .all_gather(axis_name)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis_name="i"))]
+    fn all_to_all(&self, axis_name: &str) -> PyResult<Self> {
+        self.inner
+            .all_to_all(axis_name)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (axis_name="i"))]
+    fn axis_index(axis_name: &str) -> PyResult<Self> {
+        fj_trace::TracerRef::axis_index(axis_name)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
     fn __repr__(&self) -> String {
         let aval = self.inner.aval();
         format!(
@@ -4249,23 +4289,31 @@ fn py_jit(py: Python<'_>, target: &Bound<'_, PyAny>, args: Vec<PyValue>) -> PyRe
     jit(&PyJaxpr { inner: jaxpr }, args)
 }
 
-fn grad(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
+fn grad_with_argnums(
+    jaxpr: &PyJaxpr,
+    args: Vec<PyValue>,
+    argnums: Option<Vec<usize>>,
+) -> PyResult<Vec<PyValue>> {
     let rust_args = py_values_to_rust(args);
-    let grads = fj_api::grad(jaxpr.inner.clone())
-        .call(rust_args)
-        .map_err(runtime_error)?;
+    let mut wrapped = fj_api::grad(jaxpr.inner.clone());
+    if let Some(ref indices) = argnums {
+        wrapped = wrapped.with_argnums(indices);
+    }
+    let grads = wrapped.call(rust_args).map_err(runtime_error)?;
     check_debug_nans_infs(&grads)?;
     Ok(py_values_from_rust(grads))
 }
 
 #[pyfunction(name = "grad")]
+#[pyo3(signature = (target, args, *, argnums=None))]
 fn py_grad(
     py: Python<'_>,
     target: &Bound<'_, PyAny>,
     args: Vec<PyValue>,
+    argnums: Option<Vec<usize>>,
 ) -> PyResult<Vec<PyValue>> {
     let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
-    grad(&PyJaxpr { inner: jaxpr }, args)
+    grad_with_argnums(&PyJaxpr { inner: jaxpr }, args, argnums)
 }
 
 fn jvp(
@@ -4973,24 +5021,32 @@ fn py_pmap(
     pmap_with_devices(&PyJaxpr { inner: jaxpr }, args, None)
 }
 
-fn value_and_grad(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<(Vec<PyValue>, Vec<PyValue>)> {
+fn value_and_grad_with_argnums(
+    jaxpr: &PyJaxpr,
+    args: Vec<PyValue>,
+    argnums: Option<Vec<usize>>,
+) -> PyResult<(Vec<PyValue>, Vec<PyValue>)> {
     let rust_args = py_values_to_rust(args);
-    let (values, grads) = fj_api::value_and_grad(jaxpr.inner.clone())
-        .call(rust_args)
-        .map_err(runtime_error)?;
+    let mut wrapped = fj_api::value_and_grad(jaxpr.inner.clone());
+    if let Some(ref indices) = argnums {
+        wrapped = wrapped.with_argnums(indices);
+    }
+    let (values, grads) = wrapped.call(rust_args).map_err(runtime_error)?;
     check_debug_nans_infs(&values)?;
     check_debug_nans_infs(&grads)?;
     Ok((py_values_from_rust(values), py_values_from_rust(grads)))
 }
 
 #[pyfunction(name = "value_and_grad")]
+#[pyo3(signature = (target, args, *, argnums=None))]
 fn py_value_and_grad(
     py: Python<'_>,
     target: &Bound<'_, PyAny>,
     args: Vec<PyValue>,
+    argnums: Option<Vec<usize>>,
 ) -> PyResult<(Vec<PyValue>, Vec<PyValue>)> {
     let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
-    value_and_grad(&PyJaxpr { inner: jaxpr }, args)
+    value_and_grad_with_argnums(&PyJaxpr { inner: jaxpr }, args, argnums)
 }
 
 fn jacobian(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
@@ -5041,6 +5097,77 @@ fn hessian(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
 fn py_hessian(py: Python<'_>, target: &Bound<'_, PyAny>, args: Vec<PyValue>) -> PyResult<PyValue> {
     let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
     hessian(&PyJaxpr { inner: jaxpr }, args)
+}
+
+#[pyfunction(name = "hvp")]
+fn py_hvp(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    primals: Vec<PyValue>,
+    tangents: Vec<PyValue>,
+) -> PyResult<Vec<PyValue>> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&primals))?;
+    let rust_primals = py_values_to_rust(primals);
+    let rust_tangents = py_values_to_rust(tangents);
+    let outputs = fj_api::hvp(&jaxpr, &rust_primals, &rust_tangents).map_err(runtime_error)?;
+    check_debug_nans_infs(&outputs)?;
+    Ok(py_values_from_rust(outputs))
+}
+
+#[pyfunction(name = "jvp_to_jaxpr", signature = (target, example_args=None))]
+fn py_jvp_to_jaxpr(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    example_args: Option<Vec<PyValue>>,
+) -> PyResult<PyJaxpr> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, example_args.as_deref())?;
+    let lowered = fj_api::jvp_to_jaxpr(&jaxpr).map_err(runtime_error)?;
+    Ok(PyJaxpr { inner: lowered })
+}
+
+#[pyfunction(name = "grad_to_jaxpr", signature = (target, example_args=None))]
+fn py_grad_to_jaxpr(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    example_args: Option<Vec<PyValue>>,
+) -> PyResult<PyJaxpr> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, example_args.as_deref())?;
+    let lowered = fj_api::grad_to_jaxpr(&jaxpr).map_err(runtime_error)?;
+    Ok(PyJaxpr { inner: lowered })
+}
+
+#[pyfunction(name = "hvp_to_jaxpr", signature = (target, example_args=None))]
+fn py_hvp_to_jaxpr(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    example_args: Option<Vec<PyValue>>,
+) -> PyResult<PyJaxpr> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, example_args.as_deref())?;
+    let lowered = fj_api::hvp_to_jaxpr(&jaxpr).map_err(runtime_error)?;
+    Ok(PyJaxpr { inner: lowered })
+}
+
+#[pyfunction(name = "hessian_to_jaxpr", signature = (target, example_args=None))]
+fn py_hessian_to_jaxpr(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    example_args: Option<Vec<PyValue>>,
+) -> PyResult<PyJaxpr> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, example_args.as_deref())?;
+    let lowered = fj_api::hessian_to_jaxpr(&jaxpr).map_err(runtime_error)?;
+    Ok(PyJaxpr { inner: lowered })
+}
+
+#[pyfunction(name = "optimize_jaxpr", signature = (target, example_args=None))]
+fn py_optimize_jaxpr(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    example_args: Option<Vec<PyValue>>,
+) -> PyResult<PyJaxpr> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, example_args.as_deref())?;
+    Ok(PyJaxpr {
+        inner: fj_api::optimize_jaxpr(&jaxpr),
+    })
 }
 
 #[pyfunction]
@@ -5155,6 +5282,12 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_jacrev, m)?)?;
     m.add_function(wrap_pyfunction!(py_jacfwd, m)?)?;
     m.add_function(wrap_pyfunction!(py_hessian, m)?)?;
+    m.add_function(wrap_pyfunction!(py_hvp, m)?)?;
+    m.add_function(wrap_pyfunction!(py_jvp_to_jaxpr, m)?)?;
+    m.add_function(wrap_pyfunction!(py_grad_to_jaxpr, m)?)?;
+    m.add_function(wrap_pyfunction!(py_hvp_to_jaxpr, m)?)?;
+    m.add_function(wrap_pyfunction!(py_hessian_to_jaxpr, m)?)?;
+    m.add_function(wrap_pyfunction!(py_optimize_jaxpr, m)?)?;
     m.add_function(wrap_pyfunction!(checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(remat, m)?)?;
     Ok(())
@@ -6446,11 +6579,11 @@ mod tests {
             assert_eq!(jit_out.len(), 1);
             assert!((jit_out[0].as_f64().unwrap() - 16.0).abs() < 1e-12);
 
-            let grad_out = py_grad(py, &poly_fn, vec![x3.clone()]).unwrap();
+            let grad_out = py_grad(py, &poly_fn, vec![x3.clone()], None).unwrap();
             assert_eq!(grad_out.len(), 1);
             assert!((grad_out[0].as_f64().unwrap() - 8.0).abs() < 1e-9);
 
-            let (vals, grads) = py_value_and_grad(py, &poly_fn, vec![x3.clone()]).unwrap();
+            let (vals, grads) = py_value_and_grad(py, &poly_fn, vec![x3.clone()], None).unwrap();
             assert!((vals[0].as_f64().unwrap() - 16.0).abs() < 1e-12);
             assert!((grads[0].as_f64().unwrap() - 8.0).abs() < 1e-9);
 
@@ -6467,6 +6600,84 @@ mod tests {
             assert!(
                 bad_trace.is_err(),
                 "invalid reshape inside Python callable must raise ValueError"
+            );
+        });
+    }
+
+    #[test]
+    fn wave13_python_symbolic_ad_egraph_argnums_and_pmap_collectives_work() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                pyo3::ffi::c_str!(
+                    "def cubic(x):\n    return (x * x * x) + (2.0 * x)\n\ndef weighted_sum(x, y):\n    return (3.0 * x) + (5.0 * y)\n\ndef unopt(x):\n    return (x + 0.0) * 1.0\n\ndef spmd_psum(x):\n    return x.psum()\n"
+                ),
+                None,
+                Some(&locals),
+            )
+            .unwrap();
+            let cubic_fn = locals.get_item("cubic").unwrap().unwrap();
+            let weighted_fn = locals.get_item("weighted_sum").unwrap().unwrap();
+            let unopt_fn = locals.get_item("unopt").unwrap().unwrap();
+            let spmd_fn = locals.get_item("spmd_psum").unwrap().unwrap();
+
+            let x3 = PyValue::scalar_f64(3.0);
+            let v25 = PyValue::scalar_f64(2.5);
+
+            // 1. Symbolic AD lowerings + HVP
+            let hvp_out = py_hvp(py, &cubic_fn, vec![x3.clone()], vec![v25.clone()]).unwrap();
+            assert_eq!(hvp_out.len(), 1);
+            assert!((hvp_out[0].as_f64().unwrap() - 45.0).abs() < 1e-9);
+
+            let jvp_ir = py_jvp_to_jaxpr(py, &cubic_fn, Some(vec![x3.clone()])).unwrap();
+            assert_eq!(jvp_ir.num_inputs(), 2);
+            assert_eq!(jvp_ir.num_outputs(), 2);
+
+            let grad_ir = py_grad_to_jaxpr(py, &cubic_fn, Some(vec![x3.clone()])).unwrap();
+            let grad_ir_out = jit(&grad_ir, vec![x3.clone()]).unwrap();
+            // f'(3) = 3*9 + 2 = 29
+            assert!((grad_ir_out[0].as_f64().unwrap() - 29.0).abs() < 1e-9);
+
+            let hvp_ir = py_hvp_to_jaxpr(py, &cubic_fn, Some(vec![x3.clone()])).unwrap();
+            let hvp_ir_out = jit(&hvp_ir, vec![x3.clone(), v25]).unwrap();
+            assert!((hvp_ir_out[0].as_f64().unwrap() - 45.0).abs() < 1e-9);
+
+            let hess_ir = py_hessian_to_jaxpr(py, &cubic_fn, Some(vec![x3.clone()])).unwrap();
+            let hess_ir_out = jit(&hess_ir, vec![x3.clone()]).unwrap();
+            assert!((hess_ir_out[0].as_f64().unwrap() - 18.0).abs() < 1e-9);
+
+            // 2. E-graph optimization from Python
+            let opt_ir = py_optimize_jaxpr(py, &unopt_fn, Some(vec![x3.clone()])).unwrap();
+            let opt_out = jit(&opt_ir, vec![x3]).unwrap();
+            assert!((opt_out[0].as_f64().unwrap() - 3.0).abs() < 1e-12);
+
+            // 3. Multi-argument grad / value_and_grad with argnums=[0, 1]
+            let a = PyValue::scalar_f64(2.0);
+            let b = PyValue::scalar_f64(4.0);
+            let grads_both = py_grad(
+                py,
+                &weighted_fn,
+                vec![a.clone(), b.clone()],
+                Some(vec![0, 1]),
+            )
+            .unwrap();
+            assert_eq!(grads_both.len(), 2);
+            assert!((grads_both[0].as_f64().unwrap() - 3.0).abs() < 1e-9);
+            assert!((grads_both[1].as_f64().unwrap() - 5.0).abs() < 1e-9);
+
+            let (vg_vals, vg_grads) =
+                py_value_and_grad(py, &weighted_fn, vec![a, b], Some(vec![1])).unwrap();
+            assert!((vg_vals[0].as_f64().unwrap() - 26.0).abs() < 1e-9);
+            assert_eq!(vg_grads.len(), 1);
+            assert!((vg_grads[0].as_f64().unwrap() - 5.0).abs() < 1e-9);
+
+            // 4. Multi-device pmap with collective psum on PyTracer
+            let sharded = PyValue::vector_f64(vec![10.0, 20.0, 30.0, 40.0]).unwrap();
+            let pmap_out = py_pmap(py, &spmd_fn, vec![sharded], Some(4)).unwrap();
+            assert_eq!(
+                pmap_out[0].as_f64_list().unwrap(),
+                vec![100.0, 100.0, 100.0, 100.0]
             );
         });
     }

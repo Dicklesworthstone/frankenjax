@@ -916,6 +916,8 @@ dependencies = [
  "criterion 0.8.2",
  "fj-ad",
  "fj-dispatch",
+ "fj-egraph",
+ "fj-ffi",
  "fj-interpreters",
  "fj-ledger",
  "fj-runtime",

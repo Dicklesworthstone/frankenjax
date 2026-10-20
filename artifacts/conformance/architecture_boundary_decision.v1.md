@@ -4,7 +4,7 @@
 - bead: `frankenjax-cstq.12`
 - status: `pass`
 - crates: `17`
-- normal edges: `55`
+- normal edges: `57`
 
 | Boundary | Decision | Owners | User outcome |
 |---|---|---|---|

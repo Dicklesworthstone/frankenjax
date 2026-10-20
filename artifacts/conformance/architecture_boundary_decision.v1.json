@@ -32,6 +32,8 @@
         "fj-ad",
         "fj-core",
         "fj-dispatch",
+        "fj-egraph",
+        "fj-ffi",
         "fj-interpreters",
         "fj-lax",
         "fj-ledger",
@@ -337,6 +339,14 @@
     {
       "from": "fj-api",
       "to": "fj-dispatch"
+    },
+    {
+      "from": "fj-api",
+      "to": "fj-egraph"
+    },
+    {
+      "from": "fj-api",
+      "to": "fj-ffi"
     },
     {
       "from": "fj-api",

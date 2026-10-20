@@ -34,6 +34,7 @@ pub struct JitWrapped {
     static_argnums: Vec<usize>,
     precision_policy: Option<PrecisionPolicy>,
     compile_options: BTreeMap<String, String>,
+    ffi_registry: FfiRegistrySlot,
     /// Lazily-computed, args-independent dispatch metadata shared across
     /// repeated `call`s. Excluded from equality/Debug so cached proof/key state
     /// does not change the wrapper's observable identity.
@@ -291,6 +292,16 @@ pub struct PmapWrapped {
     last_evidence: LastEvidenceCache,
 }
 
+#[derive(Clone, Default, Debug)]
+struct FfiRegistrySlot(Option<fj_ffi::FfiRegistry>);
+
+impl PartialEq for FfiRegistrySlot {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_ref().map(fj_ffi::FfiRegistry::registered_names)
+            == other.0.as_ref().map(fj_ffi::FfiRegistry::registered_names)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComposedTransform {
     jaxpr: Jaxpr,
@@ -299,6 +310,7 @@ pub struct ComposedTransform {
     mode: CompatibilityMode,
     compile_options: BTreeMap<String, String>,
     custom_vjp_rule_key: Option<String>,
+    ffi_registry: FfiRegistrySlot,
     last_evidence: LastEvidenceCache,
 }
 
@@ -311,6 +323,7 @@ pub fn jit(jaxpr: Jaxpr) -> JitWrapped {
         static_argnums: Vec::new(),
         precision_policy: None,
         compile_options: BTreeMap::new(),
+        ffi_registry: FfiRegistrySlot::default(),
         meta_cache: DispatchMetaCache::default(),
         compiled_cache: CompiledEvalCache::default(),
         last_evidence: LastEvidenceCache::default(),
@@ -1129,6 +1142,7 @@ pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
         mode: CompatibilityMode::Strict,
         compile_options: BTreeMap::new(),
         custom_vjp_rule_key: None,
+        ffi_registry: FfiRegistrySlot::default(),
         last_evidence: LastEvidenceCache::default(),
     }
 }
@@ -1148,6 +1162,11 @@ impl JitWrapped {
         if let Some(policy) = self.precision_policy {
             opts.insert("precision_policy".to_owned(), policy.as_str().to_owned());
         }
+        if let Some(reg) = &self.ffi_registry.0 {
+            let mut targets = reg.registered_names();
+            targets.sort();
+            opts.insert("ffi_registered_targets".to_owned(), targets.join(","));
+        }
         opts
     }
 
@@ -1158,6 +1177,7 @@ impl JitWrapped {
         if self.backend.as_ref() != DEFAULT_BACKEND
             || !self.static_argnums.is_empty()
             || !self.compile_options.is_empty()
+            || self.ffi_registry.0.is_some()
             || fj_dispatch::jaxpr_has_parallel_heavy_wave(&self.jaxpr)
         {
             return Ok(None);
@@ -1315,6 +1335,16 @@ impl JitWrapped {
         self.precision_policy
     }
 
+    /// Attach a scoped [`fj_ffi::FfiRegistry`] for `Primitive::CustomCall` evaluation during JIT dispatch.
+    #[must_use]
+    pub fn with_ffi_registry(mut self, registry: fj_ffi::FfiRegistry) -> Self {
+        self.ffi_registry = FfiRegistrySlot(Some(registry));
+        self.meta_cache = DispatchMetaCache::default();
+        self.compiled_cache = CompiledEvalCache::default();
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
     /// Return the number of warm fast-path hits recorded on this `JitWrapped` instance.
     #[must_use]
     pub fn warm_hit_count(&self) -> u64 {
@@ -1351,7 +1381,7 @@ impl JitWrapped {
         } else {
             None
         };
-        let response = dispatch_ref(DispatchRequestRef {
+        let req = DispatchRequestRef {
             mode: self.mode,
             root_jaxpr: &self.jaxpr,
             transform_stack: &transforms,
@@ -1362,7 +1392,12 @@ impl JitWrapped {
             custom_hook: None,
             unknown_incompatible_features: &[],
             prepared,
-        })?;
+        };
+        let response = if let Some(reg) = &self.ffi_registry.0 {
+            fj_interpreters::with_ffi_registry(reg, || dispatch_ref(req))?
+        } else {
+            dispatch_ref(req)?
+        };
         self.last_evidence.store(
             response.evidence_ledger.clone(),
             response.composition_proof.clone(),
@@ -1374,6 +1409,18 @@ impl JitWrapped {
     /// complete [`DispatchResponse`] including `evidence_ledger` and `composition_proof`.
     pub fn call_with_evidence(&self, args: Vec<Value>) -> Result<DispatchResponse, ApiError> {
         self.call_with_dispatch(args)
+    }
+
+    /// Execute with an explicit [`fj_ffi::FfiRegistry`] installed for `Primitive::CustomCall` equations.
+    pub fn call_with_ffi(
+        &self,
+        args: Vec<Value>,
+        registry: &fj_ffi::FfiRegistry,
+    ) -> Result<Vec<Value>, ApiError> {
+        self.clone()
+            .with_ffi_registry(registry.clone())
+            .call_with_dispatch(args)
+            .map(|r| r.outputs)
     }
 
     /// Return the [`EvidenceLedger`] from the most recent invocation of this wrapper.
@@ -1430,6 +1477,7 @@ impl JitWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: None,
+            ffi_registry: self.ffi_registry,
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1445,6 +1493,7 @@ impl JitWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: None,
+            ffi_registry: self.ffi_registry,
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1657,6 +1706,7 @@ impl GradWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: self.custom_vjp_rule_key,
+            ffi_registry: FfiRegistrySlot::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1673,6 +1723,7 @@ impl GradWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: self.custom_vjp_rule_key,
+            ffi_registry: FfiRegistrySlot::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1689,6 +1740,7 @@ impl GradWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: self.custom_vjp_rule_key,
+            ffi_registry: FfiRegistrySlot::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1844,6 +1896,7 @@ impl VmapWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: None,
+            ffi_registry: FfiRegistrySlot::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1859,6 +1912,7 @@ impl VmapWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: None,
+            ffi_registry: FfiRegistrySlot::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1874,6 +1928,7 @@ impl VmapWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: None,
+            ffi_registry: FfiRegistrySlot::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1890,6 +1945,15 @@ impl ComposedTransform {
     #[must_use]
     pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
         self.mode = mode;
+        self.last_evidence = LastEvidenceCache::default();
+        self
+    }
+
+    /// Attach a thread-safe [`fj_ffi::FfiRegistry`] for executing `Primitive::CustomCall`
+    /// equations within this composed transform stack.
+    #[must_use]
+    pub fn with_ffi_registry(mut self, registry: fj_ffi::FfiRegistry) -> Self {
+        self.ffi_registry = FfiRegistrySlot(Some(registry));
         self.last_evidence = LastEvidenceCache::default();
         self
     }
@@ -1992,19 +2056,30 @@ impl ComposedTransform {
         if let Some(rule_key) = &self.custom_vjp_rule_key {
             compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
         }
+        if let Some(ref registry) = self.ffi_registry.0 {
+            let mut names = registry.registered_names();
+            names.sort();
+            compile_options.insert("ffi_registered_targets".to_owned(), names.join(","));
+        }
         let evidence = transform_evidence(&self.transforms);
-        let response = dispatch_ref(DispatchRequestRef {
-            mode: self.mode,
-            root_jaxpr: &self.jaxpr,
-            transform_stack: &self.transforms,
-            transform_evidence: &evidence,
-            args,
-            backend: self.backend.as_ref(),
-            compile_options,
-            custom_hook: None,
-            unknown_incompatible_features: &[],
-            prepared: None,
-        })?;
+        let run_dispatch = || {
+            dispatch_ref(DispatchRequestRef {
+                mode: self.mode,
+                root_jaxpr: &self.jaxpr,
+                transform_stack: &self.transforms,
+                transform_evidence: &evidence,
+                args,
+                backend: self.backend.as_ref(),
+                compile_options,
+                custom_hook: None,
+                unknown_incompatible_features: &[],
+                prepared: None,
+            })
+        };
+        let response = match self.ffi_registry.0 {
+            Some(ref registry) => fj_interpreters::with_ffi_registry(registry, run_dispatch)?,
+            None => run_dispatch()?,
+        };
         self.last_evidence.store(
             response.evidence_ledger.clone(),
             response.composition_proof.clone(),
@@ -2026,6 +2101,17 @@ impl ComposedTransform {
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
         Ok(self.call_with_evidence(args)?.outputs)
+    }
+
+    /// Execute with an explicit [`fj_ffi::FfiRegistry`] bound for this invocation.
+    pub fn call_with_ffi(
+        &self,
+        args: Vec<Value>,
+        registry: &fj_ffi::FfiRegistry,
+    ) -> Result<Vec<Value>, ApiError> {
+        let mut with_ffi = self.clone();
+        with_ffi.ffi_registry = FfiRegistrySlot(Some(registry.clone()));
+        with_ffi.call(args)
     }
 }
 
@@ -2295,6 +2381,7 @@ impl CustomVjpWrapped {
             mode: self.mode,
             compile_options: BTreeMap::new(),
             custom_vjp_rule_key: Some(self.rule_key.clone()),
+            ffi_registry: FfiRegistrySlot::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -2344,11 +2431,40 @@ impl JacobianWrapped {
             fj_ad::jacobian_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
         }
     }
+
+    /// Lower the underlying [`Jaxpr`] to its symbolic forward-mode JVP [`Jaxpr`].
+    pub fn to_jvp_jaxpr(&self) -> Result<Jaxpr, ApiError> {
+        fj_ad::jvp_to_jaxpr(&self.jaxpr).map_err(ApiError::from)
+    }
 }
 
 impl HessianWrapped {
     pub fn call(&self, args: Vec<Value>) -> Result<Value, ApiError> {
         fj_ad::hessian_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
+    }
+
+    /// Compute the Hessian matrix using the symbolic `jvp(grad(f))` IR lowering
+    /// (`fj_ad::symbolic_hessian_jaxpr`).
+    pub fn call_symbolic(&self, args: Vec<Value>) -> Result<Value, ApiError> {
+        fj_ad::symbolic_hessian_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
+    }
+
+    /// Compute the Hessian-vector product `H(f)(primals) @ tangents` without materializing
+    /// the full `n x n` Hessian matrix.
+    pub fn hvp(&self, primals: &[Value], tangents: &[Value]) -> Result<Vec<Value>, ApiError> {
+        fj_ad::hvp(&self.jaxpr, primals, tangents).map_err(ApiError::from)
+    }
+
+    /// Lower the scalar-output [`Jaxpr`] to a standalone Hessian [`Jaxpr`] (for scalar input)
+    /// via `grad_to_jaxpr` composed with `grad_to_jaxpr`.
+    pub fn to_jaxpr(&self) -> Result<Jaxpr, ApiError> {
+        fj_ad::hessian_to_jaxpr(&self.jaxpr).map_err(ApiError::from)
+    }
+
+    /// Lower the scalar-output [`Jaxpr`] to a standalone symbolic Hessian-vector product
+    /// (`HVP`) [`Jaxpr`] via `jvp_to_jaxpr(grad_to_jaxpr(f))`.
+    pub fn to_hvp_jaxpr(&self) -> Result<Jaxpr, ApiError> {
+        fj_ad::hvp_to_jaxpr(&self.jaxpr).map_err(ApiError::from)
     }
 }
 
@@ -2596,6 +2712,7 @@ impl PmapWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: None,
+            ffi_registry: FfiRegistrySlot::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -2611,9 +2728,15 @@ impl PmapWrapped {
             mode: self.mode,
             compile_options,
             custom_vjp_rule_key: None,
+            ffi_registry: FfiRegistrySlot::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
+}
+
+/// Compute the Hessian-vector product `H(f)(primals) @ tangents` for a scalar-output [`Jaxpr`].
+pub fn hvp(jaxpr: &Jaxpr, primals: &[Value], tangents: &[Value]) -> Result<Vec<Value>, ApiError> {
+    fj_ad::hvp(jaxpr, primals, tangents).map_err(ApiError::from)
 }
 
 /// Trace a fallible Rust closure against the shapes and dtypes of `args` and return
@@ -2775,6 +2898,26 @@ where
 {
     let jaxpr = trace_jaxpr_for_values(f, &args)?;
     hessian(jaxpr).call(args)
+}
+
+/// Trace a scalar-output Rust closure against `primals` and compute its Hessian-vector
+/// product `H(f)(primals) @ tangents`.
+pub fn hvp_fn<F>(f: F, primals: &[Value], tangents: &[Value]) -> Result<Vec<Value>, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let jaxpr = trace_jaxpr_for_values(f, primals)?;
+    hvp(&jaxpr, primals, tangents)
+}
+
+/// Trace a Rust closure against `in_avals` and return the e-graph equality-saturation
+/// optimized [`Jaxpr`].
+pub fn optimize_fn<F>(f: F, in_avals: Vec<ShapedArray>) -> Result<Jaxpr, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let closed = fj_trace::make_jaxpr_fallible(f, in_avals)?;
+    Ok(fj_egraph::optimize_jaxpr(&closed.into_executable_jaxpr()))
 }
 
 #[cfg(test)]

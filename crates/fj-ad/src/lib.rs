@@ -13437,6 +13437,7 @@ fn is_input_differentiable(primitive: Primitive, input_idx: usize) -> bool {
         Primitive::DynamicUpdateSlice => input_idx <= 1,
         Primitive::Scatter => input_idx == 0 || input_idx == 2,
         Primitive::Heaviside => input_idx == 1,
+        Primitive::CopySign => input_idx == 0,
         _ => true,
     }
 }
@@ -13535,33 +13536,39 @@ fn emit_symbolic_jvp_equation(
     let p = |i: usize| p_in[i].clone();
     let t = |i: usize| t_in[i].clone();
 
-    if !eqn.sub_jaxprs.is_empty() && eqn.primitive == Primitive::Cond && eqn.sub_jaxprs.len() == 2 {
-        let jvp_true = build_jvp_jaxpr(&eqn.sub_jaxprs[0])?;
-        let jvp_false = build_jvp_jaxpr(&eqn.sub_jaxprs[1])?;
-        let mut cond_inputs = SmallVec::<[Atom; 4]>::with_capacity(1 + 2 * (p_in.len() - 1));
-        cond_inputs.push(p(0));
+    if !eqn.sub_jaxprs.is_empty()
+        && ((eqn.primitive == Primitive::Cond && eqn.sub_jaxprs.len() == 2)
+            || eqn.primitive == Primitive::Switch)
+    {
+        let jvp_branches: Vec<Jaxpr> = eqn
+            .sub_jaxprs
+            .iter()
+            .map(build_jvp_jaxpr)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut branch_inputs = SmallVec::<[Atom; 4]>::with_capacity(1 + 2 * (p_in.len() - 1));
+        branch_inputs.push(p(0));
         for a in &p_in[1..] {
-            cond_inputs.push(a.clone());
+            branch_inputs.push(a.clone());
         }
         for da in &t_in[1..] {
-            cond_inputs.push(da.clone());
+            branch_inputs.push(da.clone());
         }
-        let mut cond_outputs = SmallVec::<[VarId; 2]>::with_capacity(2 * p_out.len());
+        let mut branch_outputs = SmallVec::<[VarId; 2]>::with_capacity(2 * p_out.len());
         let mut tangent_vars = Vec::with_capacity(p_out.len());
         for _ in 0..p_out.len() {
-            cond_outputs.push(builder.fresh_var());
+            branch_outputs.push(builder.fresh_var());
         }
         for _ in 0..p_out.len() {
             let tv = builder.fresh_var();
-            cond_outputs.push(tv);
+            branch_outputs.push(tv);
             tangent_vars.push(tv);
         }
         builder.equations.push(fj_core::Equation {
-            primitive: Primitive::Cond,
-            inputs: cond_inputs,
-            outputs: cond_outputs,
+            primitive: eqn.primitive,
+            inputs: branch_inputs,
+            outputs: branch_outputs,
             params: params.clone(),
-            sub_jaxprs: vec![jvp_true, jvp_false],
+            sub_jaxprs: jvp_branches,
             effects: eqn.effects.clone(),
         });
         return Ok(tangent_vars);
@@ -13864,6 +13871,89 @@ fn emit_symbolic_jvp_equation(
         | Primitive::Rfft
         | Primitive::Irfft => builder.emit_unary_params(eqn.primitive, t(0), params.clone()),
         Primitive::Complex => builder.emit_binary(Primitive::Complex, t(0), t(1)),
+        Primitive::Deg2Rad => builder.emit_binary(
+            Primitive::Mul,
+            t(0),
+            Atom::Lit(Literal::from_f64(std::f64::consts::PI / 180.0)),
+        ),
+        Primitive::Rad2Deg => builder.emit_binary(
+            Primitive::Mul,
+            t(0),
+            Atom::Lit(Literal::from_f64(180.0 / std::f64::consts::PI)),
+        ),
+        Primitive::Lgamma => {
+            let dig = builder.emit_unary(Primitive::Digamma, p(0));
+            builder.emit_binary(Primitive::Mul, Atom::Var(dig), t(0))
+        }
+        Primitive::LogAddExp => {
+            let x_minus_y = builder.emit_binary(Primitive::Sub, p(0), p(1));
+            let y_minus_x = builder.emit_binary(Primitive::Sub, p(1), p(0));
+            let sig_xy = builder.emit_unary(Primitive::Logistic, Atom::Var(x_minus_y));
+            let sig_yx = builder.emit_unary(Primitive::Logistic, Atom::Var(y_minus_x));
+            let dx = builder.emit_binary(Primitive::Mul, Atom::Var(sig_xy), t(0));
+            let dy = builder.emit_binary(Primitive::Mul, Atom::Var(sig_yx), t(1));
+            builder.emit_binary(Primitive::Add, Atom::Var(dx), Atom::Var(dy))
+        }
+        Primitive::LogAddExp2 => {
+            let x_norm = builder.emit_binary(Primitive::Sub, p(0), Atom::Var(p_out[0]));
+            let y_norm = builder.emit_binary(Primitive::Sub, p(1), Atom::Var(p_out[0]));
+            let wx = builder.emit_unary(Primitive::Exp2, Atom::Var(x_norm));
+            let wy = builder.emit_unary(Primitive::Exp2, Atom::Var(y_norm));
+            let dx = builder.emit_binary(Primitive::Mul, Atom::Var(wx), t(0));
+            let dy = builder.emit_binary(Primitive::Mul, Atom::Var(wy), t(1));
+            builder.emit_binary(Primitive::Add, Atom::Var(dx), Atom::Var(dy))
+        }
+        Primitive::CopySign => {
+            let sx = builder.emit_unary(Primitive::Sign, p(0));
+            let sy = builder.emit_unary(Primitive::Sign, p(1));
+            let sprod = builder.emit_binary(Primitive::Mul, Atom::Var(sx), Atom::Var(sy));
+            builder.emit_binary(Primitive::Mul, Atom::Var(sprod), t(0))
+        }
+        Primitive::XLogY => {
+            let log_y = builder.emit_unary(Primitive::Log, p(1));
+            let dx = builder.emit_binary(Primitive::Mul, t(0), Atom::Var(log_y));
+            let x_over_y = builder.emit_binary(Primitive::Div, p(0), p(1));
+            let dy = builder.emit_binary(Primitive::Mul, Atom::Var(x_over_y), t(1));
+            builder.emit_binary(Primitive::Add, Atom::Var(dx), Atom::Var(dy))
+        }
+        Primitive::XLog1PY => {
+            let log1p_y = builder.emit_unary(Primitive::Log1p, p(1));
+            let dx = builder.emit_binary(Primitive::Mul, t(0), Atom::Var(log1p_y));
+            let one_plus_y =
+                builder.emit_binary(Primitive::Add, Atom::Lit(Literal::from_f64(1.0)), p(1));
+            let x_over_1py = builder.emit_binary(Primitive::Div, p(0), Atom::Var(one_plus_y));
+            let dy = builder.emit_binary(Primitive::Mul, Atom::Var(x_over_1py), t(1));
+            builder.emit_binary(Primitive::Add, Atom::Var(dx), Atom::Var(dy))
+        }
+        Primitive::Heaviside => {
+            let zero = builder.emit_zeros_like(p(0));
+            let x_is_zero = builder.emit_binary(Primitive::Eq, p(0), Atom::Var(zero));
+            builder.emit_ternary(
+                Primitive::Select,
+                Atom::Var(x_is_zero),
+                t(1),
+                Atom::Var(zero),
+            )
+        }
+        Primitive::IntegerPow => {
+            let n: i32 = params
+                .get("exponent")
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(1);
+            if n == 0 {
+                builder.emit_zeros_like(Atom::Var(p_out[0]))
+            } else {
+                let mut nm1_params = params.clone();
+                nm1_params.insert("exponent".to_owned(), (n - 1).to_string());
+                let x_nm1 = builder.emit_unary_params(Primitive::IntegerPow, p(0), nm1_params);
+                let n_x_nm1 = builder.emit_binary(
+                    Primitive::Mul,
+                    Atom::Lit(Literal::from_f64(f64::from(n))),
+                    Atom::Var(x_nm1),
+                );
+                builder.emit_binary(Primitive::Mul, Atom::Var(n_x_nm1), t(0))
+            }
+        }
         _ => return Err(AdError::UnsupportedPrimitive(eqn.primitive)),
     };
 
@@ -13955,34 +14045,40 @@ fn emit_symbolic_vjp_equation(
     let p = |i: usize| p_in[i].clone();
     let g = || Atom::Var(g_var);
 
-    if !eqn.sub_jaxprs.is_empty() && eqn.primitive == Primitive::Cond && eqn.sub_jaxprs.len() == 2 {
+    if !eqn.sub_jaxprs.is_empty()
+        && ((eqn.primitive == Primitive::Cond && eqn.sub_jaxprs.len() == 2)
+            || eqn.primitive == Primitive::Switch)
+    {
         let active_branch_argnums: Vec<usize> = (1..p_in.len())
             .filter_map(|i| need_input[i].then_some(i - 1))
             .collect();
         if active_branch_argnums.is_empty() {
             return Ok(vec![None; p_in.len()]);
         }
-        let grad_true = build_grad_jaxpr(&eqn.sub_jaxprs[0], &active_branch_argnums)?;
-        let grad_false = build_grad_jaxpr(&eqn.sub_jaxprs[1], &active_branch_argnums)?;
-        let mut cond_inputs = SmallVec::<[Atom; 4]>::with_capacity(p_in.len());
+        let grad_branches: Vec<Jaxpr> = eqn
+            .sub_jaxprs
+            .iter()
+            .map(|sub| build_grad_jaxpr(sub, &active_branch_argnums))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut branch_inputs = SmallVec::<[Atom; 4]>::with_capacity(p_in.len());
         for a in p_in {
-            cond_inputs.push(a.clone());
+            branch_inputs.push(a.clone());
         }
-        let mut cond_outputs = SmallVec::<[VarId; 2]>::with_capacity(active_branch_argnums.len());
+        let mut branch_outputs = SmallVec::<[VarId; 2]>::with_capacity(active_branch_argnums.len());
         for _ in 0..active_branch_argnums.len() {
-            cond_outputs.push(builder.fresh_var());
+            branch_outputs.push(builder.fresh_var());
         }
         builder.equations.push(fj_core::Equation {
-            primitive: Primitive::Cond,
-            inputs: cond_inputs,
-            outputs: cond_outputs.clone(),
+            primitive: eqn.primitive,
+            inputs: branch_inputs,
+            outputs: branch_outputs.clone(),
             params: params.clone(),
-            sub_jaxprs: vec![grad_true, grad_false],
+            sub_jaxprs: grad_branches,
             effects: eqn.effects.clone(),
         });
         let mut result = vec![None; p_in.len()];
         for (k, &branch_arg) in active_branch_argnums.iter().enumerate() {
-            let scaled = builder.emit_binary(Primitive::Mul, g(), Atom::Var(cond_outputs[k]));
+            let scaled = builder.emit_binary(Primitive::Mul, g(), Atom::Var(branch_outputs[k]));
             result[1 + branch_arg] = Some(scaled);
         }
         return Ok(result);
@@ -14440,6 +14536,113 @@ fn emit_symbolic_vjp_equation(
             let zero = builder.emit_zeros_like(g());
             builder.emit_binary(Primitive::Complex, Atom::Var(zero), g())
         })]),
+        Primitive::Deg2Rad => Ok(vec![need_input[0].then(|| {
+            builder.emit_binary(
+                Primitive::Mul,
+                g(),
+                Atom::Lit(Literal::from_f64(std::f64::consts::PI / 180.0)),
+            )
+        })]),
+        Primitive::Rad2Deg => Ok(vec![need_input[0].then(|| {
+            builder.emit_binary(
+                Primitive::Mul,
+                g(),
+                Atom::Lit(Literal::from_f64(180.0 / std::f64::consts::PI)),
+            )
+        })]),
+        Primitive::Lgamma => Ok(vec![need_input[0].then(|| {
+            let dig = builder.emit_unary(Primitive::Digamma, p(0));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(dig))
+        })]),
+        Primitive::LogAddExp => {
+            let g0 = need_input[0].then(|| {
+                let x_minus_y = builder.emit_binary(Primitive::Sub, p(0), p(1));
+                let sig_xy = builder.emit_unary(Primitive::Logistic, Atom::Var(x_minus_y));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(sig_xy))
+            });
+            let g1 = need_input[1].then(|| {
+                let y_minus_x = builder.emit_binary(Primitive::Sub, p(1), p(0));
+                let sig_yx = builder.emit_unary(Primitive::Logistic, Atom::Var(y_minus_x));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(sig_yx))
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::LogAddExp2 => {
+            let g0 = need_input[0].then(|| {
+                let x_norm = builder.emit_binary(Primitive::Sub, p(0), Atom::Var(p_out[0]));
+                let wx = builder.emit_unary(Primitive::Exp2, Atom::Var(x_norm));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(wx))
+            });
+            let g1 = need_input[1].then(|| {
+                let y_norm = builder.emit_binary(Primitive::Sub, p(1), Atom::Var(p_out[0]));
+                let wy = builder.emit_unary(Primitive::Exp2, Atom::Var(y_norm));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(wy))
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::CopySign => {
+            let g0 = need_input[0].then(|| {
+                let sx = builder.emit_unary(Primitive::Sign, p(0));
+                let sy = builder.emit_unary(Primitive::Sign, p(1));
+                let sprod = builder.emit_binary(Primitive::Mul, Atom::Var(sx), Atom::Var(sy));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(sprod))
+            });
+            Ok(vec![g0, None])
+        }
+        Primitive::XLogY => {
+            let g0 = need_input[0].then(|| {
+                let log_y = builder.emit_unary(Primitive::Log, p(1));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(log_y))
+            });
+            let g1 = need_input[1].then(|| {
+                let x_over_y = builder.emit_binary(Primitive::Div, p(0), p(1));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(x_over_y))
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::XLog1PY => {
+            let g0 = need_input[0].then(|| {
+                let log1p_y = builder.emit_unary(Primitive::Log1p, p(1));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(log1p_y))
+            });
+            let g1 = need_input[1].then(|| {
+                let one_plus_y =
+                    builder.emit_binary(Primitive::Add, Atom::Lit(Literal::from_f64(1.0)), p(1));
+                let x_over_1py = builder.emit_binary(Primitive::Div, p(0), Atom::Var(one_plus_y));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(x_over_1py))
+            });
+            Ok(vec![g0, g1])
+        }
+        Primitive::Heaviside => {
+            let g1 = need_input[1].then(|| {
+                let zero = builder.emit_zeros_like(p(0));
+                let x_is_zero = builder.emit_binary(Primitive::Eq, p(0), Atom::Var(zero));
+                let z_g = builder.emit_zeros_like(g());
+                builder.emit_ternary(Primitive::Select, Atom::Var(x_is_zero), g(), Atom::Var(z_g))
+            });
+            Ok(vec![None, g1])
+        }
+        Primitive::IntegerPow => {
+            let n: i32 = params
+                .get("exponent")
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(1);
+            if n == 0 {
+                Ok(vec![need_input[0].then(|| builder.emit_zeros_like(p(0)))])
+            } else {
+                Ok(vec![need_input[0].then(|| {
+                    let mut nm1_params = params.clone();
+                    nm1_params.insert("exponent".to_owned(), (n - 1).to_string());
+                    let x_nm1 = builder.emit_unary_params(Primitive::IntegerPow, p(0), nm1_params);
+                    let n_x_nm1 = builder.emit_binary(
+                        Primitive::Mul,
+                        Atom::Lit(Literal::from_f64(f64::from(n))),
+                        Atom::Var(x_nm1),
+                    );
+                    builder.emit_binary(Primitive::Mul, g(), Atom::Var(n_x_nm1))
+                })])
+            }
+        }
         _ => Err(AdError::UnsupportedPrimitive(eqn.primitive)),
     }
 }
@@ -14619,6 +14822,233 @@ pub fn jvp_to_jaxpr(jaxpr: &Jaxpr) -> Result<Jaxpr, AdError> {
 pub fn grad_to_jaxpr(jaxpr: &Jaxpr) -> Result<Jaxpr, AdError> {
     let argnums: Vec<usize> = (0..jaxpr.invars.len()).collect();
     build_grad_jaxpr(jaxpr, &argnums)
+}
+
+/// Build a symbolic Hessian-vector product (HVP) `Jaxpr` for `jaxpr` with respect to `argnums`.
+///
+/// If `jaxpr` has `N` `invars` and `K = argnums.len()`, the returned `Jaxpr` has:
+/// - `2N` `invars`: `[primals..., tangents...]`
+/// - `K` `outvars`: `[hvp_0, ..., hvp_{K-1}]` (the directional derivative of `grad(f)` along `tangents`)
+pub fn build_hvp_jaxpr(jaxpr: &Jaxpr, argnums: &[usize]) -> Result<Jaxpr, AdError> {
+    let grad_ir = build_grad_jaxpr(jaxpr, argnums)?;
+    let jvp_of_grad = build_jvp_jaxpr(&grad_ir)?;
+    let k = argnums.len();
+    let hvp_outvars = jvp_of_grad.outvars[k..].to_vec();
+    let hvp_equations = dce_equations(jvp_of_grad.equations.to_vec(), &hvp_outvars);
+    Ok(Jaxpr::new(
+        jvp_of_grad.invars,
+        jvp_of_grad.constvars,
+        hvp_outvars,
+        hvp_equations,
+    ))
+}
+
+/// Transform `jaxpr` into its symbolic Hessian-vector product (HVP) `Jaxpr` with respect to all inputs.
+///
+/// If `jaxpr` has `N` inputs, the returned `Jaxpr` has `2N` inputs (`[primals..., tangents...]`)
+/// and `N` outputs (`[hvp_0, ..., hvp_{N-1}]`).
+pub fn hvp_to_jaxpr(jaxpr: &Jaxpr) -> Result<Jaxpr, AdError> {
+    let argnums: Vec<usize> = (0..jaxpr.invars.len()).collect();
+    build_hvp_jaxpr(jaxpr, &argnums)
+}
+
+fn alpha_rename_jaxpr_body(
+    jaxpr: &Jaxpr,
+    var_map: &mut std::collections::BTreeMap<VarId, VarId>,
+    next_var: &mut u32,
+) -> Vec<fj_core::Equation> {
+    let mut renamed_eqns = Vec::with_capacity(jaxpr.equations.len());
+    for eqn in &jaxpr.equations {
+        let inputs: SmallVec<[Atom; 4]> = eqn
+            .inputs
+            .iter()
+            .map(|atom| match atom {
+                Atom::Var(v) => Atom::Var(var_map.get(v).copied().unwrap_or(*v)),
+                Atom::Lit(lit) => Atom::Lit(*lit),
+            })
+            .collect();
+        let mut outputs = SmallVec::<[VarId; 2]>::with_capacity(eqn.outputs.len());
+        for &out_v in &eqn.outputs {
+            let fresh = VarId(*next_var);
+            *next_var += 1;
+            var_map.insert(out_v, fresh);
+            outputs.push(fresh);
+        }
+        let sub_jaxprs: Vec<Jaxpr> = eqn
+            .sub_jaxprs
+            .iter()
+            .map(|sub| {
+                let mut sub_map = var_map.clone();
+                let mut sub_invars = Vec::with_capacity(sub.invars.len());
+                for &in_v in &sub.invars {
+                    let fresh = VarId(*next_var);
+                    *next_var += 1;
+                    sub_map.insert(in_v, fresh);
+                    sub_invars.push(fresh);
+                }
+                let mut sub_constvars = Vec::with_capacity(sub.constvars.len());
+                for &cv in &sub.constvars {
+                    let mapped = sub_map.get(&cv).copied().unwrap_or(cv);
+                    sub_constvars.push(mapped);
+                }
+                let sub_eqns = alpha_rename_jaxpr_body(sub, &mut sub_map, next_var);
+                let sub_outvars: Vec<VarId> = sub
+                    .outvars
+                    .iter()
+                    .map(|v| sub_map.get(v).copied().unwrap_or(*v))
+                    .collect();
+                Jaxpr::new(sub_invars, sub_constvars, sub_outvars, sub_eqns)
+            })
+            .collect();
+        renamed_eqns.push(fj_core::Equation {
+            primitive: eqn.primitive,
+            inputs,
+            outputs,
+            params: eqn.params.clone(),
+            sub_jaxprs,
+            effects: eqn.effects.clone(),
+        });
+    }
+    renamed_eqns
+}
+
+/// Build a symbolic second-order Hessian `Jaxpr` differentiating scalar-output `jaxpr`
+/// twice with respect to `argnums`.
+///
+/// If `K = argnums.len()`, the returned `Jaxpr` has `jaxpr.invars` as inputs and
+/// `K * K` `outvars` in row-major order `[d^2 f / (dx_{argnums[i]} dx_{argnums[j]})]`.
+pub fn build_hessian_jaxpr(jaxpr: &Jaxpr, argnums: &[usize]) -> Result<Jaxpr, AdError> {
+    let grad_ir = build_grad_jaxpr(jaxpr, argnums)?;
+    let mut next_var = max_var_id_in_jaxpr(&grad_ir) + 1;
+    let mut builder = SymbolicJaxprBuilder::new(next_var);
+    let mut raw_outvars = Vec::with_capacity(argnums.len() * argnums.len());
+
+    for &grad_outvar in &grad_ir.outvars {
+        let row_eqns = dce_equations(grad_ir.equations.to_vec(), &[grad_outvar]);
+        let row_grad_jaxpr = Jaxpr::new(
+            grad_ir.invars.clone(),
+            grad_ir.constvars.clone(),
+            vec![grad_outvar],
+            row_eqns,
+        );
+        let row_hess = build_grad_jaxpr(&row_grad_jaxpr, argnums)?;
+        next_var = next_var.max(max_var_id_in_jaxpr(&row_hess) + 1);
+        let mut var_map: std::collections::BTreeMap<VarId, VarId> =
+            std::collections::BTreeMap::new();
+        for &invar in &jaxpr.invars {
+            var_map.insert(invar, invar);
+        }
+        for &cvar in &jaxpr.constvars {
+            var_map.insert(cvar, cvar);
+        }
+        let renamed_eqns = alpha_rename_jaxpr_body(&row_hess, &mut var_map, &mut next_var);
+        builder.equations.extend(renamed_eqns);
+        for &out_v in &row_hess.outvars {
+            raw_outvars.push(var_map.get(&out_v).copied().unwrap_or(out_v));
+        }
+    }
+    builder.next_var = next_var;
+    let outvars =
+        canonicalize_symbolic_outvars(&mut builder, &jaxpr.invars, &jaxpr.constvars, raw_outvars);
+    let equations = dce_equations(builder.equations, &outvars);
+    Ok(Jaxpr::new(
+        jaxpr.invars.clone(),
+        jaxpr.constvars.clone(),
+        outvars,
+        equations,
+    ))
+}
+
+/// Transform scalar-output `jaxpr` into its symbolic Hessian `Jaxpr` with respect to all inputs.
+///
+/// If `jaxpr` has `N` scalar inputs, the returned `Jaxpr` has `N * N` outputs in row-major order
+/// `[d^2 f / (dx_i dx_j)]`.
+pub fn hessian_to_jaxpr(jaxpr: &Jaxpr) -> Result<Jaxpr, AdError> {
+    let argnums: Vec<usize> = (0..jaxpr.invars.len()).collect();
+    build_hessian_jaxpr(jaxpr, &argnums)
+}
+
+/// Compute the Hessian-vector product `H(f)(primals) · tangents` of a scalar-output `Jaxpr`.
+///
+/// Uses exact forward-over-reverse AD (`jvp` over `grad_to_jaxpr(jaxpr)`) when symbolic
+/// gradient lowering succeeds, and falls back to directional central differences of `grad_jaxpr`
+/// otherwise.
+pub fn hvp(jaxpr: &Jaxpr, primals: &[Value], tangents: &[Value]) -> Result<Vec<Value>, AdError> {
+    if primals.len() != jaxpr.invars.len() {
+        return Err(AdError::InputArity {
+            expected: jaxpr.invars.len(),
+            actual: primals.len(),
+        });
+    }
+    if tangents.len() != jaxpr.invars.len() {
+        return Err(AdError::InputArity {
+            expected: jaxpr.invars.len(),
+            actual: tangents.len(),
+        });
+    }
+    if lookup_custom_jaxpr_jvp(jaxpr).is_none()
+        && lookup_custom_jaxpr_vjp(jaxpr).is_none()
+        && let Ok(grad_ir) = grad_to_jaxpr(jaxpr)
+        && let Ok(jvp_res) = jvp(&grad_ir, primals, tangents)
+    {
+        return Ok(jvp_res.tangents);
+    }
+
+    // Fallback: central-difference directional derivative of `grad_jaxpr(jaxpr, x ± eps * v)`.
+    let eps = 1e-5_f64;
+    let base_flat = primals
+        .iter()
+        .map(flatten_value_to_f64)
+        .collect::<Result<Vec<_>, _>>()?;
+    let tan_flat = tangents
+        .iter()
+        .map(flatten_value_to_f64)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut plus_flat = Vec::with_capacity(base_flat.len());
+    let mut minus_flat = Vec::with_capacity(base_flat.len());
+    for (p_vec, t_vec) in base_flat.iter().zip(tan_flat.iter()) {
+        if p_vec.len() != t_vec.len() {
+            return Err(AdError::EvalFailed(format!(
+                "hvp primal/tangent element count mismatch: {} vs {}",
+                p_vec.len(),
+                t_vec.len()
+            )));
+        }
+        plus_flat.push(
+            p_vec
+                .iter()
+                .zip(t_vec.iter())
+                .map(|(&p, &t)| p + eps * t)
+                .collect::<Vec<_>>(),
+        );
+        minus_flat.push(
+            p_vec
+                .iter()
+                .zip(t_vec.iter())
+                .map(|(&p, &t)| p - eps * t)
+                .collect::<Vec<_>>(),
+        );
+    }
+    let plus_args = reconstruct_args_from_flat(primals, &plus_flat)?;
+    let minus_args = reconstruct_args_from_flat(primals, &minus_flat)?;
+    let plus_grads = grad_jaxpr(jaxpr, &plus_args)?;
+    let minus_grads = grad_jaxpr(jaxpr, &minus_args)?;
+    let mut out = Vec::with_capacity(primals.len());
+    for ((p_template, pg), mg) in primals
+        .iter()
+        .zip(plus_grads.iter())
+        .zip(minus_grads.iter())
+    {
+        let pg_flat = flatten_value_to_f64(pg)?;
+        let mg_flat = flatten_value_to_f64(mg)?;
+        let diff: Vec<f64> = pg_flat
+            .iter()
+            .zip(mg_flat.iter())
+            .map(|(&a, &b)| (a - b) / (2.0 * eps))
+            .collect();
+        out.push(value_from_flat_like(p_template, &diff)?);
+    }
+    Ok(out)
 }
 
 fn flatten_value_to_f64(value: &Value) -> Result<Vec<f64>, AdError> {
@@ -32119,6 +32549,176 @@ mod tests {
         assert!(
             (jvp_sym_out[1].as_f64_scalar().unwrap() - jvp_rt.tangents[0].as_f64_scalar().unwrap())
                 .abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn test_symbolic_hvp_and_hessian_jaxpr_and_extended_primitives() {
+        use fj_core::Atom;
+        use smallvec::smallvec;
+
+        // f(x, y) = x^2 * y + sin(x)
+        // df/dx = 2*x*y + cos(x), df/dy = x^2
+        // H = [[2*y - sin(x), 2*x], [2*x, 0]]
+        let f_xy = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(6)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(5))],
+                    outputs: smallvec![VarId(6)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+
+        let x = 1.2_f64;
+        let y = -0.8_f64;
+        let vx = 0.5_f64;
+        let vy = -1.5_f64;
+
+        let h00 = 2.0 * y - x.sin();
+        let h01 = 2.0 * x;
+        let h10 = 2.0 * x;
+        let h11 = 0.0_f64;
+
+        // 1. Symbolic HVP Jaxpr
+        let hvp_ir = super::hvp_to_jaxpr(&f_xy).expect("hvp_to_jaxpr");
+        hvp_ir.validate_well_formed().expect("hvp_ir well-formed");
+        let hvp_ir_out = fj_interpreters::eval_jaxpr(
+            &hvp_ir,
+            &[
+                Value::scalar_f64(x),
+                Value::scalar_f64(y),
+                Value::scalar_f64(vx),
+                Value::scalar_f64(vy),
+            ],
+        )
+        .expect("eval hvp_ir");
+        assert_eq!(hvp_ir_out.len(), 2);
+        let expected_hvp_0 = h00 * vx + h01 * vy;
+        let expected_hvp_1 = h10 * vx + h11 * vy;
+        assert!((hvp_ir_out[0].as_f64_scalar().unwrap() - expected_hvp_0).abs() < 1e-12);
+        assert!((hvp_ir_out[1].as_f64_scalar().unwrap() - expected_hvp_1).abs() < 1e-12);
+
+        // 2. Runtime hvp() helper matches symbolic HVP Jaxpr
+        let rt_hvp = super::hvp(
+            &f_xy,
+            &[Value::scalar_f64(x), Value::scalar_f64(y)],
+            &[Value::scalar_f64(vx), Value::scalar_f64(vy)],
+        )
+        .expect("hvp");
+        assert!((rt_hvp[0].as_f64_scalar().unwrap() - expected_hvp_0).abs() < 1e-12);
+        assert!((rt_hvp[1].as_f64_scalar().unwrap() - expected_hvp_1).abs() < 1e-12);
+
+        // 3. Symbolic Hessian Jaxpr (4 outputs in row-major order)
+        let hess_ir = super::hessian_to_jaxpr(&f_xy).expect("hessian_to_jaxpr");
+        hess_ir.validate_well_formed().expect("hess_ir well-formed");
+        let hess_out =
+            fj_interpreters::eval_jaxpr(&hess_ir, &[Value::scalar_f64(x), Value::scalar_f64(y)])
+                .expect("eval hess_ir");
+        assert_eq!(hess_out.len(), 4);
+        assert!((hess_out[0].as_f64_scalar().unwrap() - h00).abs() < 1e-12);
+        assert!((hess_out[1].as_f64_scalar().unwrap() - h01).abs() < 1e-12);
+        assert!((hess_out[2].as_f64_scalar().unwrap() - h10).abs() < 1e-12);
+        assert!((hess_out[3].as_f64_scalar().unwrap() - h11).abs() < 1e-12);
+
+        // 4. Extended symbolic primitives: LogAddExp, XLogY, IntegerPow
+        let mut int_pow_params = BTreeMap::new();
+        int_pow_params.insert("exponent".to_owned(), "3".to_owned());
+        let f_ext = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(6)],
+            vec![
+                Equation {
+                    primitive: Primitive::LogAddExp,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::XLogY,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::IntegerPow,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(5)],
+                    params: int_pow_params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(4))],
+                    outputs: smallvec![VarId(7)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(7)), Atom::Var(VarId(5))],
+                    outputs: smallvec![VarId(6)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let ext_grad_ir = super::grad_to_jaxpr(&f_ext).expect("grad_to_jaxpr on extended ops");
+        ext_grad_ir
+            .validate_well_formed()
+            .expect("ext_grad_ir well-formed");
+        let ext_jvp_ir = super::jvp_to_jaxpr(&f_ext).expect("jvp_to_jaxpr on extended ops");
+        ext_jvp_ir
+            .validate_well_formed()
+            .expect("ext_jvp_ir well-formed");
+        let args = [Value::scalar_f64(1.3), Value::scalar_f64(2.1)];
+        let sym_grads = fj_interpreters::eval_jaxpr(&ext_grad_ir, &args).expect("eval ext_grad_ir");
+        let tape_grads = grad_jaxpr(&f_ext, &args).expect("tape grad f_ext");
+        assert!(
+            (sym_grads[0].as_f64_scalar().unwrap() - tape_grads[0].as_f64_scalar().unwrap()).abs()
+                < 1e-12
+        );
+        assert!(
+            (sym_grads[1].as_f64_scalar().unwrap() - tape_grads[1].as_f64_scalar().unwrap()).abs()
                 < 1e-12
         );
     }

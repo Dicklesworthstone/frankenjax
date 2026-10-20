@@ -1,11 +1,11 @@
 {
   "sidecar_path": "artifacts/durability/architecture_boundary_decision.v1/architecture_boundary_decision.v1.sidecar.json",
   "artifact_path": "artifacts/conformance/architecture_boundary_decision.v1.json",
-  "expected_sha256_hex": "3698257f59bda92323ad450b325b08369a75e794416316cc4d474caa48e90101",
-  "decoded_sha256_hex": "3698257f59bda92323ad450b325b08369a75e794416316cc4d474caa48e90101",
+  "expected_sha256_hex": "67093f3a7f122b659c9cb71e4263315bc64b4a55cafa1c08283c76fc9cd00059",
+  "decoded_sha256_hex": "67093f3a7f122b659c9cb71e4263315bc64b4a55cafa1c08283c76fc9cd00059",
   "decoded_matches_expected": true,
   "total_symbols": 96,
   "source_symbols": 87,
   "repair_symbols": 9,
-  "generated_at_unix_ms": 1792431100529
+  "generated_at_unix_ms": 1792469685614
 }

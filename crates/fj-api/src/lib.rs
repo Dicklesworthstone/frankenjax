@@ -9,19 +9,37 @@ pub mod transforms;
 
 pub use errors::ApiError;
 pub use fj_ad::{
-    AdError, JvpResult, LinearizedTape, VjpTape, build_grad_jaxpr, build_jvp_jaxpr,
-    build_value_and_grad_jaxpr, clear_custom_derivative_rules, grad_jaxpr_with_cotangent,
-    grad_to_jaxpr, jvp_to_jaxpr, linearize_jaxpr, record_vjp_tape, register_custom_jaxpr_jvp,
-    register_custom_jaxpr_vjp, register_custom_jvp, register_custom_vjp,
+    AdError, JvpResult, LinearizedTape, VjpTape, build_grad_jaxpr, build_hessian_jaxpr,
+    build_hvp_jaxpr, build_jvp_jaxpr, build_value_and_grad_jaxpr, clear_custom_derivative_rules,
+    grad_jaxpr_with_cotangent, grad_to_jaxpr, hessian_to_jaxpr, hvp_to_jaxpr, jvp_to_jaxpr,
+    linearize_jaxpr, record_vjp_tape, register_custom_jaxpr_jvp, register_custom_jaxpr_vjp,
+    register_custom_jvp, register_custom_vjp, symbolic_hessian_jaxpr,
 };
 pub use fj_core::{
-    DType, PrecisionPolicy, Shape, TransformCompositionProof, Value, current_precision_policy,
-    set_precision_policy, with_precision_policy,
+    DType, Literal, PrecisionPolicy, Shape, TransformCompositionProof, Value,
+    current_precision_policy, set_precision_policy, with_precision_policy,
 };
 pub use fj_dispatch::{
     DispatchGovernanceSnapshot, DispatchResponse, dispatch_cancellation_token,
     dispatch_governance_stats, observe_dispatch_drift_likelihood_ratio, reset_dispatch_governance,
     set_dispatch_memory_budget,
+};
+pub use fj_egraph::{
+    OptimizationConfig, canonicalize_jaxpr_fast, optimize_jaxpr, optimize_jaxpr_with_config,
+};
+pub use fj_ffi::{
+    FfiBuffer, FfiCall, FfiError, FfiFnPtr, FfiRegistry, FfiTarget, buffer_to_value,
+    global_ffi_registry, register_global_ffi_target, value_to_buffer,
+};
+pub use fj_interpreters::{
+    CompiledJaxpr, InterpreterError, compile_jaxpr_for_repeated_eval, eval_jaxpr,
+    eval_jaxpr_with_consts, eval_jaxpr_with_ffi,
+    partial_eval::{
+        PartialEvalError, PartialEvalResult, PartialVal, partial_eval_jaxpr,
+        partial_eval_jaxpr_with_consts,
+    },
+    staging::{StagedProgram, StagingError, execute_staged, stage_jaxpr, stage_jaxpr_with_consts},
+    with_ffi_registry,
 };
 pub use fj_ledger::EvidenceLedger;
 pub use fj_runtime::{AdmissionRejection, CancellationToken, ExecutionRegime, MemoryBudget};
@@ -32,9 +50,9 @@ pub use transforms::{
 };
 pub use transforms::{
     ShapedArray, checkpoint, compose, custom_jvp, custom_vjp, eval_shape, eval_shape_avals,
-    eval_shape_fn, grad, grad_fn, hessian, hessian_fn, jacobian, jacobian_fn, jit, jit_fn, jvp,
-    jvp_fn, linear_transpose, linearize, linearize_fn, pmap, pmap_fn, trace_jaxpr_for_values,
-    value_and_grad, value_and_grad_fn, vjp, vjp_fn, vmap, vmap_fn,
+    eval_shape_fn, grad, grad_fn, hessian, hessian_fn, hvp, hvp_fn, jacobian, jacobian_fn, jit,
+    jit_fn, jvp, jvp_fn, linear_transpose, linearize, linearize_fn, optimize_fn, pmap, pmap_fn,
+    trace_jaxpr_for_values, value_and_grad, value_and_grad_fn, vjp, vjp_fn, vmap, vmap_fn,
 };
 
 // Re-export make_jaxpr, ClosedJaxpr, and control-flow tracing API from fj-trace
@@ -2839,6 +2857,130 @@ mod tests {
         .expect("eval_shape_fn should succeed");
         assert_eq!(shapes.len(), 1);
         assert_eq!(shapes[0].shape.dims, vec![4]);
+    }
+
+    #[test]
+    fn wave13_symbolic_hvp_hessian_egraph_staging_and_ffi_work() {
+        // 1. Symbolic HVP, hvp_fn, and HessianWrapped methods on f(x) = x^3 + 2*x
+        let cubic_jaxpr = trace_jaxpr_for_values(
+            |xs| {
+                let x = &xs[0];
+                let x3 = x.square()?.mul_op(x)?;
+                let two_x = x.mul_op(&TracerRef::literal(Literal::from_f64(2.0))?)?;
+                Ok(vec![x3.add_op(&two_x)?])
+            },
+            &[Value::scalar_f64(3.0)],
+        )
+        .expect("trace cubic");
+
+        // f''(x) = 6*x => at x=3.0, f''(3)=18; with v=2.5, HVP = 45.0
+        let hvp_wrapped = hessian(cubic_jaxpr.clone());
+        let hvp_out = hvp_wrapped
+            .hvp(&[Value::scalar_f64(3.0)], &[Value::scalar_f64(2.5)])
+            .expect("HessianWrapped::hvp");
+        assert!((hvp_out[0].as_f64_scalar().unwrap() - 45.0).abs() < 1e-10);
+
+        let hvp_fn_out = hvp_fn(
+            |xs| {
+                let x = &xs[0];
+                Ok(vec![x.square()?.mul_op(x)?])
+            },
+            &[Value::scalar_f64(3.0)],
+            &[Value::scalar_f64(2.5)],
+        )
+        .expect("hvp_fn");
+        assert!((hvp_fn_out[0].as_f64_scalar().unwrap() - 45.0).abs() < 1e-10);
+
+        let sym_hess = hvp_wrapped
+            .call_symbolic(vec![Value::scalar_f64(3.0)])
+            .expect("call_symbolic");
+        assert_eq!(
+            sym_hess.as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![18.0]
+        );
+
+        let hess_ir = hvp_wrapped.to_jaxpr().expect("HessianWrapped::to_jaxpr");
+        let hess_ir_out =
+            eval_jaxpr(&hess_ir, &[Value::scalar_f64(3.0)]).expect("eval hessian_to_jaxpr");
+        assert!((hess_ir_out[0].as_f64_scalar().unwrap() - 18.0).abs() < 1e-10);
+
+        let hvp_ir = hvp_wrapped
+            .to_hvp_jaxpr()
+            .expect("HessianWrapped::to_hvp_jaxpr");
+        let hvp_ir_out = eval_jaxpr(&hvp_ir, &[Value::scalar_f64(3.0), Value::scalar_f64(2.5)])
+            .expect("eval hvp_to_jaxpr");
+        assert!((hvp_ir_out[0].as_f64_scalar().unwrap() - 45.0).abs() < 1e-10);
+
+        let jvp_ir = jacobian(cubic_jaxpr.clone())
+            .to_jvp_jaxpr()
+            .expect("JacobianWrapped::to_jvp_jaxpr");
+        let jvp_ir_out = eval_jaxpr(&jvp_ir, &[Value::scalar_f64(3.0), Value::scalar_f64(1.0)])
+            .expect("eval jvp_to_jaxpr");
+        // f(3) = 27 + 6 = 33; f'(3) = 3*9 + 2 = 29
+        assert!((jvp_ir_out[0].as_f64_scalar().unwrap() - 33.0).abs() < 1e-10);
+        assert!((jvp_ir_out[1].as_f64_scalar().unwrap() - 29.0).abs() < 1e-10);
+
+        // 2. E-graph optimization and staging re-exports in fj-api
+        let opt_ir = optimize_fn(
+            |xs| {
+                let zero = TracerRef::literal(Literal::from_f64(0.0))?;
+                let one = TracerRef::literal(Literal::from_f64(1.0))?;
+                Ok(vec![xs[0].add_op(&zero)?.mul_op(&one)?])
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            }],
+        )
+        .expect("optimize_fn");
+        let opt_out = eval_jaxpr(&opt_ir, &[Value::scalar_f64(7.5)]).expect("eval opt_ir");
+        assert_eq!(opt_out, vec![Value::scalar_f64(7.5)]);
+
+        let staged = stage_jaxpr(
+            &cubic_jaxpr,
+            &[false],
+            &[Value::scalar_f64(2.0)], // f(2) = 8 + 4 = 12
+        )
+        .expect("stage_jaxpr");
+        let staged_out = execute_staged(&staged, &[]).expect("execute_staged");
+        assert_eq!(staged_out, vec![Value::scalar_f64(12.0)]);
+
+        // 3. FFI CustomCall through JitWrapped::with_ffi_registry and call_with_ffi
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("call_target_name".to_owned(), "double_plus5".to_owned());
+        params.insert("result_dtypes".to_owned(), "f64".to_owned());
+        params.insert("result_shapes".to_owned(), "".to_owned());
+        let custom_call_jaxpr = fj_core::Jaxpr::new(
+            vec![fj_core::VarId(1)],
+            vec![],
+            vec![fj_core::VarId(2)],
+            vec![fj_core::Equation {
+                primitive: fj_core::Primitive::CustomCall,
+                inputs: smallvec::smallvec![fj_core::Atom::Var(fj_core::VarId(1))],
+                outputs: smallvec::smallvec![fj_core::VarId(2)],
+                params,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        );
+        let registry = FfiRegistry::new();
+        registry
+            .register(
+                "double_plus5",
+                fj_ffi::fj_ffi_builtin_double_plus5_scalar_f64,
+            )
+            .expect("register ffi target");
+
+        let jit_ffi = jit(custom_call_jaxpr.clone()).with_ffi_registry(registry.clone());
+        let ffi_out = jit_ffi
+            .call(vec![Value::scalar_f64(6.0)])
+            .expect("jit with_ffi_registry");
+        assert_eq!(ffi_out, vec![Value::scalar_f64(17.0)]);
+
+        let call_with_ffi_out = jit(custom_call_jaxpr)
+            .call_with_ffi(vec![Value::scalar_f64(10.0)], &registry)
+            .expect("jit call_with_ffi");
+        assert_eq!(call_with_ffi_out, vec![Value::scalar_f64(25.0)]);
     }
 
     mod proptest_tests {

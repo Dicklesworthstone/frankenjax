@@ -12,6 +12,8 @@ doctest = false
 fj-ad = { path = "../fj-ad" }
 fj-core = { package = "frankenjax-core", version = "=0.1.0", path = "../fj-core" }
 fj-dispatch = { path = "../fj-dispatch" }
+fj-egraph = { path = "../fj-egraph" }
+fj-ffi = { path = "../fj-ffi" }
 fj-interpreters = { path = "../fj-interpreters" }
 fj-lax = { package = "frankenjax-lax", version = "=0.1.0", path = "../fj-lax" }
 fj-ledger = { path = "../fj-ledger" }
