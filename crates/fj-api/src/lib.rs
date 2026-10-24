@@ -2427,6 +2427,140 @@ mod tests {
     }
 
     #[test]
+    fn gradients_keep_the_input_dtype_through_grad_jit_and_vmap() {
+        // Regression for frankenjax#2: reverse mode was seeded with an F64 one
+        // and built its internal constants as F64, so under implicit promotion
+        // an F32/BF16/F16 backward pass ran in F64 and returned F64 gradients
+        // while the primal stayed F32. As in JAX, each gradient now has the
+        // dtype of its input, on every grad entry point.
+        fn lit(dtype: DType, x: f64) -> Literal {
+            match dtype {
+                DType::F32 => Literal::from_f32(x as f32),
+                DType::BF16 => Literal::from_bf16_f64(x),
+                DType::F16 => Literal::from_f16_f64(x),
+                _ => Literal::from_f64(x),
+            }
+        }
+        fn tensor(dtype: DType, dims: Vec<u32>, xs: &[f64]) -> Value {
+            let lits = xs.iter().map(|&x| lit(dtype, x)).collect();
+            Value::Tensor(fj_core::TensorValue::new(dtype, Shape { dims }, lits).expect("tensor"))
+        }
+        fn check(what: &str, got: &Value, dtype: DType, want: &[f64]) {
+            assert_eq!(got.dtype(), dtype, "{what}: dtype");
+            let vals = match got {
+                Value::Tensor(t) => t.to_f64_vec().expect("float tensor"),
+                Value::Scalar(lit) => vec![lit.as_f64().expect("float scalar")],
+            };
+            let tol = match dtype {
+                DType::F32 => 1e-6,
+                DType::F16 => 2e-3,
+                _ => 2e-2,
+            };
+            assert_eq!(vals.len(), want.len(), "{what}: length");
+            for (i, (&g, &w)) in vals.iter().zip(want).enumerate() {
+                assert!((g - w).abs() <= tol, "{what}[{i}] = {g}, expected {w}");
+            }
+        }
+
+        for dtype in [DType::F32, DType::BF16, DType::F16] {
+            let aval = ShapedArray {
+                dtype,
+                shape: Shape::vector(3),
+            };
+            // The report's loss: -sum(onehot * log_softmax(z)).
+            let ce = make_jaxpr_fallible(
+                |inp| {
+                    let ls = nn::log_softmax(&inp[0], -1)?;
+                    Ok(vec![inp[1].mul_op(&ls)?.reduce_sum(None)?.neg_op()?])
+                },
+                vec![aval.clone(), aval.clone()],
+            )
+            .expect("trace cross-entropy");
+            let args = vec![
+                tensor(dtype, vec![3], &[2.0, 1.0, 0.0]),
+                tensor(dtype, vec![3], &[1.0, 0.0, 0.0]),
+            ];
+            // softmax([2, 1, 0]) - onehot(0), and -log softmax([2, 1, 0])[0].
+            let want = [
+                -0.3347590442251781,
+                0.24472847105479764,
+                0.09003057317038046,
+            ];
+
+            let (value, grads) = value_and_grad(ce.jaxpr.clone())
+                .call(args.clone())
+                .expect("value_and_grad");
+            check(
+                "value_and_grad value",
+                &value[0],
+                dtype,
+                &[0.4076059644443803],
+            );
+            check("value_and_grad grad", &grads[0], dtype, &want);
+            let grads = grad(ce.jaxpr.clone()).call(args.clone()).expect("grad");
+            check("grad", &grads[0], dtype, &want);
+            for transforms in [
+                vec![Transform::Jit, Transform::Grad],
+                vec![Transform::Grad, Transform::Jit],
+            ] {
+                let grads = compose(ce.jaxpr.clone(), transforms.clone())
+                    .call(args.clone())
+                    .expect("composed grad");
+                check(&format!("{transforms:?}"), &grads[0], dtype, &want);
+            }
+
+            // grad(grad) lowers the inner grad through the symbolic builder.
+            let cube = make_jaxpr_fallible(
+                |inp| Ok(vec![inp[0].mul_op(&inp[0])?.mul_op(&inp[0])?]),
+                vec![ShapedArray {
+                    dtype,
+                    shape: Shape::scalar(),
+                }],
+            )
+            .expect("trace cube");
+            let second = compose(cube.jaxpr, vec![Transform::Grad, Transform::Grad])
+                .call(vec![Value::Scalar(lit(dtype, 2.0))])
+                .expect("grad(grad(cube))");
+            check("grad(grad(cube))", &second[0], dtype, &[12.0]);
+
+            // vmap(grad) lowers through the symbolic gradient builder.
+            let batch = tensor(dtype, vec![2, 3], &[2.0, 1.0, 0.0, 0.0, 2.0, 1.0]);
+            let sum_sq = make_jaxpr_fallible(
+                |inp| Ok(vec![inp[0].mul_op(&inp[0])?.reduce_sum(None)?]),
+                vec![aval.clone()],
+            )
+            .expect("trace sum of squares");
+            let grads = compose(sum_sq.jaxpr, vec![Transform::Vmap, Transform::Grad])
+                .call(vec![batch.clone()])
+                .expect("vmap(grad(sum of squares))");
+            check(
+                "vmap(grad(sum of squares))",
+                &grads[0],
+                dtype,
+                &[4.0, 2.0, 0.0, 0.0, 4.0, 2.0],
+            );
+            let lse = make_jaxpr_fallible(|inp| Ok(vec![nn::logsumexp(&inp[0], -1)?]), vec![aval])
+                .expect("trace logsumexp");
+            let grads = compose(lse.jaxpr, vec![Transform::Vmap, Transform::Grad])
+                .call(vec![batch])
+                .expect("vmap(grad(logsumexp))");
+            check(
+                "vmap(grad(logsumexp))",
+                &grads[0],
+                dtype,
+                &[
+                    0.6652409557748219,
+                    0.24472847105479764,
+                    0.09003057317038046,
+                    0.09003057317038046,
+                    0.6652409557748219,
+                    0.24472847105479764,
+                ],
+            );
+        }
+    }
+
+    #[test]
     fn random_distributions_and_prng_keys_work() {
         let k0 = random::key(42);
         let (k1, k2) = random::split(k0);

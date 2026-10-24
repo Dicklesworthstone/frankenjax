@@ -3404,6 +3404,64 @@ fn unbroadcast_cotangent_to(value: Value, target: &Shape) -> Result<Value, AdErr
     Ok(current)
 }
 
+fn is_real_float_dtype(dtype: DType) -> bool {
+    matches!(dtype, DType::BF16 | DType::F16 | DType::F32 | DType::F64)
+}
+
+fn is_complex_dtype(dtype: DType) -> bool {
+    matches!(dtype, DType::Complex64 | DType::Complex128)
+}
+
+/// Both real floating dtypes or both complex dtypes: the pairs between which
+/// a cotangent is converted back to its operand's dtype.
+fn same_float_family(a: DType, b: DType) -> bool {
+    (is_real_float_dtype(a) && is_real_float_dtype(b))
+        || (is_complex_dtype(a) && is_complex_dtype(b))
+}
+
+/// Whether the symbolic builder converts the cotangent of an `in_dtype` input
+/// back to `in_dtype` (see `unpromote_cotangent_to`). The cotangent follows the
+/// equation's output dtype, so convert when that differs within the same
+/// family. Sub-jaxpr equations differentiate their bodies untyped and an
+/// untyped output says nothing about the cotangent, so convert those too.
+fn symbolic_cotangent_needs_unpromote(
+    in_dtype: DType,
+    out_dtype: Option<DType>,
+    has_sub_jaxprs: bool,
+) -> bool {
+    match out_dtype {
+        Some(out) => same_float_family(in_dtype, out) && (out != in_dtype || has_sub_jaxprs),
+        None => is_real_float_dtype(in_dtype) || is_complex_dtype(in_dtype),
+    }
+}
+
+/// Transpose of an equation's implicit dtype promotion.
+///
+/// Binary and ternary primitives promote mixed operands implicitly (an F32
+/// tensor times an F64 constant evaluates in F64), so a VJP rule can return a
+/// cotangent whose dtype differs from the operand it belongs to. JAX makes the
+/// promotion an explicit `convert_element_type`, whose transpose converts the
+/// cotangent back to the operand dtype; this applies that transpose where each
+/// input cotangent is accumulated, as `unbroadcast_cotangent_to` does for
+/// implicit broadcasting. Only real-float to real-float and complex to complex
+/// changes are undone: integer and bool operands keep their legacy cotangent
+/// convention, and the rules that cross the real/complex boundary own that
+/// conversion.
+fn unpromote_cotangent_to(value: Value, target: DType) -> Result<Value, AdError> {
+    let current = value.dtype();
+    if current == target || !same_float_family(current, target) {
+        return Ok(value);
+    }
+    let mut params = BTreeMap::new();
+    params.insert("new_dtype".to_owned(), format!("{target:?}"));
+    eval_primitive(
+        Primitive::ConvertElementType,
+        std::slice::from_ref(&value),
+        &params,
+    )
+    .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
 fn backward(
     tape: &Tape,
     output_var: VarId,
@@ -3517,6 +3575,9 @@ fn backward_multi(
                 Value::Tensor(t) => t.shape.clone(),
             };
             let cot = unbroadcast_cotangent_to(cot, &target_shape)?;
+            // Likewise undo any implicit dtype promotion: the cotangent of an
+            // input lives in that input's dtype.
+            let cot = unpromote_cotangent_to(cot, entry.input_values[i].dtype())?;
             adjoints.add_or_insert(*var_id, cot)?;
         }
     }
@@ -13150,7 +13211,9 @@ fn value_and_grad_jaxpr_inner_with_custom_vjp_key(
         return Err(AdError::NonScalarGradientOutput);
     }
 
-    let seed = Value::scalar_f64(1.0);
+    // JAX seeds reverse mode with a one of the output's dtype, so an F32 loss
+    // runs its backward pass in F32 rather than widening every cotangent.
+    let seed = ones_like(output_val);
 
     let custom_rule = custom_vjp_rule_key
         .and_then(lookup_custom_jaxpr_vjp_by_key)
@@ -13260,6 +13323,10 @@ pub fn grad_first(jaxpr: &Jaxpr, args: &[Value]) -> Result<f64, AdError> {
 struct SymbolicJaxprBuilder {
     next_var: u32,
     equations: Vec<fj_core::Equation>,
+    /// Dtype of the cotangent whose VJP is being emitted, when known. AD-internal
+    /// constants take this dtype so an F32 backward pass is not widened to F64
+    /// by its own literals (JAX creates these constants in the cotangent dtype).
+    const_dtype: Option<DType>,
 }
 
 impl SymbolicJaxprBuilder {
@@ -13267,7 +13334,21 @@ impl SymbolicJaxprBuilder {
         Self {
             next_var: start_var,
             equations: Vec::new(),
+            const_dtype: None,
         }
+    }
+
+    /// An AD-internal (real) constant at the current cotangent's precision: F32
+    /// for F32 and Complex64, BF16/F16 for those, F64 otherwise or when unknown.
+    /// A real constant promotes with a complex operand to the same complex
+    /// dtype and stays valid in real-only ops (`max`, comparisons).
+    fn const_atom(&self, value: f64) -> Atom {
+        Atom::Lit(match self.const_dtype {
+            Some(DType::F32 | DType::Complex64) => Literal::from_f32(value as f32),
+            Some(DType::BF16) => Literal::from_bf16_f64(value),
+            Some(DType::F16) => Literal::from_f16_f64(value),
+            _ => Literal::from_f64(value),
+        })
     }
 
     fn fresh_var(&mut self) -> VarId {
@@ -13331,11 +13412,8 @@ impl SymbolicJaxprBuilder {
 
     fn emit_ones_like(&mut self, x: Atom) -> VarId {
         let z = self.emit_zeros_like(x);
-        self.emit_binary(
-            Primitive::Add,
-            Atom::Var(z),
-            Atom::Lit(Literal::from_f64(1.0)),
-        )
+        let one = self.const_atom(1.0);
+        self.emit_binary(Primitive::Add, Atom::Var(z), one)
     }
 
     fn emit_add_cotangents(&mut self, a: VarId, b: VarId) -> VarId {
@@ -14121,19 +14199,22 @@ fn emit_symbolic_vjp_equation(
         }
         Primitive::Pow => {
             let g0 = need_input[0].then(|| {
-                let bm1 =
-                    builder.emit_binary(Primitive::Sub, p(1), Atom::Lit(Literal::from_f64(1.0)));
+                let bm1 = builder.emit_binary(Primitive::Sub, p(1), builder.const_atom(1.0));
                 let a_bm1 = builder.emit_binary(Primitive::Pow, p(0), Atom::Var(bm1));
                 let b_abm1 = builder.emit_binary(Primitive::Mul, p(1), Atom::Var(a_bm1));
                 builder.emit_binary(Primitive::Mul, g(), Atom::Var(b_abm1))
             });
             let g1 = need_input[1].then(|| {
                 let abs_a = builder.emit_unary(Primitive::Abs, p(0));
-                let safe_a = builder.emit_binary(
-                    Primitive::Max,
-                    Atom::Var(abs_a),
-                    Atom::Lit(Literal::from_f64(1e-30)),
-                );
+                // log(0) guard; 1e-30 underflows to 0 in F16, so use F16's
+                // smallest subnormal there.
+                let tiny = if builder.const_dtype == Some(DType::F16) {
+                    2f64.powi(-24)
+                } else {
+                    1e-30
+                };
+                let safe_a =
+                    builder.emit_binary(Primitive::Max, Atom::Var(abs_a), builder.const_atom(tiny));
                 let ln_a = builder.emit_unary(Primitive::Log, Atom::Var(safe_a));
                 let out_lna =
                     builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(ln_a));
@@ -14197,35 +14278,25 @@ fn emit_symbolic_vjp_equation(
             builder.emit_binary(Primitive::Mul, g(), Atom::Var(s))
         })]),
         Primitive::Square => Ok(vec![need_input[0].then(|| {
-            let two_x =
-                builder.emit_binary(Primitive::Mul, Atom::Lit(Literal::from_f64(2.0)), p(0));
+            let two_x = builder.emit_binary(Primitive::Mul, builder.const_atom(2.0), p(0));
             builder.emit_binary(Primitive::Mul, g(), Atom::Var(two_x))
         })]),
         Primitive::Sqrt => Ok(vec![need_input[0].then(|| {
-            let two_y = builder.emit_binary(
-                Primitive::Mul,
-                Atom::Lit(Literal::from_f64(2.0)),
-                Atom::Var(p_out[0]),
-            );
+            let two_y =
+                builder.emit_binary(Primitive::Mul, builder.const_atom(2.0), Atom::Var(p_out[0]));
             builder.emit_binary(Primitive::Div, g(), Atom::Var(two_y))
         })]),
         Primitive::Rsqrt => Ok(vec![need_input[0].then(|| {
             let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
             let y3 = builder.emit_binary(Primitive::Mul, Atom::Var(y2), Atom::Var(p_out[0]));
-            let half_y3 = builder.emit_binary(
-                Primitive::Mul,
-                Atom::Lit(Literal::from_f64(-0.5)),
-                Atom::Var(y3),
-            );
+            let half_y3 =
+                builder.emit_binary(Primitive::Mul, builder.const_atom(-0.5), Atom::Var(y3));
             builder.emit_binary(Primitive::Mul, g(), Atom::Var(half_y3))
         })]),
         Primitive::Cbrt => Ok(vec![need_input[0].then(|| {
             let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
-            let three_y2 = builder.emit_binary(
-                Primitive::Mul,
-                Atom::Lit(Literal::from_f64(3.0)),
-                Atom::Var(y2),
-            );
+            let three_y2 =
+                builder.emit_binary(Primitive::Mul, builder.const_atom(3.0), Atom::Var(y2));
             builder.emit_binary(Primitive::Div, g(), Atom::Var(three_y2))
         })]),
         Primitive::Reciprocal => Ok(vec![need_input[0].then(|| {
@@ -14243,7 +14314,7 @@ fn emit_symbolic_vjp_equation(
             builder.emit_binary(Primitive::Mul, g(), Atom::Var(ex))
         })]),
         Primitive::Exp2 => Ok(vec![need_input[0].then(|| {
-            let ln2 = Atom::Lit(Literal::from_f64(std::f64::consts::LN_2));
+            let ln2 = builder.const_atom(std::f64::consts::LN_2);
             let y_ln2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), ln2);
             builder.emit_binary(Primitive::Mul, g(), Atom::Var(y_ln2))
         })]),
@@ -14251,7 +14322,7 @@ fn emit_symbolic_vjp_equation(
             need_input[0].then(|| builder.emit_binary(Primitive::Div, g(), p(0))),
         ]),
         Primitive::Log1p => Ok(vec![need_input[0].then(|| {
-            let xp1 = builder.emit_binary(Primitive::Add, p(0), Atom::Lit(Literal::from_f64(1.0)));
+            let xp1 = builder.emit_binary(Primitive::Add, p(0), builder.const_atom(1.0));
             builder.emit_binary(Primitive::Div, g(), Atom::Var(xp1))
         })]),
         Primitive::Log2 => Ok(vec![need_input[0].then(|| {
@@ -14259,7 +14330,7 @@ fn emit_symbolic_vjp_equation(
             builder.emit_binary(
                 Primitive::Mul,
                 Atom::Var(gx),
-                Atom::Lit(Literal::from_f64(1.0 / std::f64::consts::LN_2)),
+                builder.const_atom(1.0 / std::f64::consts::LN_2),
             )
         })]),
         Primitive::Sin => Ok(vec![need_input[0].then(|| {
@@ -14286,78 +14357,48 @@ fn emit_symbolic_vjp_equation(
         })]),
         Primitive::Tanh => Ok(vec![need_input[0].then(|| {
             let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
-            let one_m_y2 = builder.emit_binary(
-                Primitive::Sub,
-                Atom::Lit(Literal::from_f64(1.0)),
-                Atom::Var(y2),
-            );
+            let one_m_y2 =
+                builder.emit_binary(Primitive::Sub, builder.const_atom(1.0), Atom::Var(y2));
             builder.emit_binary(Primitive::Mul, g(), Atom::Var(one_m_y2))
         })]),
         Primitive::Asin => Ok(vec![need_input[0].then(|| {
             let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
-            let omx2 = builder.emit_binary(
-                Primitive::Sub,
-                Atom::Lit(Literal::from_f64(1.0)),
-                Atom::Var(x2),
-            );
+            let omx2 = builder.emit_binary(Primitive::Sub, builder.const_atom(1.0), Atom::Var(x2));
             let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(omx2));
             builder.emit_binary(Primitive::Div, g(), Atom::Var(denom))
         })]),
         Primitive::Acos => Ok(vec![need_input[0].then(|| {
             let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
-            let omx2 = builder.emit_binary(
-                Primitive::Sub,
-                Atom::Lit(Literal::from_f64(1.0)),
-                Atom::Var(x2),
-            );
+            let omx2 = builder.emit_binary(Primitive::Sub, builder.const_atom(1.0), Atom::Var(x2));
             let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(omx2));
             let ng = builder.emit_unary(Primitive::Neg, g());
             builder.emit_binary(Primitive::Div, Atom::Var(ng), Atom::Var(denom))
         })]),
         Primitive::Atan => Ok(vec![need_input[0].then(|| {
             let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
-            let denom = builder.emit_binary(
-                Primitive::Add,
-                Atom::Lit(Literal::from_f64(1.0)),
-                Atom::Var(x2),
-            );
+            let denom = builder.emit_binary(Primitive::Add, builder.const_atom(1.0), Atom::Var(x2));
             builder.emit_binary(Primitive::Div, g(), Atom::Var(denom))
         })]),
         Primitive::Asinh => Ok(vec![need_input[0].then(|| {
             let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
-            let x2p1 = builder.emit_binary(
-                Primitive::Add,
-                Atom::Var(x2),
-                Atom::Lit(Literal::from_f64(1.0)),
-            );
+            let x2p1 = builder.emit_binary(Primitive::Add, Atom::Var(x2), builder.const_atom(1.0));
             let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(x2p1));
             builder.emit_binary(Primitive::Div, g(), Atom::Var(denom))
         })]),
         Primitive::Acosh => Ok(vec![need_input[0].then(|| {
             let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
-            let x2m1 = builder.emit_binary(
-                Primitive::Sub,
-                Atom::Var(x2),
-                Atom::Lit(Literal::from_f64(1.0)),
-            );
+            let x2m1 = builder.emit_binary(Primitive::Sub, Atom::Var(x2), builder.const_atom(1.0));
             let denom = builder.emit_unary(Primitive::Sqrt, Atom::Var(x2m1));
             builder.emit_binary(Primitive::Div, g(), Atom::Var(denom))
         })]),
         Primitive::Atanh => Ok(vec![need_input[0].then(|| {
             let x2 = builder.emit_binary(Primitive::Mul, p(0), p(0));
-            let denom = builder.emit_binary(
-                Primitive::Sub,
-                Atom::Lit(Literal::from_f64(1.0)),
-                Atom::Var(x2),
-            );
+            let denom = builder.emit_binary(Primitive::Sub, builder.const_atom(1.0), Atom::Var(x2));
             builder.emit_binary(Primitive::Div, g(), Atom::Var(denom))
         })]),
         Primitive::Logistic => Ok(vec![need_input[0].then(|| {
-            let one_m_y = builder.emit_binary(
-                Primitive::Sub,
-                Atom::Lit(Literal::from_f64(1.0)),
-                Atom::Var(p_out[0]),
-            );
+            let one_m_y =
+                builder.emit_binary(Primitive::Sub, builder.const_atom(1.0), Atom::Var(p_out[0]));
             let y_omy =
                 builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(one_m_y));
             builder.emit_binary(Primitive::Mul, g(), Atom::Var(y_omy))
@@ -14371,11 +14412,7 @@ fn emit_symbolic_vjp_equation(
             } else {
                 -2.0 / std::f64::consts::PI.sqrt()
             };
-            let d = builder.emit_binary(
-                Primitive::Mul,
-                Atom::Lit(Literal::from_f64(coef)),
-                Atom::Var(ex),
-            );
+            let d = builder.emit_binary(Primitive::Mul, builder.const_atom(coef), Atom::Var(ex));
             builder.emit_binary(Primitive::Mul, g(), Atom::Var(d))
         })]),
         Primitive::Select => {
@@ -14540,14 +14577,14 @@ fn emit_symbolic_vjp_equation(
             builder.emit_binary(
                 Primitive::Mul,
                 g(),
-                Atom::Lit(Literal::from_f64(std::f64::consts::PI / 180.0)),
+                builder.const_atom(std::f64::consts::PI / 180.0),
             )
         })]),
         Primitive::Rad2Deg => Ok(vec![need_input[0].then(|| {
             builder.emit_binary(
                 Primitive::Mul,
                 g(),
-                Atom::Lit(Literal::from_f64(180.0 / std::f64::consts::PI)),
+                builder.const_atom(180.0 / std::f64::consts::PI),
             )
         })]),
         Primitive::Lgamma => Ok(vec![need_input[0].then(|| {
@@ -14606,8 +14643,7 @@ fn emit_symbolic_vjp_equation(
                 builder.emit_binary(Primitive::Mul, g(), Atom::Var(log1p_y))
             });
             let g1 = need_input[1].then(|| {
-                let one_plus_y =
-                    builder.emit_binary(Primitive::Add, Atom::Lit(Literal::from_f64(1.0)), p(1));
+                let one_plus_y = builder.emit_binary(Primitive::Add, builder.const_atom(1.0), p(1));
                 let x_over_1py = builder.emit_binary(Primitive::Div, p(0), Atom::Var(one_plus_y));
                 builder.emit_binary(Primitive::Mul, g(), Atom::Var(x_over_1py))
             });
@@ -14636,7 +14672,7 @@ fn emit_symbolic_vjp_equation(
                     let x_nm1 = builder.emit_unary_params(Primitive::IntegerPow, p(0), nm1_params);
                     let n_x_nm1 = builder.emit_binary(
                         Primitive::Mul,
-                        Atom::Lit(Literal::from_f64(f64::from(n))),
+                        builder.const_atom(f64::from(n)),
                         Atom::Var(x_nm1),
                     );
                     builder.emit_binary(Primitive::Mul, g(), Atom::Var(n_x_nm1))
@@ -14651,6 +14687,7 @@ fn build_grad_jaxpr_internal(
     jaxpr: &Jaxpr,
     argnums: &[usize],
     include_value: bool,
+    var_dtypes: &BTreeMap<VarId, DType>,
 ) -> Result<Jaxpr, AdError> {
     if lookup_custom_jaxpr_vjp(jaxpr).is_some()
         || jaxpr
@@ -14731,7 +14768,9 @@ fn build_grad_jaxpr_internal(
 
     let mut adjoints: std::collections::BTreeMap<VarId, VarId> = std::collections::BTreeMap::new();
     if useful.contains(&out_var) {
-        let seed_var = builder.emit_unary(Primitive::Copy, Atom::Lit(Literal::from_f64(1.0)));
+        builder.const_dtype = var_dtypes.get(&out_var).copied();
+        let one = builder.const_atom(1.0);
+        let seed_var = builder.emit_unary(Primitive::Copy, one);
         adjoints.insert(out_var, seed_var);
     }
 
@@ -14759,9 +14798,30 @@ fn build_grad_jaxpr_internal(
             continue;
         }
 
+        let out_dtype = var_dtypes.get(&out0).copied();
+        builder.const_dtype = out_dtype;
         let input_grads = emit_symbolic_vjp_equation(&mut builder, eqn, g_var, &need_input)?;
         for (atom, maybe_cot) in eqn.inputs.iter().zip(input_grads) {
             if let (Atom::Var(v), Some(cot_var)) = (atom, maybe_cot) {
+                // Transpose of implicit dtype promotion.
+                let cot_var = match var_dtypes.get(v).copied() {
+                    Some(in_dtype)
+                        if symbolic_cotangent_needs_unpromote(
+                            in_dtype,
+                            out_dtype,
+                            !eqn.sub_jaxprs.is_empty(),
+                        ) =>
+                    {
+                        let mut convert = BTreeMap::new();
+                        convert.insert("new_dtype".to_owned(), format!("{in_dtype:?}"));
+                        builder.emit_unary_params(
+                            Primitive::ConvertElementType,
+                            Atom::Var(cot_var),
+                            convert,
+                        )
+                    }
+                    _ => cot_var,
+                };
                 if let Some(&prev) = adjoints.get(v) {
                     let sum = builder.emit_add_cotangents(prev, cot_var);
                     adjoints.insert(*v, sum);
@@ -14804,12 +14864,40 @@ fn build_grad_jaxpr_internal(
 /// elimination so inactive branches (e.g., `exp(y)` when differentiating `sin(x) + exp(y)`
 /// w.r.t. `x`) are completely pruned from the returned `Jaxpr`.
 pub fn build_grad_jaxpr(jaxpr: &Jaxpr, argnums: &[usize]) -> Result<Jaxpr, AdError> {
-    build_grad_jaxpr_internal(jaxpr, argnums, false)
+    build_grad_jaxpr_internal(jaxpr, argnums, false, &BTreeMap::new())
 }
 
 /// Build a symbolic `value_and_grad` `Jaxpr` returning `[value, grad_0, ...]` for `argnums`.
 pub fn build_value_and_grad_jaxpr(jaxpr: &Jaxpr, argnums: &[usize]) -> Result<Jaxpr, AdError> {
-    build_grad_jaxpr_internal(jaxpr, argnums, true)
+    build_grad_jaxpr_internal(jaxpr, argnums, true, &BTreeMap::new())
+}
+
+/// [`build_grad_jaxpr`] for a `jaxpr` whose variable dtypes are known.
+///
+/// `Jaxpr` carries no avals, so the untyped builder seeds the pullback and
+/// creates its internal constants as F64, which widens an F32/BF16/F16 backward
+/// pass to F64 under implicit promotion. Given the dtype of each variable it can
+/// infer (at least the output and the differentiated inputs), the builder seeds
+/// with a one of the output dtype, creates constants in each cotangent's dtype,
+/// and converts every input cotangent back to its input's dtype, so each
+/// gradient has the dtype of its input as in JAX. Variables missing from
+/// `var_dtypes` fall back to the untyped behavior.
+pub fn build_grad_jaxpr_with_dtypes(
+    jaxpr: &Jaxpr,
+    argnums: &[usize],
+    var_dtypes: &BTreeMap<VarId, DType>,
+) -> Result<Jaxpr, AdError> {
+    build_grad_jaxpr_internal(jaxpr, argnums, false, var_dtypes)
+}
+
+/// [`build_value_and_grad_jaxpr`] for a `jaxpr` whose variable dtypes are known;
+/// see [`build_grad_jaxpr_with_dtypes`].
+pub fn build_value_and_grad_jaxpr_with_dtypes(
+    jaxpr: &Jaxpr,
+    argnums: &[usize],
+    var_dtypes: &BTreeMap<VarId, DType>,
+) -> Result<Jaxpr, AdError> {
+    build_grad_jaxpr_internal(jaxpr, argnums, true, var_dtypes)
 }
 
 /// Transform `jaxpr` into its symbolic forward-mode JVP `Jaxpr` (`2N` inputs: `[primals..., tangents...]`,

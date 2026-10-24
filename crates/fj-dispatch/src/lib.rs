@@ -11,7 +11,7 @@ use fj_core::{
     AbstractValue, Atom, CompatibilityMode, DType, GradWitness, Jaxpr, JitWitness, Literal,
     PmapWitness, Primitive, Shape, TensorValue, TraceTransformLedger, Transform,
     TransformCompositionError, TransformCompositionProof, TransformProofStep,
-    TransformRewriteWitness, Value, VmapWitness, jaxpr_fingerprint_sha256,
+    TransformRewriteWitness, Value, VarId, VmapWitness, jaxpr_fingerprint_sha256,
     verify_transform_composition, verify_transform_composition_parts,
     verify_transform_composition_steps,
 };
@@ -2695,6 +2695,7 @@ fn execute_grad(
                 false,
                 reduce_tensor_steps,
                 true,
+                grad_input_avals(args, None).as_deref(),
             ) && let Ok(outputs) = execute_symbolic_grad(&lowered, args, compile_options)
             {
                 return Ok(outputs);
@@ -2751,6 +2752,9 @@ fn append_reduce_sum_to_scalar(jaxpr: &mut Jaxpr) {
     jaxpr.outvars[0] = reduced_var;
 }
 
+/// Lower a chain of `grad`s symbolically. `in_avals` are the avals the lowered
+/// body is evaluated at (per slice under vmap); when known they keep an
+/// F32/BF16/F16 backward pass and its gradients in the input dtype.
 fn try_lower_symbolic_grad_chain(
     root_jaxpr: &Jaxpr,
     grad_transforms: &[Transform],
@@ -2758,6 +2762,7 @@ fn try_lower_symbolic_grad_chain(
     outer_include_value: bool,
     reduce_tensor_steps: bool,
     reduce_final_step: bool,
+    in_avals: Option<&[fj_trace::ShapedArray]>,
 ) -> Option<Jaxpr> {
     if !grad_transforms
         .iter()
@@ -2776,12 +2781,14 @@ fn try_lower_symbolic_grad_chain(
     let mut current = root_jaxpr.clone();
     for step in 0..grad_count {
         let is_outer = step + 1 == grad_count;
+        let var_dtypes = symbolic_grad_var_dtypes(&current, in_avals);
         current = if is_outer && outer_include_value {
-            fj_ad::build_value_and_grad_jaxpr(&current, outer_argnums).ok()?
+            fj_ad::build_value_and_grad_jaxpr_with_dtypes(&current, outer_argnums, &var_dtypes)
+                .ok()?
         } else if is_outer {
-            fj_ad::build_grad_jaxpr(&current, outer_argnums).ok()?
+            fj_ad::build_grad_jaxpr_with_dtypes(&current, outer_argnums, &var_dtypes).ok()?
         } else {
-            fj_ad::build_grad_jaxpr(&current, &[inner_argnum]).ok()?
+            fj_ad::build_grad_jaxpr_with_dtypes(&current, &[inner_argnum], &var_dtypes).ok()?
         };
         if reduce_tensor_steps && (!is_outer || reduce_final_step) {
             append_reduce_sum_to_scalar(&mut current);
@@ -2821,6 +2828,95 @@ fn can_execute_symbolic_grad_vmap(
     explicit_reduce || out_axes_none || jaxpr_ends_with_reduction(root_jaxpr)
 }
 
+/// The aval one vmapped slice of `arg` has: the batch axis removed for a
+/// batched input, the whole value otherwise. `None` for a malformed axis.
+fn per_slice_aval(arg: &Value, axis: &AxisSpec) -> Option<fj_trace::ShapedArray> {
+    let dtype = arg.dtype();
+    let shape = match (arg, axis) {
+        (Value::Scalar(_), AxisSpec::NotBatched) => Shape::scalar(),
+        (Value::Scalar(_), AxisSpec::Batched(_)) => return None,
+        (Value::Tensor(t), AxisSpec::NotBatched) => t.shape.clone(),
+        (Value::Tensor(t), AxisSpec::Batched(axis)) => {
+            let rank = i64::try_from(t.shape.rank()).ok()?;
+            let axis = i64::from(*axis);
+            let axis = if axis < 0 { axis + rank } else { axis };
+            let axis = usize::try_from(axis).ok().filter(|&a| a < t.shape.rank())?;
+            let mut dims = t.shape.dims.clone();
+            dims.remove(axis);
+            Shape { dims }
+        }
+    };
+    Some(fj_trace::ShapedArray { dtype, shape })
+}
+
+/// Dtype of every variable of `jaxpr` that shape inference can type from the
+/// input avals. Variables it cannot type (unknown inputs, or primitives whose
+/// result depends on a sub-jaxpr) are left out, and the symbolic gradient
+/// builders treat them as untyped.
+fn infer_jaxpr_var_dtypes(
+    jaxpr: &Jaxpr,
+    in_avals: &[fj_trace::ShapedArray],
+) -> BTreeMap<VarId, DType> {
+    let mut avals: BTreeMap<VarId, fj_trace::ShapedArray> = jaxpr
+        .invars
+        .iter()
+        .copied()
+        .zip(in_avals.iter().cloned())
+        .collect();
+    for eqn in &jaxpr.equations {
+        let inputs: Option<Vec<fj_trace::ShapedArray>> = eqn
+            .inputs
+            .iter()
+            .map(|atom| match atom {
+                Atom::Var(var) => avals.get(var).cloned(),
+                Atom::Lit(lit) => Some(fj_trace::ShapedArray {
+                    dtype: Value::Scalar(*lit).dtype(),
+                    shape: Shape::scalar(),
+                }),
+            })
+            .collect();
+        let Some(inputs) = inputs else {
+            continue;
+        };
+        if let Ok(outputs) = fj_trace::infer_output_avals(eqn.primitive, &inputs, &eqn.params)
+            && outputs.len() == eqn.outputs.len()
+        {
+            avals.extend(eqn.outputs.iter().copied().zip(outputs));
+        }
+    }
+    avals
+        .into_iter()
+        .map(|(var, aval)| (var, aval.dtype))
+        .collect()
+}
+
+/// Avals a symbolically lowered gradient body is evaluated at: one vmapped
+/// slice of each argument under `in_axes`, or each whole argument when there is
+/// no vmap. `None` when an axis is malformed or missing.
+fn grad_input_avals(
+    args: &[Value],
+    in_axes: Option<&[AxisSpec]>,
+) -> Option<Vec<fj_trace::ShapedArray>> {
+    args.iter()
+        .enumerate()
+        .map(|(i, arg)| match in_axes {
+            Some(axes) => per_slice_aval(arg, axes.get(i)?),
+            None => per_slice_aval(arg, &AxisSpec::NotBatched),
+        })
+        .collect()
+}
+
+/// Variable dtypes for the symbolic gradient builders, empty (untyped
+/// lowering) when the input avals are unknown.
+fn symbolic_grad_var_dtypes(
+    jaxpr: &Jaxpr,
+    in_avals: Option<&[fj_trace::ShapedArray]>,
+) -> BTreeMap<VarId, DType> {
+    in_avals
+        .map(|avals| infer_jaxpr_var_dtypes(jaxpr, avals))
+        .unwrap_or_default()
+}
+
 fn execute_symbolic_grad_vmap(
     root_jaxpr: &Jaxpr,
     vmap_tail: &[Transform],
@@ -2841,18 +2937,24 @@ fn execute_symbolic_grad_vmap(
         (Some(Value::Tensor(_)), _) => true,
         _ => false,
     };
+    // The symbolic builders need variable dtypes to keep an F32/BF16/F16
+    // backward pass (and its gradients) in the input dtype; infer them from the
+    // per-slice avals each lowered body is evaluated at.
+    let slice_avals = grad_input_avals(args, Some(in_axes.as_slice()));
     for _ in 0..tail_grads {
-        current = fj_ad::build_grad_jaxpr(&current, &[first_argnum])
+        let var_dtypes = symbolic_grad_var_dtypes(&current, slice_avals.as_deref());
+        current = fj_ad::build_grad_jaxpr_with_dtypes(&current, &[first_argnum], &var_dtypes)
             .map_err(|e| TransformExecutionError::TensorBuild(format!("AD lowering error: {e}")))?;
         if per_slice_is_tensor {
             append_reduce_sum_to_scalar(&mut current);
         }
     }
 
+    let var_dtypes = symbolic_grad_var_dtypes(&current, slice_avals.as_deref());
     let lowered = if include_value {
-        fj_ad::build_value_and_grad_jaxpr(&current, &argnums)
+        fj_ad::build_value_and_grad_jaxpr_with_dtypes(&current, &argnums, &var_dtypes)
     } else {
-        fj_ad::build_grad_jaxpr(&current, &argnums)
+        fj_ad::build_grad_jaxpr_with_dtypes(&current, &argnums, &var_dtypes)
     }
     .map_err(|e| match e {
         fj_ad::AdError::NonScalarGradientOutput => TransformExecutionError::NonScalarGradientOutput,
@@ -3175,6 +3277,7 @@ fn execute_vmap(
                 include_value,
                 per_slice_is_tensor,
                 false,
+                grad_input_avals(args, Some(in_axes.as_slice())).as_deref(),
             )
             && (all_axis_zero || can_use_nonzero_axis_batch_trace(&lowered))
             && let Ok(outputs) = execute_vmap_batch_trace(&lowered, args, &in_axes, lead_len, false)
