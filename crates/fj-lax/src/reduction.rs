@@ -1566,6 +1566,16 @@ fn eval_dense_float_full_reduce(
                     )));
                 }
             }
+            // Without this arm F16 fell through to the sum/prod fold below and
+            // returned the SUM for reduce_max/reduce_min.
+            DType::F16 => {
+                if let Some(values) = tensor.elements.as_half_float_slice() {
+                    return Some(Value::Scalar(reduce_real_literal(
+                        DType::F16,
+                        simd_reduce_minmax_f16(values, is_max),
+                    )));
+                }
+            }
             _ => {}
         }
     }
@@ -7803,6 +7813,50 @@ mod tests {
                     extract_half_bits(&b),
                     "{dtype:?} {prim:?} dense vs boxed half-float full-reduce must be bit-identical"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn half_float_full_reduce_max_min_return_the_extremum() {
+        // Regression: dense F16 full reduce_max/reduce_min returned the SUM (3.5 here),
+        // which also turned every F16 reduce_max VJP into NaN. The NaN in the test above
+        // hides this because sum, max and min are all NaN there.
+        let src = [
+            0.5, -1.0, 2.0, 1.0, -0.25, 0.75, 1.5, -2.0, 0.125, 3.0, 0.0, -0.5,
+        ];
+        let p = BTreeMap::new();
+        for (dtype, to_lit) in [
+            (DType::BF16, Literal::from_bf16_f64 as fn(f64) -> Literal),
+            (DType::F16, Literal::from_f16_f64 as fn(f64) -> Literal),
+        ] {
+            // 3 elements stay in the scalar tail; 12 also cover one 8-lane SIMD chunk.
+            for len in [3, src.len()] {
+                let lits: Vec<Literal> = src[..len].iter().map(|&v| to_lit(v)).collect();
+                let x = Value::Tensor(
+                    TensorValue::new(dtype, Shape::vector(len as u32), lits).unwrap(),
+                );
+                assert!(
+                    x.as_tensor()
+                        .unwrap()
+                        .elements
+                        .as_half_float_slice()
+                        .is_some()
+                );
+                let want_max = src[..len].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let want_min = src[..len].iter().copied().fold(f64::INFINITY, f64::min);
+                for (prim, want) in [
+                    (Primitive::ReduceMax, want_max),
+                    (Primitive::ReduceMin, want_min),
+                ] {
+                    let out = crate::eval_primitive(prim, std::slice::from_ref(&x), &p).unwrap();
+                    assert_eq!(out.dtype(), dtype, "{dtype:?} {prim:?} len {len}");
+                    assert_eq!(
+                        out.as_f64_scalar(),
+                        Some(want),
+                        "{dtype:?} {prim:?} len {len}"
+                    );
+                }
             }
         }
     }
