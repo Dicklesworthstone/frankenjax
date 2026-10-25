@@ -41,8 +41,18 @@ pub use fj_interpreters::{
     staging::{StagedProgram, StagingError, execute_staged, stage_jaxpr, stage_jaxpr_with_consts},
     with_ffi_registry,
 };
-pub use fj_ledger::EvidenceLedger;
-pub use fj_runtime::{AdmissionRejection, CancellationToken, ExecutionRegime, MemoryBudget};
+pub use fj_ledger::{
+    CalibratedEstimate, CalibrationReport, ConformalPredictor, DecisionAction, DecisionRecord,
+    EProcess, EvidenceLedger, EvidenceSignal, LedgerEntry, LogDomainPosterior, LossMatrix,
+    expected_loss_keep, expected_loss_kill, log_sum_exp, recommend_action,
+};
+pub use fj_runtime::{
+    AdmissionDecision, AdmissionRejection, CancellationToken, ExecutionRegime, MemoryBudget,
+    RuntimeAdmissionModel,
+    backend::{Backend, BackendCapabilities, BackendError, BackendRegistry},
+    buffer::{Buffer, BufferView},
+    device::{DeviceId, DeviceInfo, DevicePlacement, Platform},
+};
 pub use transforms::{
     CheckpointWrapped, ComposedTransform, CustomJvpWrapped, CustomVjpWrapped, GradWrapped,
     HessianWrapped, JacobianWrapped, JitWrapped, LinearizeResult, LinearizedFunction, PmapWrapped,
@@ -798,6 +808,510 @@ pub mod tree_util {
         )?;
         let out_def = out_def_slot.ok_or(TraceError::CompositionViolation)?;
         Ok((closed, out_def))
+    }
+}
+
+/// Canonical `jax.lax` primitive facade (`fj_api::lax`).
+///
+/// Provides both traced [`TracerRef`] free functions (which lower directly into canonical
+/// `fj_core::Primitive` equations and compose with [`jit`], [`grad`], [`vmap`], [`hessian`],
+/// and [`pmap`]) and re-exports of eager `fj_lax` evaluation modules (`array_creation`,
+/// `einsum`, `linalg`, `eval_primitive`, `eval_primitive_multi`).
+pub mod lax {
+    use fj_core::DType;
+    use fj_trace::{TraceError, TracerRef};
+    use std::collections::BTreeMap;
+
+    pub use fj_lax::{
+        EvalError, array_creation, einsum, eval_primitive, eval_primitive_multi, linalg,
+    };
+    pub use fj_trace::{
+        trace_cond as cond, trace_scan as scan, trace_switch as switch,
+        trace_while_loop as while_loop,
+    };
+
+    macro_rules! def_lax_unary {
+        ($(($fn_name:ident, $method:ident)),* $(,)?) => {
+            $(
+                #[doc = concat!("Traced `lax.", stringify!($fn_name), "(x)` operation on [`TracerRef`].")]
+                pub fn $fn_name(x: &TracerRef) -> Result<TracerRef, TraceError> {
+                    x.$method()
+                }
+            )*
+        };
+    }
+
+    def_lax_unary!(
+        (neg, neg_op),
+        (abs, abs),
+        (exp, exp),
+        (expm1, expm1),
+        (exp2, exp2),
+        (log, log),
+        (log1p, log1p),
+        (log2, log2),
+        (sqrt, sqrt),
+        (rsqrt, rsqrt),
+        (cbrt, cbrt),
+        (floor, floor),
+        (ceil, ceil),
+        (round, round),
+        (trunc, trunc),
+        (sin, sin),
+        (cos, cos),
+        (tan, tan),
+        (asin, asin),
+        (acos, acos),
+        (atan, atan),
+        (deg2rad, deg2rad),
+        (rad2deg, rad2deg),
+        (sinh, sinh),
+        (cosh, cosh),
+        (tanh, tanh),
+        (asinh, asinh),
+        (acosh, acosh),
+        (atanh, atanh),
+        (sinc, sinc),
+        (sign, sign),
+        (square, square),
+        (reciprocal, reciprocal),
+        (logistic, logistic),
+        (erf, erf),
+        (erfc, erfc),
+        (erf_inv, erf_inv),
+        (lgamma, lgamma),
+        (digamma, digamma),
+        (bessel_i0e, bessel_i0e),
+        (bessel_i1e, bessel_i1e),
+        (is_finite, is_finite),
+        (is_nan, is_nan),
+        (is_inf, is_inf),
+        (signbit, signbit),
+        (conj, conj),
+        (real, real),
+        (imag, imag),
+        (copy, copy),
+        (stop_gradient, stop_gradient),
+        (bitwise_not, bitwise_not),
+        (population_count, population_count),
+        (count_leading_zeros, count_leading_zeros),
+        (count_trailing_zeros, count_trailing_zeros),
+        (cholesky, cholesky),
+        (det, det),
+    );
+
+    macro_rules! def_lax_binary {
+        ($(($fn_name:ident, $method:ident)),* $(,)?) => {
+            $(
+                #[doc = concat!("Traced `lax.", stringify!($fn_name), "(lhs, rhs)` operation on [`TracerRef`].")]
+                pub fn $fn_name(lhs: &TracerRef, rhs: &TracerRef) -> Result<TracerRef, TraceError> {
+                    lhs.$method(rhs)
+                }
+            )*
+        };
+    }
+
+    def_lax_binary!(
+        (add, add_op),
+        (sub, sub_op),
+        (mul, mul_op),
+        (div, div_op),
+        (rem, rem_op),
+        (max, max),
+        (min, min),
+        (pow, pow),
+        (atan2, atan2),
+        (hypot, hypot),
+        (logaddexp, log_add_exp),
+        (logaddexp2, log_add_exp2),
+        (gcd, gcd),
+        (lcm, lcm),
+        (copysign, copy_sign),
+        (ldexp, ldexp),
+        (xlogy, xlogy),
+        (xlog1py, xlog1py),
+        (polygamma, polygamma),
+        (heaviside, heaviside),
+        (igamma, igamma),
+        (igammac, igammac),
+        (zeta, zeta),
+        (nextafter, nextafter),
+        (complex, complex),
+        (eq, eq),
+        (ne, ne),
+        (lt, lt),
+        (le, le),
+        (gt, gt),
+        (ge, ge),
+        (bitwise_and, bitwise_and),
+        (bitwise_or, bitwise_or),
+        (bitwise_xor, bitwise_xor),
+        (shift_left, shift_left),
+        (shift_right_arithmetic, shift_right_arithmetic),
+        (shift_right_logical, shift_right_logical),
+        (dot, dot),
+        (matmul, matmul),
+        (solve, solve),
+    );
+
+    /// Traced `lax.integer_pow(x, y)` raising `x` to fixed integer power `y`.
+    pub fn integer_pow(x: &TracerRef, y: i64) -> Result<TracerRef, TraceError> {
+        x.integer_pow(y)
+    }
+
+    /// Traced `lax.convert_element_type(x, new_dtype)`.
+    pub fn convert_element_type(x: &TracerRef, new_dtype: DType) -> Result<TracerRef, TraceError> {
+        x.convert_element_type(new_dtype)
+    }
+
+    /// Traced `lax.bitcast_convert_type(x, new_dtype)`.
+    pub fn bitcast_convert_type(x: &TracerRef, new_dtype: DType) -> Result<TracerRef, TraceError> {
+        x.bitcast_convert_type(new_dtype)
+    }
+
+    /// Traced `lax.fma(a, b, c) = a * b + c`.
+    pub fn fma(a: &TracerRef, b: &TracerRef, c: &TracerRef) -> Result<TracerRef, TraceError> {
+        a.fma(b, c)
+    }
+
+    /// Traced `lax.betainc(a, b, x)`.
+    pub fn betainc(a: &TracerRef, b: &TracerRef, x: &TracerRef) -> Result<TracerRef, TraceError> {
+        a.betainc(b, x)
+    }
+
+    /// Traced `lax.select(pred, on_true, on_false)`.
+    pub fn select(
+        pred: &TracerRef,
+        on_true: &TracerRef,
+        on_false: &TracerRef,
+    ) -> Result<TracerRef, TraceError> {
+        pred.select(on_true, on_false)
+    }
+
+    /// Traced `lax.select_n(which, cases)`.
+    pub fn select_n(which: &TracerRef, cases: &[&TracerRef]) -> Result<TracerRef, TraceError> {
+        which.select_n(cases)
+    }
+
+    /// Traced `lax.clamp(min, x, max)`.
+    pub fn clamp(min: &TracerRef, x: &TracerRef, max: &TracerRef) -> Result<TracerRef, TraceError> {
+        x.clamp(min, max)
+    }
+
+    /// Traced `lax.reshape(x, new_shape)`.
+    pub fn reshape(x: &TracerRef, new_shape: &[u32]) -> Result<TracerRef, TraceError> {
+        x.reshape(new_shape)
+    }
+
+    /// Traced `lax.transpose(x, permutation)`.
+    pub fn transpose(
+        x: &TracerRef,
+        permutation: Option<&[usize]>,
+    ) -> Result<TracerRef, TraceError> {
+        x.transpose(permutation)
+    }
+
+    /// Traced `lax.broadcast_in_dim(x, shape, broadcast_dimensions)`.
+    pub fn broadcast_in_dim(
+        x: &TracerRef,
+        shape: &[u32],
+        broadcast_dimensions: &[usize],
+    ) -> Result<TracerRef, TraceError> {
+        x.broadcast_in_dim(shape, broadcast_dimensions)
+    }
+
+    /// Traced `lax.broadcast(x, sizes)`.
+    pub fn broadcast(x: &TracerRef, sizes: &[u32]) -> Result<TracerRef, TraceError> {
+        x.broadcast(sizes)
+    }
+
+    /// Traced `lax.slice(x, start_indices, limit_indices, strides)`.
+    pub fn slice(
+        x: &TracerRef,
+        start_indices: &[u32],
+        limit_indices: &[u32],
+        strides: Option<&[u32]>,
+    ) -> Result<TracerRef, TraceError> {
+        x.slice(start_indices, limit_indices, strides)
+    }
+
+    /// Traced `lax.dynamic_slice(x, start_indices, slice_sizes)`.
+    pub fn dynamic_slice(
+        x: &TracerRef,
+        start_indices: &[&TracerRef],
+        slice_sizes: &[u32],
+    ) -> Result<TracerRef, TraceError> {
+        x.dynamic_slice(start_indices, slice_sizes)
+    }
+
+    /// Traced `lax.dynamic_update_slice(x, update, start_indices)`.
+    pub fn dynamic_update_slice(
+        x: &TracerRef,
+        update: &TracerRef,
+        start_indices: &[&TracerRef],
+    ) -> Result<TracerRef, TraceError> {
+        x.dynamic_update_slice(update, start_indices)
+    }
+
+    /// Traced `lax.gather(x, start_indices, slice_sizes)`.
+    pub fn gather(
+        x: &TracerRef,
+        start_indices: &TracerRef,
+        slice_sizes: &[u32],
+    ) -> Result<TracerRef, TraceError> {
+        x.gather(start_indices, slice_sizes)
+    }
+
+    /// Traced `lax.scatter(x, scatter_indices, updates, mode)`.
+    pub fn scatter(
+        x: &TracerRef,
+        scatter_indices: &TracerRef,
+        updates: &TracerRef,
+        mode: Option<&str>,
+    ) -> Result<TracerRef, TraceError> {
+        x.scatter(scatter_indices, updates, mode)
+    }
+
+    /// Traced `lax.concatenate(inputs, dimension)`.
+    pub fn concatenate(inputs: &[&TracerRef], dimension: usize) -> Result<TracerRef, TraceError> {
+        TracerRef::concatenate(inputs, dimension)
+    }
+
+    /// Traced `lax.pad(x, padding_value, padding_low, padding_high, padding_interior)`.
+    pub fn pad(
+        x: &TracerRef,
+        padding_value: &TracerRef,
+        padding_low: &[i64],
+        padding_high: &[i64],
+        padding_interior: &[u32],
+    ) -> Result<TracerRef, TraceError> {
+        x.pad(padding_value, padding_low, padding_high, padding_interior)
+    }
+
+    /// Traced `lax.rev(x, dimensions)`.
+    pub fn rev(x: &TracerRef, dimensions: &[usize]) -> Result<TracerRef, TraceError> {
+        x.rev(dimensions)
+    }
+
+    /// Traced `lax.squeeze(x, dimensions)`.
+    pub fn squeeze(x: &TracerRef, dimensions: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        x.squeeze(dimensions)
+    }
+
+    /// Traced `lax.expand_dims(x, axis)`.
+    pub fn expand_dims(x: &TracerRef, axis: i64) -> Result<TracerRef, TraceError> {
+        x.expand_dims(axis)
+    }
+
+    /// Traced `lax.tile(x, reps)`.
+    pub fn tile(x: &TracerRef, reps: &[usize]) -> Result<TracerRef, TraceError> {
+        x.tile(reps)
+    }
+
+    /// Traced `lax.reduce_sum(x, axes)`.
+    pub fn reduce_sum(x: &TracerRef, axes: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        x.reduce_sum(axes)
+    }
+
+    /// Traced `lax.reduce_max(x, axes)`.
+    pub fn reduce_max(x: &TracerRef, axes: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        x.reduce_max(axes)
+    }
+
+    /// Traced `lax.reduce_min(x, axes)`.
+    pub fn reduce_min(x: &TracerRef, axes: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        x.reduce_min(axes)
+    }
+
+    /// Traced `lax.reduce_prod(x, axes)`.
+    pub fn reduce_prod(x: &TracerRef, axes: Option<&[i64]>) -> Result<TracerRef, TraceError> {
+        x.reduce_prod(axes)
+    }
+
+    /// Traced `lax.cumsum(x, axis, reverse)`.
+    pub fn cumsum(
+        x: &TracerRef,
+        axis: Option<i64>,
+        reverse: bool,
+    ) -> Result<TracerRef, TraceError> {
+        x.cumsum(axis, reverse)
+    }
+
+    /// Traced `lax.cumprod(x, axis, reverse)`.
+    pub fn cumprod(
+        x: &TracerRef,
+        axis: Option<i64>,
+        reverse: bool,
+    ) -> Result<TracerRef, TraceError> {
+        x.cumprod(axis, reverse)
+    }
+
+    /// Traced `lax.cummax(x, axis, reverse)`.
+    pub fn cummax(
+        x: &TracerRef,
+        axis: Option<i64>,
+        reverse: bool,
+    ) -> Result<TracerRef, TraceError> {
+        x.cummax(axis, reverse)
+    }
+
+    /// Traced `lax.cummin(x, axis, reverse)`.
+    pub fn cummin(
+        x: &TracerRef,
+        axis: Option<i64>,
+        reverse: bool,
+    ) -> Result<TracerRef, TraceError> {
+        x.cummin(axis, reverse)
+    }
+
+    /// Traced `lax.sort(x, axis, descending)`.
+    pub fn sort(
+        x: &TracerRef,
+        axis: Option<i64>,
+        descending: bool,
+    ) -> Result<TracerRef, TraceError> {
+        x.sort(axis, descending)
+    }
+
+    /// Traced `lax.argsort(x, axis, descending)`.
+    pub fn argsort(
+        x: &TracerRef,
+        axis: Option<i64>,
+        descending: bool,
+    ) -> Result<TracerRef, TraceError> {
+        x.argsort(axis, descending)
+    }
+
+    /// Traced `lax.top_k(x, k)`.
+    pub fn top_k(x: &TracerRef, k: u32) -> Result<(TracerRef, TracerRef), TraceError> {
+        x.top_k(k)
+    }
+
+    /// Traced `lax.dot_general(lhs, rhs, lhs_contracting, rhs_contracting, lhs_batch, rhs_batch)`.
+    pub fn dot_general(
+        lhs: &TracerRef,
+        rhs: &TracerRef,
+        lhs_contracting_dims: &[usize],
+        rhs_contracting_dims: &[usize],
+        lhs_batch_dims: &[usize],
+        rhs_batch_dims: &[usize],
+    ) -> Result<TracerRef, TraceError> {
+        lhs.dot_general(
+            rhs,
+            lhs_contracting_dims,
+            rhs_contracting_dims,
+            lhs_batch_dims,
+            rhs_batch_dims,
+        )
+    }
+
+    /// Traced `lax.conv(lhs, rhs, strides, padding)`.
+    pub fn conv(
+        lhs: &TracerRef,
+        rhs: &TracerRef,
+        strides: &[usize],
+        padding: &str,
+    ) -> Result<TracerRef, TraceError> {
+        lhs.conv(rhs, strides, padding)
+    }
+
+    /// Traced `lax.qr(x, full_matrices)`.
+    pub fn qr(x: &TracerRef, full_matrices: bool) -> Result<(TracerRef, TracerRef), TraceError> {
+        x.qr(full_matrices)
+    }
+
+    /// Traced `lax.lu(x)`.
+    pub fn lu(x: &TracerRef) -> Result<(TracerRef, TracerRef, TracerRef), TraceError> {
+        x.lu()
+    }
+
+    /// Traced `lax.svd(x, full_matrices)`.
+    pub fn svd(
+        x: &TracerRef,
+        full_matrices: bool,
+    ) -> Result<(TracerRef, TracerRef, TracerRef), TraceError> {
+        x.svd(full_matrices)
+    }
+
+    /// Traced `lax.eigh(x)`.
+    pub fn eigh(x: &TracerRef) -> Result<(TracerRef, TracerRef), TraceError> {
+        x.eigh()
+    }
+
+    /// Traced `lax.triangular_solve(a, b, lower, transpose_a, unit_diagonal)`.
+    pub fn triangular_solve(
+        a: &TracerRef,
+        b: &TracerRef,
+        lower: bool,
+        transpose_a: bool,
+        unit_diagonal: bool,
+    ) -> Result<TracerRef, TraceError> {
+        a.triangular_solve(b, lower, transpose_a, unit_diagonal)
+    }
+
+    /// Traced `lax.slogdet(x)`.
+    pub fn slogdet(x: &TracerRef) -> Result<(TracerRef, TracerRef), TraceError> {
+        x.slogdet()
+    }
+
+    /// Traced `lax.fft(x, fft_length)`.
+    pub fn fft(x: &TracerRef, fft_length: Option<u32>) -> Result<TracerRef, TraceError> {
+        x.fft(fft_length)
+    }
+
+    /// Traced `lax.ifft(x, fft_length)`.
+    pub fn ifft(x: &TracerRef, fft_length: Option<u32>) -> Result<TracerRef, TraceError> {
+        x.ifft(fft_length)
+    }
+
+    /// Traced `lax.rfft(x, fft_length)`.
+    pub fn rfft(x: &TracerRef, fft_length: Option<u32>) -> Result<TracerRef, TraceError> {
+        x.rfft(fft_length)
+    }
+
+    /// Traced `lax.irfft(x, fft_length)`.
+    pub fn irfft(x: &TracerRef, fft_length: Option<u32>) -> Result<TracerRef, TraceError> {
+        x.irfft(fft_length)
+    }
+
+    /// Traced `lax.psum(x, axis_name)`.
+    pub fn psum(x: &TracerRef, axis_name: &str) -> Result<TracerRef, TraceError> {
+        x.psum(axis_name)
+    }
+
+    /// Traced `lax.pmean(x, axis_name)`.
+    pub fn pmean(x: &TracerRef, axis_name: &str) -> Result<TracerRef, TraceError> {
+        x.pmean(axis_name)
+    }
+
+    /// Traced `lax.all_gather(x, axis_name)`.
+    pub fn all_gather(x: &TracerRef, axis_name: &str) -> Result<TracerRef, TraceError> {
+        x.all_gather(axis_name)
+    }
+
+    /// Traced `lax.all_to_all(x, axis_name)`.
+    pub fn all_to_all(x: &TracerRef, axis_name: &str) -> Result<TracerRef, TraceError> {
+        x.all_to_all(axis_name)
+    }
+
+    /// Traced `lax.axis_index(axis_name)` (in the currently active trace frame).
+    pub fn axis_index(axis_name: &str) -> Result<TracerRef, TraceError> {
+        TracerRef::axis_index(axis_name)
+    }
+
+    /// Traced `lax.bind_axis_index(x, axis_name)` bound to `x`'s trace frame.
+    pub fn bind_axis_index(x: &TracerRef, axis_name: &str) -> Result<TracerRef, TraceError> {
+        x.bind_axis_index(axis_name)
+    }
+
+    /// Traced `lax.custom_call(first_input, target, other_inputs, params)`.
+    pub fn custom_call(
+        first_input: &TracerRef,
+        target: &str,
+        other_inputs: &[&TracerRef],
+        params: BTreeMap<String, String>,
+    ) -> Result<TracerRef, TraceError> {
+        first_input.custom_call(target, other_inputs, params)
     }
 }
 
@@ -3115,6 +3629,71 @@ mod tests {
             .call_with_ffi(vec![Value::scalar_f64(10.0)], &registry)
             .expect("jit call_with_ffi");
         assert_eq!(call_with_ffi_out, vec![Value::scalar_f64(25.0)]);
+    }
+
+    #[test]
+    fn wave15_lax_module_and_runtime_ledger_facade_work() {
+        // 1. Traced lax::integer_pow, lax::lgamma, lax::add composed with hessian_fn and symbolic hessian
+        let x = Value::scalar_f64(2.5);
+        let h_pow_out = hessian_fn(
+            |inputs| {
+                let y = lax::integer_pow(&inputs[0], 3)?;
+                Ok(vec![y])
+            },
+            vec![x.clone()],
+        )
+        .expect("hessian_fn lax::integer_pow");
+        // d^2/dx^2 (x^3) = 6x = 15.0
+        let h_pow_val = h_pow_out.as_tensor().unwrap().to_f64_vec().unwrap()[0];
+        assert!((h_pow_val - 15.0).abs() < 1e-10);
+
+        let h_lgamma_out = hessian_fn(|inputs| Ok(vec![lax::lgamma(&inputs[0])?]), vec![x])
+            .expect("hessian_fn lax::lgamma");
+        let expected_trigamma = std::f64::consts::PI.powi(2) / 2.0 - 4.0 - 4.0 / 9.0;
+        let h_lgamma_val = h_lgamma_out.as_tensor().unwrap().to_f64_vec().unwrap()[0];
+        assert!((h_lgamma_val - expected_trigamma).abs() < 1e-10);
+
+        // 2. Traced lax::psum composed with pmap_fn across 4 devices
+        let vec_in = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+        let pmap_out = pmap_fn(
+            |inputs| {
+                let sq = lax::square(&inputs[0])?;
+                Ok(vec![lax::psum(&sq, "i")?])
+            },
+            4,
+            vec![vec_in],
+        )
+        .expect("pmap_fn with lax::psum");
+        assert_eq!(
+            pmap_out[0].as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![30.0, 30.0, 30.0, 30.0]
+        );
+
+        // 3. Eager lax::array_creation and runtime/ledger facade types
+        let eye2 =
+            lax::array_creation::eye(2, None, 0, DType::F64).expect("lax::array_creation::eye");
+        assert_eq!(eye2.as_tensor().unwrap().shape.dims, vec![2, 2]);
+
+        let buf = Buffer::new(vec![10, 20, 30, 40], DeviceId(0));
+        let view = BufferView::from_buffer(&buf).slice(1, 2).expect("slice");
+        assert_eq!(view.as_bytes(), &[20, 30]);
+        assert_eq!(Platform::Cpu.as_str(), "cpu");
+
+        let mut cp = ConformalPredictor::new(0.9, 3);
+        cp.observe(0.05);
+        cp.observe(0.10);
+        cp.observe(0.15);
+        assert!(cp.is_calibrated());
+        let est = cp.calibrated_posterior(0.2);
+        assert!(est.used_conformal);
+
+        let mut ep = EProcess::new(10.0);
+        ep.update(2.5);
+        assert!(!ep.rejected());
+        assert_eq!(
+            recommend_action(0.05, &LossMatrix::default()),
+            DecisionAction::Keep
+        );
     }
 
     mod proptest_tests {

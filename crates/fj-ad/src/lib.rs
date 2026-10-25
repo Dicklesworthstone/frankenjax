@@ -13509,13 +13509,16 @@ fn is_input_differentiable(primitive: Primitive, input_idx: usize) -> bool {
         | Primitive::Argsort
         | Primitive::ReduceAnd
         | Primitive::ReduceOr
-        | Primitive::ReduceXor => false,
+        | Primitive::ReduceXor
+        | Primitive::Gcd
+        | Primitive::Lcm
+        | Primitive::AxisIndex => false,
         Primitive::Select | Primitive::Cond | Primitive::Switch => input_idx >= 1,
         Primitive::DynamicSlice | Primitive::Gather => input_idx == 0,
         Primitive::DynamicUpdateSlice => input_idx <= 1,
         Primitive::Scatter => input_idx == 0 || input_idx == 2,
-        Primitive::Heaviside => input_idx == 1,
-        Primitive::CopySign => input_idx == 0,
+        Primitive::Heaviside | Primitive::Polygamma => input_idx == 1,
+        Primitive::CopySign | Primitive::Ldexp => input_idx == 0,
         _ => true,
     }
 }
@@ -13947,7 +13950,33 @@ fn emit_symbolic_jvp_equation(
         | Primitive::Fft
         | Primitive::Ifft
         | Primitive::Rfft
-        | Primitive::Irfft => builder.emit_unary_params(eqn.primitive, t(0), params.clone()),
+        | Primitive::Irfft
+        | Primitive::Psum
+        | Primitive::Pmean => builder.emit_unary_params(eqn.primitive, t(0), params.clone()),
+        Primitive::ReduceProd => {
+            let y_bcast = builder.emit_broadcast_reduced_to(Atom::Var(p_out[0]), p(0), params);
+            let y_dx = builder.emit_binary(Primitive::Mul, Atom::Var(y_bcast), t(0));
+            let ratio = builder.emit_binary(Primitive::Div, Atom::Var(y_dx), p(0));
+            builder.emit_unary_params(Primitive::ReduceSum, Atom::Var(ratio), params.clone())
+        }
+        Primitive::ReduceMax | Primitive::ReduceMin => {
+            let y_bcast = builder.emit_broadcast_reduced_to(Atom::Var(p_out[0]), p(0), params);
+            let mask = builder.emit_binary(Primitive::Eq, p(0), Atom::Var(y_bcast));
+            let one = builder.emit_ones_like(p(0));
+            let zero = builder.emit_zeros_like(p(0));
+            let ind = builder.emit_ternary(
+                Primitive::Select,
+                Atom::Var(mask),
+                Atom::Var(one),
+                Atom::Var(zero),
+            );
+            let counts =
+                builder.emit_unary_params(Primitive::ReduceSum, Atom::Var(ind), params.clone());
+            let ind_dx = builder.emit_binary(Primitive::Mul, Atom::Var(ind), t(0));
+            let sum_dx =
+                builder.emit_unary_params(Primitive::ReduceSum, Atom::Var(ind_dx), params.clone());
+            builder.emit_binary(Primitive::Div, Atom::Var(sum_dx), Atom::Var(counts))
+        }
         Primitive::Complex => builder.emit_binary(Primitive::Complex, t(0), t(1)),
         Primitive::Deg2Rad => builder.emit_binary(
             Primitive::Mul,
@@ -13963,6 +13992,81 @@ fn emit_symbolic_jvp_equation(
             let dig = builder.emit_unary(Primitive::Digamma, p(0));
             builder.emit_binary(Primitive::Mul, Atom::Var(dig), t(0))
         }
+        Primitive::Digamma => {
+            let trig = builder.emit_binary(Primitive::Polygamma, Atom::Lit(Literal::I64(1)), p(0));
+            builder.emit_binary(Primitive::Mul, Atom::Var(trig), t(0))
+        }
+        Primitive::Polygamma => {
+            let np1 = builder.emit_binary(Primitive::Add, p(0), Atom::Lit(Literal::I64(1)));
+            let dpoly = builder.emit_binary(Primitive::Polygamma, Atom::Var(np1), p(1));
+            builder.emit_binary(Primitive::Mul, Atom::Var(dpoly), t(1))
+        }
+        Primitive::Sinc => {
+            let zero = builder.emit_zeros_like(p(0));
+            let is_zero = builder.emit_binary(Primitive::Eq, p(0), Atom::Var(zero));
+            let one = builder.emit_ones_like(p(0));
+            let safe_x =
+                builder.emit_ternary(Primitive::Select, Atom::Var(is_zero), Atom::Var(one), p(0));
+            let pi_x = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Lit(Literal::from_f64(std::f64::consts::PI)),
+                p(0),
+            );
+            let cos_pi_x = builder.emit_unary(Primitive::Cos, Atom::Var(pi_x));
+            let numer =
+                builder.emit_binary(Primitive::Sub, Atom::Var(cos_pi_x), Atom::Var(p_out[0]));
+            let deriv = builder.emit_binary(Primitive::Div, Atom::Var(numer), Atom::Var(safe_x));
+            builder.emit_binary(Primitive::Mul, Atom::Var(deriv), t(0))
+        }
+        Primitive::ErfInv => {
+            let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
+            let exp_y2 = builder.emit_unary(Primitive::Exp, Atom::Var(y2));
+            let deriv = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Lit(Literal::from_f64(std::f64::consts::PI.sqrt() / 2.0)),
+                Atom::Var(exp_y2),
+            );
+            builder.emit_binary(Primitive::Mul, Atom::Var(deriv), t(0))
+        }
+        Primitive::BesselI0e => {
+            let i1e = builder.emit_unary(Primitive::BesselI1e, p(0));
+            let sx = builder.emit_unary(Primitive::Sign, p(0));
+            let s_i0e = builder.emit_binary(Primitive::Mul, Atom::Var(sx), Atom::Var(p_out[0]));
+            let deriv = builder.emit_binary(Primitive::Sub, Atom::Var(i1e), Atom::Var(s_i0e));
+            builder.emit_binary(Primitive::Mul, Atom::Var(deriv), t(0))
+        }
+        Primitive::BesselI1e => {
+            let ones = builder.emit_ones_like(p(0));
+            let eps = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Var(ones),
+                Atom::Lit(Literal::from_f64(f64::EPSILON)),
+            );
+            let half = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Var(ones),
+                Atom::Lit(Literal::from_f64(0.5)),
+            );
+            let abs_x = builder.emit_unary(Primitive::Abs, p(0));
+            let not_tiny = builder.emit_binary(Primitive::Gt, Atom::Var(abs_x), Atom::Var(eps));
+            let safe_x =
+                builder.emit_ternary(Primitive::Select, Atom::Var(not_tiny), p(0), Atom::Var(eps));
+            let i0e = builder.emit_unary(Primitive::BesselI0e, Atom::Var(safe_x));
+            let sign_safe = builder.emit_unary(Primitive::Sign, Atom::Var(safe_x));
+            let recip_safe = builder.emit_unary(Primitive::Reciprocal, Atom::Var(safe_x));
+            let coeff =
+                builder.emit_binary(Primitive::Add, Atom::Var(sign_safe), Atom::Var(recip_safe));
+            let term = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(coeff));
+            let formula = builder.emit_binary(Primitive::Sub, Atom::Var(i0e), Atom::Var(term));
+            let deriv = builder.emit_ternary(
+                Primitive::Select,
+                Atom::Var(not_tiny),
+                Atom::Var(formula),
+                Atom::Var(half),
+            );
+            builder.emit_binary(Primitive::Mul, Atom::Var(deriv), t(0))
+        }
+        Primitive::Ldexp => builder.emit_binary(Primitive::Ldexp, t(0), p(1)),
         Primitive::LogAddExp => {
             let x_minus_y = builder.emit_binary(Primitive::Sub, p(0), p(1));
             let y_minus_x = builder.emit_binary(Primitive::Sub, p(1), p(0));
@@ -14511,7 +14615,11 @@ fn emit_symbolic_vjp_equation(
             }
             builder.emit_unary_params(Primitive::Transpose, g(), inv_params)
         })]),
-        Primitive::Rev | Primitive::ReducePrecision | Primitive::Conj => {
+        Primitive::Rev
+        | Primitive::ReducePrecision
+        | Primitive::Conj
+        | Primitive::Psum
+        | Primitive::Pmean => {
             Ok(vec![need_input[0].then(|| {
                 builder.emit_unary_params(eqn.primitive, g(), params.clone())
             })])
@@ -14591,6 +14699,84 @@ fn emit_symbolic_vjp_equation(
             let dig = builder.emit_unary(Primitive::Digamma, p(0));
             builder.emit_binary(Primitive::Mul, g(), Atom::Var(dig))
         })]),
+        Primitive::Digamma => Ok(vec![need_input[0].then(|| {
+            let trig = builder.emit_binary(Primitive::Polygamma, Atom::Lit(Literal::I64(1)), p(0));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(trig))
+        })]),
+        Primitive::Polygamma => {
+            let g1 = need_input[1].then(|| {
+                let np1 = builder.emit_binary(Primitive::Add, p(0), Atom::Lit(Literal::I64(1)));
+                let dpoly = builder.emit_binary(Primitive::Polygamma, Atom::Var(np1), p(1));
+                builder.emit_binary(Primitive::Mul, g(), Atom::Var(dpoly))
+            });
+            Ok(vec![None, g1])
+        }
+        Primitive::Sinc => Ok(vec![need_input[0].then(|| {
+            let zero = builder.emit_zeros_like(p(0));
+            let is_zero = builder.emit_binary(Primitive::Eq, p(0), Atom::Var(zero));
+            let one = builder.emit_ones_like(p(0));
+            let safe_x =
+                builder.emit_ternary(Primitive::Select, Atom::Var(is_zero), Atom::Var(one), p(0));
+            let pi_x = builder.emit_binary(
+                Primitive::Mul,
+                builder.const_atom(std::f64::consts::PI),
+                p(0),
+            );
+            let cos_pi_x = builder.emit_unary(Primitive::Cos, Atom::Var(pi_x));
+            let numer =
+                builder.emit_binary(Primitive::Sub, Atom::Var(cos_pi_x), Atom::Var(p_out[0]));
+            let deriv = builder.emit_binary(Primitive::Div, Atom::Var(numer), Atom::Var(safe_x));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(deriv))
+        })]),
+        Primitive::ErfInv => Ok(vec![need_input[0].then(|| {
+            let y2 = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(p_out[0]));
+            let exp_y2 = builder.emit_unary(Primitive::Exp, Atom::Var(y2));
+            let deriv = builder.emit_binary(
+                Primitive::Mul,
+                builder.const_atom(std::f64::consts::PI.sqrt() / 2.0),
+                Atom::Var(exp_y2),
+            );
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(deriv))
+        })]),
+        Primitive::BesselI0e => Ok(vec![need_input[0].then(|| {
+            let i1e = builder.emit_unary(Primitive::BesselI1e, p(0));
+            let sx = builder.emit_unary(Primitive::Sign, p(0));
+            let s_i0e = builder.emit_binary(Primitive::Mul, Atom::Var(sx), Atom::Var(p_out[0]));
+            let deriv = builder.emit_binary(Primitive::Sub, Atom::Var(i1e), Atom::Var(s_i0e));
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(deriv))
+        })]),
+        Primitive::BesselI1e => Ok(vec![need_input[0].then(|| {
+            let ones = builder.emit_ones_like(p(0));
+            let eps = builder.emit_binary(
+                Primitive::Mul,
+                Atom::Var(ones),
+                builder.const_atom(f64::EPSILON),
+            );
+            let half =
+                builder.emit_binary(Primitive::Mul, Atom::Var(ones), builder.const_atom(0.5));
+            let abs_x = builder.emit_unary(Primitive::Abs, p(0));
+            let not_tiny = builder.emit_binary(Primitive::Gt, Atom::Var(abs_x), Atom::Var(eps));
+            let safe_x =
+                builder.emit_ternary(Primitive::Select, Atom::Var(not_tiny), p(0), Atom::Var(eps));
+            let i0e = builder.emit_unary(Primitive::BesselI0e, Atom::Var(safe_x));
+            let sign_safe = builder.emit_unary(Primitive::Sign, Atom::Var(safe_x));
+            let recip_safe = builder.emit_unary(Primitive::Reciprocal, Atom::Var(safe_x));
+            let coeff =
+                builder.emit_binary(Primitive::Add, Atom::Var(sign_safe), Atom::Var(recip_safe));
+            let term = builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(coeff));
+            let formula = builder.emit_binary(Primitive::Sub, Atom::Var(i0e), Atom::Var(term));
+            let deriv = builder.emit_ternary(
+                Primitive::Select,
+                Atom::Var(not_tiny),
+                Atom::Var(formula),
+                Atom::Var(half),
+            );
+            builder.emit_binary(Primitive::Mul, g(), Atom::Var(deriv))
+        })]),
+        Primitive::Ldexp => {
+            let g0 = need_input[0].then(|| builder.emit_binary(Primitive::Ldexp, g(), p(1)));
+            Ok(vec![g0, None])
+        }
         Primitive::LogAddExp => {
             let g0 = need_input[0].then(|| {
                 let x_minus_y = builder.emit_binary(Primitive::Sub, p(0), p(1));
@@ -32809,5 +32995,162 @@ mod tests {
             (sym_grads[1].as_f64_scalar().unwrap() - tape_grads[1].as_f64_scalar().unwrap()).abs()
                 < 1e-12
         );
+    }
+
+    #[test]
+    fn wave15_symbolic_ad_higher_order_special_math_and_reduction_symmetry_work() {
+        use smallvec::smallvec;
+        // 1. Lgamma -> Digamma -> Polygamma(1, x) -> Polygamma(2, x) higher-order symbolic AD
+        let f_lgamma = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Lgamma,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let g1_lgamma = super::grad_to_jaxpr(&f_lgamma).expect("1st grad lgamma -> digamma");
+        let g2_lgamma = super::grad_to_jaxpr(&g1_lgamma).expect("2nd grad digamma -> polygamma(1)");
+        let g3_lgamma =
+            super::grad_to_jaxpr(&g2_lgamma).expect("3rd grad polygamma(1) -> polygamma(2)");
+        let hess_lgamma = super::hessian_to_jaxpr(&f_lgamma).expect("hessian_to_jaxpr lgamma");
+        g3_lgamma
+            .validate_well_formed()
+            .expect("g3_lgamma well-formed");
+        hess_lgamma
+            .validate_well_formed()
+            .expect("hess_lgamma well-formed");
+
+        let x = Value::scalar_f64(2.5);
+        let d2_val = fj_interpreters::eval_jaxpr(&g2_lgamma, std::slice::from_ref(&x))
+            .expect("eval g2_lgamma")[0]
+            .as_f64_scalar()
+            .unwrap();
+        let hess_val = fj_interpreters::eval_jaxpr(&hess_lgamma, std::slice::from_ref(&x))
+            .expect("eval hess_lgamma")[0]
+            .as_f64_scalar()
+            .unwrap();
+        // trigamma(2.5) = pi^2/2 - 1/(0.5)^2 - 1/(1.5)^2 = pi^2/2 - 4 - 4/9
+        let expected_trigamma = std::f64::consts::PI.powi(2) / 2.0 - 4.0 - 4.0 / 9.0;
+        assert!((d2_val - expected_trigamma).abs() < 1e-10);
+        assert!((hess_val - expected_trigamma).abs() < 1e-10);
+
+        let d3_val = fj_interpreters::eval_jaxpr(&g3_lgamma, std::slice::from_ref(&x))
+            .expect("eval g3_lgamma")[0]
+            .as_f64_scalar()
+            .unwrap();
+        assert!(d3_val.is_finite() && d3_val < 0.0);
+
+        // 2. BesselI0e <-> BesselI1e symbolic Hessian & HVP
+        let f_bessel = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::BesselI0e,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let hess_bessel = super::hessian_to_jaxpr(&f_bessel).expect("hessian_to_jaxpr bessel_i0e");
+        hess_bessel
+            .validate_well_formed()
+            .expect("hess_bessel well-formed");
+        let bessel_h_zero = fj_interpreters::eval_jaxpr(&hess_bessel, &[Value::scalar_f64(0.0)])
+            .expect("eval hess_bessel at 0")[0]
+            .as_f64_scalar()
+            .unwrap();
+        // d/dx I0e(x) = I1e(x) - sign(x)*I0e(x); at x=0, d/dx I1e(0) = 0.5, sign(0)=0 => 0.5
+        assert!((bessel_h_zero - 0.5).abs() < 1e-12);
+
+        // 3. Sinc (at x=0 and x=0.5), ErfInv, and Ldexp symbolic grad & JVP
+        let f_sinc = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Sinc,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let g_sinc = super::grad_to_jaxpr(&f_sinc).expect("grad_to_jaxpr sinc");
+        let sinc_g0 = fj_interpreters::eval_jaxpr(&g_sinc, &[Value::scalar_f64(0.0)])
+            .expect("eval g_sinc at 0")[0]
+            .as_f64_scalar()
+            .unwrap();
+        assert!(sinc_g0.abs() < 1e-12);
+        let sinc_g_half = fj_interpreters::eval_jaxpr(&g_sinc, &[Value::scalar_f64(0.5)])
+            .expect("eval g_sinc at 0.5")[0]
+            .as_f64_scalar()
+            .unwrap();
+        let tape_sinc_half = grad_jaxpr(&f_sinc, &[Value::scalar_f64(0.5)]).expect("tape sinc")[0]
+            .as_f64_scalar()
+            .unwrap();
+        assert!((sinc_g_half - tape_sinc_half).abs() < 1e-12);
+
+        let f_erfinv = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::ErfInv,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let hess_erfinv = super::hessian_to_jaxpr(&f_erfinv).expect("hessian_to_jaxpr erf_inv");
+        let erfinv_h = fj_interpreters::eval_jaxpr(&hess_erfinv, &[Value::scalar_f64(0.3)])
+            .expect("eval hess_erfinv")[0]
+            .as_f64_scalar()
+            .unwrap();
+        assert!(erfinv_h.is_finite() && erfinv_h > 0.0);
+
+        // 4. ReduceProd and ReduceMax symbolic JVP & HVP symmetry
+        let f_rprod = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::ReduceProd,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let jvp_rprod = super::jvp_to_jaxpr(&f_rprod).expect("jvp_to_jaxpr ReduceProd");
+        let hvp_rprod = super::hvp_to_jaxpr(&f_rprod).expect("hvp_to_jaxpr ReduceProd");
+        jvp_rprod
+            .validate_well_formed()
+            .expect("jvp_rprod well-formed");
+        hvp_rprod
+            .validate_well_formed()
+            .expect("hvp_rprod well-formed");
+        let v = Value::vector_f64(&[2.0, 3.0, 4.0]).unwrap();
+        let dv = Value::vector_f64(&[1.0, 0.0, 0.0]).unwrap();
+        let jvp_out =
+            fj_interpreters::eval_jaxpr(&jvp_rprod, &[v.clone(), dv.clone()]).expect("eval jvp");
+        assert!((jvp_out[0].as_f64_scalar().unwrap() - 24.0).abs() < 1e-12);
+        assert!((jvp_out[1].as_f64_scalar().unwrap() - 12.0).abs() < 1e-12);
+        let hvp_out = fj_interpreters::eval_jaxpr(&hvp_rprod, &[v, dv]).expect("eval hvp");
+        let hvp_vec = hvp_out[0].as_tensor().unwrap().to_f64_vec().unwrap();
+        // f(x,y,z) = x*y*z => H * [1, 0, 0] = [0, z, y] = [0, 4, 3]
+        assert_eq!(hvp_vec, vec![0.0, 4.0, 3.0]);
     }
 }

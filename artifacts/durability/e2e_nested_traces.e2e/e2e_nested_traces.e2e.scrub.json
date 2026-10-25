@@ -1,11 +1,11 @@
 {
   "sidecar_path": "artifacts/durability/e2e_nested_traces.e2e/e2e_nested_traces.e2e.sidecar.json",
   "artifact_path": "artifacts/e2e/e2e_nested_traces.e2e.json",
-  "expected_sha256_hex": "b68cf38f78e044f167f1e0f14d5db662b6a2af5999662cdcba7942800d33ad20",
-  "decoded_sha256_hex": "b68cf38f78e044f167f1e0f14d5db662b6a2af5999662cdcba7942800d33ad20",
+  "expected_sha256_hex": "dd94723d2ab356475696cd763786d445ce01564dda5f85f707393dd4cfedef37",
+  "decoded_sha256_hex": "dd94723d2ab356475696cd763786d445ce01564dda5f85f707393dd4cfedef37",
   "decoded_matches_expected": true,
   "total_symbols": 5,
   "source_symbols": 4,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1792431051573
+  "generated_at_unix_ms": 1792901611683
 }

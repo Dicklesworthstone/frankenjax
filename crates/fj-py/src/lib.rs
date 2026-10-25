@@ -1181,6 +1181,142 @@ impl PyTracer {
             .map_err(trace_error_to_py_err)
     }
 
+    // ── Neural-network (`jax.nn`) tracer methods ──────────────────────────────
+
+    fn relu6(&self) -> PyResult<Self> {
+        fj_api::nn::relu6(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn selu(&self) -> PyResult<Self> {
+        fj_api::nn::selu(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (alpha=1.0))]
+    fn celu(&self, alpha: f64) -> PyResult<Self> {
+        fj_api::nn::celu(&self.inner, alpha)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn mish(&self) -> PyResult<Self> {
+        fj_api::nn::mish(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn soft_sign(&self) -> PyResult<Self> {
+        fj_api::nn::soft_sign(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn hard_tanh(&self) -> PyResult<Self> {
+        fj_api::nn::hard_tanh(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn hard_sigmoid(&self) -> PyResult<Self> {
+        fj_api::nn::hard_sigmoid(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn hard_swish(&self) -> PyResult<Self> {
+        fj_api::nn::hard_swish(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn hard_silu(&self) -> PyResult<Self> {
+        fj_api::nn::hard_silu(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn log_sigmoid(&self) -> PyResult<Self> {
+        fj_api::nn::log_sigmoid(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn swiglu(&self, up: &Self) -> PyResult<Self> {
+        fj_api::nn::swiglu(&self.inner, &up.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (up, approximate=true))]
+    fn geglu(&self, up: &Self, approximate: bool) -> PyResult<Self> {
+        fj_api::nn::geglu(&self.inner, &up.inner, approximate)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=-1))]
+    fn logsumexp(&self, axis: isize) -> PyResult<Self> {
+        fj_api::nn::logsumexp(&self.inner, axis)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=-1))]
+    fn softmax(&self, axis: isize) -> PyResult<Self> {
+        fj_api::nn::softmax(&self.inner, axis)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=-1))]
+    fn log_softmax(&self, axis: isize) -> PyResult<Self> {
+        fj_api::nn::log_softmax(&self.inner, axis)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=-1, eps=1e-5))]
+    fn standardize(&self, axis: isize, eps: f64) -> PyResult<Self> {
+        fj_api::nn::standardize(&self.inner, axis, eps)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=-1, eps=1e-5, weight=None, bias=None))]
+    fn layer_norm(
+        &self,
+        axis: isize,
+        eps: f64,
+        weight: Option<&Self>,
+        bias: Option<&Self>,
+    ) -> PyResult<Self> {
+        fj_api::nn::layer_norm(
+            &self.inner,
+            axis,
+            eps,
+            weight.map(|w| &w.inner),
+            bias.map(|b| &b.inner),
+        )
+        .map(Self::from_tracer)
+        .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=-1, eps=1e-5, weight=None))]
+    fn rms_norm(&self, axis: isize, eps: f64, weight: Option<&Self>) -> PyResult<Self> {
+        fj_api::nn::rms_norm(&self.inner, axis, eps, weight.map(|w| &w.inner))
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn l2_loss(&self) -> PyResult<Self> {
+        fj_api::nn::l2_loss(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
     fn __repr__(&self) -> String {
         let aval = self.inner.aval();
         format!(
@@ -5158,6 +5294,79 @@ fn py_hessian_to_jaxpr(
     Ok(PyJaxpr { inner: lowered })
 }
 
+#[pyclass(name = "StagedProgram")]
+#[derive(Clone, Debug)]
+struct PyStagedProgram {
+    inner: fj_api::StagedProgram,
+}
+
+#[pymethods]
+impl PyStagedProgram {
+    fn execute(&self, dynamic_args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
+        let rust_args = py_values_to_rust(dynamic_args);
+        let outputs = fj_api::execute_staged(&self.inner, &rust_args)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+        check_debug_nans_infs(&outputs)?;
+        Ok(py_values_from_rust(outputs))
+    }
+
+    fn residual_jaxpr(&self) -> PyJaxpr {
+        PyJaxpr {
+            inner: self.inner.jaxpr_unknown.clone(),
+        }
+    }
+
+    fn known_jaxpr(&self) -> PyJaxpr {
+        PyJaxpr {
+            inner: self.inner.jaxpr_known.clone(),
+        }
+    }
+
+    fn known_outputs(&self) -> Vec<PyValue> {
+        py_values_from_rust(self.inner.known_outputs.clone())
+    }
+
+    fn residuals(&self) -> Vec<PyValue> {
+        py_values_from_rust(self.inner.residuals.clone())
+    }
+
+    fn out_unknowns(&self) -> Vec<bool> {
+        self.inner.out_unknowns.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StagedProgram(known_equations={}, residual_equations={}, residuals={})",
+            self.inner.jaxpr_known.equations.len(),
+            self.inner.jaxpr_unknown.equations.len(),
+            self.inner.residuals.len()
+        )
+    }
+}
+
+#[pyfunction(name = "stage_jaxpr", signature = (target, unknowns, known_args, example_args=None))]
+fn py_stage_jaxpr(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    unknowns: Vec<bool>,
+    known_args: Vec<PyValue>,
+    example_args: Option<Vec<PyValue>>,
+) -> PyResult<PyStagedProgram> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, example_args.as_deref())?;
+    let rust_known = py_values_to_rust(known_args);
+    let staged = fj_api::stage_jaxpr(&jaxpr, &unknowns, &rust_known)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+    Ok(PyStagedProgram { inner: staged })
+}
+
+#[pyfunction(name = "execute_staged")]
+fn py_execute_staged(
+    staged: &PyStagedProgram,
+    dynamic_args: Vec<PyValue>,
+) -> PyResult<Vec<PyValue>> {
+    staged.execute(dynamic_args)
+}
+
 #[pyfunction(name = "optimize_jaxpr", signature = (target, example_args=None))]
 fn py_optimize_jaxpr(
     py: Python<'_>,
@@ -5192,6 +5401,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyJaxpr>()?;
     m.add_class::<PyTracer>()?;
     m.add_class::<PyCheckpoint>()?;
+    m.add_class::<PyStagedProgram>()?;
     m.add_class::<PyVjpPullback>()?;
     m.add_class::<PyLinearizedJvp>()?;
     m.add_class::<PyForwardPass>()?;
@@ -5288,6 +5498,8 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_hvp_to_jaxpr, m)?)?;
     m.add_function(wrap_pyfunction!(py_hessian_to_jaxpr, m)?)?;
     m.add_function(wrap_pyfunction!(py_optimize_jaxpr, m)?)?;
+    m.add_function(wrap_pyfunction!(py_stage_jaxpr, m)?)?;
+    m.add_function(wrap_pyfunction!(py_execute_staged, m)?)?;
     m.add_function(wrap_pyfunction!(checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(remat, m)?)?;
     Ok(())
@@ -6723,6 +6935,58 @@ mod tests {
                 nan_exec.is_err(),
                 "debug_nans(true) must fail closed on NaN output"
             );
+        });
+    }
+
+    #[test]
+    fn wave15_python_stage_jaxpr_and_nn_tracer_methods_work() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                pyo3::ffi::c_str!(
+                    "def stage_target(k, x):\n    known_sq = (k + 1.0) * (k + 1.0)\n    return known_sq + (x * 2.0)\n\ndef nn_loss(x):\n    return x.silu().l2_loss()\n\ndef nn_softmax(x):\n    return x.softmax(-1)\n"
+                ),
+                None,
+                Some(&locals),
+            )
+            .unwrap();
+            let stage_fn = locals.get_item("stage_target").unwrap().unwrap();
+            let nn_loss_fn = locals.get_item("nn_loss").unwrap().unwrap();
+            let nn_softmax_fn = locals.get_item("nn_softmax").unwrap().unwrap();
+
+            // 1. stage_jaxpr + execute_staged from Python
+            let k_val = PyValue::scalar_f64(3.0);
+            let x_ex = PyValue::scalar_f64(1.0);
+            let staged = py_stage_jaxpr(
+                py,
+                &stage_fn,
+                vec![false, true],
+                vec![k_val.clone()],
+                Some(vec![k_val, x_ex]),
+            )
+            .unwrap();
+            // (3 + 1)^2 = 16 is folded into residuals
+            assert_eq!(staged.residuals().len(), 1);
+            assert!((staged.residuals()[0].as_f64().unwrap() - 16.0).abs() < 1e-12);
+            assert!(staged.__repr__().contains("StagedProgram"));
+
+            let out1 = staged.execute(vec![PyValue::scalar_f64(5.0)]).unwrap();
+            assert!((out1[0].as_f64().unwrap() - 26.0).abs() < 1e-12);
+            let out2 = py_execute_staged(&staged, vec![PyValue::scalar_f64(10.0)]).unwrap();
+            assert!((out2[0].as_f64().unwrap() - 36.0).abs() < 1e-12);
+
+            // 2. Neural-network tracer methods (silu, l2_loss, softmax) composed with grad & jit
+            let vec_in = PyValue::vector_f64(vec![1.0, 2.0]).unwrap();
+            let sm_jaxpr = py_make_jaxpr(py, &nn_softmax_fn, Some(vec![vec_in.clone()])).unwrap();
+            let sm_out = jit(&sm_jaxpr, vec![vec_in.clone()]).unwrap();
+            let sm_vals = sm_out[0].as_f64_list().unwrap();
+            assert!((sm_vals[0] + sm_vals[1] - 1.0).abs() < 1e-12);
+
+            let grad_nn = py_grad(py, &nn_loss_fn, vec![vec_in], None).unwrap();
+            let grad_vals = grad_nn[0].as_f64_list().unwrap();
+            assert_eq!(grad_vals.len(), 2);
+            assert!(grad_vals[0] > 0.5 && grad_vals[1] > 1.5);
         });
     }
 }

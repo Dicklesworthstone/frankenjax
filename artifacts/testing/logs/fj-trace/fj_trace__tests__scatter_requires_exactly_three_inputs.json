@@ -7,8 +7,8 @@
   "env": {
     "rust_version": "rustc 1.100.0-nightly (908501772 2026-08-30)",
     "os": "linux",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax",
-    "timestamp_unix_ms": 1792261992017
+    "cargo_target_dir": "/dev/shm/cargo-target-frankenjax",
+    "timestamp_unix_ms": 1792901420192
   },
   "artifact_refs": [
     "packet:FJ-P2C-001",
@@ -16,10 +16,10 @@
     "/data/projects/frankenjax/crates/fj-trace/../../artifacts/testing/logs/fj-trace/fj_trace__tests__scatter_requires_exactly_three_inputs.json"
   ],
   "result": "pass",
-  "duration_ms": 46,
+  "duration_ms": 19,
   "details": "packet_id=FJ-P2C-001;suite_id=fj-trace;result=pass",
   "phase_timings": {
-    "setup_ms": 45,
+    "setup_ms": 18,
     "execute_ms": 0,
     "verify_ms": 0,
     "teardown_ms": 0

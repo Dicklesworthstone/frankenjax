@@ -5372,6 +5372,7 @@ impl TracerRef {
     /// Raise each element to a fixed integer power (`Primitive::IntegerPow`).
     pub fn integer_pow(&self, count: i64) -> Result<TracerRef, TraceError> {
         let mut params = BTreeMap::new();
+        params.insert("exponent".to_owned(), count.to_string());
         params.insert("y".to_owned(), count.to_string());
         params.insert("count".to_owned(), count.to_string());
         self.single_output_with_params(Primitive::IntegerPow, &[], params)
