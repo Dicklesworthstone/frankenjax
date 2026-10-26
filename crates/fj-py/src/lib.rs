@@ -1317,6 +1317,298 @@ impl PyTracer {
             .map_err(trace_error_to_py_err)
     }
 
+    // ── Special math, structural, FFT, and linear algebra tracer methods ──────
+
+    fn sinc(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Sinc)
+    }
+
+    fn bessel_i0e(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::BesselI0e)
+    }
+
+    fn bessel_i1e(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::BesselI1e)
+    }
+
+    fn deg2rad(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Deg2Rad)
+    }
+
+    fn rad2deg(&self) -> PyResult<Self> {
+        self.unary_primitive(fj_core::Primitive::Rad2Deg)
+    }
+
+    fn integer_pow(&self, count: i64) -> PyResult<Self> {
+        self.inner
+            .integer_pow(count)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn polygamma(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Polygamma, rhs)
+    }
+
+    fn atan2(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Atan2, rhs)
+    }
+
+    fn hypot(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Hypot, rhs)
+    }
+
+    fn logaddexp(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::LogAddExp, rhs)
+    }
+
+    fn logaddexp2(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::LogAddExp2, rhs)
+    }
+
+    fn copysign(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::CopySign, rhs)
+    }
+
+    fn nextafter(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Nextafter, rhs)
+    }
+
+    fn xlogy(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::XLogY, rhs)
+    }
+
+    fn xlog1py(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::XLog1PY, rhs)
+    }
+
+    fn heaviside(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Heaviside, rhs)
+    }
+
+    fn ldexp(&self, rhs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.binary_primitive(fj_core::Primitive::Ldexp, rhs)
+    }
+
+    fn fma(&self, b: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let bt = self.coerce_other(b)?;
+        let ct = self.coerce_other(c)?;
+        self.inner
+            .fma(&bt, &ct)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn rev(&self, axes: Vec<usize>) -> PyResult<Self> {
+        self.inner
+            .rev(&axes)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn tile(&self, reps: Vec<usize>) -> PyResult<Self> {
+        self.inner
+            .tile(&reps)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn pad(
+        &self,
+        padding_value: &Bound<'_, PyAny>,
+        padding_low: Vec<i64>,
+        padding_high: Vec<i64>,
+        padding_interior: Vec<u32>,
+    ) -> PyResult<Self> {
+        let pv = self.coerce_other(padding_value)?;
+        self.inner
+            .pad(&pv, &padding_low, &padding_high, &padding_interior)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn concatenate(&self, others: Vec<Self>, dimension: usize) -> PyResult<Self> {
+        let refs: Vec<&fj_trace::TracerRef> = others.iter().map(|t| &t.inner).collect();
+        self.inner
+            .concat_with(&refs, dimension)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=0, num_sections=2))]
+    fn split(&self, axis: i64, num_sections: usize) -> PyResult<Self> {
+        self.inner
+            .split(axis, num_sections)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn dynamic_slice(&self, start_indices: Vec<Self>, slice_sizes: Vec<u32>) -> PyResult<Self> {
+        let refs: Vec<&fj_trace::TracerRef> = start_indices.iter().map(|t| &t.inner).collect();
+        self.inner
+            .dynamic_slice(&refs, &slice_sizes)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn dynamic_update_slice(&self, update: &Self, start_indices: Vec<Self>) -> PyResult<Self> {
+        let refs: Vec<&fj_trace::TracerRef> = start_indices.iter().map(|t| &t.inner).collect();
+        self.inner
+            .dynamic_update_slice(&update.inner, &refs)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn gather(&self, start_indices: &Self, slice_sizes: Vec<u32>) -> PyResult<Self> {
+        self.inner
+            .gather(&start_indices.inner, &slice_sizes)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (scatter_indices, updates, mode="overwrite"))]
+    fn scatter(&self, scatter_indices: &Self, updates: &Self, mode: &str) -> PyResult<Self> {
+        self.inner
+            .scatter(&scatter_indices.inner, &updates.inner, Some(mode))
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None, reverse=false))]
+    fn cummax(&self, axis: Option<i64>, reverse: bool) -> PyResult<Self> {
+        self.inner
+            .cummax(axis, reverse)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None, reverse=false))]
+    fn cummin(&self, axis: Option<i64>, reverse: bool) -> PyResult<Self> {
+        self.inner
+            .cummin(axis, reverse)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None, descending=false))]
+    fn sort(&self, axis: Option<i64>, descending: bool) -> PyResult<Self> {
+        self.inner
+            .sort(axis, descending)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None, descending=false))]
+    fn argsort(&self, axis: Option<i64>, descending: bool) -> PyResult<Self> {
+        self.inner
+            .argsort(axis, descending)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (fft_length=None))]
+    fn fft(&self, fft_length: Option<u32>) -> PyResult<Self> {
+        self.inner
+            .fft(fft_length)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (fft_length=None))]
+    fn ifft(&self, fft_length: Option<u32>) -> PyResult<Self> {
+        self.inner
+            .ifft(fft_length)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (fft_length=None))]
+    fn rfft(&self, fft_length: Option<u32>) -> PyResult<Self> {
+        self.inner
+            .rfft(fft_length)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (fft_length=None))]
+    fn irfft(&self, fft_length: Option<u32>) -> PyResult<Self> {
+        self.inner
+            .irfft(fft_length)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn cholesky(&self) -> PyResult<Self> {
+        self.inner
+            .cholesky()
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (rhs, lower=true, transpose_a=false, unit_diagonal=false))]
+    fn triangular_solve(
+        &self,
+        rhs: &Self,
+        lower: bool,
+        transpose_a: bool,
+        unit_diagonal: bool,
+    ) -> PyResult<Self> {
+        self.inner
+            .triangular_solve(&rhs.inner, lower, transpose_a, unit_diagonal)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (full_matrices=true))]
+    fn qr(&self, full_matrices: bool) -> PyResult<(Self, Self)> {
+        self.inner
+            .qr(full_matrices)
+            .map(|(q, r)| (Self::from_tracer(q), Self::from_tracer(r)))
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (full_matrices=true))]
+    fn svd(&self, full_matrices: bool) -> PyResult<(Self, Self, Self)> {
+        self.inner
+            .svd(full_matrices)
+            .map(|(u, s, vt)| {
+                (
+                    Self::from_tracer(u),
+                    Self::from_tracer(s),
+                    Self::from_tracer(vt),
+                )
+            })
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn eigh(&self) -> PyResult<(Self, Self)> {
+        self.inner
+            .eigh()
+            .map(|(w, v)| (Self::from_tracer(w), Self::from_tracer(v)))
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn det(&self) -> PyResult<Self> {
+        self.inner
+            .det()
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn slogdet(&self) -> PyResult<(Self, Self)> {
+        self.inner
+            .slogdet()
+            .map(|(sign, logabsdet)| (Self::from_tracer(sign), Self::from_tracer(logabsdet)))
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn solve(&self, rhs: &Self) -> PyResult<Self> {
+        self.inner
+            .solve(&rhs.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
     fn __repr__(&self) -> String {
         let aval = self.inner.aval();
         format!(
@@ -5391,6 +5683,133 @@ fn remat(jaxpr: &PyJaxpr) -> PyCheckpoint {
     checkpoint(jaxpr)
 }
 
+#[pyfunction]
+fn random_key(seed: u64) -> (u32, u32) {
+    let k = fj_api::random::key(seed);
+    (k.0[0], k.0[1])
+}
+
+#[pyfunction]
+fn random_split(key: (u32, u32)) -> ((u32, u32), (u32, u32)) {
+    let (k1, k2) = fj_api::random::split(fj_api::random::PRNGKey([key.0, key.1]));
+    ((k1.0[0], k1.0[1]), (k2.0[0], k2.0[1]))
+}
+
+#[pyfunction]
+fn random_fold_in(key: (u32, u32), data: u32) -> (u32, u32) {
+    let k = fj_api::random::fold_in(fj_api::random::PRNGKey([key.0, key.1]), data);
+    (k.0[0], k.0[1])
+}
+
+#[pyfunction(signature = (key, shape, minval=0.0, maxval=1.0))]
+fn random_uniform(key: (u32, u32), shape: Vec<u32>, minval: f64, maxval: f64) -> PyResult<PyValue> {
+    fj_api::random::uniform(
+        fj_api::random::PRNGKey([key.0, key.1]),
+        fj_core::Shape { dims: shape },
+        minval,
+        maxval,
+    )
+    .map(PyValue::from_value)
+    .map_err(runtime_error)
+}
+
+#[pyfunction]
+fn random_normal(key: (u32, u32), shape: Vec<u32>) -> PyResult<PyValue> {
+    fj_api::random::normal(
+        fj_api::random::PRNGKey([key.0, key.1]),
+        fj_core::Shape { dims: shape },
+    )
+    .map(PyValue::from_value)
+    .map_err(runtime_error)
+}
+
+#[pyfunction(signature = (key, p=0.5, shape=vec![]))]
+fn random_bernoulli(key: (u32, u32), p: f64, shape: Vec<u32>) -> PyResult<PyValue> {
+    fj_api::random::bernoulli(
+        fj_api::random::PRNGKey([key.0, key.1]),
+        p,
+        fj_core::Shape { dims: shape },
+    )
+    .map(PyValue::from_value)
+    .map_err(runtime_error)
+}
+
+#[pyfunction]
+fn random_randint(key: (u32, u32), shape: Vec<u32>, minval: i64, maxval: i64) -> PyResult<PyValue> {
+    fj_api::random::randint(
+        fj_api::random::PRNGKey([key.0, key.1]),
+        fj_core::Shape { dims: shape },
+        minval,
+        maxval,
+    )
+    .map(PyValue::from_value)
+    .map_err(runtime_error)
+}
+
+#[pyfunction]
+fn random_categorical(key: (u32, u32), logits: Vec<f64>) -> PyResult<usize> {
+    fj_api::random::categorical(fj_api::random::PRNGKey([key.0, key.1]), &logits)
+        .map_err(runtime_error)
+}
+
+#[pyfunction]
+fn random_permutation(key: (u32, u32), n: usize) -> PyResult<PyValue> {
+    fj_api::random::permutation(fj_api::random::PRNGKey([key.0, key.1]), n)
+        .map(PyValue::from_value)
+        .map_err(runtime_error)
+}
+
+#[pyfunction]
+fn random_gumbel(key: (u32, u32), shape: Vec<u32>) -> PyResult<PyValue> {
+    fj_api::random::gumbel(
+        fj_api::random::PRNGKey([key.0, key.1]),
+        fj_core::Shape { dims: shape },
+    )
+    .map(PyValue::from_value)
+    .map_err(runtime_error)
+}
+
+#[pyfunction]
+fn random_laplace(key: (u32, u32), shape: Vec<u32>) -> PyResult<PyValue> {
+    fj_api::random::laplace(
+        fj_api::random::PRNGKey([key.0, key.1]),
+        fj_core::Shape { dims: shape },
+    )
+    .map(PyValue::from_value)
+    .map_err(runtime_error)
+}
+
+#[pyfunction]
+fn random_exponential(key: (u32, u32), shape: Vec<u32>) -> PyResult<PyValue> {
+    fj_api::random::exponential(
+        fj_api::random::PRNGKey([key.0, key.1]),
+        fj_core::Shape { dims: shape },
+    )
+    .map(PyValue::from_value)
+    .map_err(runtime_error)
+}
+
+#[pyfunction]
+fn random_logistic(key: (u32, u32), shape: Vec<u32>) -> PyResult<PyValue> {
+    fj_api::random::logistic(
+        fj_api::random::PRNGKey([key.0, key.1]),
+        fj_core::Shape { dims: shape },
+    )
+    .map(PyValue::from_value)
+    .map_err(runtime_error)
+}
+
+#[pyfunction]
+fn random_gamma(key: (u32, u32), alpha: f64, shape: Vec<u32>) -> PyResult<PyValue> {
+    fj_api::random::gamma(
+        fj_api::random::PRNGKey([key.0, key.1]),
+        alpha,
+        fj_core::Shape { dims: shape },
+    )
+    .map(PyValue::from_value)
+    .map_err(runtime_error)
+}
+
 #[pymodule]
 fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -5502,6 +5921,20 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_execute_staged, m)?)?;
     m.add_function(wrap_pyfunction!(checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(remat, m)?)?;
+    m.add_function(wrap_pyfunction!(random_key, m)?)?;
+    m.add_function(wrap_pyfunction!(random_split, m)?)?;
+    m.add_function(wrap_pyfunction!(random_fold_in, m)?)?;
+    m.add_function(wrap_pyfunction!(random_uniform, m)?)?;
+    m.add_function(wrap_pyfunction!(random_normal, m)?)?;
+    m.add_function(wrap_pyfunction!(random_bernoulli, m)?)?;
+    m.add_function(wrap_pyfunction!(random_randint, m)?)?;
+    m.add_function(wrap_pyfunction!(random_categorical, m)?)?;
+    m.add_function(wrap_pyfunction!(random_permutation, m)?)?;
+    m.add_function(wrap_pyfunction!(random_gumbel, m)?)?;
+    m.add_function(wrap_pyfunction!(random_laplace, m)?)?;
+    m.add_function(wrap_pyfunction!(random_exponential, m)?)?;
+    m.add_function(wrap_pyfunction!(random_logistic, m)?)?;
+    m.add_function(wrap_pyfunction!(random_gamma, m)?)?;
     Ok(())
 }
 
@@ -6987,6 +7420,70 @@ mod tests {
             let grad_vals = grad_nn[0].as_f64_list().unwrap();
             assert_eq!(grad_vals.len(), 2);
             assert!(grad_vals[0] > 0.5 && grad_vals[1] > 1.5);
+        });
+    }
+
+    #[test]
+    fn wave17_python_random_and_tracer_structural_linalg_fft_methods_work() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                pyo3::ffi::c_str!(
+                    "def reshape_slice_cumprod(x):\n    m = x.reshape(2, 2)\n    v = m.reshape(4)\n    s = v.slice([1], [3])\n    return s.cumprod(0, False).sum()\n\ndef det_fn(m):\n    return m.det()\n\ndef special_pow(x):\n    return x.integer_pow(3) + x.sinc()\n"
+                ),
+                None,
+                Some(&locals),
+            )
+            .unwrap();
+            let rsc_fn = locals.get_item("reshape_slice_cumprod").unwrap().unwrap();
+            let det_fn = locals.get_item("det_fn").unwrap().unwrap();
+            let sp_fn = locals.get_item("special_pow").unwrap().unwrap();
+
+            // 1. Symbolic grad_to_jaxpr and hvp_to_jaxpr over Python-traced reshape -> slice -> cumprod -> sum
+            let x4 = PyValue::vector_f64(vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+            let grad_ir = py_grad_to_jaxpr(py, &rsc_fn, Some(vec![x4.clone()])).unwrap();
+            let g_out = jit(&grad_ir, vec![x4]).unwrap();
+            // s = [x1, x2] = [2, 3], cumprod = [x1, x1*x2], sum = x1 + x1*x2
+            // d/dx1 = 1 + x2 = 4, d/dx2 = x1 = 2
+            assert_eq!(g_out[0].as_f64_list().unwrap(), vec![0.0, 4.0, 2.0, 0.0]);
+
+            // 2. Python-traced linalg det and special_pow with symbolic hessian_to_jaxpr
+            let mat = PyValue::from_value(
+                fj_core::TensorValue::new(
+                    fj_core::DType::F64,
+                    fj_core::Shape { dims: vec![2, 2] },
+                    [4.0, 1.0, 2.0, 3.0]
+                        .into_iter()
+                        .map(fj_core::Literal::from_f64)
+                        .collect(),
+                )
+                .map(Value::Tensor)
+                .unwrap(),
+            );
+            let det_ir = py_make_jaxpr(py, &det_fn, Some(vec![mat.clone()])).unwrap();
+            let det_out = jit(&det_ir, vec![mat]).unwrap();
+            assert!((det_out[0].as_f64().unwrap() - 10.0).abs() < 1e-10);
+
+            let x2 = PyValue::scalar_f64(2.0);
+            let hess_sp = py_hessian_to_jaxpr(py, &sp_fn, Some(vec![x2.clone()])).unwrap();
+            let h_sp_out = jit(&hess_sp, vec![x2]).unwrap();
+            assert!(h_sp_out[0].as_f64().unwrap().is_finite());
+
+            // 3. Random key, split, fold_in, and distribution samplers
+            let k0 = random_key(42);
+            let (k1, k2) = random_split(k0);
+            assert_ne!(k1, k2);
+            let k3 = random_fold_in(k1, 7);
+            assert_ne!(k1, k3);
+            let u = random_uniform(k1, vec![4], -1.0, 1.0).unwrap();
+            assert_eq!(u.shape_dims(), vec![4]);
+            let n = random_normal(k2, vec![2, 3]).unwrap();
+            assert_eq!(n.shape_dims(), vec![2, 3]);
+            let perm = random_permutation(k3, 5).unwrap();
+            let mut perm_sorted = perm.as_i64_list().unwrap();
+            perm_sorted.sort_unstable();
+            assert_eq!(perm_sorted, vec![0, 1, 2, 3, 4]);
         });
     }
 }
