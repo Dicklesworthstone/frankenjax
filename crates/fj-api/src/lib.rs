@@ -3763,6 +3763,87 @@ mod tests {
         assert_eq!(sym_ln_out[0].as_tensor().unwrap().shape.dims, vec![2, 3]);
     }
 
+    #[test]
+    fn vmap_grad_softmax_and_layer_norm_compose_cleanly() {
+        use fj_core::TensorValue;
+
+        let row0 = TensorValue::new_f64_values(Shape::vector(3), vec![0.5, 1.2, -0.3])
+            .map(Value::Tensor)
+            .unwrap();
+        let row1 = TensorValue::new_f64_values(Shape::vector(3), vec![-1.0, 0.0, 2.0])
+            .map(Value::Tensor)
+            .unwrap();
+        let batch_input = TensorValue::new_f64_values(
+            Shape { dims: vec![2, 3] },
+            vec![0.5, 1.2, -0.3, -1.0, 0.0, 2.0],
+        )
+        .map(Value::Tensor)
+        .unwrap();
+
+        let softmax_loss_jaxpr = trace_jaxpr_for_values(
+            |inputs| {
+                let sm = nn::softmax(&inputs[0], -1)?;
+                Ok(vec![nn::l2_loss(&sm)?])
+            },
+            std::slice::from_ref(&row0),
+        )
+        .expect("trace 1D softmax l2_loss");
+
+        let sym_grad_sm = grad_to_jaxpr(&softmax_loss_jaxpr).expect("grad_to_jaxpr 1D softmax");
+        let batched_grads = vmap(sym_grad_sm)
+            .call(vec![batch_input.clone()])
+            .expect("vmap(grad_to_jaxpr(softmax)) should succeed");
+        assert_eq!(batched_grads[0].as_tensor().unwrap().shape.dims, vec![2, 3]);
+
+        // Also test via composable vmap(jaxpr).compose_grad()
+        let composed_grads = vmap(softmax_loss_jaxpr.clone())
+            .compose_grad()
+            .call(vec![batch_input.clone()])
+            .expect("vmap(softmax).compose_grad() should succeed");
+        assert_eq!(
+            composed_grads[0].as_tensor().unwrap().shape.dims,
+            vec![2, 3]
+        );
+
+        // Compare each row against unbatched grad(softmax)
+        let g0 = grad(softmax_loss_jaxpr.clone())
+            .call(vec![row0.clone()])
+            .expect("grad row0")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        let g1 = grad(softmax_loss_jaxpr)
+            .call(vec![row1])
+            .expect("grad row1")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        let got = batched_grads[0].as_tensor().unwrap().to_f64_vec().unwrap();
+        for (a, b) in got.iter().zip(g0.iter().chain(g1.iter())) {
+            assert!((a - b).abs() < 1e-6, "mismatch: {a} vs {b}");
+        }
+
+        // Also test vmap(grad_to_jaxpr(layer_norm))
+        let ln_loss_jaxpr = trace_jaxpr_for_values(
+            |inputs| {
+                let ln = nn::layer_norm(&inputs[0], -1, 1e-5, None, None)?;
+                Ok(vec![nn::l2_loss(&ln)?])
+            },
+            std::slice::from_ref(&row0),
+        )
+        .expect("trace 1D layer_norm l2_loss");
+        let sym_grad_ln = grad_to_jaxpr(&ln_loss_jaxpr).expect("grad_to_jaxpr 1D layer_norm");
+        let batched_ln_grads = vmap(sym_grad_ln)
+            .call(vec![batch_input])
+            .expect("vmap(grad_to_jaxpr(layer_norm)) should succeed");
+        assert_eq!(
+            batched_ln_grads[0].as_tensor().unwrap().shape.dims,
+            vec![2, 3]
+        );
+    }
+
     mod proptest_tests {
         use super::*;
         use proptest::prelude::*;

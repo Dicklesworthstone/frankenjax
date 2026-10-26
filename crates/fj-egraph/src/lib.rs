@@ -925,8 +925,11 @@ fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
         }
 
         let identity_input = if rewritten.outputs.len() == 1
-            && rewritten.inputs.len() == 1
-            && is_shape_identity(&rewritten)
+            && ((rewritten.inputs.len() == 1 && is_shape_identity(&rewritten))
+                || (rewritten.primitive == Primitive::Reshape
+                    && rewritten.inputs.len() == 2
+                    && rewritten.params.get("like").is_some_and(|s| s == "true")
+                    && rewritten.inputs[0] == rewritten.inputs[1]))
         {
             match rewritten.inputs[0] {
                 Atom::Var(input_var) => Some(input_var),
@@ -948,6 +951,21 @@ fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
                     && previous.outputs[0] == *input_var
                     && counts.get(&previous.outputs[0]).copied().unwrap_or(0) == 1
                     && cancels_shape_chain(previous, &rewritten)
+            } else {
+                false
+            }
+        } else if rewritten.primitive == Primitive::Reshape
+            && rewritten.outputs.len() == 1
+            && rewritten.inputs.len() == 2
+            && rewritten.params.get("like").is_some_and(|s| s == "true")
+        {
+            if let (Some(previous), Atom::Var(input_var)) = (previous, &rewritten.inputs[0]) {
+                previous.primitive == Primitive::Reshape
+                    && !previous.inputs.is_empty()
+                    && previous.outputs.len() == 1
+                    && previous.outputs[0] == *input_var
+                    && counts.get(&previous.outputs[0]).copied().unwrap_or(0) == 1
+                    && previous.inputs[0] == rewritten.inputs[1]
             } else {
                 false
             }
@@ -975,11 +993,29 @@ fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
         let previous = equations.last();
         let can_fuse = if rewritten.outputs.len() == 1 && rewritten.inputs.len() == 1 {
             if let (Some(previous), Atom::Var(input_var)) = (previous, &rewritten.inputs[0]) {
-                previous.inputs.len() == 1
+                ((previous.inputs.len() == 1)
+                    || (previous.primitive == Primitive::Reshape
+                        && previous.inputs.len() == 2
+                        && previous.params.get("like").is_some_and(|s| s == "true")))
                     && previous.outputs.len() == 1
                     && previous.outputs[0] == *input_var
                     && counts.get(&previous.outputs[0]).copied().unwrap_or(0) == 1
                     && fuses_shape_chain(previous, &rewritten)
+            } else {
+                false
+            }
+        } else if rewritten.primitive == Primitive::Reshape
+            && rewritten.outputs.len() == 1
+            && rewritten.inputs.len() == 2
+            && rewritten.params.get("like").is_some_and(|s| s == "true")
+        {
+            if let (Some(previous), Atom::Var(input_var)) = (previous, &rewritten.inputs[0]) {
+                previous.primitive == Primitive::Reshape
+                    && !previous.inputs.is_empty()
+                    && previous.outputs.len() == 1
+                    && previous.outputs[0] == *input_var
+                    && counts.get(&previous.outputs[0]).copied().unwrap_or(0) == 1
+                    && rewritten.inputs[1] != Atom::Var(previous.outputs[0])
             } else {
                 false
             }
@@ -2740,7 +2776,15 @@ pub fn optimize_jaxpr_with_config(jaxpr: &Jaxpr, config: &OptimizationConfig) ->
 
     while index < jaxpr.equations.len() {
         if is_egraph_barrier(&jaxpr.equations[index]) {
-            equations.push(jaxpr.equations[index].clone());
+            let mut barrier_eqn = jaxpr.equations[index].clone();
+            if !barrier_eqn.sub_jaxprs.is_empty() {
+                barrier_eqn.sub_jaxprs = barrier_eqn
+                    .sub_jaxprs
+                    .iter()
+                    .map(|sub| optimize_jaxpr_with_config(sub, config))
+                    .collect();
+            }
+            equations.push(barrier_eqn);
             index += 1;
             continue;
         }
@@ -3765,6 +3809,9 @@ fn max_var_id(jaxpr: &Jaxpr) -> u32 {
         }
         for outvar in &equation.outputs {
             max_var = max_var.max(outvar.0);
+        }
+        for sub in &equation.sub_jaxprs {
+            max_var = max_var.max(max_var_id(sub));
         }
     }
     max_var
@@ -9272,5 +9319,90 @@ mod tests {
         let fast = canonicalize_jaxpr_fast(&jaxpr, &OptimizationConfig::finite_fast_math());
         assert!(fast.equations.is_empty());
         assert_eq!(fast.outvars, vec![VarId(1)]);
+    }
+
+    #[test]
+    fn reshape_like_identity_cancellation_and_fusion() {
+        let mut like_params = BTreeMap::new();
+        like_params.insert("like".to_owned(), "true".to_owned());
+        let mut shape_params = BTreeMap::new();
+        shape_params.insert("new_shape".to_owned(), "6".to_owned());
+
+        // 1. Identity: Reshape(x, x, like="true") -> x
+        let id_jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Reshape,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: like_params.clone(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        );
+        let opt_id = canonicalize_jaxpr_fast(&id_jaxpr, &OptimizationConfig::ieee_strict());
+        assert!(opt_id.equations.is_empty());
+        assert_eq!(opt_id.outvars, vec![VarId(1)]);
+
+        // 2. Inverse cancellation: y = Reshape(x, new_shape="6"); z = Reshape(y, x, like="true") -> x
+        let cancel_jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Reshape,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: shape_params.clone(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Reshape,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: like_params.clone(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let opt_cancel = canonicalize_jaxpr_fast(&cancel_jaxpr, &OptimizationConfig::ieee_strict());
+        assert!(opt_cancel.equations.is_empty());
+        assert_eq!(opt_cancel.outvars, vec![VarId(1)]);
+
+        // 3. Consecutive fusion: y = Reshape(x, new_shape="6"); z = Reshape(y, w, like="true") -> Reshape(x, w, like="true")
+        let fuse_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Reshape,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: shape_params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Reshape,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    params: like_params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let opt_fuse = canonicalize_jaxpr_fast(&fuse_jaxpr, &OptimizationConfig::ieee_strict());
+        assert_eq!(opt_fuse.equations.len(), 1);
+        assert_eq!(
+            opt_fuse.equations[0].inputs.as_slice(),
+            &[Atom::Var(VarId(1)), Atom::Var(VarId(2))]
+        );
     }
 }

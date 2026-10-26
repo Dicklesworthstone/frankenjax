@@ -1916,6 +1916,80 @@ fn batch_reshape(
     inputs: &[BatchTracer],
     params: &BTreeMap<String, String>,
 ) -> Result<BatchTracer, BatchError> {
+    if inputs.len() == 2 && params.get("like").is_some_and(|s| s == "true") {
+        let input = &inputs[0];
+        let shape_ref = &inputs[1];
+        let unbatched_target_shape: Vec<i64> = match shape_ref.batch_dim {
+            None => match &shape_ref.value {
+                Value::Scalar(_) => Vec::new(),
+                Value::Tensor(t) => t.shape.dims.iter().map(|&d| i64::from(d)).collect(),
+            },
+            Some(bd_ref) => {
+                let ref_tensor = shape_ref.value.as_tensor().ok_or_else(|| {
+                    BatchError::BatchDimMoveError(
+                        "expected tensor for batched reshape shape_ref".into(),
+                    )
+                })?;
+                if bd_ref >= ref_tensor.shape.dims.len() {
+                    return Err(BatchError::BatchDimMoveError(format!(
+                        "reshape shape_ref batch_dim {bd_ref} out of bounds for rank {}",
+                        ref_tensor.shape.dims.len()
+                    )));
+                }
+                ref_tensor
+                    .shape
+                    .dims
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| *idx != bd_ref)
+                    .map(|(_, &d)| i64::from(d))
+                    .collect()
+            }
+        };
+
+        return match input.batch_dim {
+            None => {
+                if unbatched_target_shape.is_empty() {
+                    let result = eval_primitive(
+                        Primitive::Reshape,
+                        &[input.value.clone(), Value::scalar_i64(0)],
+                        params,
+                    )
+                    .map_err(|e| BatchError::EvalError(e.to_string()))?;
+                    Ok(BatchTracer::unbatched(result))
+                } else {
+                    let mut new_params = params.clone();
+                    new_params.remove("like");
+                    new_params.insert("new_shape".to_owned(), format_csv(&unbatched_target_shape));
+                    let result = eval_primitive(
+                        Primitive::Reshape,
+                        std::slice::from_ref(&input.value),
+                        &new_params,
+                    )
+                    .map_err(|e| BatchError::EvalError(e.to_string()))?;
+                    Ok(BatchTracer::unbatched(result))
+                }
+            }
+            Some(bd) => {
+                let value = move_batch_dim_to_front(&input.value, bd)?;
+                let tensor = value.as_tensor().ok_or_else(|| {
+                    BatchError::BatchDimMoveError("expected tensor for reshape".into())
+                })?;
+                let batch_size = tensor.shape.dims[0] as usize;
+                let mut batched_shape = Vec::with_capacity(unbatched_target_shape.len() + 1);
+                batched_shape.push(batch_size as i64);
+                batched_shape.extend_from_slice(&unbatched_target_shape);
+
+                let mut new_params = params.clone();
+                new_params.remove("like");
+                new_params.insert("new_shape".to_owned(), format_csv(&batched_shape));
+                let result = eval_primitive(Primitive::Reshape, &[value], &new_params)
+                    .map_err(|e| BatchError::EvalError(e.to_string()))?;
+                Ok(BatchTracer::batched(result, 0))
+            }
+        };
+    }
+
     let input = &inputs[0];
     let batch_dim = match input.batch_dim {
         None => {
@@ -16646,6 +16720,57 @@ mod tests {
         let b = BatchTracer::batched(make_i64_vector(&[0b1010, 0b1010, 0b0101]), 0);
         let result = apply_batch_rule(Primitive::BitwiseAnd, &[a, b], &BTreeMap::new()).unwrap();
         assert_eq!(result.batch_dim, Some(0));
+    }
+
+    #[test]
+    fn batch_reshape_like_batched_and_unbatched() {
+        let mut params = BTreeMap::new();
+        params.insert("like".to_owned(), "true".to_owned());
+
+        // Case 1: batched input [2, 6] (batch_dim=0) reshaped like batched ref [2, 2, 3] (batch_dim=0) -> [2, 2, 3]
+        let x = BatchTracer::batched(
+            Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape { dims: vec![2, 6] },
+                    (1..=12).map(|v| v as f64).collect(),
+                )
+                .unwrap(),
+            ),
+            0,
+        );
+        let shape_ref = BatchTracer::batched(
+            Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![2, 2, 3],
+                    },
+                    vec![0.0; 12],
+                )
+                .unwrap(),
+            ),
+            0,
+        );
+        let out = apply_batch_rule(Primitive::Reshape, &[x, shape_ref], &params).unwrap();
+        assert_eq!(out.batch_dim, Some(0));
+        assert_eq!(out.value.as_tensor().unwrap().shape.dims, vec![2, 2, 3]);
+
+        // Case 2: batched input [2, 6] (batch_dim=0) reshaped like unbatched ref [3, 2] -> [2, 3, 2]
+        let x2 = BatchTracer::batched(
+            Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape { dims: vec![2, 6] },
+                    (1..=12).map(|v| v as f64).collect(),
+                )
+                .unwrap(),
+            ),
+            0,
+        );
+        let unbatched_ref = BatchTracer::unbatched(Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![3, 2] }, vec![0.0; 6]).unwrap(),
+        ));
+        let out2 = apply_batch_rule(Primitive::Reshape, &[x2, unbatched_ref], &params).unwrap();
+        assert_eq!(out2.batch_dim, Some(0));
+        assert_eq!(out2.value.as_tensor().unwrap().shape.dims, vec![2, 3, 2]);
     }
 
     // ── Proptest Metamorphic Tests ──────────────────────────────

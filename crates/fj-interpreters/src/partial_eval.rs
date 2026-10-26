@@ -645,6 +645,9 @@ fn try_dce_all_used_linear_chain(
 
     let mut current = jaxpr.invars[0];
     for eqn in &jaxpr.equations {
+        if !eqn.sub_jaxprs.is_empty() {
+            return None;
+        }
         let [output] = eqn.outputs.as_slice() else {
             return None;
         };
@@ -1422,6 +1425,17 @@ fn infer_equation_output_avals(
             infer_dot_general_aval(eqn, input_avals)?;
             eqn.outputs.len()
         ]),
+        Reshape
+            if input_avals.len() == 2 && eqn.params.get("like").is_some_and(|s| s == "true") =>
+        {
+            Ok(vec![
+                AbstractValue {
+                    dtype: first_input.dtype,
+                    shape: input_avals[1].shape.clone(),
+                };
+                eqn.outputs.len()
+            ])
+        }
         _ => {
             let out_aval = infer_equation_output_aval(eqn, first_input)?;
             Ok(vec![out_aval; eqn.outputs.len()])
@@ -2190,6 +2204,9 @@ fn max_var_in_jaxpr(jaxpr: &Jaxpr) -> usize {
         }
         for v in &eqn.outputs {
             max_id = max_id.max(v.0);
+        }
+        for sub in &eqn.sub_jaxprs {
+            max_id = max_id.max(max_var_in_jaxpr(sub) as u32);
         }
     }
     max_id as usize
@@ -6095,5 +6112,25 @@ mod tests {
             infer_equation_output_avals(&eqn_n(Primitive::Det, 1, &[]), &[av(&[2, 2], DType::F64)])
                 .unwrap();
         assert_eq!(det64[0].dtype, DType::F64);
+
+        // 2-input Reshape(x, shape_ref, like="true") infers shape from shape_ref
+        let mut like_params = BTreeMap::new();
+        like_params.insert("like".to_owned(), "true".to_owned());
+        let reshape_like_eqn = Equation {
+            primitive: Primitive::Reshape,
+            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+            outputs: smallvec![VarId(3)],
+            params: like_params,
+            effects: vec![],
+            sub_jaxprs: vec![],
+        };
+        let reshape_like_avals = infer_equation_output_avals(
+            &reshape_like_eqn,
+            &[av(&[6], DType::F64), av(&[2, 3], DType::F32)],
+        )
+        .unwrap();
+        assert_eq!(reshape_like_avals.len(), 1);
+        assert_eq!(reshape_like_avals[0].dtype, DType::F64);
+        assert_eq!(reshape_like_avals[0].shape.dims, vec![2, 3]);
     }
 }
