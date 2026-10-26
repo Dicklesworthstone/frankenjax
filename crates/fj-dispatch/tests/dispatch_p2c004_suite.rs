@@ -969,16 +969,25 @@ fn e2e_vmap_tensor_ops_oracle() {
         "pass": pad_pass,
     }));
 
-    let generated_at_unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock should be after unix epoch")
-        .as_millis();
     let e2e_path = repo_root().join("artifacts/e2e/e2e_vmap_tensor_ops.e2e.json");
+    let cases_value = json!(e2e_cases);
+    let generated_at_unix_ms = fs::read_to_string(&e2e_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("cases") == Some(&cases_value))
+        .and_then(|existing| existing.get("generated_at_unix_ms").and_then(|v| v.as_u64()))
+        .map(u128::from)
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_millis()
+        });
     let e2e_payload = json!({
         "schema_version": "frankenjax.e2e.vmap_tensor_ops.v1",
         "scenario": "e2e_vmap_tensor_ops_oracle",
         "generated_at_unix_ms": generated_at_unix_ms,
-        "cases": e2e_cases,
+        "cases": cases_value,
     });
     write_json_artifact(&e2e_path, &e2e_payload);
 

@@ -311,6 +311,7 @@ pub struct ComposedTransform {
     compile_options: BTreeMap<String, String>,
     custom_vjp_rule_key: Option<String>,
     ffi_registry: FfiRegistrySlot,
+    meta_cache: DispatchMetaCache,
     last_evidence: LastEvidenceCache,
 }
 
@@ -1143,6 +1144,7 @@ pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
         compile_options: BTreeMap::new(),
         custom_vjp_rule_key: None,
         ffi_registry: FfiRegistrySlot::default(),
+        meta_cache: DispatchMetaCache::default(),
         last_evidence: LastEvidenceCache::default(),
     }
 }
@@ -1478,6 +1480,7 @@ impl JitWrapped {
             compile_options,
             custom_vjp_rule_key: None,
             ffi_registry: self.ffi_registry,
+            meta_cache: DispatchMetaCache::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1494,6 +1497,24 @@ impl JitWrapped {
             compile_options,
             custom_vjp_rule_key: None,
             ffi_registry: self.ffi_registry,
+            meta_cache: DispatchMetaCache::default(),
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
+
+    /// Compose: `jit(pmap(f))`.
+    #[must_use]
+    pub fn compose_pmap(self) -> ComposedTransform {
+        let compile_options = self.build_compile_options();
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Jit, Transform::Pmap],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: None,
+            ffi_registry: self.ffi_registry,
+            meta_cache: DispatchMetaCache::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1694,6 +1715,18 @@ impl GradWrapped {
         Ok(self.call_with_evidence(args)?.outputs)
     }
 
+    /// Lower the underlying scalar-output [`Jaxpr`] to its symbolic reverse-mode gradient [`Jaxpr`]
+    /// with respect to the configured `argnums` (or input `0` by default).
+    pub fn to_grad_jaxpr(&self) -> Result<Jaxpr, ApiError> {
+        let default_argnums = [0usize];
+        let argnums: &[usize] = if self.argnums.is_empty() {
+            &default_argnums
+        } else {
+            &self.argnums
+        };
+        fj_ad::build_grad_jaxpr(&self.jaxpr, argnums).map_err(ApiError::from)
+    }
+
     /// Compose: `grad(jit(f))`.
     #[must_use]
     pub fn compose_jit(self) -> ComposedTransform {
@@ -1707,6 +1740,7 @@ impl GradWrapped {
             compile_options,
             custom_vjp_rule_key: self.custom_vjp_rule_key,
             ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1724,6 +1758,7 @@ impl GradWrapped {
             compile_options,
             custom_vjp_rule_key: self.custom_vjp_rule_key,
             ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1741,6 +1776,25 @@ impl GradWrapped {
             compile_options,
             custom_vjp_rule_key: self.custom_vjp_rule_key,
             ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
+
+    /// Compose: `grad(pmap(f))`.
+    #[must_use]
+    pub fn compose_pmap(self) -> ComposedTransform {
+        let mut compile_options = self.build_compile_options();
+        compile_options.remove(CUSTOM_VJP_RULE_KEY_OPTION);
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Grad, Transform::Pmap],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: self.custom_vjp_rule_key,
+            ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1897,6 +1951,7 @@ impl VmapWrapped {
             compile_options,
             custom_vjp_rule_key: None,
             ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1913,6 +1968,7 @@ impl VmapWrapped {
             compile_options,
             custom_vjp_rule_key: None,
             ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1929,6 +1985,24 @@ impl VmapWrapped {
             compile_options,
             custom_vjp_rule_key: None,
             ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
+
+    /// Compose: `vmap(pmap(f))`.
+    #[must_use]
+    pub fn compose_pmap(self) -> ComposedTransform {
+        let compile_options = self.build_compile_options();
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Vmap, Transform::Pmap],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: None,
+            ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -1938,6 +2012,7 @@ impl ComposedTransform {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
         self.backend = Cow::Owned(backend.to_owned());
+        self.meta_cache = DispatchMetaCache::default();
         self.last_evidence = LastEvidenceCache::default();
         self
     }
@@ -1945,6 +2020,7 @@ impl ComposedTransform {
     #[must_use]
     pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
         self.mode = mode;
+        self.meta_cache = DispatchMetaCache::default();
         self.last_evidence = LastEvidenceCache::default();
         self
     }
@@ -1954,6 +2030,7 @@ impl ComposedTransform {
     #[must_use]
     pub fn with_ffi_registry(mut self, registry: fj_ffi::FfiRegistry) -> Self {
         self.ffi_registry = FfiRegistrySlot(Some(registry));
+        self.meta_cache = DispatchMetaCache::default();
         self.last_evidence = LastEvidenceCache::default();
         self
     }
@@ -1962,6 +2039,7 @@ impl ComposedTransform {
     pub fn with_compile_option(mut self, key: &str, value: &str) -> Self {
         self.compile_options
             .insert(key.to_owned(), value.to_owned());
+        self.meta_cache = DispatchMetaCache::default();
         self.last_evidence = LastEvidenceCache::default();
         self
     }
@@ -1999,6 +2077,7 @@ impl ComposedTransform {
     #[must_use]
     pub fn compose_jit(mut self) -> Self {
         self.transforms.push(Transform::Jit);
+        self.meta_cache = DispatchMetaCache::default();
         self.last_evidence = LastEvidenceCache::default();
         self
     }
@@ -2007,6 +2086,7 @@ impl ComposedTransform {
     #[must_use]
     pub fn compose_grad(mut self) -> Self {
         self.transforms.push(Transform::Grad);
+        self.meta_cache = DispatchMetaCache::default();
         self.last_evidence = LastEvidenceCache::default();
         self
     }
@@ -2015,6 +2095,7 @@ impl ComposedTransform {
     #[must_use]
     pub fn compose_vmap(mut self) -> Self {
         self.transforms.push(Transform::Vmap);
+        self.meta_cache = DispatchMetaCache::default();
         self.last_evidence = LastEvidenceCache::default();
         self
     }
@@ -2023,6 +2104,7 @@ impl ComposedTransform {
     #[must_use]
     pub fn compose_pmap(mut self) -> Self {
         self.transforms.push(Transform::Pmap);
+        self.meta_cache = DispatchMetaCache::default();
         self.last_evidence = LastEvidenceCache::default();
         self
     }
@@ -2062,6 +2144,27 @@ impl ComposedTransform {
             compile_options.insert("ffi_registered_targets".to_owned(), names.join(","));
         }
         let evidence = transform_evidence(&self.transforms);
+        let prepared =
+            if self.ffi_registry.0.is_none() && !compile_options.contains_key("static_argnums") {
+                self.meta_cache
+                    .0
+                    .get_or_init(|| {
+                        prepare_dispatch_meta(
+                            self.mode,
+                            &self.jaxpr,
+                            &self.transforms,
+                            &evidence,
+                            self.backend.as_ref(),
+                            &compile_options,
+                            None,
+                            &[],
+                        )
+                        .ok()
+                    })
+                    .as_ref()
+            } else {
+                None
+            };
         let run_dispatch = || {
             dispatch_ref(DispatchRequestRef {
                 mode: self.mode,
@@ -2073,7 +2176,7 @@ impl ComposedTransform {
                 compile_options,
                 custom_hook: None,
                 unknown_incompatible_features: &[],
-                prepared: None,
+                prepared,
             })
         };
         let response = match self.ffi_registry.0 {
@@ -2320,6 +2423,73 @@ impl ValueAndGradWrapped {
         }
         Ok(self.call_with_evidence(args)?.0)
     }
+
+    /// Lower the underlying scalar-output [`Jaxpr`] to its symbolic `value_and_grad` [`Jaxpr`]
+    /// returning `[value, grad_0, ...]` for the configured `argnums` (or all inputs by default).
+    pub fn to_value_and_grad_jaxpr(&self) -> Result<Jaxpr, ApiError> {
+        let all_argnums: Vec<usize>;
+        let argnums: &[usize] = if self.argnums.is_empty() {
+            all_argnums = (0..self.jaxpr.invars.len()).collect();
+            &all_argnums
+        } else {
+            &self.argnums
+        };
+        fj_ad::build_value_and_grad_jaxpr(&self.jaxpr, argnums).map_err(ApiError::from)
+    }
+
+    /// Compose: `value_and_grad(jit(f))`.
+    #[must_use]
+    pub fn compose_jit(self) -> ComposedTransform {
+        let mut compile_options = self.compile_options();
+        compile_options.remove(CUSTOM_VJP_RULE_KEY_OPTION);
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Grad, Transform::Jit],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: self.custom_vjp_rule_key,
+            ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
+
+    /// Compose: `value_and_grad(vmap(f))`.
+    #[must_use]
+    pub fn compose_vmap(self) -> ComposedTransform {
+        let mut compile_options = self.compile_options();
+        compile_options.remove(CUSTOM_VJP_RULE_KEY_OPTION);
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Grad, Transform::Vmap],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: self.custom_vjp_rule_key,
+            ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
+
+    /// Compose: `value_and_grad(pmap(f))`.
+    #[must_use]
+    pub fn compose_pmap(self) -> ComposedTransform {
+        let mut compile_options = self.compile_options();
+        compile_options.remove(CUSTOM_VJP_RULE_KEY_OPTION);
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Grad, Transform::Pmap],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: self.custom_vjp_rule_key,
+            ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
 }
 
 impl CustomVjpWrapped {
@@ -2382,6 +2552,7 @@ impl CustomVjpWrapped {
             compile_options: BTreeMap::new(),
             custom_vjp_rule_key: Some(self.rule_key.clone()),
             ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -2713,6 +2884,7 @@ impl PmapWrapped {
             compile_options,
             custom_vjp_rule_key: None,
             ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -2729,6 +2901,24 @@ impl PmapWrapped {
             compile_options,
             custom_vjp_rule_key: None,
             ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
+            last_evidence: LastEvidenceCache::default(),
+        }
+    }
+
+    /// Compose: `pmap(vmap(f))`.
+    #[must_use]
+    pub fn compose_vmap(self) -> ComposedTransform {
+        let compile_options = self.build_compile_options();
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Pmap, Transform::Vmap],
+            backend: self.backend,
+            mode: self.mode,
+            compile_options,
+            custom_vjp_rule_key: None,
+            ffi_registry: FfiRegistrySlot::default(),
+            meta_cache: DispatchMetaCache::default(),
             last_evidence: LastEvidenceCache::default(),
         }
     }
@@ -4210,5 +4400,98 @@ mod tests {
             .call(vec![Value::scalar_f64(5.0)])
             .expect("linearize_fn tangent pushforward should succeed");
         assert!((t_out[0].as_f64_scalar().unwrap() - 60.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn grad_and_value_and_grad_to_jaxpr_and_composed_memoization() {
+        // f(x, y) = x^2 * y + 5 * y
+        let args = vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)];
+        let jaxpr = trace_jaxpr_for_values(
+            |t| {
+                let x = &t[0];
+                let y = &t[1];
+                let x2y = x.mul_op(x)?.mul_op(y)?;
+                let five = y.bind_literal(fj_core::Literal::from_f64(5.0))?;
+                let five_y = five.mul_op(y)?;
+                Ok(vec![x2y.add_op(&five_y)?])
+            },
+            &args,
+        )
+        .expect("trace should succeed");
+
+        // 1. GradWrapped::to_grad_jaxpr (default argnum 0 and explicit argnums &[0, 1])
+        let g_jaxpr_0 = grad(jaxpr.clone())
+            .to_grad_jaxpr()
+            .expect("to_grad_jaxpr should succeed");
+        let g0_out = fj_interpreters::eval_jaxpr(&g_jaxpr_0, &args).expect("eval grad jaxpr 0");
+        assert_eq!(g0_out, vec![Value::scalar_f64(24.0)]); // 2 * x * y = 24
+
+        let g_jaxpr_both = grad(jaxpr.clone())
+            .with_argnums(&[0, 1])
+            .to_grad_jaxpr()
+            .expect("to_grad_jaxpr([0, 1]) should succeed");
+        let g_both_out =
+            fj_interpreters::eval_jaxpr(&g_jaxpr_both, &args).expect("eval grad jaxpr [0, 1]");
+        assert_eq!(
+            g_both_out,
+            vec![Value::scalar_f64(24.0), Value::scalar_f64(14.0)] // x^2 + 5 = 14
+        );
+
+        // 2. ValueAndGradWrapped::to_value_and_grad_jaxpr
+        let vg_jaxpr = value_and_grad(jaxpr.clone())
+            .to_value_and_grad_jaxpr()
+            .expect("to_value_and_grad_jaxpr should succeed");
+        let vg_out =
+            fj_interpreters::eval_jaxpr(&vg_jaxpr, &args).expect("eval value_and_grad jaxpr");
+        assert_eq!(
+            vg_out,
+            vec![
+                Value::scalar_f64(56.0), // 9*4 + 20 = 56
+                Value::scalar_f64(24.0),
+                Value::scalar_f64(14.0),
+            ]
+        );
+
+        // 3. ComposedTransform metadata memoization + invalidation + symmetric compose_* builders
+        let vg_composed = value_and_grad(jaxpr.clone()).compose_jit();
+        assert!(vg_composed.meta_cache.0.get().is_none());
+        let vg_comp_out = vg_composed
+            .call(args.clone())
+            .expect("value_and_grad.compose_jit should succeed");
+        assert_eq!(vg_comp_out, vg_out);
+        assert!(
+            vg_composed.meta_cache.0.get().is_some(),
+            "ComposedTransform must memoize PreparedDispatchMeta after first call"
+        );
+        let mutated = vg_composed.with_mode(CompatibilityMode::Hardened);
+        assert!(
+            mutated.meta_cache.0.get().is_none(),
+            "mutating ComposedTransform options must invalidate meta_cache"
+        );
+
+        assert_eq!(
+            jit(jaxpr.clone()).compose_pmap().transforms,
+            vec![Transform::Jit, Transform::Pmap]
+        );
+        assert_eq!(
+            grad(jaxpr.clone()).compose_pmap().transforms,
+            vec![Transform::Grad, Transform::Pmap]
+        );
+        assert_eq!(
+            vmap(jaxpr.clone()).compose_pmap().transforms,
+            vec![Transform::Vmap, Transform::Pmap]
+        );
+        assert_eq!(
+            pmap(jaxpr.clone()).compose_vmap().transforms,
+            vec![Transform::Pmap, Transform::Vmap]
+        );
+        assert_eq!(
+            value_and_grad(jaxpr.clone()).compose_vmap().transforms,
+            vec![Transform::Grad, Transform::Vmap]
+        );
+        assert_eq!(
+            value_and_grad(jaxpr).compose_pmap().transforms,
+            vec![Transform::Grad, Transform::Pmap]
+        );
     }
 }

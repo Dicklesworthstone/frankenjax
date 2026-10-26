@@ -2726,20 +2726,33 @@ fn execute_grad(
     execute_symbolic_grad(root_jaxpr, args, compile_options)
 }
 
+fn max_var_in_jaxpr(jaxpr: &Jaxpr) -> u32 {
+    jaxpr
+        .invars
+        .iter()
+        .chain(jaxpr.constvars.iter())
+        .chain(jaxpr.outvars.iter())
+        .map(|v| v.0)
+        .chain(jaxpr.equations.iter().flat_map(|eqn| {
+            eqn.outputs
+                .iter()
+                .map(|v| v.0)
+                .chain(eqn.inputs.iter().filter_map(|atom| match atom {
+                    Atom::Var(v) => Some(v.0),
+                    Atom::Lit(_) => None,
+                }))
+                .chain(eqn.sub_jaxprs.iter().map(max_var_in_jaxpr))
+        }))
+        .max()
+        .unwrap_or(0)
+}
+
 fn append_reduce_sum_to_scalar(jaxpr: &mut Jaxpr) {
     if jaxpr.outvars.len() != 1 {
         return;
     }
     let out_var = jaxpr.outvars[0];
-    let max_var = jaxpr
-        .invars
-        .iter()
-        .chain(jaxpr.constvars.iter())
-        .chain(jaxpr.outvars.iter())
-        .chain(jaxpr.equations.iter().flat_map(|eqn| eqn.outputs.iter()))
-        .map(|v| v.0)
-        .max()
-        .unwrap_or(0);
+    let max_var = max_var_in_jaxpr(jaxpr);
     let reduced_var = fj_core::VarId(max_var + 1);
     jaxpr.equations.push(fj_core::Equation {
         primitive: Primitive::ReduceSum,
@@ -2849,14 +2862,13 @@ fn per_slice_aval(arg: &Value, axis: &AxisSpec) -> Option<fj_trace::ShapedArray>
     Some(fj_trace::ShapedArray { dtype, shape })
 }
 
-/// Dtype of every variable of `jaxpr` that shape inference can type from the
-/// input avals. Variables it cannot type (unknown inputs, or primitives whose
-/// result depends on a sub-jaxpr) are left out, and the symbolic gradient
-/// builders treat them as untyped.
-fn infer_jaxpr_var_dtypes(
+/// Abstract value (dtype + shape) of every variable of `jaxpr` that shape
+/// inference can type from the input avals. Variables it cannot type (unknown
+/// inputs, or primitives whose result depends on a sub-jaxpr) are left out.
+fn infer_jaxpr_var_avals(
     jaxpr: &Jaxpr,
     in_avals: &[fj_trace::ShapedArray],
-) -> BTreeMap<VarId, DType> {
+) -> BTreeMap<VarId, fj_trace::ShapedArray> {
     let mut avals: BTreeMap<VarId, fj_trace::ShapedArray> = jaxpr
         .invars
         .iter()
@@ -2885,6 +2897,17 @@ fn infer_jaxpr_var_dtypes(
         }
     }
     avals
+}
+
+/// Dtype of every variable of `jaxpr` that shape inference can type from the
+/// input avals. Variables it cannot type (unknown inputs, or primitives whose
+/// result depends on a sub-jaxpr) are left out, and the symbolic gradient
+/// builders treat them as untyped.
+fn infer_jaxpr_var_dtypes(
+    jaxpr: &Jaxpr,
+    in_avals: &[fj_trace::ShapedArray],
+) -> BTreeMap<VarId, DType> {
+    infer_jaxpr_var_avals(jaxpr, in_avals)
         .into_iter()
         .map(|(var, aval)| (var, aval.dtype))
         .collect()
@@ -3013,14 +3036,27 @@ fn vmap_per_slice_output_guaranteed_scalar(
         return true;
     }
     let out_var = root_jaxpr.outvars[0];
-    root_jaxpr.equations.iter().any(|eqn| {
+    if root_jaxpr.equations.iter().any(|eqn| {
         eqn.outputs.as_slice() == [out_var]
             && eqn.primitive == Primitive::ReduceSum
             && eqn
                 .params
                 .get("axes")
                 .is_none_or(|axes| axes.trim().is_empty())
-    })
+    }) {
+        return true;
+    }
+    if root_jaxpr.constvars.is_empty()
+        && root_jaxpr
+            .equations
+            .iter()
+            .all(|eqn| eqn.sub_jaxprs.is_empty())
+        && let Some(slice_avals) = grad_input_avals(args, Some(in_axes))
+        && let Some(out_aval) = infer_jaxpr_var_avals(root_jaxpr, &slice_avals).get(&out_var)
+    {
+        return out_aval.shape.rank() == 0;
+    }
+    false
 }
 
 fn execute_symbolic_grad(
@@ -7087,5 +7123,118 @@ mod tests {
         )
         .expect_err("unregistered custom_call target must fail closed");
         assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn vmap_per_slice_scalar_inference_and_symbolic_grad_without_finite_diff() {
+        // 1. f(x) = 0.5 * reduce_sum(x^2) (final equation is Mul, not ReduceSum).
+        // Per-slice shape inference must prove the per-slice output is scalar so
+        // vmap(grad(f)) uses the vectorized BatchTrace fast path.
+        let l2_half = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Square,
+                    inputs: smallvec::smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec::smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec::smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec::smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec::smallvec![
+                        Atom::Lit(fj_core::Literal::from_f64(0.5)),
+                        Atom::Var(VarId(3))
+                    ],
+                    outputs: smallvec::smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let batch_x = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape { dims: vec![2, 3] },
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            )
+            .unwrap(),
+        );
+        assert!(super::vmap_per_slice_output_guaranteed_scalar(
+            &l2_half,
+            std::slice::from_ref(&batch_x),
+            &[super::AxisSpec::Batched(0)],
+        ));
+
+        // Non-scalar per-slice Jaxpr (Add(x, x) on [2, 3]) must return false.
+        let vec_double = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                outputs: smallvec::smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        assert!(!super::vmap_per_slice_output_guaranteed_scalar(
+            &vec_double,
+            std::slice::from_ref(&batch_x),
+            &[super::AxisSpec::Batched(0)],
+        ));
+
+        let mut ttl_vmap_grad = TraceTransformLedger::new(l2_half);
+        ttl_vmap_grad.push_transform(Transform::Vmap, "vmap-0");
+        ttl_vmap_grad.push_transform(Transform::Grad, "grad-1");
+        let mut no_fd_opts = BTreeMap::new();
+        no_fd_opts.insert(
+            "allow_finite_diff_grad_fallback".to_owned(),
+            "false".to_owned(),
+        );
+        let resp = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl_vmap_grad,
+            args: vec![batch_x.clone()],
+            backend: "cpu".to_owned(),
+            compile_options: no_fd_opts.clone(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("vmap(grad(0.5 * sum(x^2))) should succeed without finite-diff");
+        assert_eq!(resp.outputs, vec![batch_x.clone()]);
+
+        // 2. Also verify Dot inner product per slice is recognized as scalar output.
+        let dot_inner = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Dot,
+                inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec::smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        assert!(super::vmap_per_slice_output_guaranteed_scalar(
+            &dot_inner,
+            &[batch_x.clone(), batch_x],
+            &[super::AxisSpec::Batched(0), super::AxisSpec::Batched(0)],
+        ));
     }
 }
