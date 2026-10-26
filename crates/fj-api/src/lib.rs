@@ -485,10 +485,18 @@ pub mod nn {
     /// and swapped in with `stop_gradient`: the loss is `-Σ p · sg(log_softmax(student)) + Σ
     /// sg(g) · (student - sg(student))`. So `g` is exactly 0 for equal logits and keeps its
     /// relative precision near them. Two details beyond the paper keep it from losing digits
-    /// elsewhere: `δ` is first shifted by its value at the teacher's argmax (exact when the
-    /// logits differ by a common offset, which softmax ignores), and an entry whose
+    /// elsewhere: `δ` is taken relative to its value at the teacher's argmax, exactly (each
+    /// difference as its rounded value plus its rounding error, so a common offset, which
+    /// softmax ignores, neither rounds into `Σ p δ` nor hides the small differences between
+    /// entries), and an entry whose
     /// probabilities differ by more than a factor `e` (`|s| > 1`, where `q - p` does not
     /// cancel) or whose `s` is not finite uses `q - p` directly.
+    ///
+    /// Entries the teacher gives no probability (a masked `-inf` logit, or `p` underflowing to
+    /// 0) are left out of the sums above, where `p · δ` would be `0 · inf`. On the remaining
+    /// entries the formulas give `q' - p` for the student's softmax `q'` over just those
+    /// entries, and with `q_m` the student's probability on the left-out ones,
+    /// `q - p = (1 - q_m)(q' - p) - q_m · p`. A left-out entry's gradient is `q`.
     ///
     /// The teacher's gradient is the plain one, through `p`. Only first derivatives are
     /// rewritten: derivatives of second or higher order with respect to `student` come out as 0,
@@ -523,24 +531,42 @@ pub mod nn {
 
         let q = softmax(student, axis)?.stop_gradient()?;
         let p_c = p.stop_gradient()?;
-        let delta = student.stop_gradient()?.sub_op(&teacher.stop_gradient()?)?;
+        let zeros = zeros_like(&q)?;
+        // Entries with p = 0 stay out of every sum: there δ is +inf (or NaN), and one NaN
+        // would send the whole row to the q - p fallback.
+        let kept = p_c.gt(&zeros)?;
+        let kept_sum = |v: &TracerRef| row_sum(&kept.select(v, &zeros)?);
+        // δ = student - teacher as its rounded value plus the rounding error (TwoSum). With a
+        // common offset the rounded values alone lose the small differences between entries.
+        let (zs, zt) = (student.stop_gradient()?, teacher.stop_gradient()?);
+        let delta = zs.sub_op(&zt)?;
+        let back = delta.sub_op(&zs)?;
+        let delta_err = zs
+            .sub_op(&delta.sub_op(&back)?)?
+            .sub_op(&zt.add_op(&back)?)?;
         let at_teacher_max = teacher.argmax(Some(ax as i64))?.one_hot(
             student.aval().shape.dims[ax],
             DType::Bool,
             Some(ax as i64),
         )?;
-        let delta_ref = at_teacher_max
-            .select(&delta, &zeros_like(&delta)?)?
-            .reduce_sum(Some(&axes))?;
-        let delta = delta.sub_op(&broadcast_back(&delta_ref, student, ax)?)?;
-        let d = delta.sub_op(&row_sum(&p_c.mul_op(&delta)?)?)?;
-        let s = d.sub_op(&row_sum(&p_c.mul_op(&d.expm1()?)?)?.log1p()?)?;
+        let at_ref = |v: &TracerRef| -> Result<TracerRef, TraceError> {
+            let picked = at_teacher_max.select(v, &zeros)?.reduce_sum(Some(&axes))?;
+            broadcast_back(&picked, student, ax)
+        };
+        let delta = delta
+            .sub_op(&at_ref(&delta)?)?
+            .add_op(&delta_err.sub_op(&at_ref(&delta_err)?)?)?;
+        let d = delta.sub_op(&kept_sum(&p_c.mul_op(&delta)?)?)?;
+        let s = d.sub_op(&kept_sum(&p_c.mul_op(&d.expm1()?)?)?.log1p()?)?;
         let q_minus_p = q.sub_op(&p_c)?;
+        // (1 - q_m)(q' - p) - q_m · p, with 1 - q_m summed from the kept q (no cancellation).
+        let q_m = row_sum(&kept.select(&zeros, &q)?)?;
+        let rewritten = kept_sum(&q)?
+            .mul_op(&p_c.mul_op(&s.expm1()?)?)?
+            .sub_op(&q_m.mul_op(&p_c)?)?;
         // A NaN `s` fails the comparison and takes `q - p`.
-        let u = s
-            .abs()?
-            .le(&scalar_like(&s, 1.0)?)?
-            .select(&p_c.mul_op(&s.expm1()?)?, &q_minus_p)?;
+        let small_s = s.abs()?.le(&scalar_like(&s, 1.0)?)?;
+        let u = kept.select(&small_s.select(&rewritten, &q_minus_p)?, &q_minus_p)?;
         let g = u.sub_op(&q.mul_op(&row_sum(&u)?)?)?.stop_gradient()?;
 
         // student - sg(student) is 0 with gradient 1; a non-finite logit would make it NaN.
@@ -3867,6 +3893,108 @@ mod tests {
                 tol,
             );
         }
+    }
+
+    #[test]
+    fn soft_target_cross_entropy_keeps_precision_with_masked_teacher_entries() {
+        // A teacher logit of -inf (top-k or padding masks), or one whose probability underflows
+        // to 0 while δ overflows expm1, used to make 0 · inf = NaN and send the whole row to the
+        // plain q - p, which loses most digits on the nearly equal logits before it. The masked
+        // entry still has student mass (e^-40 of it). References: q - p in 90-digit arithmetic.
+        let cases: [(DType, f64, [f64; 4], f64); 2] = [
+            (
+                DType::F64,
+                2f64.powi(-51),
+                [
+                    -1.714_503_126_948_709_5e-16,
+                    1.542_895_014_542_199e-16,
+                    1.677_832_947_201_633e-17,
+                    3.824_817_686_347_266_6e-19,
+                ],
+                1e-12,
+            ),
+            (
+                DType::F32,
+                2f64.powi(-23),
+                [
+                    -4.595_504_334_943_142_6e-8,
+                    4.144_190_159_310_166e-8,
+                    4.513_141_755_947_284e-9,
+                    3.824_817_878_081_516e-19,
+                ],
+                1e-5,
+            ),
+        ];
+        for (dtype, ulp, want, rel) in cases {
+            for masked in [f64::NEG_INFINITY, -800.0] {
+                let (_, g, _) = distillation_value_and_grads(
+                    soft_target_ce,
+                    dtype,
+                    &[4],
+                    &[2.0 - ulp, 1.0 + ulp, 0.0, -40.0],
+                    &[2.0, 1.0, 0.0, masked],
+                );
+                assert_rel_close(&format!("{dtype:?} teacher logit {masked}"), &g, &want, rel);
+            }
+        }
+    }
+
+    #[test]
+    fn soft_target_cross_entropy_shift_and_fallback_keep_digits() {
+        // A common offset is exactly nothing only because δ is shifted by its value at the
+        // teacher's argmax: these 16 probabilities do not sum to exactly 1 in f64, and without
+        // the shift that rounding leaves gradients of ~1e-44 instead of 0.
+        let teacher: Vec<f64> = (0..16).map(|i| f64::from((i * 7) % 16) / 2.0).collect();
+        let student: Vec<f64> = teacher.iter().map(|t| t + 1024.0).collect();
+        let (_, g, _) =
+            distillation_value_and_grads(soft_target_ce, DType::F64, &[16], &student, &teacher);
+        assert_eq!(g, [0.0; 16], "offset logits: gradient must be exactly 0");
+
+        // References: q - p in 90-digit arithmetic.
+        let cases: [([f64; 3], [f64; 3]); 2] = [
+            // Logits offset by 40 and by 1000 from a teacher whose entries are not dyadic, with
+            // one student logit a single ulp up: the rounded differences student - teacher
+            // carry errors of ~ulp(offset), about the size of the gradient itself.
+            (
+                [40.300_000_000_000_004, 38.8, 42.0],
+                [
+                    5.573_012_991_539_11e-16,
+                    -1.142_341_387_622_264_6e-16,
+                    -4.430_671_603_916_845_6e-16,
+                ],
+            ),
+            (
+                [1_000.300_000_000_000_1, 998.8, 1_002.0],
+                [
+                    8.892_353_276_909_566e-15,
+                    -1.805_463_233_137_68e-15,
+                    -7.086_890_043_771_887e-15,
+                ],
+            ),
+        ];
+        for (student, want) in cases {
+            let (_, g, _) = distillation_value_and_grads(
+                soft_target_ce,
+                DType::F64,
+                &[3],
+                &student,
+                &[0.3, -1.2, 2.0],
+            );
+            assert_rel_close(&format!("offset student {student:?}"), &g, &want, 1e-12);
+        }
+
+        // p is subnormal (~2e-311, ~2e-13 relative spacing) on the second entry, where q - p
+        // does not cancel: p · expm1(s) would carry p's rounding, q - p does not. With
+        // c = 1 / (1 + e^10), q - p = [-c, c] (p's own share is below 1e-300 of c).
+        let c = 1.0 / (1.0 + 10f64.exp());
+        let (_, g, _) = distillation_value_and_grads(
+            soft_target_ce,
+            DType::F64,
+            &[2],
+            &[0.0, -10.0],
+            &[0.0, -715.0],
+        );
+        assert_rel_close("subnormal teacher probability", &g, &[-c, c], 1e-14);
     }
 
     #[test]
