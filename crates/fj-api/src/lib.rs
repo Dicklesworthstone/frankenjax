@@ -3738,7 +3738,10 @@ mod tests {
             .to_f64_vec()
             .unwrap();
         for (a, b) in sym_grad_out.iter().zip(tape_grad_out.iter()) {
-            assert!((a - b).abs() < 1e-10, "2D softmax grad mismatch: {a} vs {b}");
+            assert!(
+                (a - b).abs() < 1e-10,
+                "2D softmax grad mismatch: {a} vs {b}"
+            );
         }
         let hvp_sm_out = jit(sym_hvp_sm)
             .call(vec![mat2x3.clone(), dmat2x3])

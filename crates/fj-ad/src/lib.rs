@@ -14716,12 +14716,8 @@ fn emit_symbolic_vjp_equation(
             if need_input[0] {
                 let mut reshape_params = BTreeMap::new();
                 reshape_params.insert("like".to_owned(), "true".to_owned());
-                result[0] = Some(builder.emit_binary_params(
-                    Primitive::Reshape,
-                    g(),
-                    p(0),
-                    reshape_params,
-                ));
+                result[0] =
+                    Some(builder.emit_binary_params(Primitive::Reshape, g(), p(0), reshape_params));
             }
             Ok(result)
         }
@@ -14763,11 +14759,8 @@ fn emit_symbolic_vjp_equation(
                 for st in &p_in[1..] {
                     dus_inputs.push(st.clone());
                 }
-                result[0] = Some(builder.emit(
-                    Primitive::DynamicUpdateSlice,
-                    dus_inputs,
-                    BTreeMap::new(),
-                ));
+                result[0] =
+                    Some(builder.emit(Primitive::DynamicUpdateSlice, dus_inputs, BTreeMap::new()));
             }
             Ok(result)
         }
@@ -14784,11 +14777,8 @@ fn emit_symbolic_vjp_equation(
                 for st in &p_in[2..] {
                     dus_inputs.push(st.clone());
                 }
-                result[0] = Some(builder.emit(
-                    Primitive::DynamicUpdateSlice,
-                    dus_inputs,
-                    BTreeMap::new(),
-                ));
+                result[0] =
+                    Some(builder.emit(Primitive::DynamicUpdateSlice, dus_inputs, BTreeMap::new()));
             }
             Ok(result)
         }
