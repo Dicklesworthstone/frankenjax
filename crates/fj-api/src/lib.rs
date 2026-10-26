@@ -107,10 +107,8 @@ pub mod nn {
         if rank == 0 {
             return Ok(sum);
         }
-        let mut kept_dims: Vec<u32> = x.aval().shape.dims.clone();
-        kept_dims[axis] = 1;
         let broadcast_dims: Vec<usize> = (0..rank).filter(|&d| d != axis).collect();
-        sum.broadcast_in_dim(&kept_dims, &broadcast_dims)
+        sum.broadcast_in_dim(&x.aval().shape.dims, &broadcast_dims)
     }
 
     fn reduce_keepdims_max(x: &TracerRef, axis: usize) -> Result<TracerRef, TraceError> {
@@ -119,10 +117,8 @@ pub mod nn {
         if rank == 0 {
             return Ok(max_val);
         }
-        let mut kept_dims: Vec<u32> = x.aval().shape.dims.clone();
-        kept_dims[axis] = 1;
         let broadcast_dims: Vec<usize> = (0..rank).filter(|&d| d != axis).collect();
-        max_val.broadcast_in_dim(&kept_dims, &broadcast_dims)
+        max_val.broadcast_in_dim(&x.aval().shape.dims, &broadcast_dims)
     }
 
     /// Rectified Linear Unit: `max(x, 0)`.
@@ -3694,6 +3690,74 @@ mod tests {
             recommend_action(0.05, &LossMatrix::default()),
             DecisionAction::Keep
         );
+
+        // 4. Symbolic grad_to_jaxpr and hvp_to_jaxpr on 2D nn::softmax, nn::layer_norm, nn::rms_norm
+        let mat2x3 = fj_core::TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 3] },
+            [1.0, 2.0, 3.0, 0.5, 1.5, 2.5]
+                .into_iter()
+                .map(Literal::from_f64)
+                .collect(),
+        )
+        .map(Value::Tensor)
+        .unwrap();
+        let dmat2x3 = fj_core::TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 3] },
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+                .into_iter()
+                .map(Literal::from_f64)
+                .collect(),
+        )
+        .map(Value::Tensor)
+        .unwrap();
+
+        let softmax_loss_jaxpr = trace_jaxpr_for_values(
+            |inputs| {
+                let sm = nn::softmax(&inputs[0], -1)?;
+                Ok(vec![nn::l2_loss(&sm)?])
+            },
+            std::slice::from_ref(&mat2x3),
+        )
+        .expect("trace 2D softmax l2_loss");
+        let sym_grad_sm = grad_to_jaxpr(&softmax_loss_jaxpr).expect("grad_to_jaxpr 2D softmax");
+        let sym_hvp_sm = hvp_to_jaxpr(&softmax_loss_jaxpr).expect("hvp_to_jaxpr 2D softmax");
+        let sym_grad_out = jit(sym_grad_sm)
+            .call(vec![mat2x3.clone()])
+            .expect("eval sym_grad_sm")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        let tape_grad_out = grad(softmax_loss_jaxpr)
+            .call(vec![mat2x3.clone()])
+            .expect("eval tape grad sm")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        for (a, b) in sym_grad_out.iter().zip(tape_grad_out.iter()) {
+            assert!((a - b).abs() < 1e-10, "2D softmax grad mismatch: {a} vs {b}");
+        }
+        let hvp_sm_out = jit(sym_hvp_sm)
+            .call(vec![mat2x3.clone(), dmat2x3])
+            .expect("eval sym_hvp_sm");
+        assert_eq!(hvp_sm_out[0].as_tensor().unwrap().shape.dims, vec![2, 3]);
+
+        let ln_loss_jaxpr = trace_jaxpr_for_values(
+            |inputs| {
+                let ln = nn::layer_norm(&inputs[0], -1, 1e-5, None, None)?;
+                Ok(vec![nn::l2_loss(&ln)?])
+            },
+            std::slice::from_ref(&mat2x3),
+        )
+        .expect("trace 2D layer_norm l2_loss");
+        let sym_grad_ln = grad_to_jaxpr(&ln_loss_jaxpr).expect("grad_to_jaxpr 2D layer_norm");
+        let sym_ln_out = jit(sym_grad_ln)
+            .call(vec![mat2x3])
+            .expect("eval sym_grad_ln");
+        assert_eq!(sym_ln_out[0].as_tensor().unwrap().shape.dims, vec![2, 3]);
     }
 
     mod proptest_tests {
