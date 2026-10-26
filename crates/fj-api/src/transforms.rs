@@ -213,10 +213,19 @@ pub struct CustomJvpWrapped {
     rule_key: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JacobianMode {
+    Auto,
+    Forward,
+    Reverse,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct JacobianWrapped {
     jaxpr: Jaxpr,
+    mode: JacobianMode,
     custom_jvp_rule_key: Option<String>,
+    custom_vjp_rule_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -488,7 +497,31 @@ where
 pub fn jacobian(jaxpr: Jaxpr) -> JacobianWrapped {
     JacobianWrapped {
         jaxpr,
+        mode: JacobianMode::Auto,
         custom_jvp_rule_key: None,
+        custom_vjp_rule_key: None,
+    }
+}
+
+/// Wrap a [`Jaxpr`] for forward-mode Jacobian computation (`jax.jacfwd`).
+#[must_use]
+pub fn jacfwd(jaxpr: Jaxpr) -> JacobianWrapped {
+    JacobianWrapped {
+        jaxpr,
+        mode: JacobianMode::Forward,
+        custom_jvp_rule_key: None,
+        custom_vjp_rule_key: None,
+    }
+}
+
+/// Wrap a [`Jaxpr`] for reverse-mode Jacobian computation (`jax.jacrev`).
+#[must_use]
+pub fn jacrev(jaxpr: Jaxpr) -> JacobianWrapped {
+    JacobianWrapped {
+        jaxpr,
+        mode: JacobianMode::Reverse,
+        custom_jvp_rule_key: None,
+        custom_vjp_rule_key: None,
     }
 }
 
@@ -2611,6 +2644,21 @@ impl CustomVjpWrapped {
             last_evidence: LastEvidenceCache::default(),
         }
     }
+
+    #[must_use]
+    pub fn jacobian(&self) -> JacobianWrapped {
+        self.jacrev()
+    }
+
+    #[must_use]
+    pub fn jacrev(&self) -> JacobianWrapped {
+        JacobianWrapped {
+            jaxpr: self.jaxpr.clone(),
+            mode: JacobianMode::Reverse,
+            custom_jvp_rule_key: None,
+            custom_vjp_rule_key: Some(self.rule_key.clone()),
+        }
+    }
 }
 
 impl CustomJvpWrapped {
@@ -2641,20 +2689,56 @@ impl CustomJvpWrapped {
 
     #[must_use]
     pub fn jacobian(&self) -> JacobianWrapped {
+        self.jacfwd()
+    }
+
+    #[must_use]
+    pub fn jacfwd(&self) -> JacobianWrapped {
         JacobianWrapped {
             jaxpr: self.jaxpr.clone(),
+            mode: JacobianMode::Forward,
             custom_jvp_rule_key: Some(self.rule_key.clone()),
+            custom_vjp_rule_key: None,
         }
     }
 }
 
 impl JacobianWrapped {
     pub fn call(&self, args: Vec<Value>) -> Result<Value, ApiError> {
+        match self.mode {
+            JacobianMode::Auto => {
+                if let Some(rule_key) = &self.custom_jvp_rule_key {
+                    fj_ad::jacobian_jaxpr_with_custom_jvp_key(&self.jaxpr, &args, rule_key)
+                        .map_err(ApiError::from)
+                } else if let Some(rule_key) = &self.custom_vjp_rule_key {
+                    fj_ad::jacrev_jaxpr_with_custom_vjp_key(&self.jaxpr, &args, rule_key)
+                        .map_err(ApiError::from)
+                } else {
+                    fj_ad::jacobian_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
+                }
+            }
+            JacobianMode::Forward => self.call_forward(args),
+            JacobianMode::Reverse => self.call_reverse(args),
+        }
+    }
+
+    /// Compute the Jacobian matrix using forward-mode AD (`jacfwd`).
+    pub fn call_forward(&self, args: Vec<Value>) -> Result<Value, ApiError> {
         if let Some(rule_key) = &self.custom_jvp_rule_key {
-            fj_ad::jacobian_jaxpr_with_custom_jvp_key(&self.jaxpr, &args, rule_key)
+            fj_ad::jacfwd_jaxpr_with_custom_jvp_key(&self.jaxpr, &args, rule_key)
                 .map_err(ApiError::from)
         } else {
-            fj_ad::jacobian_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
+            fj_ad::jacfwd_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
+        }
+    }
+
+    /// Compute the Jacobian matrix using reverse-mode AD (`jacrev`).
+    pub fn call_reverse(&self, args: Vec<Value>) -> Result<Value, ApiError> {
+        if let Some(rule_key) = &self.custom_vjp_rule_key {
+            fj_ad::jacrev_jaxpr_with_custom_vjp_key(&self.jaxpr, &args, rule_key)
+                .map_err(ApiError::from)
+        } else {
+            fj_ad::jacrev_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
         }
     }
 
@@ -3134,6 +3218,24 @@ where
 {
     let jaxpr = trace_jaxpr_for_values(f, &args)?;
     jacobian(jaxpr).call(args)
+}
+
+/// Trace a Rust closure against `args` and compute its forward-mode Jacobian matrix via [`jacfwd`].
+pub fn jacfwd_fn<F>(f: F, args: Vec<Value>) -> Result<Value, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let jaxpr = trace_jaxpr_for_values(f, &args)?;
+    jacfwd(jaxpr).call(args)
+}
+
+/// Trace a Rust closure against `args` and compute its reverse-mode Jacobian matrix via [`jacrev`].
+pub fn jacrev_fn<F>(f: F, args: Vec<Value>) -> Result<Value, ApiError>
+where
+    F: FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+{
+    let jaxpr = trace_jaxpr_for_values(f, &args)?;
+    jacrev(jaxpr).call(args)
 }
 
 /// Trace a scalar-output Rust closure against `args` and compute its Hessian matrix via [`hessian`].
@@ -4566,6 +4668,23 @@ mod tests {
             fj_core::jaxpr_fingerprint_sha256(
                 &vg_fast.to_value_and_grad_jaxpr().expect("lowered vg jaxpr")
             )
+        );
+
+        let args2 = vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)];
+        let j_fwd = jacfwd_fn(
+            |xs| Ok(vec![xs[0].mul_op(&xs[1])?, xs[0].add_op(&xs[1])?]),
+            args2.clone(),
+        )
+        .expect("jacfwd_fn should succeed");
+        let j_rev = jacrev_fn(
+            |xs| Ok(vec![xs[0].mul_op(&xs[1])?, xs[0].add_op(&xs[1])?]),
+            args2,
+        )
+        .expect("jacrev_fn should succeed");
+        assert_eq!(j_fwd, j_rev);
+        assert_eq!(
+            j_fwd.as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![4.0, 3.0, 1.0, 1.0]
         );
     }
 }

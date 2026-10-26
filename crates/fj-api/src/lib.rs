@@ -11,9 +11,9 @@ pub use errors::ApiError;
 pub use fj_ad::{
     AdError, JvpResult, LinearizedTape, VjpTape, build_grad_jaxpr, build_hessian_jaxpr,
     build_hvp_jaxpr, build_jvp_jaxpr, build_value_and_grad_jaxpr, clear_custom_derivative_rules,
-    grad_jaxpr_with_cotangent, grad_to_jaxpr, hessian_to_jaxpr, hvp_to_jaxpr, jvp_to_jaxpr,
-    linearize_jaxpr, record_vjp_tape, register_custom_jaxpr_jvp, register_custom_jaxpr_vjp,
-    register_custom_jvp, register_custom_vjp, symbolic_hessian_jaxpr,
+    grad_jaxpr_with_cotangent, grad_to_jaxpr, hessian_to_jaxpr, hvp_to_jaxpr, jacfwd_jaxpr,
+    jacrev_jaxpr, jvp_to_jaxpr, linearize_jaxpr, record_vjp_tape, register_custom_jaxpr_jvp,
+    register_custom_jaxpr_vjp, register_custom_jvp, register_custom_vjp, symbolic_hessian_jaxpr,
 };
 pub use fj_core::{
     DType, Literal, PrecisionPolicy, Shape, TransformCompositionProof, Value,
@@ -55,14 +55,16 @@ pub use fj_runtime::{
 };
 pub use transforms::{
     CheckpointWrapped, ComposedTransform, CustomJvpWrapped, CustomVjpWrapped, GradWrapped,
-    HessianWrapped, JacobianWrapped, JitWrapped, LinearizeResult, LinearizedFunction, PmapWrapped,
-    TransposedLinearFunction, ValueAndGradWrapped, VjpPullback, VjpResult, VmapWrapped,
+    HessianWrapped, JacobianMode, JacobianWrapped, JitWrapped, LinearizeResult, LinearizedFunction,
+    PmapWrapped, TransposedLinearFunction, ValueAndGradWrapped, VjpPullback, VjpResult,
+    VmapWrapped,
 };
 pub use transforms::{
     ShapedArray, checkpoint, compose, custom_jvp, custom_vjp, eval_shape, eval_shape_avals,
-    eval_shape_fn, grad, grad_fn, hessian, hessian_fn, hvp, hvp_fn, jacobian, jacobian_fn, jit,
-    jit_fn, jvp, jvp_fn, linear_transpose, linearize, linearize_fn, optimize_fn, pmap, pmap_fn,
-    trace_jaxpr_for_values, value_and_grad, value_and_grad_fn, vjp, vjp_fn, vmap, vmap_fn,
+    eval_shape_fn, grad, grad_fn, hessian, hessian_fn, hvp, hvp_fn, jacfwd, jacfwd_fn, jacobian,
+    jacobian_fn, jacrev, jacrev_fn, jit, jit_fn, jvp, jvp_fn, linear_transpose, linearize,
+    linearize_fn, optimize_fn, pmap, pmap_fn, trace_jaxpr_for_values, value_and_grad,
+    value_and_grad_fn, vjp, vjp_fn, vmap, vmap_fn,
 };
 
 // Re-export make_jaxpr, ClosedJaxpr, and control-flow tracing API from fj-trace
@@ -83,10 +85,6 @@ pub mod nn {
     /// Eager `f64` reference implementations from `fj_lax::nn`.
     pub mod eager {
         pub use fj_lax::nn::*;
-    }
-
-    fn lit_f64(val: f64) -> Result<TracerRef, TraceError> {
-        TracerRef::literal(Literal::from_f64(val))
     }
 
     fn normalize_axis(rank: usize, axis: isize) -> Result<usize, TraceError> {
@@ -146,31 +144,36 @@ pub mod nn {
         scalar_like(x, 0.0)?.broadcast_in_dim(&x.aval().shape.dims, &[])
     }
 
+    /// Identity activation: returns `x` unmodified (`jax.nn.identity`).
+    pub fn identity(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        Ok(x.clone())
+    }
+
     /// Rectified Linear Unit: `max(x, 0)`.
     pub fn relu(x: &TracerRef) -> Result<TracerRef, TraceError> {
-        x.max(&lit_f64(0.0)?)
+        x.max(&scalar_like(x, 0.0)?)
     }
 
     /// Leaky ReLU: `select(x >= 0, x, negative_slope * x)`.
     pub fn leaky_relu(x: &TracerRef, negative_slope: f64) -> Result<TracerRef, TraceError> {
-        let zero = lit_f64(0.0)?;
+        let zero = scalar_like(x, 0.0)?;
         let cond = x.ge(&zero)?;
-        let scaled = x.mul_op(&lit_f64(negative_slope)?)?;
+        let scaled = x.mul_op(&scalar_like(x, negative_slope)?)?;
         cond.select(x, &scaled)
     }
 
     /// ReLU6: `clamp(0, x, 6)`.
     pub fn relu6(x: &TracerRef) -> Result<TracerRef, TraceError> {
-        let zero = lit_f64(0.0)?;
-        let six = lit_f64(6.0)?;
+        let zero = scalar_like(x, 0.0)?;
+        let six = scalar_like(x, 6.0)?;
         x.clamp(&zero, &six)
     }
 
     /// Exponential Linear Unit: `select(x > 0, x, alpha * expm1(x))`.
     pub fn elu(x: &TracerRef, alpha: f64) -> Result<TracerRef, TraceError> {
-        let zero = lit_f64(0.0)?;
+        let zero = scalar_like(x, 0.0)?;
         let cond = x.gt(&zero)?;
-        let neg_branch = x.expm1()?.mul_op(&lit_f64(alpha)?)?;
+        let neg_branch = x.expm1()?.mul_op(&scalar_like(x, alpha)?)?;
         cond.select(x, &neg_branch)
     }
 
@@ -178,13 +181,13 @@ pub mod nn {
     pub fn selu(x: &TracerRef) -> Result<TracerRef, TraceError> {
         const ALPHA: f64 = 1.673_263_242_354_377_2;
         const SCALE: f64 = 1.050_700_987_355_480_5;
-        elu(x, ALPHA)?.mul_op(&lit_f64(SCALE)?)
+        elu(x, ALPHA)?.mul_op(&scalar_like(x, SCALE)?)
     }
 
     /// Continuously Differentiable ELU: `max(0, x) + min(0, alpha * expm1(x / alpha))`.
     pub fn celu(x: &TracerRef, alpha: f64) -> Result<TracerRef, TraceError> {
-        let zero = lit_f64(0.0)?;
-        let alpha_lit = lit_f64(alpha)?;
+        let zero = scalar_like(x, 0.0)?;
+        let alpha_lit = scalar_like(x, alpha)?;
         let pos = x.max(&zero)?;
         let neg = x
             .div_op(&alpha_lit)?
@@ -199,17 +202,17 @@ pub mod nn {
     /// When `approximate` is `false`, computes `0.5 * x * (1 + erf(x / sqrt(2)))`.
     /// When `approximate` is `true`, computes `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))`.
     pub fn gelu(x: &TracerRef, approximate: bool) -> Result<TracerRef, TraceError> {
-        let half = lit_f64(0.5)?;
-        let one = lit_f64(1.0)?;
+        let half = scalar_like(x, 0.5)?;
+        let one = scalar_like(x, 1.0)?;
         if approximate {
-            let sqrt_2_over_pi = lit_f64((2.0_f64 / std::f64::consts::PI).sqrt())?;
-            let coeff = lit_f64(0.044_715)?;
+            let sqrt_2_over_pi = scalar_like(x, (2.0_f64 / std::f64::consts::PI).sqrt())?;
+            let coeff = scalar_like(x, 0.044_715)?;
             let x2 = x.square()?;
             let x3 = x2.mul_op(x)?;
             let inner = x.add_op(&x3.mul_op(&coeff)?)?.mul_op(&sqrt_2_over_pi)?;
             x.mul_op(&half)?.mul_op(&one.add_op(&inner.tanh()?)?)
         } else {
-            let inv_sqrt2 = lit_f64(std::f64::consts::FRAC_1_SQRT_2)?;
+            let inv_sqrt2 = scalar_like(x, std::f64::consts::FRAC_1_SQRT_2)?;
             let erf_part = x.mul_op(&inv_sqrt2)?.erf()?;
             x.mul_op(&half)?.mul_op(&one.add_op(&erf_part)?)
         }
@@ -235,6 +238,43 @@ pub mod nn {
         x.exp()?.log1p()
     }
 
+    /// Squareplus: `0.5 * (x + sqrt(x^2 + b))` (`jax.nn.squareplus`).
+    pub fn squareplus(x: &TracerRef, b: f64) -> Result<TracerRef, TraceError> {
+        let rad = x.square()?.add_op(&scalar_like(x, b)?)?.sqrt()?;
+        x.add_op(&rad)?.mul_op(&scalar_like(x, 0.5)?)
+    }
+
+    /// Sparse plus: `0` for `x <= -1`, `(x + 1)^2 / 4` for `-1 < x < 1`, `x` for `x >= 1`
+    /// (`jax.nn.sparse_plus`).
+    pub fn sparse_plus(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        let neg_one = scalar_like(x, -1.0)?;
+        let pos_one = scalar_like(x, 1.0)?;
+        let zero_vec = zeros_like(x)?;
+        let mid = x
+            .add_op(&pos_one)?
+            .square()?
+            .mul_op(&scalar_like(x, 0.25)?)?;
+        let inner = x.ge(&pos_one)?.select(x, &mid)?;
+        x.le(&neg_one)?.select(&zero_vec, &inner)
+    }
+
+    /// Sparse sigmoid: `0.5 * clamp(0, x + 1, 2)` (`jax.nn.sparse_sigmoid`).
+    pub fn sparse_sigmoid(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        let shifted = x.add_op(&scalar_like(x, 1.0)?)?;
+        let clamped = shifted.clamp(&scalar_like(x, 0.0)?, &scalar_like(x, 2.0)?)?;
+        clamped.mul_op(&scalar_like(x, 0.5)?)
+    }
+
+    /// Numerically stable `log(1 - exp(-x))` for `x > 0` (`jax.nn.log1mexp`), using the
+    /// Mächler split at `ln(2)`.
+    pub fn log1mexp(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        let ln2 = scalar_like(x, std::f64::consts::LN_2)?;
+        let neg_x = x.neg_op()?;
+        let small_branch = neg_x.expm1()?.neg_op()?.log()?;
+        let large_branch = neg_x.exp()?.neg_op()?.log1p()?;
+        x.lt(&ln2)?.select(&small_branch, &large_branch)
+    }
+
     /// Mish: `x * tanh(softplus(x))`.
     pub fn mish(x: &TracerRef) -> Result<TracerRef, TraceError> {
         x.mul_op(&softplus(x)?.tanh()?)
@@ -242,19 +282,19 @@ pub mod nn {
 
     /// Softsign: `x / (1 + |x|)`.
     pub fn soft_sign(x: &TracerRef) -> Result<TracerRef, TraceError> {
-        let denom = x.abs()?.add_op(&lit_f64(1.0)?)?;
+        let denom = x.abs()?.add_op(&scalar_like(x, 1.0)?)?;
         x.div_op(&denom)
     }
 
     /// Hard tanh: `clamp(-1, x, 1)`.
     pub fn hard_tanh(x: &TracerRef) -> Result<TracerRef, TraceError> {
-        x.clamp(&lit_f64(-1.0)?, &lit_f64(1.0)?)
+        x.clamp(&scalar_like(x, -1.0)?, &scalar_like(x, 1.0)?)
     }
 
     /// Hard sigmoid: `relu6(x + 3) / 6`.
     pub fn hard_sigmoid(x: &TracerRef) -> Result<TracerRef, TraceError> {
-        let shifted = x.add_op(&lit_f64(3.0)?)?;
-        relu6(&shifted)?.div_op(&lit_f64(6.0)?)
+        let shifted = x.add_op(&scalar_like(x, 3.0)?)?;
+        relu6(&shifted)?.div_op(&scalar_like(x, 6.0)?)
     }
 
     /// Hard swish: `x * hard_sigmoid(x)`.
@@ -270,6 +310,24 @@ pub mod nn {
     /// Log-sigmoid: `-softplus(-x)`.
     pub fn log_sigmoid(x: &TracerRef) -> Result<TracerRef, TraceError> {
         softplus(&x.neg_op()?)?.neg_op()
+    }
+
+    /// Gated Linear Unit (`jax.nn.glu`): splits `x` in half along `axis` and computes
+    /// `first_half * sigmoid(second_half)`.
+    pub fn glu(x: &TracerRef, axis: isize) -> Result<TracerRef, TraceError> {
+        let rank = x.aval().shape.rank();
+        let ax = normalize_axis(rank, axis)?;
+        let half = x.aval().shape.dims[ax] / 2;
+        let start_a = vec![0u32; rank];
+        let mut limit_a = x.aval().shape.dims.clone();
+        limit_a[ax] = half;
+        let mut start_b = vec![0u32; rank];
+        start_b[ax] = half;
+        let mut limit_b = x.aval().shape.dims.clone();
+        limit_b[ax] = half * 2;
+        let first_half = x.slice(&start_a, &limit_a, None)?;
+        let second_half = x.slice(&start_b, &limit_b, None)?;
+        first_half.mul_op(&sigmoid(&second_half)?)
     }
 
     /// SwiGLU gated activation: `silu(gate) * up`.
@@ -319,6 +377,18 @@ pub mod nn {
         max.add_op(&tail.log1p()?)
     }
 
+    /// Numerically stable log-mean-exp along `axis` (`logsumexp(x, axis) - ln(N)`).
+    pub fn logmeanexp(x: &TracerRef, axis: isize) -> Result<TracerRef, TraceError> {
+        let rank = x.aval().shape.rank();
+        if rank == 0 {
+            return Ok(x.clone());
+        }
+        let ax = normalize_axis(rank, axis)?;
+        let n = x.aval().shape.dims[ax] as f64;
+        let lse = logsumexp(x, axis)?;
+        lse.sub_op(&scalar_like(&lse, n.ln())?)
+    }
+
     /// Numerically stable softmax along `axis` (use `-1` for the last axis).
     ///
     /// Unlike `jax.nn.softmax`, the max is not under `stop_gradient`, and that matters: when one
@@ -328,7 +398,7 @@ pub mod nn {
     pub fn softmax(x: &TracerRef, axis: isize) -> Result<TracerRef, TraceError> {
         let rank = x.aval().shape.rank();
         if rank == 0 {
-            return lit_f64(1.0);
+            return scalar_like(x, 1.0);
         }
         let ax = normalize_axis(rank, axis)?;
         let max_keep = reduce_keepdims_max(x, ax)?;
@@ -358,7 +428,7 @@ pub mod nn {
     pub fn log_softmax(x: &TracerRef, axis: isize) -> Result<TracerRef, TraceError> {
         let rank = x.aval().shape.rank();
         if rank == 0 {
-            return lit_f64(0.0);
+            return scalar_like(x, 0.0);
         }
         let ax = normalize_axis(rank, axis)?;
         let n = x.aval().shape.dims[ax];
@@ -380,6 +450,20 @@ pub mod nn {
             .sub_op(&argmax.one_hot(n, x.aval().dtype, Some(ax as i64))?)?
             .reduce_sum(Some(&[ax as i64]))?;
         shifted.sub_op(&broadcast_back(&tail.log1p()?, x, ax)?)
+    }
+
+    /// Categorical cross-entropy loss `-Σ_k labels_k · log_softmax(logits)_k` reduced along `axis`.
+    pub fn softmax_cross_entropy(
+        logits: &TracerRef,
+        labels: &TracerRef,
+        axis: isize,
+    ) -> Result<TracerRef, TraceError> {
+        let ax = normalize_axis(logits.aval().shape.rank(), axis)?;
+        let log_probs = log_softmax(logits, axis)?;
+        labels
+            .mul_op(&log_probs)?
+            .reduce_sum(Some(&[ax as i64]))?
+            .neg_op()
     }
 
     /// Soft-target (distillation) cross-entropy along `axis` between a teacher and a student
@@ -471,15 +555,15 @@ pub mod nn {
     pub fn standardize(x: &TracerRef, axis: isize, eps: f64) -> Result<TracerRef, TraceError> {
         let rank = x.aval().shape.rank();
         if rank == 0 {
-            return lit_f64(0.0);
+            return scalar_like(x, 0.0);
         }
         let ax = normalize_axis(rank, axis)?;
         let n = x.aval().shape.dims[ax] as f64;
-        let inv_n = lit_f64(1.0 / n)?;
+        let inv_n = scalar_like(x, 1.0 / n)?;
         let mean_keep = reduce_keepdims_sum(x, ax)?.mul_op(&inv_n)?;
         let centered = x.sub_op(&mean_keep)?;
         let var_keep = reduce_keepdims_sum(&centered.square()?, ax)?.mul_op(&inv_n)?;
-        let std_keep = var_keep.add_op(&lit_f64(eps)?)?.sqrt()?;
+        let std_keep = var_keep.add_op(&scalar_like(x, eps)?)?.sqrt()?;
         centered.div_op(&std_keep)
     }
 
@@ -511,14 +595,33 @@ pub mod nn {
         let rank = x.aval().shape.rank();
         let ax = normalize_axis(rank, axis)?;
         let n = x.aval().shape.dims[ax] as f64;
-        let inv_n = lit_f64(1.0 / n)?;
+        let inv_n = scalar_like(x, 1.0 / n)?;
         let ms_keep = reduce_keepdims_sum(&x.square()?, ax)?.mul_op(&inv_n)?;
-        let inv_rms = ms_keep.add_op(&lit_f64(eps)?)?.rsqrt()?;
+        let inv_rms = ms_keep.add_op(&scalar_like(x, eps)?)?.rsqrt()?;
         let mut out = x.mul_op(&inv_rms)?;
         if let Some(w) = weight {
             out = out.mul_op(w)?;
         }
         Ok(out)
+    }
+
+    /// Scaled dot-product attention (`softmax(Q @ K^T / sqrt(d_k) + mask, axis=-1) @ V`)
+    /// for 2-D `query` (`[T_q, d_k]`), `key` (`[T_k, d_k]`), and `value` (`[T_k, d_v]`).
+    pub fn dot_product_attention(
+        query: &TracerRef,
+        key: &TracerRef,
+        value: &TracerRef,
+        mask: Option<&TracerRef>,
+    ) -> Result<TracerRef, TraceError> {
+        let d_k = query.aval().shape.dims.last().copied().unwrap_or(1).max(1) as f64;
+        let key_t = key.transpose(None)?;
+        let scale = scalar_like(query, 1.0 / d_k.sqrt())?;
+        let mut scores = query.dot(&key_t)?.mul_op(&scale)?;
+        if let Some(m) = mask {
+            scores = scores.add_op(m)?;
+        }
+        let weights = softmax(&scores, -1)?;
+        weights.dot(value)
     }
 
     /// One-hot encoding wrapper on [`TracerRef`].
@@ -534,7 +637,7 @@ pub mod nn {
     pub fn l2_loss(x: &TracerRef) -> Result<TracerRef, TraceError> {
         let sq = x.square()?;
         let sum = sq.reduce_sum(None)?;
-        sum.mul_op(&lit_f64(0.5)?)
+        sum.mul_op(&scalar_like(&sum, 0.5)?)
     }
 }
 
@@ -4538,6 +4641,157 @@ mod tests {
             batched_ln_grads[0].as_tensor().unwrap().shape.dims,
             vec![2, 3]
         );
+    }
+
+    #[test]
+    fn nn_f32_dtype_preservation_and_full_parity() {
+        let x_f32 = Value::Tensor(
+            fj_core::TensorValue::new(
+                DType::F32,
+                Shape::vector(4),
+                vec![
+                    Literal::from_f32(-2.0),
+                    Literal::from_f32(-0.5),
+                    Literal::from_f32(0.5),
+                    Literal::from_f32(2.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let f32_outs = jit_fn(
+            |xs| {
+                Ok(vec![
+                    nn::identity(&xs[0])?,
+                    nn::relu(&xs[0])?,
+                    nn::leaky_relu(&xs[0], 0.01)?,
+                    nn::relu6(&xs[0])?,
+                    nn::elu(&xs[0], 1.0)?,
+                    nn::selu(&xs[0])?,
+                    nn::celu(&xs[0], 1.0)?,
+                    nn::gelu(&xs[0], false)?,
+                    nn::gelu(&xs[0], true)?,
+                    nn::squareplus(&xs[0], 4.0)?,
+                    nn::sparse_plus(&xs[0])?,
+                    nn::sparse_sigmoid(&xs[0])?,
+                    nn::soft_sign(&xs[0])?,
+                    nn::hard_tanh(&xs[0])?,
+                    nn::hard_sigmoid(&xs[0])?,
+                    nn::hard_swish(&xs[0])?,
+                    nn::glu(&xs[0], -1)?,
+                    nn::logmeanexp(&xs[0], -1)?,
+                    nn::softmax(&xs[0], -1)?,
+                    nn::log_softmax(&xs[0], -1)?,
+                    nn::standardize(&xs[0], -1, 1e-5)?,
+                    nn::rms_norm(&xs[0], -1, 1e-5, None)?,
+                    nn::l2_loss(&xs[0])?,
+                ])
+            },
+            vec![x_f32],
+        )
+        .expect("jit_fn over F32 nn suite");
+        for (idx, out) in f32_outs.iter().enumerate() {
+            assert_eq!(
+                out.dtype(),
+                DType::F32,
+                "nn output #{idx} should preserve F32 dtype, got {:?}",
+                out.dtype()
+            );
+        }
+
+        // Parity against eager fj_lax::nn on F64
+        let raw = [-2.0_f64, -0.5, 0.5, 2.0];
+        let x_f64 = Value::vector_f64(&raw).unwrap();
+        let f64_outs = jit_fn(
+            |xs| {
+                Ok(vec![
+                    nn::squareplus(&xs[0], 4.0)?,
+                    nn::sparse_plus(&xs[0])?,
+                    nn::sparse_sigmoid(&xs[0])?,
+                    nn::glu(&xs[0], -1)?,
+                    nn::logmeanexp(&xs[0], -1)?,
+                ])
+            },
+            vec![x_f64],
+        )
+        .expect("jit_fn over F64 new nn ops");
+
+        let assert_close = |actual: &[f64], expected: &[f64], label: &str| {
+            assert_eq!(actual.len(), expected.len(), "{label} len mismatch");
+            for (a, b) in actual.iter().zip(expected.iter()) {
+                assert!((a - b).abs() < 1e-12, "{label} mismatch: {a} vs {b}");
+            }
+        };
+        assert_close(
+            &f64_outs[0].as_tensor().unwrap().to_f64_vec().unwrap(),
+            &nn::eager::squareplus(&raw, 4.0),
+            "squareplus",
+        );
+        assert_close(
+            &f64_outs[1].as_tensor().unwrap().to_f64_vec().unwrap(),
+            &nn::eager::sparse_plus(&raw),
+            "sparse_plus",
+        );
+        assert_close(
+            &f64_outs[2].as_tensor().unwrap().to_f64_vec().unwrap(),
+            &nn::eager::sparse_sigmoid(&raw),
+            "sparse_sigmoid",
+        );
+        assert_close(
+            &f64_outs[3].as_tensor().unwrap().to_f64_vec().unwrap(),
+            &nn::eager::glu(&raw),
+            "glu",
+        );
+        let lme = f64_outs[4].as_f64_scalar().unwrap();
+        assert!((lme - nn::eager::logmeanexp(&raw)).abs() < 1e-12);
+
+        // log1mexp parity on positive inputs
+        let pos_raw = [0.2_f64, 0.7, 1.5, 4.0];
+        let pos_val = Value::vector_f64(&pos_raw).unwrap();
+        let l1me = jit_fn(|xs| Ok(vec![nn::log1mexp(&xs[0])?]), vec![pos_val]).expect("log1mexp")
+            [0]
+        .as_tensor()
+        .unwrap()
+        .to_f64_vec()
+        .unwrap();
+        assert_close(&l1me, &nn::eager::log1mexp(&pos_raw), "log1mexp");
+
+        // softmax_cross_entropy + dot_product_attention + grad
+        let logits = Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap();
+        let labels = Value::vector_f64(&[0.0, 1.0, 0.0]).unwrap();
+        let ce_grads = grad_fn(
+            |xs| Ok(vec![nn::softmax_cross_entropy(&xs[0], &xs[1], -1)?]),
+            vec![logits, labels],
+        )
+        .expect("grad softmax_cross_entropy");
+        let g_logits = ce_grads[0].as_tensor().unwrap().to_f64_vec().unwrap();
+        let expected_sm = nn::eager::softmax(&[1.0, 2.0, 3.0]);
+        assert_close(
+            &g_logits,
+            &[expected_sm[0], expected_sm[1] - 1.0, expected_sm[2]],
+            "grad softmax_cross_entropy",
+        );
+
+        let q = Value::Tensor(
+            fj_core::TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                vec![1.0, 0.0, 0.0, 1.0]
+                    .into_iter()
+                    .map(Literal::from_f64)
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let attn_out = jit_fn(
+            |xs| {
+                Ok(vec![nn::dot_product_attention(
+                    &xs[0], &xs[0], &xs[0], None,
+                )?])
+            },
+            vec![q],
+        )
+        .expect("dot_product_attention");
+        assert_eq!(attn_out[0].as_tensor().unwrap().shape.dims, vec![2, 2]);
     }
 
     mod proptest_tests {

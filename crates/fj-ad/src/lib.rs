@@ -827,6 +827,25 @@ impl AdValueStore {
         }
     }
 
+    fn to_var_dtypes(&self) -> BTreeMap<VarId, DType> {
+        let mut out = BTreeMap::new();
+        match self {
+            Self::Dense(values) => {
+                for (idx, slot) in values.iter().enumerate() {
+                    if let Some(val) = slot {
+                        out.insert(VarId(idx as u32), val.dtype());
+                    }
+                }
+            }
+            Self::Sparse(values) => {
+                for (&var, val) in values {
+                    out.insert(var, val.dtype());
+                }
+            }
+        }
+        out
+    }
+
     fn add_or_insert(&mut self, var: VarId, cotangent: Value) -> Result<(), AdError> {
         match self {
             Self::Dense(values) => {
@@ -16151,6 +16170,40 @@ pub fn jacobian_jaxpr_with_custom_jvp_key(
     jacobian_jaxpr_inner(jaxpr, args, Some(rule_key))
 }
 
+/// Compute Jacobian matrix exclusively via forward-mode AD (`jacfwd` semantics).
+///
+/// Always uses forward-mode pushforwards (and honors registered custom JVP rules),
+/// regardless of whether `output_dim < input_dim`.
+pub fn jacfwd_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
+    jacfwd_jaxpr_inner(jaxpr, args, None)
+}
+
+/// Compute forward-mode Jacobian (`jacfwd`) using a wrapper-scoped custom JVP rule when present.
+pub fn jacfwd_jaxpr_with_custom_jvp_key(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    rule_key: &str,
+) -> Result<Value, AdError> {
+    jacfwd_jaxpr_inner(jaxpr, args, Some(rule_key))
+}
+
+/// Compute Jacobian matrix exclusively via reverse-mode AD (`jacrev` semantics).
+///
+/// Records the forward tape once and replays reverse-mode pullbacks for each
+/// output basis vector across all outputs (and honors registered custom VJP rules).
+pub fn jacrev_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
+    jacrev_jaxpr_inner(jaxpr, args, None)
+}
+
+/// Compute reverse-mode Jacobian (`jacrev`) using a wrapper-scoped custom VJP rule when present.
+pub fn jacrev_jaxpr_with_custom_vjp_key(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    rule_key: &str,
+) -> Result<Value, AdError> {
+    jacrev_jaxpr_inner(jaxpr, args, Some(rule_key))
+}
+
 /// A primitive whose output element `i` depends ONLY on input element `i`
 /// (position-local, shape-preserving elementwise math). A jaxpr built solely from
 /// these over a SINGLE input is componentwise, so its Jacobian is diagonal.
@@ -16795,6 +16848,96 @@ fn jacobian_jaxpr_inner(
         }
     }
 
+    jacfwd_from_prepared(
+        jaxpr,
+        args,
+        &input_lengths,
+        input_dim,
+        &zero_tangents,
+        custom_jvp_rule_key,
+    )
+}
+
+fn jacfwd_jaxpr_inner(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    custom_jvp_rule_key: Option<&str>,
+) -> Result<Value, AdError> {
+    if args.is_empty() {
+        return Err(AdError::InputArity {
+            expected: 1,
+            actual: 0,
+        });
+    }
+
+    let input_lengths = args
+        .iter()
+        .map(flatten_value_to_f64)
+        .map(|res| res.map(|flat| flat.len()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let input_dim = input_lengths.iter().sum::<usize>();
+    if input_dim == 0 {
+        return Err(AdError::EvalFailed(
+            "jacobian requires at least one differentiable input dimension".to_owned(),
+        ));
+    }
+
+    let zero_tangents = args.iter().map(zeros_like).collect::<Vec<_>>();
+
+    if jaxpr_is_elementwise_diagonal(jaxpr)
+        && custom_jvp_rule_key.is_none()
+        && lookup_custom_jaxpr_jvp(jaxpr).is_none()
+    {
+        let mut jacobian: Option<Vec<f64>> = None;
+        let mut output_dim = 0usize;
+        let mut col_offset = 0usize;
+        let mut ok = true;
+        for k in 0..args.len() {
+            let mut tangents = zero_tangents.clone();
+            tangents[k] = ones_like(&args[k]);
+            let jvp_result = jvp_inner(jaxpr, args, &tangents, custom_jvp_rule_key)?;
+            let diag = flatten_values_to_f64(&jvp_result.tangents)?;
+            if jacobian.is_none() {
+                output_dim = diag.len();
+                jacobian = Some(vec![0.0_f64; output_dim * input_dim]);
+            } else if diag.len() != output_dim {
+                ok = false;
+                break;
+            }
+            if input_lengths[k] != output_dim {
+                ok = false;
+                break;
+            }
+            if let Some(jac) = jacobian.as_mut() {
+                for i in 0..output_dim {
+                    jac[i * input_dim + col_offset + i] = diag[i];
+                }
+            }
+            col_offset += input_lengths[k];
+        }
+        if ok && let Some(jac) = jacobian {
+            return matrix_value(output_dim, input_dim, jac);
+        }
+    }
+
+    jacfwd_from_prepared(
+        jaxpr,
+        args,
+        &input_lengths,
+        input_dim,
+        &zero_tangents,
+        custom_jvp_rule_key,
+    )
+}
+
+fn jacfwd_from_prepared(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    input_lengths: &[usize],
+    input_dim: usize,
+    zero_tangents: &[Value],
+    custom_jvp_rule_key: Option<&str>,
+) -> Result<Value, AdError> {
     // LINEARIZE fast path: in jacfwd the primal is IDENTICAL for every column (only
     // the seed tangent varies), so each unary-elementwise op's derivative f'(primal)
     // can be computed ONCE and every column reduced to a cheap value_mul instead of
@@ -16809,9 +16952,9 @@ fn jacobian_jaxpr_inner(
     if let Some(jac) = jacfwd_linearize(
         jaxpr,
         args,
-        &input_lengths,
+        input_lengths,
         input_dim,
-        &zero_tangents,
+        zero_tangents,
         custom_jvp_rule_key,
     )? {
         return Ok(jac);
@@ -16824,11 +16967,11 @@ fn jacobian_jaxpr_inner(
     // pass, so a cheap one is malloc-bound and regresses under threading (0.51x),
     // which the heavy-op gate (not raw equation count) screens out.
     let column_jvp = |basis_idx: usize| -> Result<Vec<f64>, AdError> {
-        let (arg_idx, local_idx) = global_basis_to_arg_index(&input_lengths, basis_idx)
-            .ok_or_else(|| {
+        let (arg_idx, local_idx) =
+            global_basis_to_arg_index(input_lengths, basis_idx).ok_or_else(|| {
                 AdError::EvalFailed(format!("unable to resolve basis index {basis_idx}"))
             })?;
-        let mut tangents = zero_tangents.clone();
+        let mut tangents = zero_tangents.to_vec();
         tangents[arg_idx] = basis_value_like(&args[arg_idx], local_idx)?;
         let jvp_result = jvp_inner(jaxpr, args, &tangents, custom_jvp_rule_key)?;
         flatten_values_to_f64(&jvp_result.tangents)
@@ -16910,6 +17053,142 @@ fn jacobian_jaxpr_inner(
         }
     }
 
+    matrix_value(output_dim, input_dim, jacobian)
+}
+
+fn jacrev_jaxpr_inner(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    custom_vjp_rule_key: Option<&str>,
+) -> Result<Value, AdError> {
+    if args.is_empty() {
+        return Err(AdError::InputArity {
+            expected: 1,
+            actual: 0,
+        });
+    }
+
+    let input_lengths = args
+        .iter()
+        .map(flatten_value_to_f64)
+        .map(|res| res.map(|flat| flat.len()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let input_dim = input_lengths.iter().sum::<usize>();
+    if input_dim == 0 {
+        return Err(AdError::EvalFailed(
+            "jacobian requires at least one differentiable input dimension".to_owned(),
+        ));
+    }
+
+    let (outputs, tape, fwd_env) = forward_with_tape(jaxpr, args)?;
+    let output_lengths = outputs
+        .iter()
+        .map(flatten_value_to_f64)
+        .map(|res| res.map(|flat| flat.len()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let output_dim = output_lengths.iter().sum::<usize>();
+    if output_dim == 0 {
+        return matrix_value(0, input_dim, Vec::new());
+    }
+
+    let zero_cotangents: Vec<Value> = outputs.iter().map(zeros_like).collect();
+    let custom_rule = custom_vjp_rule_key
+        .and_then(lookup_custom_jaxpr_vjp_by_key)
+        .or_else(|| lookup_custom_jaxpr_vjp(jaxpr));
+
+    let row_fn = |row_idx: usize| -> Result<Vec<f64>, AdError> {
+        let (out_idx, local_idx) =
+            global_basis_to_arg_index(&output_lengths, row_idx).ok_or_else(|| {
+                AdError::EvalFailed(format!("unable to resolve output basis index {row_idx}"))
+            })?;
+        let cotangent = basis_value_like(&outputs[out_idx], local_idx)?;
+        let grads = if outputs.len() == 1 {
+            if let Some(rule) = &custom_rule {
+                let custom_grads = rule(args, &outputs, &cotangent)?;
+                if custom_grads.len() != jaxpr.invars.len() {
+                    return Err(AdError::EvalFailed(format!(
+                        "custom Jaxpr VJP cotangent arity mismatch: expected {}, got {}",
+                        jaxpr.invars.len(),
+                        custom_grads.len()
+                    )));
+                }
+                custom_grads
+            } else {
+                backward(&tape, jaxpr.outvars[0], cotangent, jaxpr, &fwd_env)?
+            }
+        } else {
+            let mut cotangents = zero_cotangents.clone();
+            cotangents[out_idx] = cotangent;
+            backward_multi(&tape, &jaxpr.outvars, &cotangents, jaxpr, &fwd_env)?
+        };
+        flatten_values_to_f64(&grads)
+    };
+
+    let work = output_dim.saturating_mul(jaxpr.equations.len());
+    let n_threads = if work < HESSIAN_PARALLEL_WORK_PER_THREAD || custom_rule.is_some() {
+        1
+    } else {
+        let cores = std::thread::available_parallelism()
+            .map(|t| t.get())
+            .unwrap_or(1);
+        cores.min(output_dim).max(1)
+    };
+
+    let rows: Vec<Vec<f64>> = if n_threads <= 1 {
+        (0..output_dim).map(row_fn).collect::<Result<Vec<_>, _>>()?
+    } else {
+        let row_fn = &row_fn;
+        let chunk = output_dim.div_ceil(n_threads);
+        let bounds: Vec<(usize, usize)> = (0..n_threads)
+            .map(|t| (t * chunk, ((t + 1) * chunk).min(output_dim)))
+            .filter(|(s, e)| s < e)
+            .collect();
+        type RowChunk = Result<Vec<(usize, Vec<f64>)>, AdError>;
+        let chunk_results: Vec<RowChunk> = std::thread::scope(|scope| {
+            let handles: Vec<_> = bounds
+                .iter()
+                .map(|&(start, end)| {
+                    scope.spawn(move || {
+                        let mut out = Vec::with_capacity(end - start);
+                        for j in start..end {
+                            out.push((j, row_fn(j)?));
+                        }
+                        Ok(out)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join().unwrap_or_else(|_| {
+                        Err(AdError::EvalFailed(
+                            "Jacobian worker thread panicked".to_owned(),
+                        ))
+                    })
+                })
+                .collect()
+        });
+        let mut assembled = vec![Vec::new(); output_dim];
+        for cr in chunk_results {
+            for (j, row) in cr? {
+                assembled[j] = row;
+            }
+        }
+        assembled
+    };
+
+    for (row_idx, row) in rows.iter().enumerate() {
+        if row.len() != input_dim {
+            return Err(AdError::EvalFailed(format!(
+                "inconsistent reverse-mode Jacobian input dimension: expected {input_dim}, got {} at row {row_idx}",
+                row.len()
+            )));
+        }
+    }
+    let mut jacobian = vec![0.0_f64; output_dim * input_dim];
+    for (j, row) in rows.iter().enumerate() {
+        jacobian[j * input_dim..(j + 1) * input_dim].copy_from_slice(row);
+    }
     matrix_value(output_dim, input_dim, jacobian)
 }
 
@@ -17711,7 +17990,8 @@ pub fn hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
 }
 
 /// Compute the exact analytical Hessian of a scalar-valued `Jaxpr` using
-/// symbolic forward-over-reverse differentiation (`jvp` over `build_grad_jaxpr`).
+/// symbolic forward-over-reverse differentiation (`linearize_jaxpr` + `pushforward`
+/// over `build_grad_jaxpr_with_dtypes`).
 pub fn symbolic_hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
     if args.is_empty() {
         return Err(AdError::InputArity {
@@ -17731,7 +18011,13 @@ pub fn symbolic_hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, Ad
         ));
     }
     let argnums: Vec<usize> = (0..jaxpr.invars.len()).collect();
-    let grad_ir = build_grad_jaxpr(jaxpr, &argnums)?;
+    let var_dtypes = if args.iter().all(|v| v.dtype() == DType::F64) {
+        BTreeMap::new()
+    } else {
+        forward_with_tape(jaxpr, args)?.2.to_var_dtypes()
+    };
+    let grad_ir = build_grad_jaxpr_with_dtypes(jaxpr, &argnums, &var_dtypes)?;
+    let (_, linearized) = linearize_jaxpr(&grad_ir, args)?;
     let zero_tangents: Vec<Value> = args.iter().map(zeros_like).collect();
     let mut hessian = vec![0.0_f64; input_dim * input_dim];
     for basis_idx in 0..input_dim {
@@ -17741,8 +18027,8 @@ pub fn symbolic_hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, Ad
             })?;
         let mut tangents = zero_tangents.clone();
         tangents[arg_idx] = basis_value_like(&args[arg_idx], local_idx)?;
-        let jvp_res = jvp(&grad_ir, args, &tangents)?;
-        let col = flatten_values_to_f64(&jvp_res.tangents)?;
+        let tangent_outs = linearized.pushforward(&tangents)?;
+        let col = flatten_values_to_f64(&tangent_outs)?;
         if col.len() != input_dim {
             return Err(AdError::EvalFailed(format!(
                 "symbolic Hessian column length mismatch: expected {input_dim}, got {}",
@@ -17766,7 +18052,17 @@ fn try_symbolic_hessian_jaxpr(
         return Ok(None);
     }
     let argnums: Vec<usize> = (0..jaxpr.invars.len()).collect();
-    let Ok(grad_ir) = build_grad_jaxpr(jaxpr, &argnums) else {
+    let var_dtypes = if args.iter().all(|v| v.dtype() == DType::F64) {
+        BTreeMap::new()
+    } else if let Ok((_, _, env)) = forward_with_tape(jaxpr, args) {
+        env.to_var_dtypes()
+    } else {
+        return Ok(None);
+    };
+    let Ok(grad_ir) = build_grad_jaxpr_with_dtypes(jaxpr, &argnums, &var_dtypes) else {
+        return Ok(None);
+    };
+    let Ok((_, linearized)) = linearize_jaxpr(&grad_ir, args) else {
         return Ok(None);
     };
     let zero_tangents: Vec<Value> = args.iter().map(zeros_like).collect();
@@ -17780,10 +18076,10 @@ fn try_symbolic_hessian_jaxpr(
             return Ok(None);
         };
         tangents[arg_idx] = basis_t;
-        let Ok(jvp_res) = jvp(&grad_ir, args, &tangents) else {
+        let Ok(tangent_outs) = linearized.pushforward(&tangents) else {
             return Ok(None);
         };
-        let Ok(col) = flatten_values_to_f64(&jvp_res.tangents) else {
+        let Ok(col) = flatten_values_to_f64(&tangent_outs) else {
             return Ok(None);
         };
         if col.len() != input_dim {
@@ -34370,5 +34666,198 @@ mod tests {
         for v in hvp_chol_out {
             assert!(v.abs() < 1e-10, "expected 0 Hessian of tr(L L^T), got {v}");
         }
+    }
+
+    #[test]
+    fn jacfwd_jacrev_and_f32_symbolic_hessian_parity() {
+        use smallvec::smallvec;
+
+        // 1. Multi-output Jaxpr: (x, y) -> (x^2 + y, x * y)
+        let multi_out = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(4), VarId(5)],
+            vec![
+                Equation {
+                    primitive: Primitive::Square,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let args = [Value::scalar_f64(3.0), Value::scalar_f64(4.0)];
+        let j_fwd = super::jacfwd_jaxpr(&multi_out, &args)
+            .expect("jacfwd multi_out")
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        let j_rev = super::jacrev_jaxpr(&multi_out, &args)
+            .expect("jacrev multi_out")
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        // At (3, 4): d(x^2 + y)/dx = 6, d(x^2 + y)/dy = 1; d(x*y)/dx = 4, d(x*y)/dy = 3
+        assert_eq!(j_fwd, vec![6.0, 1.0, 4.0, 3.0]);
+        assert_eq!(j_rev, vec![6.0, 1.0, 4.0, 3.0]);
+
+        // 2. Wide function (output_dim = 1 < input_dim = 3) with custom JVP vs custom VJP:
+        //    jacfwd must honor custom JVP even though output_dim < input_dim,
+        //    and jacrev must honor custom VJP even when output_dim == input_dim.
+        let wide_jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        super::register_custom_jaxpr_jvp_with_key(
+            "test_jacfwd_wide_key",
+            move |primals, tangents| {
+                let p_out = fj_interpreters::eval_jaxpr(&wide_jaxpr, primals)
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                let t_flat = super::flatten_value_to_f64(&tangents[0])?;
+                // Custom JVP scales directional derivative by 10.0
+                let sum_t: f64 = t_flat.iter().map(|v| 10.0 * v).sum();
+                Ok(super::JvpResult {
+                    primals: p_out,
+                    tangents: vec![Value::scalar_f64(sum_t)],
+                })
+            },
+        );
+        let wide_for_call = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let vec3 = Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap();
+        let wide_fwd = super::jacfwd_jaxpr_with_custom_jvp_key(
+            &wide_for_call,
+            std::slice::from_ref(&vec3),
+            "test_jacfwd_wide_key",
+        )
+        .expect("jacfwd with custom jvp on wide function")
+        .as_tensor()
+        .unwrap()
+        .to_f64_vec()
+        .unwrap();
+        assert_eq!(wide_fwd, vec![10.0, 10.0, 10.0]);
+
+        let square_jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Square,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        super::register_custom_jaxpr_vjp_with_key(
+            "test_jacrev_square_key",
+            |_primals, _outputs, cotangent| {
+                // Custom VJP returns 7 * cotangent
+                let c_flat = super::flatten_value_to_f64(cotangent)?;
+                let scaled: Vec<f64> = c_flat.into_iter().map(|c| 7.0 * c).collect();
+                Ok(vec![Value::vector_f64(&scaled).unwrap()])
+            },
+        );
+        let sq_rev = super::jacrev_jaxpr_with_custom_vjp_key(
+            &square_jaxpr,
+            std::slice::from_ref(&vec3),
+            "test_jacrev_square_key",
+        )
+        .expect("jacrev with custom vjp on square function")
+        .as_tensor()
+        .unwrap()
+        .to_f64_vec()
+        .unwrap();
+        assert_eq!(sq_rev, vec![7.0, 0.0, 0.0, 0.0, 7.0, 0.0, 0.0, 0.0, 7.0]);
+        super::clear_custom_derivative_rules();
+
+        // 3. F32 symbolic_hessian_jaxpr: f(x) = sum(x^3) -> diag(6 * x)
+        let cubic_sum = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Square,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let x_f32 = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape::vector(2),
+                vec![Literal::from_f32(1.0), Literal::from_f32(2.0)],
+            )
+            .unwrap(),
+        );
+        let h_f32 = super::symbolic_hessian_jaxpr(&cubic_sum, &[x_f32])
+            .expect("symbolic_hessian_jaxpr on F32 vector")
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        assert_eq!(h_f32, vec![6.0, 0.0, 0.0, 12.0]);
     }
 }

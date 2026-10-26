@@ -7200,6 +7200,16 @@ mod tests {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|err| format!("log dir create failed: {err}"))?;
         }
+        if let Ok(existing_raw) = fs::read_to_string(path)
+            && let Ok(existing) = serde_json::from_str::<fj_test_utils::TestLogV1>(&existing_raw)
+            && existing.test_id == log.test_id
+            && existing.fixture_id == log.fixture_id
+            && existing.mode == log.mode
+            && existing.result == log.result
+            && existing.details == log.details
+        {
+            return Ok(());
+        }
         let payload = serde_json::to_string_pretty(log)
             .map_err(|err| format!("log serialize failed: {err}"))?;
         fs::write(path, payload).map_err(|err| format!("log write failed: {err}"))

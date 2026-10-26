@@ -5493,7 +5493,12 @@ fn py_jacobian(py: Python<'_>, target: &Bound<'_, PyAny>, args: Vec<PyValue>) ->
 }
 
 fn jacrev(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
-    jacobian(jaxpr, args)
+    let rust_args = py_values_to_rust(args);
+    let jac = fj_api::jacrev(jaxpr.inner.clone())
+        .call(rust_args)
+        .map_err(runtime_error)?;
+    check_debug_nans_infs(std::slice::from_ref(&jac))?;
+    Ok(PyValue::from_value(jac))
 }
 
 #[pyfunction(name = "jacrev")]
@@ -5503,7 +5508,12 @@ fn py_jacrev(py: Python<'_>, target: &Bound<'_, PyAny>, args: Vec<PyValue>) -> P
 }
 
 fn jacfwd(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
-    jacobian(jaxpr, args)
+    let rust_args = py_values_to_rust(args);
+    let jac = fj_api::jacfwd(jaxpr.inner.clone())
+        .call(rust_args)
+        .map_err(runtime_error)?;
+    check_debug_nans_infs(std::slice::from_ref(&jac))?;
+    Ok(PyValue::from_value(jac))
 }
 
 #[pyfunction(name = "jacfwd")]
