@@ -13771,10 +13771,8 @@ fn emit_symbolic_jvp_equation(
         }
         let jvp_body = build_jvp_jaxpr(body_jaxpr)?;
         let mut jvp_cond = cond_jaxpr.clone();
-        let mut cond_next_var = max_var_id_in_jaxpr(&jvp_cond) + 1;
-        for _ in 0..p_in.len() {
+        for cond_next_var in (max_var_id_in_jaxpr(&jvp_cond) + 1..).take(p_in.len()) {
             jvp_cond.invars.push(VarId(cond_next_var));
-            cond_next_var += 1;
         }
         let mut loop_inputs = SmallVec::<[Atom; 4]>::with_capacity(2 * p_in.len());
         for a in p_in {
@@ -14193,8 +14191,11 @@ fn emit_symbolic_jvp_equation(
                     let dx_over_x = builder.emit_binary(Primitive::Div, t(1), p(1));
                     let sum_ratio = builder.emit_unary(Primitive::ReduceSum, Atom::Var(dx_over_x));
                     let dc_over_c = builder.emit_binary(Primitive::Div, t(0), p(0));
-                    let tot_ratio =
-                        builder.emit_binary(Primitive::Add, Atom::Var(dc_over_c), Atom::Var(sum_ratio));
+                    let tot_ratio = builder.emit_binary(
+                        Primitive::Add,
+                        Atom::Var(dc_over_c),
+                        Atom::Var(sum_ratio),
+                    );
                     builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(tot_ratio))
                 }
                 _ => return Err(AdError::UnsupportedPrimitive(Primitive::Scan)),
@@ -14873,13 +14874,11 @@ fn emit_symbolic_vjp_equation(
         }
         Primitive::Solve => {
             let at = builder.emit_unary(Primitive::Transpose, p(0));
-            let z = builder.emit_binary_params(Primitive::Solve, Atom::Var(at), g(), params.clone());
+            let z =
+                builder.emit_binary_params(Primitive::Solve, Atom::Var(at), g(), params.clone());
             let g0 = need_input[0].then(|| {
-                let z_xt = builder.emit_solve_outer_product(
-                    Atom::Var(z),
-                    Atom::Var(p_out[0]),
-                    p(0),
-                );
+                let z_xt =
+                    builder.emit_solve_outer_product(Atom::Var(z), Atom::Var(p_out[0]), p(0));
                 builder.emit_unary(Primitive::Neg, Atom::Var(z_xt))
             });
             let g1 = need_input[1].then_some(z);
@@ -14909,12 +14908,8 @@ fn emit_symbolic_vjp_equation(
                     },
                 );
             }
-            let z = builder.emit_binary_params(
-                Primitive::TriangularSolve,
-                p(0),
-                g(),
-                transpose_params,
-            );
+            let z =
+                builder.emit_binary_params(Primitive::TriangularSolve, p(0), g(), transpose_params);
             let g0 = need_input[0].then(|| {
                 let xt = builder.emit_unary(Primitive::Transpose, Atom::Var(p_out[0]));
                 let z_xt = builder.emit_binary(Primitive::Dot, Atom::Var(z), Atom::Var(xt));
@@ -14944,12 +14939,8 @@ fn emit_symbolic_vjp_equation(
                 ts_params.clone(),
             );
             let xt = builder.emit_unary(Primitive::Transpose, Atom::Var(x));
-            let zt = builder.emit_binary_params(
-                Primitive::TriangularSolve,
-                l,
-                Atom::Var(xt),
-                ts_params,
-            );
+            let zt =
+                builder.emit_binary_params(Primitive::TriangularSolve, l, Atom::Var(xt), ts_params);
             let z = builder.emit_unary(Primitive::Transpose, Atom::Var(zt));
             let z_plus_zt = builder.emit_binary(Primitive::Add, Atom::Var(z), Atom::Var(zt));
             builder.emit_binary(
@@ -15136,17 +15127,14 @@ fn emit_symbolic_vjp_equation(
                 }
                 "mul" => {
                     let gy = builder.emit_binary(Primitive::Mul, g(), Atom::Var(p_out[0]));
-                    let g0 =
-                        need_input[0].then(|| builder.emit_binary(Primitive::Div, Atom::Var(gy), p(0)));
+                    let g0 = need_input[0]
+                        .then(|| builder.emit_binary(Primitive::Div, Atom::Var(gy), p(0)));
                     let g1 = need_input[1].then(|| {
                         let gy_exp =
                             builder.emit_unary_params(Primitive::ExpandDims, Atom::Var(gy), ax0);
                         let z_xs = builder.emit_zeros_like(p(1));
-                        let bcast = builder.emit_binary(
-                            Primitive::Add,
-                            Atom::Var(gy_exp),
-                            Atom::Var(z_xs),
-                        );
+                        let bcast =
+                            builder.emit_binary(Primitive::Add, Atom::Var(gy_exp), Atom::Var(z_xs));
                         builder.emit_binary(Primitive::Div, Atom::Var(bcast), p(1))
                     });
                     Ok(vec![g0, g1])
@@ -34373,13 +34361,12 @@ mod tests {
         }
         // Note: sum(L^2) = tr(L L^T) = tr(A), so gradient w.r.t. A has 1 on diagonal and 0 off-diagonal,
         // and Hessian of tr(A) is 0! Verify hvp_chol gives 0!
-        let hvp_chol_out =
-            fj_interpreters::eval_jaxpr(&hvp_chol, &[a_mat.clone(), a_mat]).expect("eval hvp_chol")
-                [0]
-                .as_tensor()
-                .unwrap()
-                .to_f64_vec()
-                .unwrap();
+        let hvp_chol_out = fj_interpreters::eval_jaxpr(&hvp_chol, &[a_mat.clone(), a_mat])
+            .expect("eval hvp_chol")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
         for v in hvp_chol_out {
             assert!(v.abs() < 1e-10, "expected 0 Hessian of tr(L L^T), got {v}");
         }
