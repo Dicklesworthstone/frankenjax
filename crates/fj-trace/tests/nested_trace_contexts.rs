@@ -251,26 +251,50 @@ fn e2e_nested_traces_oracle() {
         }));
     }
 
-    let generated_at_unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock should be after unix epoch")
-        .as_millis();
-
     let e2e_path = repo_root().join("artifacts/e2e/e2e_nested_traces.e2e.json");
+    let cases_value = json!(e2e_cases);
+    let generated_at_unix_ms = fs::read_to_string(&e2e_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("cases") == Some(&cases_value))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .map(u128::from)
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_millis()
+        });
     let e2e_payload = json!({
         "schema_version": "frankenjax.e2e.nested_traces.v1",
         "scenario": "e2e_nested_traces_oracle",
         "generated_at_unix_ms": generated_at_unix_ms,
-        "cases": e2e_cases,
+        "cases": cases_value,
     });
     write_json_artifact(&e2e_path, &e2e_payload);
 
     let test_log_path =
         repo_root().join("artifacts/testing/logs/fj-trace/e2e_nested_traces_oracle.json");
+    let records_value = json!(test_records);
+    let log_generated_at_unix_ms = fs::read_to_string(&test_log_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("records") == Some(&records_value))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .map(u128::from)
+        .unwrap_or(generated_at_unix_ms);
     let test_log_payload = json!({
         "schema_version": "frankenjax.testing.log.v1",
-        "generated_at_unix_ms": generated_at_unix_ms,
-        "records": test_records,
+        "generated_at_unix_ms": log_generated_at_unix_ms,
+        "records": records_value,
     });
     write_json_artifact(&test_log_path, &test_log_payload);
 }

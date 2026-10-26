@@ -1757,10 +1757,6 @@ fn build_lowered_composition_proof(
 ) -> Option<TransformCompositionProof> {
     use std::borrow::Cow;
 
-    if wants_value_and_grad(&request.compile_options) {
-        return None;
-    }
-
     let n = request.transform_stack.len();
     let outer_in_avals: Vec<AbstractValue> = request.args.iter().map(value_to_aval).collect();
     let outer_out_avals: Vec<AbstractValue> = outputs.iter().map(value_to_aval).collect();
@@ -1876,7 +1872,11 @@ fn build_lowered_composition_proof(
     // Determine root_output_avals.
     let has_grad = request.transform_stack.contains(&Transform::Grad);
     let root_out_avals = if has_grad {
-        let dtype = root_in_avals.first().map_or(DType::F64, |aval| aval.dtype);
+        let dtype = outputs
+            .first()
+            .map(Value::dtype)
+            .or_else(|| root_in_avals.first().map(|aval| aval.dtype))
+            .unwrap_or(DType::F64);
         vec![AbstractValue {
             dtype,
             shape: Shape::scalar(),
@@ -2014,13 +2014,43 @@ fn build_lowered_composition_proof(
                 }
                 let (argnums, _) =
                     parse_grad_argnums(&request.compile_options, current_in_avals.len()).ok()?;
-                let mut target_for_grad = current_jaxpr.clone().into_owned();
-                if has_outer_grad && current_in_avals.first().is_some_and(|a| a.shape.rank() > 0) {
-                    append_reduce_sum_to_scalar(&mut target_for_grad);
-                }
-                let primal_eqn_count = target_for_grad.equations.len();
-                let mut grad_jaxpr = fj_ad::build_grad_jaxpr(&target_for_grad, &argnums).ok()?;
-                if has_outer_grad && current_in_avals.first().is_some_and(|a| a.shape.rank() > 0) {
+                let effective_argnums: Vec<usize> = if has_outer_grad {
+                    vec![argnums.first().copied().unwrap_or(0)]
+                } else {
+                    argnums
+                };
+                let primal_eqn_count = current_jaxpr.equations.len();
+                let in_shaped: Vec<fj_trace::ShapedArray> = current_in_avals
+                    .iter()
+                    .map(|a| fj_trace::ShapedArray {
+                        dtype: a.dtype,
+                        shape: a.shape.clone(),
+                    })
+                    .collect();
+                let in_dtypes = infer_jaxpr_var_dtypes(&current_jaxpr, &in_shaped);
+                let is_outer_value_and_grad =
+                    !has_outer_grad && wants_value_and_grad(&request.compile_options);
+                let mut grad_jaxpr = if is_outer_value_and_grad {
+                    fj_ad::build_value_and_grad_jaxpr_with_dtypes(
+                        &current_jaxpr,
+                        &effective_argnums,
+                        &in_dtypes,
+                    )
+                    .ok()?
+                } else {
+                    fj_ad::build_grad_jaxpr_with_dtypes(
+                        &current_jaxpr,
+                        &effective_argnums,
+                        &in_dtypes,
+                    )
+                    .ok()?
+                };
+                let inner_tensor_reduced = has_outer_grad
+                    && effective_argnums
+                        .first()
+                        .and_then(|&idx| current_in_avals.get(idx))
+                        .is_some_and(|a| a.shape.rank() > 0);
+                if inner_tensor_reduced {
                     append_reduce_sum_to_scalar(&mut grad_jaxpr);
                 }
                 let total_eqn_count = grad_jaxpr.equations.len();
@@ -2029,18 +2059,25 @@ fn build_lowered_composition_proof(
                     (primal_eqn_count.saturating_mul(2)).saturating_sub(total_eqn_count);
                 let output_sha256 = jaxpr_fingerprint_sha256(&grad_jaxpr);
                 let next_in_avals = current_in_avals.clone();
-                let next_out_avals: Vec<AbstractValue> = if has_outer_grad
-                    && current_in_avals.first().is_some_and(|a| a.shape.rank() > 0)
-                {
-                    return None;
+                let next_out_avals: Vec<AbstractValue> = if inner_tensor_reduced {
+                    vec![AbstractValue {
+                        dtype: current_out_avals[0].dtype,
+                        shape: Shape::scalar(),
+                    }]
                 } else {
-                    argnums
-                        .iter()
-                        .map(|&idx| current_in_avals.get(idx).cloned())
-                        .collect::<Option<Vec<_>>>()?
+                    let mut out_avals = Vec::with_capacity(
+                        usize::from(is_outer_value_and_grad) + effective_argnums.len(),
+                    );
+                    if is_outer_value_and_grad {
+                        out_avals.push(current_out_avals[0].clone());
+                    }
+                    for &idx in &effective_argnums {
+                        out_avals.push(current_in_avals.get(idx)?.clone());
+                    }
+                    out_avals
                 };
                 let witness = TransformRewriteWitness::Grad(GradWitness {
-                    argnums,
+                    argnums: effective_argnums,
                     primal_eqn_count,
                     adjoint_eqn_count,
                     pruned_dead_cotangents,
@@ -7236,5 +7273,105 @@ mod tests {
             &[batch_x.clone(), batch_x],
             &[super::AxisSpec::Batched(0), super::AxisSpec::Batched(0)],
         ));
+    }
+
+    #[test]
+    fn lowered_composition_proof_covers_value_and_grad_f32_grad_and_vector_grad_grad() {
+        // 1. value_and_grad produces a lowered GradWitness whose output fingerprint matches build_value_and_grad_jaxpr.
+        let sq = build_program(ProgramSpec::Square);
+        let mut vg_ttl = TraceTransformLedger::new(sq.clone());
+        vg_ttl.push_transform(Transform::Grad, "grad-vg");
+        let mut vg_opts = BTreeMap::new();
+        vg_opts.insert("value_and_grad".to_owned(), "true".to_owned());
+        let vg_resp = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: vg_ttl,
+            args: vec![Value::scalar_f64(3.0)],
+            backend: "cpu".to_owned(),
+            compile_options: vg_opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("value_and_grad dispatch should succeed");
+        assert!(vg_resp.composition_proof.verify().is_ok());
+        assert_eq!(vg_resp.composition_proof.steps.len(), 1);
+        let expected_vg_jaxpr = fj_ad::build_value_and_grad_jaxpr(&sq, &[0]).unwrap();
+        assert_eq!(
+            vg_resp.composition_proof.final_output_jaxpr_sha256,
+            fj_core::jaxpr_fingerprint_sha256(&expected_vg_jaxpr)
+        );
+        assert_eq!(vg_resp.composition_proof.steps[0].output_avals.len(), 2);
+
+        // 2. F32 grad produces a dtype-aware lowered Jaxpr fingerprint.
+        let mut f32_ttl = TraceTransformLedger::new(sq.clone());
+        f32_ttl.push_transform(Transform::Grad, "grad-f32");
+        let f32_resp = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: f32_ttl,
+            args: vec![Value::scalar_f32(3.0)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("f32 grad dispatch should succeed");
+        assert!(f32_resp.composition_proof.verify().is_ok());
+        let mut f32_dtypes = BTreeMap::new();
+        f32_dtypes.insert(VarId(1), DType::F32);
+        f32_dtypes.insert(VarId(2), DType::F32);
+        let expected_f32_grad =
+            fj_ad::build_grad_jaxpr_with_dtypes(&sq, &[0], &f32_dtypes).unwrap();
+        assert_eq!(
+            f32_resp.composition_proof.final_output_jaxpr_sha256,
+            fj_core::jaxpr_fingerprint_sha256(&expected_f32_grad)
+        );
+
+        // 3. Vector grad(grad(f)) produces a verified 2-step lowered proof with scalar-summed inner grad.
+        let sum_sq = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                    outputs: smallvec::smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec::smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec::smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let mut gg_ttl = TraceTransformLedger::new(sum_sq);
+        gg_ttl.push_transform(Transform::Grad, "grad-outer");
+        gg_ttl.push_transform(Transform::Grad, "grad-inner");
+        let gg_resp = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: gg_ttl,
+            args: vec![Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap()],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("vector grad(grad) should succeed");
+        assert!(gg_resp.composition_proof.verify().is_ok());
+        assert_eq!(gg_resp.composition_proof.steps.len(), 2);
+        assert_eq!(
+            gg_resp.composition_proof.steps[0].output_avals[0].shape,
+            Shape::scalar()
+        );
+        assert_eq!(
+            gg_resp.composition_proof.steps[1].output_avals[0].shape,
+            Shape::vector(3)
+        );
     }
 }

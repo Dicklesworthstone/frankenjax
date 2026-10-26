@@ -22723,9 +22723,26 @@ mod tests {
             xor_pass
         );
 
-        let generated_at_unix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../artifacts");
+        let e2e_path = root.join("e2e/e2e_bitwise_reductions.e2e.json");
+        let test_log_path = root.join("testing/logs/fj-lax/e2e_bitwise_reductions_oracle.json");
+
+        let generated_at_unix = std::fs::read_to_string(&e2e_path)
+            .ok()
+            .and_then(|raw| {
+                let prefix = "\"generated_at_unix\":";
+                let start = raw.find(prefix)? + prefix.len();
+                let digits: String = raw[start..]
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect();
+                digits.parse::<u64>().ok()
+            })
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs())
+            });
         let forensic_log = format!(
             concat!(
                 "{{",
@@ -22737,10 +22754,6 @@ mod tests {
             ),
             generated_at_unix, all_passed, case_logs
         );
-
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../artifacts");
-        let e2e_path = root.join("e2e/e2e_bitwise_reductions.e2e.json");
-        let test_log_path = root.join("testing/logs/fj-lax/e2e_bitwise_reductions_oracle.json");
 
         if let Some(parent) = e2e_path.parent() {
             std::fs::create_dir_all(parent).expect("create e2e artifact dir");

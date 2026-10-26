@@ -373,29 +373,60 @@ fn e2e_rng_determinism_full() -> Result<(), String> {
         }));
     }
 
-    let generated_at_unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after UNIX_EPOCH")
-        .as_millis();
-    let generated_at_unix_ms =
-        u64::try_from(generated_at_unix_ms).expect("unix millis should fit into u64");
+    let e2e_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/e2e/e2e_rng_determinism.e2e.json");
+    let log_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/testing/logs/fj-conformance/e2e_rng_determinism_full.json");
+    let records_val = json!(records);
+    let forensic_val = json!(forensic_rows);
+    let now_unix_ms = u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after UNIX_EPOCH")
+            .as_millis(),
+    )
+    .expect("unix millis should fit into u64");
+    let e2e_ts = std::fs::read_to_string(&e2e_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| {
+            existing.get("total_cases").and_then(|v| v.as_u64()) == Some(bundle.cases.len() as u64)
+                && existing.get("passed_cases").and_then(|v| v.as_u64()) == Some(passed as u64)
+        })
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .unwrap_or(now_unix_ms);
+    let log_ts = std::fs::read_to_string(&log_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| {
+            existing.get("total_cases").and_then(|v| v.as_u64()) == Some(bundle.cases.len() as u64)
+                && existing.get("passed_cases").and_then(|v| v.as_u64()) == Some(passed as u64)
+        })
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .unwrap_or(e2e_ts);
     let e2e_payload = json!({
         "test_name": "e2e_rng_determinism_full",
-        "generated_at_unix_ms": generated_at_unix_ms,
+        "generated_at_unix_ms": e2e_ts,
         "total_cases": bundle.cases.len(),
         "passed_cases": passed,
-        "entries": records,
+        "entries": records_val,
     });
     let log_payload = json!({
         "test_name": "e2e_rng_determinism_full",
-        "generated_at_unix_ms": generated_at_unix_ms,
+        "generated_at_unix_ms": log_ts,
         "total_cases": bundle.cases.len(),
         "passed_cases": passed,
-        "entries": forensic_rows,
+        "entries": forensic_val,
     });
 
-    let e2e_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../artifacts/e2e/e2e_rng_determinism.e2e.json");
     std::fs::create_dir_all(
         e2e_path
             .parent()
@@ -408,8 +439,6 @@ fn e2e_rng_determinism_full() -> Result<(), String> {
     )
     .expect("should write e2e RNG artifact");
 
-    let log_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../artifacts/testing/logs/fj-conformance/e2e_rng_determinism_full.json");
     std::fs::create_dir_all(
         log_path
             .parent()

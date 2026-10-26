@@ -2703,6 +2703,25 @@ mod tests {
             super::read_transform_fixture_bundle(&fixture_path).expect("bundle should load");
         let report = run_transform_fixture_bundle(&cfg, &bundle);
 
+        let log_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../artifacts/e2e/e2e_tolerance_tightening.e2e.json");
+        let timestamp = std::fs::read_to_string(&log_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .filter(|existing| {
+                existing.get("total_cases").and_then(|v| v.as_u64())
+                    == Some(report.total_cases as u64)
+                    && existing.get("passed").and_then(|v| v.as_u64())
+                        == Some(report.matched_cases as u64)
+                    && existing.get("failed").and_then(|v| v.as_u64())
+                        == Some(report.mismatched_cases as u64)
+            })
+            .and_then(|existing| existing.get("timestamp").and_then(|v| v.as_u64()))
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs())
+            });
         // Build forensic log entry
         let log_entry = serde_json::json!({
             "scenario": "e2e_tolerance_tightening",
@@ -2710,13 +2729,8 @@ mod tests {
             "total_cases": report.total_cases,
             "passed": report.matched_cases,
             "failed": report.mismatched_cases,
-            "timestamp": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs()),
+            "timestamp": timestamp,
         });
-
-        let log_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../artifacts/e2e/e2e_tolerance_tightening.e2e.json");
         if let Some(parent) = log_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }

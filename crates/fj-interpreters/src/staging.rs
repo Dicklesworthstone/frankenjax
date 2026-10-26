@@ -448,6 +448,17 @@ mod tests {
     }
 
     fn write_log(path: &Path, log: &fj_test_utils::TestLogV1) -> Result<(), String> {
+        if let Ok(raw) = fs::read_to_string(path)
+            && let Ok(existing) = serde_json::from_str::<fj_test_utils::TestLogV1>(&raw)
+            && existing.schema_version == log.schema_version
+            && existing.test_id == log.test_id
+            && existing.fixture_id == log.fixture_id
+            && existing.mode == log.mode
+            && existing.result == log.result
+            && existing.details == log.details
+        {
+            return Ok(());
+        }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|err| format!("log dir create failed: {err}"))?;
         }

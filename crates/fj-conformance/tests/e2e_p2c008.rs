@@ -1424,19 +1424,33 @@ fn e2e_adversarial_fixture_suite() {
         "all adversarial fixture cases should pass"
     );
 
+    let e2e_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/e2e/e2e_adversarial_fixtures.e2e.json");
+    let entries_val = json!(entries);
+    let e2e_ts = fs::read_to_string(&e2e_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("entries") == Some(&entries_val))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .map(u128::from)
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_millis()
+        });
     let e2e_payload = json!({
         "test_name": "e2e_adversarial_fixture_suite",
-        "generated_at_unix_ms": SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_millis(),
+        "generated_at_unix_ms": e2e_ts,
         "total_cases": total_cases,
         "passed_cases": passed_cases,
         "failed_cases": total_cases.saturating_sub(passed_cases),
-        "entries": entries
+        "entries": entries_val
     });
-    let e2e_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../artifacts/e2e/e2e_adversarial_fixtures.e2e.json");
     fs::create_dir_all(
         e2e_path
             .parent()
@@ -1449,16 +1463,25 @@ fn e2e_adversarial_fixture_suite() {
     )
     .expect("write adversarial e2e artifact");
 
-    let log_payload = json!({
-        "test_name": "e2e_adversarial_fixture_suite",
-        "generated_at_unix_ms": SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_millis(),
-        "entries": log_entries
-    });
     let log_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../artifacts/testing/logs/fj-conformance/e2e_adversarial_fixture_suite.json");
+    let log_entries_val = json!(log_entries);
+    let log_ts = fs::read_to_string(&log_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("entries") == Some(&log_entries_val))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .map(u128::from)
+        .unwrap_or(e2e_ts);
+    let log_payload = json!({
+        "test_name": "e2e_adversarial_fixture_suite",
+        "generated_at_unix_ms": log_ts,
+        "entries": log_entries_val
+    });
     fs::create_dir_all(
         log_path
             .parent()

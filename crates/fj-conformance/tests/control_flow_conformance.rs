@@ -754,31 +754,52 @@ fn e2e_control_flow_ad_oracle() {
         128.0,
     );
 
-    let generated_at_unix_ms = SystemTime::now()
+    let e2e_ad_path = repo_root().join("artifacts/e2e/e2e_control_flow_ad.e2e.json");
+    let log_ad_path =
+        repo_root().join("artifacts/testing/logs/fj-ad/e2e_control_flow_ad_oracle.json");
+    let cases_val = json!(cases);
+    let log_records_val = json!(log_records);
+    let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after unix epoch")
         .as_millis();
+    let e2e_ad_ts = fs::read_to_string(&e2e_ad_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("cases") == Some(&cases_val))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .map(u128::from)
+        .unwrap_or(now_ms);
+    let log_ad_ts = fs::read_to_string(&log_ad_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("records") == Some(&log_records_val))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .map(u128::from)
+        .unwrap_or(e2e_ad_ts);
 
     let e2e_payload = json!({
         "schema_version": "frankenjax.e2e.control-flow-ad.v1",
         "test_name": "e2e_control_flow_ad_oracle",
-        "generated_at_unix_ms": generated_at_unix_ms,
-        "cases": cases,
+        "generated_at_unix_ms": e2e_ad_ts,
+        "cases": cases_val,
     });
-    write_json_artifact(
-        &repo_root().join("artifacts/e2e/e2e_control_flow_ad.e2e.json"),
-        &e2e_payload,
-    );
+    write_json_artifact(&e2e_ad_path, &e2e_payload);
 
     let log_payload = json!({
         "schema_version": "frankenjax.testing.control-flow-ad.v1",
-        "generated_at_unix_ms": generated_at_unix_ms,
-        "records": log_records,
+        "generated_at_unix_ms": log_ad_ts,
+        "records": log_records_val,
     });
-    write_json_artifact(
-        &repo_root().join("artifacts/testing/logs/fj-ad/e2e_control_flow_ad_oracle.json"),
-        &log_payload,
-    );
+    write_json_artifact(&log_ad_path, &log_payload);
 
     println!("__FJ_CTRL_AD_E2E_JSON_BEGIN__");
     println!(
@@ -1071,30 +1092,51 @@ fn e2e_control_flow_conformance() {
         "control-flow conformance mismatches: {failure_ids:?}"
     );
 
-    let generated_at_unix_ms = SystemTime::now()
+    let e2e_cf_path = repo_root().join("artifacts/e2e/e2e_control_flow_conformance.e2e.json");
+    let log_cf_path =
+        repo_root().join("artifacts/testing/logs/fj-conformance/control_flow_conformance.json");
+    let case_records_val = json!(case_records);
+    let test_records_val = json!(test_records);
+    let now_cf_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after unix epoch")
         .as_millis();
+    let e2e_cf_ts = fs::read_to_string(&e2e_cf_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("cases") == Some(&case_records_val))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .map(u128::from)
+        .unwrap_or(now_cf_ms);
+    let log_cf_ts = fs::read_to_string(&log_cf_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("records") == Some(&test_records_val))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .map(u128::from)
+        .unwrap_or(e2e_cf_ts);
     let e2e_payload = json!({
         "schema_version": "frankenjax.e2e.control-flow.v1",
         "scenario": "e2e_control_flow_conformance",
-        "generated_at_unix_ms": generated_at_unix_ms,
-        "cases": case_records,
+        "generated_at_unix_ms": e2e_cf_ts,
+        "cases": case_records_val,
     });
-    write_json_artifact(
-        &repo_root().join("artifacts/e2e/e2e_control_flow_conformance.e2e.json"),
-        &e2e_payload,
-    );
+    write_json_artifact(&e2e_cf_path, &e2e_payload);
 
     let test_log_payload = json!({
         "schema_version": "frankenjax.testing.control-flow.v1",
-        "generated_at_unix_ms": generated_at_unix_ms,
-        "records": test_records,
+        "generated_at_unix_ms": log_cf_ts,
+        "records": test_records_val,
     });
-    write_json_artifact(
-        &repo_root().join("artifacts/testing/logs/fj-conformance/control_flow_conformance.json"),
-        &test_log_payload,
-    );
+    write_json_artifact(&log_cf_path, &test_log_payload);
 }
 
 // ============================================================================

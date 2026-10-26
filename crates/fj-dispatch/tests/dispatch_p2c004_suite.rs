@@ -975,7 +975,11 @@ fn e2e_vmap_tensor_ops_oracle() {
         .ok()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
         .filter(|existing| existing.get("cases") == Some(&cases_value))
-        .and_then(|existing| existing.get("generated_at_unix_ms").and_then(|v| v.as_u64()))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
         .map(u128::from)
         .unwrap_or_else(|| {
             SystemTime::now()

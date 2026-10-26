@@ -6878,7 +6878,16 @@ fn verify_step_abstract_signature(
                 };
                 expected_grad_outputs.push(in_aval.clone());
             }
-            if step.output_avals != expected_grad_outputs {
+            let is_value_and_grad = step.output_avals.len() == 1 + expected_grad_outputs.len()
+                && step.output_avals[0] == target_out_avals[0]
+                && step.output_avals[1..] == expected_grad_outputs[..];
+            let is_scalar_summed_inner_grad = step.output_avals.len() == 1
+                && step.output_avals[0].shape.rank() == 0
+                && step.output_avals[0].dtype == target_out_avals[0].dtype;
+            if step.output_avals != expected_grad_outputs
+                && !is_value_and_grad
+                && !is_scalar_summed_inner_grad
+            {
                 return Err(TransformCompositionError::InvalidStepSignature {
                     step_index,
                     transform: Transform::Grad,

@@ -96,6 +96,16 @@ fn run_e2e_scenario(
 
     let path = artifact_dir().join(format!("e2e_p2c004_{scenario_id}.e2e.json"));
     let json = serde_json::to_string_pretty(&log).expect("serialize");
+    if std::env::var_os("FJ_E2E_ARTIFACT_DIR").is_none()
+        && let Ok(existing_raw) = fs::read_to_string(&path)
+        && let Ok(existing) = serde_json::from_str::<JsonValue>(&existing_raw)
+        && existing.get("scenario_id").and_then(JsonValue::as_str) == Some(&log.scenario_id)
+        && existing.get("fixture_id").and_then(JsonValue::as_str) == Some(&log.fixture_id)
+        && existing.get("result").and_then(JsonValue::as_str) == Some(&log.result)
+    {
+        assert_eq!(result, "PASS", "scenario {scenario_id} failed");
+        return;
+    }
     fs::write(&path, &json).expect("write forensic log");
 
     assert_eq!(result, "PASS", "scenario {scenario_id} failed");

@@ -1520,21 +1520,34 @@ fn e2e_multirank_fixture_sweep() {
         );
     }
 
+    let output_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/e2e/e2e_multirank_fixtures.e2e.json");
+    let entries_val = json!(entries);
+    let multirank_ts = fs::read_to_string(&output_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("entries") == Some(&entries_val))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .map(u128::from)
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_millis()
+        });
     let forensic_log = json!({
         "scenario": "e2e_multirank_fixture_sweep",
-        "generated_at_unix_ms": SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_millis(),
+        "generated_at_unix_ms": multirank_ts,
         "total_cases": report.total_cases,
         "matched_cases": report.matched_cases,
         "mismatched_cases": report.mismatched_cases,
         "rank_summary": rank_summary,
-        "entries": entries
+        "entries": entries_val
     });
-
-    let output_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../artifacts/e2e/e2e_multirank_fixtures.e2e.json");
     fs::create_dir_all(output_path.parent().expect("output parent should exist"))
         .expect("should create artifacts/e2e");
     fs::write(
@@ -2260,20 +2273,33 @@ fn e2e_mixed_dtype_conformance() {
         "all mixed-dtype conformance cases should pass"
     );
 
+    let e2e_output_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../artifacts/e2e/e2e_mixed_dtype.e2e.json");
+    let forensic_entries_val = json!(forensic_entries);
+    let mixed_e2e_ts = fs::read_to_string(&e2e_output_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("entries") == Some(&forensic_entries_val))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .map(u128::from)
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_millis()
+        });
     let forensic_log = json!({
         "scenario": "e2e_mixed_dtype_conformance",
-        "generated_at_unix_ms": SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_millis(),
+        "generated_at_unix_ms": mixed_e2e_ts,
         "total_cases": total_cases,
         "passed_cases": passed_cases,
         "failed_cases": total_cases.saturating_sub(passed_cases),
-        "entries": forensic_entries
+        "entries": forensic_entries_val
     });
-
-    let e2e_output_path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../artifacts/e2e/e2e_mixed_dtype.e2e.json");
     fs::create_dir_all(
         e2e_output_path
             .parent()
@@ -2286,17 +2312,25 @@ fn e2e_mixed_dtype_conformance() {
     )
     .expect("should write mixed-dtype e2e forensic log");
 
-    let promotion_log = json!({
-        "test_name": "e2e_mixed_dtype_conformance",
-        "generated_at_unix_ms": SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_millis(),
-        "entries": promotion_log_entries
-    });
-
     let log_output_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../artifacts/testing/logs/fj-conformance/e2e_mixed_dtype_conformance.json");
+    let promotion_entries_val = json!(promotion_log_entries);
+    let mixed_log_ts = fs::read_to_string(&log_output_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|existing| existing.get("entries") == Some(&promotion_entries_val))
+        .and_then(|existing| {
+            existing
+                .get("generated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+        })
+        .map(u128::from)
+        .unwrap_or(mixed_e2e_ts);
+    let promotion_log = json!({
+        "test_name": "e2e_mixed_dtype_conformance",
+        "generated_at_unix_ms": mixed_log_ts,
+        "entries": promotion_entries_val
+    });
     fs::create_dir_all(
         log_output_path
             .parent()

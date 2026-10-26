@@ -76,6 +76,15 @@ fn write_log(log: &E2EForensicLogV1) {
     fs::create_dir_all(&dir).expect("e2e artifact dir should be creatable");
     let path = dir.join(format!("{}.e2e.json", log.scenario_id));
     let raw = serde_json::to_string_pretty(log).expect("log serialization should succeed");
+    if std::env::var_os("FJ_E2E_ARTIFACT_DIR").is_none()
+        && let Ok(existing_raw) = fs::read_to_string(&path)
+        && let Ok(existing) = serde_json::from_str::<JsonValue>(&existing_raw)
+        && existing.get("scenario_id").and_then(JsonValue::as_str) == Some(&log.scenario_id)
+        && existing.get("fixture_id").and_then(JsonValue::as_str) == Some(&log.fixture_id)
+        && existing.get("result").and_then(JsonValue::as_str) == Some(&log.result)
+    {
+        return;
+    }
     fs::write(&path, raw).expect("e2e forensic log write should succeed");
 }
 

@@ -8,8 +8,9 @@ use std::sync::{Arc, OnceLock};
 #[cfg(test)]
 use fj_core::TraceTransformLedger;
 use fj_core::{
-    CompatibilityMode, Jaxpr, PrecisionPolicy, Transform, TransformCompositionProof, Value,
-    with_precision_policy,
+    AbstractValue, CompatibilityMode, DType, GradWitness, Jaxpr, PrecisionPolicy, Shape, Transform,
+    TransformCompositionProof, TransformProofStep, TransformRewriteWitness, Value,
+    jaxpr_fingerprint_sha256, verify_transform_composition_steps, with_precision_policy,
 };
 use fj_dispatch::{
     DispatchRequestRef, DispatchResponse, PreparedDispatchMeta, check_fast_path_admission,
@@ -1076,7 +1077,7 @@ fn synthesize_fast_path_proof(
     compile_options: &BTreeMap<String, String>,
 ) -> Option<TransformCompositionProof> {
     let evidence = transform_evidence(transforms);
-    prepare_dispatch_meta(
+    let meta = prepare_dispatch_meta(
         mode,
         jaxpr,
         transforms,
@@ -1086,8 +1087,62 @@ fn synthesize_fast_path_proof(
         None,
         &[],
     )
-    .ok()
-    .map(|meta| meta.composition_proof)
+    .ok()?;
+    if transforms == [Transform::Grad] && !jaxpr.invars.is_empty() && jaxpr.outvars.len() == 1 {
+        let is_val_and_grad = compile_options
+            .get("value_and_grad")
+            .is_some_and(|v| v == "true");
+        let argnums = vec![0];
+        let lowered_res = if is_val_and_grad {
+            fj_ad::build_value_and_grad_jaxpr(jaxpr, &argnums)
+        } else {
+            fj_ad::build_grad_jaxpr(jaxpr, &argnums)
+        };
+        if let Ok(lowered) = lowered_res {
+            let scalar_aval = AbstractValue {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            };
+            let in_avals = vec![scalar_aval.clone(); jaxpr.invars.len()];
+            let out_avals = vec![scalar_aval.clone()];
+            let step_out_avals = if is_val_and_grad {
+                vec![scalar_aval.clone(), scalar_aval]
+            } else {
+                vec![scalar_aval]
+            };
+            let primal_eqn_count = jaxpr.equations.len();
+            let total_eqn_count = lowered.equations.len();
+            let adjoint_eqn_count = total_eqn_count.saturating_sub(primal_eqn_count);
+            let pruned_dead_cotangents =
+                (primal_eqn_count.saturating_mul(2)).saturating_sub(total_eqn_count);
+            let step = TransformProofStep {
+                step_index: 0,
+                transform: Transform::Grad,
+                evidence: evidence[0].clone(),
+                input_jaxpr_fingerprint_sha256: jaxpr_fingerprint_sha256(jaxpr),
+                output_jaxpr_fingerprint_sha256: jaxpr_fingerprint_sha256(&lowered),
+                input_avals: in_avals.clone(),
+                output_avals: step_out_avals,
+                witness: TransformRewriteWitness::Grad(GradWitness {
+                    argnums,
+                    primal_eqn_count,
+                    adjoint_eqn_count,
+                    pruned_dead_cotangents,
+                }),
+            };
+            if let Ok(lowered_proof) = verify_transform_composition_steps(
+                jaxpr,
+                transforms,
+                &evidence,
+                &in_avals,
+                &out_avals,
+                &[step],
+            ) {
+                return Some(lowered_proof);
+            }
+        }
+    }
+    Some(meta.composition_proof)
 }
 
 fn synthesize_fast_path_ledger(
@@ -4490,8 +4545,27 @@ mod tests {
             vec![Transform::Grad, Transform::Vmap]
         );
         assert_eq!(
-            value_and_grad(jaxpr).compose_pmap().transforms,
+            value_and_grad(jaxpr.clone()).compose_pmap().transforms,
             vec![Transform::Grad, Transform::Pmap]
+        );
+
+        let sq_jaxpr = fj_core::build_program(fj_core::ProgramSpec::Square);
+        let vg_fast = value_and_grad(sq_jaxpr.clone());
+        let (vals, grads) = vg_fast
+            .call(vec![Value::scalar_f64(5.0)])
+            .expect("fast-path value_and_grad should succeed");
+        assert_eq!(vals, vec![Value::scalar_f64(25.0)]);
+        assert_eq!(grads, vec![Value::scalar_f64(10.0)]);
+        let fast_proof = vg_fast
+            .last_composition_proof()
+            .expect("fast-path value_and_grad must synthesize lowered proof");
+        assert!(fast_proof.verify().is_ok());
+        assert_eq!(fast_proof.steps[0].output_avals.len(), 2);
+        assert_eq!(
+            fast_proof.final_output_jaxpr_sha256,
+            fj_core::jaxpr_fingerprint_sha256(
+                &vg_fast.to_value_and_grad_jaxpr().expect("lowered vg jaxpr")
+            )
         );
     }
 }
