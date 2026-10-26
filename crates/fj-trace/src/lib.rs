@@ -4054,6 +4054,12 @@ fn infer_reshape(
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<ShapedArray>, TraceError> {
     let primitive = Primitive::Reshape;
+    if inputs.len() == 2 && params.get("like").is_some_and(|s| s == "true") {
+        return Ok(vec![ShapedArray {
+            dtype: inputs[0].dtype,
+            shape: inputs[1].shape.clone(),
+        }]);
+    }
     if inputs.len() != 1 {
         return Err(TraceError::ShapeInferenceFailed {
             primitive,

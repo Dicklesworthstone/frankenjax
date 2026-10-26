@@ -5163,7 +5163,11 @@ pub fn vjp(
             let reshaped_g =
                 eval_primitive(Primitive::Reshape, std::slice::from_ref(g), &reshape_params)
                     .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            Ok(vec![reshaped_g])
+            if inputs.len() == 2 {
+                Ok(vec![reshaped_g, zeros_like(&inputs[1])])
+            } else {
+                Ok(vec![reshaped_g])
+            }
         }
         Primitive::Transpose => {
             // VJP of transpose: transpose g with inverse permutation
@@ -12133,7 +12137,17 @@ fn jvp_rule(
         }
 
         // ── Shape ops: apply same transformation to tangent ──
-        Primitive::Reshape => ep_p(Primitive::Reshape, &[tangents[0].clone()], params),
+        Primitive::Reshape => {
+            if primals.len() == 2 && params.get("like").is_some_and(|s| s == "true") {
+                ep_p(
+                    Primitive::Reshape,
+                    &[tangents[0].clone(), primals[1].clone()],
+                    params,
+                )
+            } else {
+                ep_p(Primitive::Reshape, &[tangents[0].clone()], params)
+            }
+        }
         Primitive::Transpose => ep_p(Primitive::Transpose, &[tangents[0].clone()], params),
         Primitive::BroadcastInDim => {
             ep_p(Primitive::BroadcastInDim, &[tangents[0].clone()], params)
@@ -13514,7 +13528,7 @@ fn is_input_differentiable(primitive: Primitive, input_idx: usize) -> bool {
         | Primitive::Lcm
         | Primitive::AxisIndex => false,
         Primitive::Select | Primitive::Cond | Primitive::Switch => input_idx >= 1,
-        Primitive::DynamicSlice | Primitive::Gather => input_idx == 0,
+        Primitive::DynamicSlice | Primitive::Gather | Primitive::Reshape => input_idx == 0,
         Primitive::DynamicUpdateSlice => input_idx <= 1,
         Primitive::Scatter => input_idx == 0 || input_idx == 2,
         Primitive::Heaviside | Primitive::Polygamma => input_idx == 1,
@@ -13926,21 +13940,26 @@ fn emit_symbolic_jvp_equation(
             let a_db = builder.emit_binary(Primitive::Dot, p(0), t(1));
             builder.emit_binary(Primitive::Add, Atom::Var(da_b), Atom::Var(a_db))
         }
-        Primitive::DotGeneral => {
-            let da_b =
-                builder.emit_binary_params(Primitive::DotGeneral, t(0), p(1), params.clone());
-            let a_db =
-                builder.emit_binary_params(Primitive::DotGeneral, p(0), t(1), params.clone());
+        Primitive::DotGeneral | Primitive::Conv => {
+            let da_b = builder.emit_binary_params(eqn.primitive, t(0), p(1), params.clone());
+            let a_db = builder.emit_binary_params(eqn.primitive, p(0), t(1), params.clone());
             builder.emit_binary(Primitive::Add, Atom::Var(da_b), Atom::Var(a_db))
         }
+        Primitive::Reshape => {
+            if p_in.len() == 2 && params.get("like").is_some_and(|s| s == "true") {
+                builder.emit_binary_params(Primitive::Reshape, t(0), p(1), params.clone())
+            } else {
+                builder.emit_unary_params(Primitive::Reshape, t(0), params.clone())
+            }
+        }
         Primitive::ReduceSum
-        | Primitive::Reshape
         | Primitive::Transpose
         | Primitive::BroadcastInDim
         | Primitive::Slice
         | Primitive::Rev
         | Primitive::Squeeze
         | Primitive::ExpandDims
+        | Primitive::Tile
         | Primitive::Copy
         | Primitive::ReducePrecision
         | Primitive::Cumsum
@@ -13952,7 +13971,49 @@ fn emit_symbolic_jvp_equation(
         | Primitive::Rfft
         | Primitive::Irfft
         | Primitive::Psum
-        | Primitive::Pmean => builder.emit_unary_params(eqn.primitive, t(0), params.clone()),
+        | Primitive::Pmean
+        | Primitive::AllGather
+        | Primitive::AllToAll => builder.emit_unary_params(eqn.primitive, t(0), params.clone()),
+        Primitive::Concatenate => builder.emit(
+            Primitive::Concatenate,
+            SmallVec::from_vec(t_in.clone()),
+            params.clone(),
+        ),
+        Primitive::Pad => builder.emit_binary_params(Primitive::Pad, t(0), t(1), params.clone()),
+        Primitive::DynamicSlice | Primitive::Gather => {
+            let mut inputs = SmallVec::<[Atom; 4]>::with_capacity(p_in.len());
+            inputs.push(t(0));
+            for a in &p_in[1..] {
+                inputs.push(a.clone());
+            }
+            builder.emit(eqn.primitive, inputs, params.clone())
+        }
+        Primitive::DynamicUpdateSlice => {
+            let mut inputs = SmallVec::<[Atom; 4]>::with_capacity(p_in.len());
+            inputs.push(t(0));
+            inputs.push(t(1));
+            for a in &p_in[2..] {
+                inputs.push(a.clone());
+            }
+            builder.emit(Primitive::DynamicUpdateSlice, inputs, params.clone())
+        }
+        Primitive::Scatter => {
+            let mut inputs = SmallVec::<[Atom; 4]>::with_capacity(p_in.len());
+            inputs.push(t(0));
+            if p_in.len() > 1 {
+                inputs.push(p(1));
+            }
+            for da in t_in.iter().skip(2) {
+                inputs.push(da.clone());
+            }
+            builder.emit(Primitive::Scatter, inputs, params.clone())
+        }
+        Primitive::Cumprod => {
+            let dx_over_x = builder.emit_binary(Primitive::Div, t(0), p(0));
+            let cs =
+                builder.emit_unary_params(Primitive::Cumsum, Atom::Var(dx_over_x), params.clone());
+            builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(cs))
+        }
         Primitive::ReduceProd => {
             let y_bcast = builder.emit_broadcast_reduced_to(Atom::Var(p_out[0]), p(0), params);
             let y_dx = builder.emit_binary(Primitive::Mul, Atom::Var(y_bcast), t(0));
@@ -14650,10 +14711,184 @@ fn emit_symbolic_vjp_equation(
             let z = builder.emit_zeros_like(p(0));
             builder.emit_binary(Primitive::Add, current, Atom::Var(z))
         })]),
+        Primitive::Reshape => {
+            let mut result = vec![None; p_in.len()];
+            if need_input[0] {
+                let mut reshape_params = BTreeMap::new();
+                reshape_params.insert("like".to_owned(), "true".to_owned());
+                result[0] = Some(builder.emit_binary_params(
+                    Primitive::Reshape,
+                    g(),
+                    p(0),
+                    reshape_params,
+                ));
+            }
+            Ok(result)
+        }
+        Primitive::Slice => {
+            let non_unit_stride = params.get("strides").is_some_and(|s| {
+                s.split(',')
+                    .filter_map(|v| v.trim().parse::<i64>().ok())
+                    .any(|st| st != 1)
+            });
+            if non_unit_stride {
+                return Err(AdError::UnsupportedPrimitive(Primitive::Slice));
+            }
+            let starts: Vec<i64> = params
+                .get("start_indices")
+                .map(|s| {
+                    s.split(',')
+                        .filter_map(|v| v.trim().parse::<i64>().ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(vec![need_input[0].then(|| {
+                let zero_op = builder.emit_zeros_like(p(0));
+                let mut dus_inputs = SmallVec::<[Atom; 4]>::with_capacity(2 + starts.len());
+                dus_inputs.push(Atom::Var(zero_op));
+                dus_inputs.push(g());
+                for st in &starts {
+                    dus_inputs.push(Atom::Lit(Literal::I64(*st)));
+                }
+                builder.emit(Primitive::DynamicUpdateSlice, dus_inputs, BTreeMap::new())
+            })])
+        }
+        Primitive::DynamicSlice => {
+            let mut result = vec![None; p_in.len()];
+            if need_input[0] {
+                let zero_op = builder.emit_zeros_like(p(0));
+                let mut dus_inputs = SmallVec::<[Atom; 4]>::with_capacity(1 + p_in.len());
+                dus_inputs.push(Atom::Var(zero_op));
+                dus_inputs.push(g());
+                for st in &p_in[1..] {
+                    dus_inputs.push(st.clone());
+                }
+                result[0] = Some(builder.emit(
+                    Primitive::DynamicUpdateSlice,
+                    dus_inputs,
+                    BTreeMap::new(),
+                ));
+            }
+            Ok(result)
+        }
+        Primitive::DynamicUpdateSlice => {
+            if need_input.get(1).copied().unwrap_or(false) {
+                return Err(AdError::UnsupportedPrimitive(Primitive::DynamicUpdateSlice));
+            }
+            let mut result = vec![None; p_in.len()];
+            if need_input[0] {
+                let zero_upd = builder.emit_zeros_like(p(1));
+                let mut dus_inputs = SmallVec::<[Atom; 4]>::with_capacity(p_in.len());
+                dus_inputs.push(g());
+                dus_inputs.push(Atom::Var(zero_upd));
+                for st in &p_in[2..] {
+                    dus_inputs.push(st.clone());
+                }
+                result[0] = Some(builder.emit(
+                    Primitive::DynamicUpdateSlice,
+                    dus_inputs,
+                    BTreeMap::new(),
+                ));
+            }
+            Ok(result)
+        }
+        Primitive::Gather => {
+            let mut result = vec![None; p_in.len()];
+            if need_input[0] {
+                let zero_op = builder.emit_zeros_like(p(0));
+                let mut scatter_params = BTreeMap::new();
+                scatter_params.insert("mode".to_owned(), "add".to_owned());
+                let index_mode = params
+                    .get("index_mode")
+                    .cloned()
+                    .unwrap_or_else(|| "clip".to_owned());
+                scatter_params.insert("index_mode".to_owned(), index_mode);
+                let mut sc_inputs = SmallVec::<[Atom; 4]>::with_capacity(3);
+                sc_inputs.push(Atom::Var(zero_op));
+                sc_inputs.push(p(1));
+                sc_inputs.push(g());
+                result[0] = Some(builder.emit(Primitive::Scatter, sc_inputs, scatter_params));
+            }
+            Ok(result)
+        }
+        Primitive::Scatter => {
+            let is_add = params.get("mode").is_some_and(|m| m == "add");
+            if !is_add || need_input.get(2).copied().unwrap_or(false) {
+                return Err(AdError::UnsupportedPrimitive(Primitive::Scatter));
+            }
+            let mut result = vec![None; p_in.len()];
+            if need_input[0] {
+                result[0] = Some(g_var);
+            }
+            Ok(result)
+        }
+        Primitive::AllToAll => Ok(vec![need_input[0].then(|| {
+            let mut rev_params = params.clone();
+            if let (Some(split_ax), Some(concat_ax)) = (
+                params.get("split_axis").cloned(),
+                params.get("concat_axis").cloned(),
+            ) {
+                rev_params.insert("split_axis".to_owned(), concat_ax);
+                rev_params.insert("concat_axis".to_owned(), split_ax);
+            }
+            builder.emit_unary_params(Primitive::AllToAll, g(), rev_params)
+        })]),
         Primitive::BroadcastInDim => Ok(vec![need_input[0].then(|| {
-            let sum_g = builder.emit_unary(Primitive::ReduceSum, g());
-            let z = builder.emit_zeros_like(p(0));
-            builder.emit_binary(Primitive::Add, Atom::Var(sum_g), Atom::Var(z))
+            let out_rank = params
+                .get("shape")
+                .map(|s| {
+                    let t = s.trim();
+                    if t.is_empty() {
+                        0
+                    } else {
+                        t.split(',').count()
+                    }
+                })
+                .unwrap_or(0);
+            let bdims: Vec<usize> = params
+                .get("broadcast_dimensions")
+                .map(|s| {
+                    s.split(',')
+                        .filter_map(|v| v.trim().parse::<usize>().ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if out_rank == 0 || bdims.is_empty() {
+                let sum_g = builder.emit_unary(Primitive::ReduceSum, g());
+                let mut reshape_params = BTreeMap::new();
+                reshape_params.insert("like".to_owned(), "true".to_owned());
+                builder.emit_binary_params(
+                    Primitive::Reshape,
+                    Atom::Var(sum_g),
+                    p(0),
+                    reshape_params,
+                )
+            } else {
+                let reduce_axes: Vec<usize> =
+                    (0..out_rank).filter(|ax| !bdims.contains(ax)).collect();
+                let current = if reduce_axes.is_empty() {
+                    g_var
+                } else {
+                    let mut r_params = BTreeMap::new();
+                    r_params.insert(
+                        "axes".to_owned(),
+                        reduce_axes
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    );
+                    builder.emit_unary_params(Primitive::ReduceSum, g(), r_params)
+                };
+                let mut reshape_params = BTreeMap::new();
+                reshape_params.insert("like".to_owned(), "true".to_owned());
+                builder.emit_binary_params(
+                    Primitive::Reshape,
+                    Atom::Var(current),
+                    p(0),
+                    reshape_params,
+                )
+            }
         })]),
         Primitive::Cumsum => Ok(vec![need_input[0].then(|| {
             let mut rev_params = params.clone();
@@ -14667,6 +14902,21 @@ fn emit_symbolic_vjp_equation(
                 },
             );
             builder.emit_unary_params(Primitive::Cumsum, g(), rev_params)
+        })]),
+        Primitive::Cumprod => Ok(vec![need_input[0].then(|| {
+            let mut rev_params = params.clone();
+            let was_rev = params.get("reverse").is_some_and(|s| s == "true");
+            rev_params.insert(
+                "reverse".to_owned(),
+                if was_rev {
+                    "false".to_owned()
+                } else {
+                    "true".to_owned()
+                },
+            );
+            let gy = builder.emit_binary(Primitive::Mul, g(), Atom::Var(p_out[0]));
+            let rev_cs = builder.emit_unary_params(Primitive::Cumsum, Atom::Var(gy), rev_params);
+            builder.emit_binary(Primitive::Div, Atom::Var(rev_cs), p(0))
         })]),
         Primitive::Complex => {
             let g0 = need_input[0].then(|| builder.emit_unary(Primitive::Real, g()));
@@ -33152,5 +33402,198 @@ mod tests {
         let hvp_vec = hvp_out[0].as_tensor().unwrap().to_f64_vec().unwrap();
         // f(x,y,z) = x*y*z => H * [1, 0, 0] = [0, z, y] = [0, 4, 3]
         assert_eq!(hvp_vec, vec![0.0, 4.0, 3.0]);
+    }
+
+    #[test]
+    fn wave17_symbolic_ad_structural_shape_cumprod_and_gather_work() {
+        use fj_core::Equation;
+        use smallvec::smallvec;
+
+        // 1. Reshape -> Square -> ReduceSum symbolic grad_to_jaxpr and hvp_to_jaxpr
+        let mut reshape_params = BTreeMap::new();
+        reshape_params.insert("new_shape".to_owned(), "2,2".to_owned());
+        let f_reshape = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Reshape,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: reshape_params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Square,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let g_reshape = super::grad_to_jaxpr(&f_reshape).expect("grad_to_jaxpr Reshape");
+        let hvp_reshape = super::hvp_to_jaxpr(&f_reshape).expect("hvp_to_jaxpr Reshape");
+        g_reshape
+            .validate_well_formed()
+            .expect("g_reshape well-formed");
+        hvp_reshape
+            .validate_well_formed()
+            .expect("hvp_reshape well-formed");
+        let x4 = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+        let dx4 = Value::vector_f64(&[1.0, 1.0, 1.0, 1.0]).unwrap();
+        let g_out = fj_interpreters::eval_jaxpr(&g_reshape, std::slice::from_ref(&x4))
+            .expect("eval g_reshape")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        assert_eq!(g_out, vec![2.0, 4.0, 6.0, 8.0]);
+        let hvp_out = fj_interpreters::eval_jaxpr(&hvp_reshape, &[x4.clone(), dx4])
+            .expect("eval hvp_reshape")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        assert_eq!(hvp_out, vec![2.0, 2.0, 2.0, 2.0]);
+
+        // 2. Slice(1..3) -> ReduceSum symbolic grad_to_jaxpr
+        let mut slice_params = BTreeMap::new();
+        slice_params.insert("start_indices".to_owned(), "1".to_owned());
+        slice_params.insert("limit_indices".to_owned(), "3".to_owned());
+        let f_slice = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Slice,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: slice_params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Square,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let g_slice = super::grad_to_jaxpr(&f_slice).expect("grad_to_jaxpr Slice");
+        let gs_out = fj_interpreters::eval_jaxpr(&g_slice, std::slice::from_ref(&x4))
+            .expect("eval g_slice")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        assert_eq!(gs_out, vec![0.0, 4.0, 6.0, 0.0]);
+
+        // 3. Cumprod -> ReduceSum symbolic grad_to_jaxpr and hvp_to_jaxpr
+        let mut cp_params = BTreeMap::new();
+        cp_params.insert("axis".to_owned(), "0".to_owned());
+        let f_cumprod = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Cumprod,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: cp_params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        // f(x1, x2, x3) = x1 + x1*x2 + x1*x2*x3
+        // At [2, 3, 4]: y = [2, 6, 24], sum = 32
+        // df/dx1 = 1 + 3 + 12 = 16; df/dx2 = 2 + 8 = 10; df/dx3 = 6
+        let g_cp = super::grad_to_jaxpr(&f_cumprod).expect("grad_to_jaxpr Cumprod");
+        let hvp_cp = super::hvp_to_jaxpr(&f_cumprod).expect("hvp_to_jaxpr Cumprod");
+        let x3 = Value::vector_f64(&[2.0, 3.0, 4.0]).unwrap();
+        let dx3 = Value::vector_f64(&[1.0, 0.0, 0.0]).unwrap();
+        let gcp_out = fj_interpreters::eval_jaxpr(&g_cp, std::slice::from_ref(&x3))
+            .expect("eval g_cp")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        assert_eq!(gcp_out, vec![16.0, 10.0, 6.0]);
+        let hvp_cp_out = fj_interpreters::eval_jaxpr(&hvp_cp, &[x3, dx3]).expect("eval hvp_cp")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        // d/dx1 of [1 + x2 + x2*x3, x1 + x1*x3, x1*x2] = [0, 1 + 4, 3] = [0, 5, 3]
+        assert_eq!(hvp_cp_out, vec![0.0, 5.0, 3.0]);
+
+        // 4. Gather -> ReduceSum symbolic grad_to_jaxpr
+        let mut gather_params = BTreeMap::new();
+        gather_params.insert("slice_sizes".to_owned(), "1".to_owned());
+        let f_gather = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Gather,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: gather_params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let g_gather = super::grad_to_jaxpr(&f_gather).expect("grad_to_jaxpr Gather");
+        let idx = Value::vector_i64(&[1, 3, 1]).unwrap();
+        let gg_out = fj_interpreters::eval_jaxpr(&g_gather, &[x4, idx]).expect("eval g_gather")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        // index 1 gathered twice, index 3 gathered once => [0, 2, 0, 1]
+        assert_eq!(gg_out, vec![0.0, 2.0, 0.0, 1.0]);
     }
 }

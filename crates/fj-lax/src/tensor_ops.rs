@@ -777,6 +777,45 @@ pub(crate) fn eval_reshape(
     params: &BTreeMap<String, String>,
 ) -> Result<Value, EvalError> {
     let primitive = Primitive::Reshape;
+    if inputs.len() == 2 && params.get("like").is_some_and(|s| s == "true") {
+        let target_shape = match &inputs[1] {
+            Value::Scalar(_) => Shape::scalar(),
+            Value::Tensor(t) => t.shape.clone(),
+        };
+        return match &inputs[0] {
+            Value::Scalar(lit) => {
+                if target_shape.rank() == 0 {
+                    return Ok(Value::Scalar(*lit));
+                }
+                let shape_spec: Vec<i64> =
+                    target_shape.dims.iter().map(|&d| i64::from(d)).collect();
+                let dims = resolve_reshape_dims(primitive, &shape_spec, 1, Shape::scalar())?;
+                Ok(Value::Tensor(TensorValue::new(
+                    inputs[0].dtype(),
+                    Shape { dims },
+                    vec![*lit],
+                )?))
+            }
+            Value::Tensor(tensor) => {
+                if target_shape.rank() == 0 && tensor.elements.len() == 1 {
+                    return Ok(Value::Scalar(tensor.elements[0]));
+                }
+                let shape_spec: Vec<i64> =
+                    target_shape.dims.iter().map(|&d| i64::from(d)).collect();
+                let dims = resolve_reshape_dims(
+                    primitive,
+                    &shape_spec,
+                    tensor.elements.len(),
+                    tensor.shape.clone(),
+                )?;
+                Ok(Value::Tensor(TensorValue::new_with_literal_buffer(
+                    tensor.dtype,
+                    Shape { dims },
+                    tensor.elements.clone(),
+                )?))
+            }
+        };
+    }
     if inputs.len() != 1 {
         return Err(EvalError::ArityMismatch {
             primitive,
