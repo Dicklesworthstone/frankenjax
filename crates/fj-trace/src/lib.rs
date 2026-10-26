@@ -3533,17 +3533,18 @@ fn infer_lu(inputs: &[ShapedArray]) -> Result<Vec<ShapedArray>, TraceError> {
     let mut pivot_dims = batch_dims.to_vec();
     pivot_dims.push(k);
 
+    let mut perm_dims = batch_dims.to_vec();
+    perm_dims.push(m);
+
     Ok(vec![
         input.clone(),
         ShapedArray {
-            dtype: DType::I64,
-            shape: Shape {
-                dims: pivot_dims.clone(),
-            },
+            dtype: DType::I32,
+            shape: Shape { dims: pivot_dims },
         },
         ShapedArray {
-            dtype: DType::I64,
-            shape: Shape { dims: pivot_dims },
+            dtype: DType::I32,
+            shape: Shape { dims: perm_dims },
         },
     ])
 }
@@ -6039,6 +6040,115 @@ impl TracerRef {
         let logabsdet = outs.pop().ok_or(TraceError::CompositionViolation)?;
         let sign = outs.pop().ok_or(TraceError::CompositionViolation)?;
         Ok((sign, logabsdet))
+    }
+
+    /// Matrix inverse `self^{-1}` lowered via `solve(self, I)`.
+    pub fn inv(&self) -> Result<TracerRef, TraceError> {
+        let aval = self.aval();
+        let rank = aval.shape.rank();
+        if rank < 2 {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Solve,
+                detail: format!("inv requires rank >= 2 matrix input, got rank {rank}"),
+            });
+        }
+        let m = aval.shape.dims[rank - 2];
+        let n = aval.shape.dims[rank - 1];
+        if m != n {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Solve,
+                detail: format!("inv requires square trailing dims, got ({m}, {n})"),
+            });
+        }
+        let row_idx = Self::broadcasted_iota(&[n, n], 0, DType::I64)?;
+        let col_idx = Self::broadcasted_iota(&[n, n], 1, DType::I64)?;
+        let eye_2d = row_idx.eq(&col_idx)?.convert_element_type(aval.dtype)?;
+        let eye = if rank == 2 {
+            eye_2d
+        } else {
+            eye_2d.broadcast_in_dim(&aval.shape.dims, &[rank - 2, rank - 1])?
+        };
+        self.solve(&eye)
+    }
+
+    /// Least-squares solution `min_x ||self @ x - rhs||_2` lowered via thin QR + triangular solve
+    /// (for `m >= n`) or thin SVD pseudoinverse (for `m < n`).
+    pub fn lstsq(&self, rhs: &TracerRef) -> Result<TracerRef, TraceError> {
+        let aval = self.aval();
+        if aval.shape.rank() != 2 {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Qr,
+                detail: format!(
+                    "lstsq requires rank-2 matrix lhs, got rank {}",
+                    aval.shape.rank()
+                ),
+            });
+        }
+        let m = aval.shape.dims[0];
+        let n = aval.shape.dims[1];
+        let rhs_aval = rhs.aval();
+        let rhs_rank = rhs_aval.shape.rank();
+        if (rhs_rank != 1 && rhs_rank != 2) || rhs_aval.shape.dims[0] != m {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Qr,
+                detail: format!(
+                    "lstsq rhs shape {:?} incompatible with lhs shape {:?}",
+                    rhs_aval.shape.dims, aval.shape.dims
+                ),
+            });
+        }
+        let is_complex = matches!(aval.dtype, DType::Complex64 | DType::Complex128);
+        if m >= n {
+            let (q, r) = self.qr(false)?;
+            let q_h = if is_complex {
+                q.conj()?.transpose(Some(&[1, 0]))?
+            } else {
+                q.transpose(Some(&[1, 0]))?
+            };
+            let qtb = q_h.dot(rhs)?;
+            if rhs_rank == 1 {
+                let qtb_2d = qtb.reshape(&[n, 1])?;
+                let x_2d = r.triangular_solve(&qtb_2d, false, false, false)?;
+                x_2d.reshape(&[n])
+            } else {
+                r.triangular_solve(&qtb, false, false, false)
+            }
+        } else {
+            let (u, s, vt) = self.svd(false)?;
+            let u_h = if is_complex {
+                u.conj()?.transpose(Some(&[1, 0]))?
+            } else {
+                u.transpose(Some(&[1, 0]))?
+            };
+            let v = if is_complex {
+                vt.conj()?.transpose(Some(&[1, 0]))?
+            } else {
+                vt.transpose(Some(&[1, 0]))?
+            };
+            let ut_b = u_h.dot(rhs)?;
+            let s_cast = if s.aval().dtype == ut_b.aval().dtype {
+                s
+            } else {
+                s.convert_element_type(ut_b.aval().dtype)?
+            };
+            let scaled = if rhs_rank == 1 {
+                ut_b.div_op(&s_cast)?
+            } else {
+                let s_col = s_cast.broadcast_in_dim(&ut_b.aval().shape.dims, &[0])?;
+                ut_b.div_op(&s_col)?
+            };
+            v.dot(&scaled)
+        }
+    }
+
+    /// L2 / Frobenius norm `sqrt(sum(|self|^2))` along `axis` (or all axes when `None`).
+    pub fn norm(&self, axis: Option<usize>) -> Result<TracerRef, TraceError> {
+        let sq = self.abs()?.square()?;
+        let sum = match axis {
+            Some(ax) => sq.reduce_sum(Some(&[ax as i64]))?,
+            None => sq.reduce_sum(None)?,
+        };
+        sum.sqrt()
     }
 
     /// 1D complex Fast Fourier Transform along the last axis (`Primitive::Fft`).

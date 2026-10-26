@@ -299,7 +299,7 @@ pub fn partial_eval_jaxpr_typed_with_consts(
                         Atom::Lit(lit) => Some(abstract_value_of_literal(lit)),
                     })
                     .collect();
-                if !input_avals.is_empty() {
+                if input_avals.len() == eqn.inputs.len() {
                     let out_avals = infer_equation_output_avals(eqn, &input_avals)?;
                     for (out_var, out_aval) in eqn.outputs.iter().zip(out_avals) {
                         var_aval[out_var.0 as usize] = Some(out_aval);
@@ -1386,6 +1386,15 @@ fn infer_equation_output_avals(
 ) -> Result<Vec<AbstractValue>, PartialEvalError> {
     use fj_core::Primitive::*;
 
+    // Control-flow equations with sub_jaxprs (Cond, Switch, While, Scan) carry their
+    // branch/body output types in `eqn.sub_jaxprs`, which `fj_trace::infer_output_avals`
+    // (taking only primitive, inputs, params) does not see.
+    if !eqn.sub_jaxprs.is_empty()
+        && let Some(avals) = infer_control_flow_sub_jaxpr_avals(eqn, input_avals)?
+    {
+        return Ok(avals);
+    }
+
     // AUTHORITATIVE PATH: delegate to fj-trace's `infer_output_avals` — the SAME
     // inference tracing uses — for EVERY op, so staging and tracing agree by
     // construction (no more two-layers drift). fj-trace is exhaustive over
@@ -1397,10 +1406,39 @@ fn infer_equation_output_avals(
         return Ok(avals);
     }
 
-    // BroadcastedIota takes NO inputs, so it must be typed before the
-    // first-input guard below (which would otherwise return an empty aval list).
-    if eqn.primitive == BroadcastedIota {
-        return Ok(vec![infer_broadcasted_iota_aval(eqn)?; eqn.outputs.len()]);
+    // Zero-input primitives must be typed before the first-input guard below
+    // (which would otherwise return an empty aval list).
+    match eqn.primitive {
+        BroadcastedIota => return Ok(vec![infer_broadcasted_iota_aval(eqn)?; eqn.outputs.len()]),
+        Iota => {
+            let length = eqn
+                .params
+                .get("length")
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .unwrap_or(0);
+            let dtype = eqn
+                .params
+                .get("dtype")
+                .and_then(|s| dtype_from_name(s))
+                .unwrap_or(DType::I64);
+            return Ok(vec![
+                AbstractValue {
+                    dtype,
+                    shape: Shape::vector(length),
+                };
+                eqn.outputs.len()
+            ]);
+        }
+        AxisIndex => {
+            return Ok(vec![
+                AbstractValue {
+                    dtype: DType::I64,
+                    shape: Shape::scalar(),
+                };
+                eqn.outputs.len()
+            ]);
+        }
+        _ => {}
     }
 
     let Some(first_input) = input_avals.first() else {
@@ -1413,6 +1451,7 @@ fn infer_equation_output_avals(
         Eigh => Ok(infer_eigh_output_avals(first_input)),
         Slogdet => Ok(infer_slogdet_output_avals(first_input)),
         Eig => Ok(infer_eig_output_avals(first_input)),
+        Lu => Ok(infer_lu_output_avals(first_input)),
         TopK => infer_topk_output_avals(first_input, eqn),
         Solve => Ok(infer_solve_output_avals(input_avals)),
         // Complex is binary — the dtype/shape depend on BOTH inputs, which the
@@ -1440,6 +1479,148 @@ fn infer_equation_output_avals(
             let out_aval = infer_equation_output_aval(eqn, first_input)?;
             Ok(vec![out_aval; eqn.outputs.len()])
         }
+    }
+}
+
+fn infer_jaxpr_output_avals(
+    jaxpr: &Jaxpr,
+    in_avals: &[AbstractValue],
+) -> Result<Vec<AbstractValue>, PartialEvalError> {
+    let max_var = max_var_in_jaxpr(jaxpr);
+    let mut var_aval: Vec<Option<AbstractValue>> = vec![None; max_var + 1];
+    for (var, aval) in jaxpr.invars.iter().zip(in_avals.iter()) {
+        var_aval[var.0 as usize] = Some(aval.clone());
+    }
+    for eqn in &jaxpr.equations {
+        let eqn_in_avals: Vec<AbstractValue> = eqn
+            .inputs
+            .iter()
+            .filter_map(|atom| match atom {
+                Atom::Var(v) => var_aval.get(v.0 as usize).cloned().flatten(),
+                Atom::Lit(lit) => Some(abstract_value_of_literal(lit)),
+            })
+            .collect();
+        if eqn_in_avals.len() == eqn.inputs.len() {
+            let out_avals = infer_equation_output_avals(eqn, &eqn_in_avals)?;
+            for (out_var, out_aval) in eqn.outputs.iter().zip(out_avals) {
+                if let Some(slot) = var_aval.get_mut(out_var.0 as usize) {
+                    *slot = Some(out_aval);
+                }
+            }
+        }
+    }
+    let default_aval = in_avals.first().cloned().unwrap_or(AbstractValue {
+        dtype: DType::F64,
+        shape: Shape::scalar(),
+    });
+    Ok(jaxpr
+        .outvars
+        .iter()
+        .map(|v| {
+            var_aval
+                .get(v.0 as usize)
+                .cloned()
+                .flatten()
+                .unwrap_or_else(|| default_aval.clone())
+        })
+        .collect())
+}
+
+fn infer_control_flow_sub_jaxpr_avals(
+    eqn: &Equation,
+    input_avals: &[AbstractValue],
+) -> Result<Option<Vec<AbstractValue>>, PartialEvalError> {
+    use fj_core::Primitive::*;
+    match eqn.primitive {
+        Cond | Switch => {
+            let Some(branch_jaxpr) = eqn.sub_jaxprs.first() else {
+                return Ok(None);
+            };
+            let branch_inputs = input_avals.get(1..).unwrap_or(&[]);
+            if branch_inputs.len() != branch_jaxpr.invars.len() {
+                return Ok(None);
+            }
+            let out_avals = infer_jaxpr_output_avals(branch_jaxpr, branch_inputs)?;
+            if out_avals.len() == eqn.outputs.len() {
+                Ok(Some(out_avals))
+            } else {
+                Ok(None)
+            }
+        }
+        While => {
+            if input_avals.len() == eqn.outputs.len() {
+                Ok(Some(input_avals.to_vec()))
+            } else if let Some(body_jaxpr) =
+                eqn.sub_jaxprs.get(1).or_else(|| eqn.sub_jaxprs.first())
+                && input_avals.len() == body_jaxpr.invars.len()
+            {
+                let out_avals = infer_jaxpr_output_avals(body_jaxpr, input_avals)?;
+                Ok(Some(out_avals))
+            } else {
+                Ok(None)
+            }
+        }
+        Scan => {
+            let Some(body_jaxpr) = eqn.sub_jaxprs.first() else {
+                return Ok(None);
+            };
+            let num_carry = eqn
+                .params
+                .get("num_carry")
+                .and_then(|s| s.trim().parse::<usize>().ok())
+                .unwrap_or(1)
+                .min(input_avals.len());
+            let carry_avals = &input_avals[..num_carry];
+            let xs_avals = &input_avals[num_carry..];
+            let scan_len = xs_avals
+                .first()
+                .and_then(|av| av.shape.dims.first().copied())
+                .or_else(|| {
+                    eqn.params
+                        .get("length")
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                })
+                .unwrap_or(1);
+            let mut body_in_avals = Vec::with_capacity(input_avals.len());
+            body_in_avals.extend_from_slice(carry_avals);
+            for xs_av in xs_avals {
+                let slice_dims = xs_av.shape.dims.get(1..).unwrap_or(&[]).to_vec();
+                body_in_avals.push(AbstractValue {
+                    dtype: xs_av.dtype,
+                    shape: Shape { dims: slice_dims },
+                });
+            }
+            if body_in_avals.len() != body_jaxpr.invars.len() {
+                return Ok(None);
+            }
+            let body_out_avals = infer_jaxpr_output_avals(body_jaxpr, &body_in_avals)?;
+            if eqn.outputs.len() <= num_carry {
+                return Ok(Some(carry_avals[..eqn.outputs.len()].to_vec()));
+            }
+            if body_out_avals.len() < eqn.outputs.len() {
+                return Ok(None);
+            }
+            let mut scan_out_avals = Vec::with_capacity(eqn.outputs.len());
+            for (idx, body_out) in body_out_avals
+                .into_iter()
+                .take(eqn.outputs.len())
+                .enumerate()
+            {
+                if idx < num_carry {
+                    scan_out_avals.push(body_out);
+                } else {
+                    let mut stacked_dims = Vec::with_capacity(body_out.shape.dims.len() + 1);
+                    stacked_dims.push(scan_len);
+                    stacked_dims.extend_from_slice(&body_out.shape.dims);
+                    scan_out_avals.push(AbstractValue {
+                        dtype: body_out.dtype,
+                        shape: Shape { dims: stacked_dims },
+                    });
+                }
+            }
+            Ok(Some(scan_out_avals))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -2110,6 +2291,27 @@ fn infer_eig_output_avals(input: &AbstractValue) -> Vec<AbstractValue> {
         AbstractValue {
             dtype: DType::Complex128,
             shape: Shape { dims: vec![n, n] },
+        },
+    ]
+}
+
+fn infer_lu_output_avals(input: &AbstractValue) -> Vec<AbstractValue> {
+    let Some((&m, &n)) = input.shape.dims.first().zip(input.shape.dims.get(1)) else {
+        return vec![input.clone(), input.clone(), input.clone()];
+    };
+    let k = m.min(n);
+    vec![
+        AbstractValue {
+            dtype: input.dtype,
+            shape: Shape { dims: vec![m, n] },
+        },
+        AbstractValue {
+            dtype: DType::I32,
+            shape: Shape { dims: vec![k] },
+        },
+        AbstractValue {
+            dtype: DType::I32,
+            shape: Shape { dims: vec![m] },
         },
     ]
 }
@@ -6143,5 +6345,140 @@ mod tests {
         assert_eq!(reshape_like_avals.len(), 1);
         assert_eq!(reshape_like_avals[0].dtype, DType::F64);
         assert_eq!(reshape_like_avals[0].shape.dims, vec![2, 3]);
+
+        // Zero-input BroadcastedIota and Iota in partial_eval_jaxpr_typed propagate exact residual avals
+        let mut iota_params = BTreeMap::new();
+        iota_params.insert("shape".to_owned(), "2,3".to_owned());
+        iota_params.insert("dimension".to_owned(), "1".to_owned());
+        iota_params.insert("dtype".to_owned(), "F32".to_owned());
+        let zero_in_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::BroadcastedIota,
+                    inputs: smallvec![],
+                    outputs: smallvec![VarId(3)],
+                    params: iota_params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let pe_iota = partial_eval_jaxpr_typed(
+            &zero_in_jaxpr,
+            &[false, true],
+            Some(&[av(&[], DType::F64), av(&[2, 3], DType::F32)]),
+        )
+        .unwrap();
+        assert_eq!(pe_iota.residual_avals.len(), 1);
+        assert_eq!(pe_iota.residual_avals[0].dtype, DType::F32);
+        assert_eq!(pe_iota.residual_avals[0].shape.dims, vec![2, 3]);
+
+        // Control-flow Cond/Switch/While/Scan with sub_jaxprs infer branch/body output avals
+        // instead of mistyping residuals as pred (Bool scalar) or index (I64 scalar).
+        let branch_jaxpr = Jaxpr::new(
+            vec![VarId(10)],
+            vec![],
+            vec![VarId(11)],
+            vec![Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec![Atom::Var(VarId(10))],
+                outputs: smallvec![VarId(11)],
+                params: BTreeMap::from([("axes".to_owned(), "1".to_owned())]),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        );
+        let cond_sub_eqn = Equation {
+            primitive: Primitive::Cond,
+            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+            outputs: smallvec![VarId(3)],
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![branch_jaxpr.clone(), branch_jaxpr.clone()],
+        };
+        let cond_avals = infer_equation_output_avals(
+            &cond_sub_eqn,
+            &[av(&[], DType::Bool), av(&[4, 5], DType::F32)],
+        )
+        .unwrap();
+        assert_eq!(cond_avals, vec![av(&[4], DType::F32)]);
+
+        let switch_sub_eqn = Equation {
+            primitive: Primitive::Switch,
+            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+            outputs: smallvec![VarId(3)],
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![branch_jaxpr.clone(), branch_jaxpr],
+        };
+        let switch_avals = infer_equation_output_avals(
+            &switch_sub_eqn,
+            &[av(&[], DType::I64), av(&[4, 5], DType::F32)],
+        )
+        .unwrap();
+        assert_eq!(switch_avals, vec![av(&[4], DType::F32)]);
+
+        // Scan with sub_jaxprs producing both carry and stacked ys
+        let scan_body = Jaxpr::new(
+            vec![VarId(10), VarId(11)],
+            vec![],
+            vec![VarId(12), VarId(13)],
+            vec![
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(10)), Atom::Var(VarId(11))],
+                    outputs: smallvec![VarId(12)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(12))],
+                    outputs: smallvec![VarId(13)],
+                    params: BTreeMap::from([("axes".to_owned(), "0".to_owned())]),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let scan_sub_eqn = Equation {
+            primitive: Primitive::Scan,
+            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+            outputs: smallvec![VarId(3), VarId(4)],
+            params: BTreeMap::from([("num_carry".to_owned(), "1".to_owned())]),
+            effects: vec![],
+            sub_jaxprs: vec![scan_body],
+        };
+        let scan_avals = infer_equation_output_avals(
+            &scan_sub_eqn,
+            &[av(&[3], DType::F32), av(&[5, 3], DType::F32)],
+        )
+        .unwrap();
+        assert_eq!(scan_avals, vec![av(&[3], DType::F32), av(&[5], DType::F32)]);
+
+        // Lu multi-output inference returns (lu, pivots, permutation)
+        let lu_avals =
+            infer_equation_output_avals(&eqn_n(Primitive::Lu, 3, &[]), &[av(&[4, 3], DType::F32)])
+                .unwrap();
+        assert_eq!(
+            lu_avals,
+            vec![
+                av(&[4, 3], DType::F32),
+                av(&[3], DType::I32),
+                av(&[4], DType::I32)
+            ]
+        );
     }
 }

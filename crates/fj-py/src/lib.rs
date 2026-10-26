@@ -1317,6 +1317,95 @@ impl PyTracer {
             .map_err(trace_error_to_py_err)
     }
 
+    fn identity(&self) -> PyResult<Self> {
+        fj_api::nn::identity(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (b=4.0))]
+    fn squareplus(&self, b: f64) -> PyResult<Self> {
+        fj_api::nn::squareplus(&self.inner, b)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn sparse_plus(&self) -> PyResult<Self> {
+        fj_api::nn::sparse_plus(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn sparse_sigmoid(&self) -> PyResult<Self> {
+        fj_api::nn::sparse_sigmoid(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn log1mexp(&self) -> PyResult<Self> {
+        fj_api::nn::log1mexp(&self.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=-1))]
+    fn glu(&self, axis: isize) -> PyResult<Self> {
+        fj_api::nn::glu(&self.inner, axis)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=-1))]
+    fn logmeanexp(&self, axis: isize) -> PyResult<Self> {
+        fj_api::nn::logmeanexp(&self.inner, axis)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (num_classes, dtype=None))]
+    fn one_hot(
+        &self,
+        py: Python<'_>,
+        num_classes: u32,
+        dtype: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let dt = dtype_from_py_arg(py, dtype)?;
+        fj_api::nn::one_hot(&self.inner, num_classes, dt)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (labels, axis=-1))]
+    fn softmax_cross_entropy(&self, labels: &Self, axis: isize) -> PyResult<Self> {
+        fj_api::nn::softmax_cross_entropy(&self.inner, &labels.inner, axis)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (targets, axis=-1))]
+    fn soft_target_cross_entropy(&self, targets: &Self, axis: isize) -> PyResult<Self> {
+        fj_api::nn::soft_target_cross_entropy(&self.inner, &targets.inner, axis)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (key, value, mask=None))]
+    fn dot_product_attention(
+        &self,
+        key: &Self,
+        value: &Self,
+        mask: Option<&Self>,
+    ) -> PyResult<Self> {
+        fj_api::nn::dot_product_attention(
+            &self.inner,
+            &key.inner,
+            &value.inner,
+            mask.map(|m| &m.inner),
+        )
+        .map(Self::from_tracer)
+        .map_err(trace_error_to_py_err)
+    }
+
     // ── Special math, structural, FFT, and linear algebra tracer methods ──────
 
     fn sinc(&self) -> PyResult<Self> {
@@ -1506,6 +1595,13 @@ impl PyTracer {
             .map_err(trace_error_to_py_err)
     }
 
+    fn top_k(&self, k: u32) -> PyResult<(Self, Self)> {
+        self.inner
+            .top_k(k)
+            .map(|(vals, idxs)| (Self::from_tracer(vals), Self::from_tracer(idxs)))
+            .map_err(trace_error_to_py_err)
+    }
+
     #[pyo3(signature = (fft_length=None))]
     fn fft(&self, fft_length: Option<u32>) -> PyResult<Self> {
         self.inner
@@ -1605,6 +1701,48 @@ impl PyTracer {
     fn solve(&self, rhs: &Self) -> PyResult<Self> {
         self.inner
             .solve(&rhs.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn lu(&self) -> PyResult<(Self, Self, Self)> {
+        self.inner
+            .lu()
+            .map(|(lu, pivots, perm)| {
+                (
+                    Self::from_tracer(lu),
+                    Self::from_tracer(pivots),
+                    Self::from_tracer(perm),
+                )
+            })
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn eig(&self) -> PyResult<(Self, Self)> {
+        self.inner
+            .eig()
+            .map(|(w, v)| (Self::from_tracer(w), Self::from_tracer(v)))
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn inv(&self) -> PyResult<Self> {
+        self.inner
+            .inv()
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    fn lstsq(&self, rhs: &Self) -> PyResult<Self> {
+        self.inner
+            .lstsq(&rhs.inner)
+            .map(Self::from_tracer)
+            .map_err(trace_error_to_py_err)
+    }
+
+    #[pyo3(signature = (axis=None))]
+    fn norm(&self, axis: Option<usize>) -> PyResult<Self> {
+        self.inner
+            .norm(axis)
             .map(Self::from_tracer)
             .map_err(trace_error_to_py_err)
     }
@@ -5537,6 +5675,23 @@ fn py_hessian(py: Python<'_>, target: &Bound<'_, PyAny>, args: Vec<PyValue>) -> 
     hessian(&PyJaxpr { inner: jaxpr }, args)
 }
 
+fn symbolic_hessian(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
+    let rust_args = py_values_to_rust(args);
+    let hess = fj_api::symbolic_hessian_jaxpr(&jaxpr.inner, &rust_args).map_err(runtime_error)?;
+    check_debug_nans_infs(std::slice::from_ref(&hess))?;
+    Ok(PyValue::from_value(hess))
+}
+
+#[pyfunction(name = "symbolic_hessian")]
+fn py_symbolic_hessian(
+    py: Python<'_>,
+    target: &Bound<'_, PyAny>,
+    args: Vec<PyValue>,
+) -> PyResult<PyValue> {
+    let jaxpr = resolve_target_to_jaxpr(py, target, Some(&args))?;
+    symbolic_hessian(&PyJaxpr { inner: jaxpr }, args)
+}
+
 #[pyfunction(name = "hvp")]
 fn py_hvp(
     py: Python<'_>,
@@ -5820,6 +5975,741 @@ fn random_gamma(key: (u32, u32), alpha: f64, shape: Vec<u32>) -> PyResult<PyValu
     .map_err(runtime_error)
 }
 
+// ── Dual-dispatch helpers for nn, linalg, and fft submodules ────────
+
+fn eval_traced_single(
+    values: &[Value],
+    f: impl FnOnce(&[fj_trace::TracerRef]) -> Result<fj_trace::TracerRef, fj_trace::TraceError>,
+) -> PyResult<PyValue> {
+    let in_avals: Vec<fj_trace::ShapedArray> = values
+        .iter()
+        .map(fj_trace::ShapedArray::from_value)
+        .collect();
+    let closed = fj_trace::make_jaxpr_fallible(|inputs| Ok(vec![f(inputs)?]), in_avals)
+        .map_err(trace_error_to_py_err)?;
+    let outputs =
+        fj_interpreters::eval_jaxpr_with_consts(&closed.jaxpr, &closed.const_values, values)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    check_debug_nans_infs(&outputs)?;
+    outputs
+        .into_iter()
+        .next()
+        .map(PyValue::from_value)
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("expected 1 output"))
+}
+
+fn eval_traced_multi(
+    values: &[Value],
+    f: impl FnOnce(&[fj_trace::TracerRef]) -> Result<Vec<fj_trace::TracerRef>, fj_trace::TraceError>,
+) -> PyResult<Vec<PyValue>> {
+    let in_avals: Vec<fj_trace::ShapedArray> = values
+        .iter()
+        .map(fj_trace::ShapedArray::from_value)
+        .collect();
+    let closed = fj_trace::make_jaxpr_fallible(f, in_avals).map_err(trace_error_to_py_err)?;
+    let outputs =
+        fj_interpreters::eval_jaxpr_with_consts(&closed.jaxpr, &closed.const_values, values)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    check_debug_nans_infs(&outputs)?;
+    Ok(py_values_from_rust(outputs))
+}
+
+fn dispatch_unary_op(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    f: impl FnOnce(&fj_trace::TracerRef) -> Result<fj_trace::TracerRef, fj_trace::TraceError>,
+) -> PyResult<Py<PyAny>> {
+    if let Ok(tr) = x.extract::<PyRef<'_, PyTracer>>() {
+        let out = f(&tr.inner).map_err(trace_error_to_py_err)?;
+        return Ok(Py::new(py, PyTracer::from_tracer(out))?.into_any());
+    }
+    if let Ok(val) = x.extract::<PyRef<'_, PyValue>>() {
+        val.ensure_not_deleted()?;
+        let out = eval_traced_single(std::slice::from_ref(&val.inner), |inputs| f(&inputs[0]))?;
+        return Ok(Py::new(py, out)?.into_any());
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "expected a Tracer or Array (PyValue)",
+    ))
+}
+
+fn dispatch_binary_op(
+    py: Python<'_>,
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+    f: impl FnOnce(
+        &fj_trace::TracerRef,
+        &fj_trace::TracerRef,
+    ) -> Result<fj_trace::TracerRef, fj_trace::TraceError>,
+) -> PyResult<Py<PyAny>> {
+    if let Ok(tr_a) = a.extract::<PyRef<'_, PyTracer>>() {
+        let tr_b = tr_a.coerce_other(b)?;
+        let out = f(&tr_a.inner, &tr_b).map_err(trace_error_to_py_err)?;
+        return Ok(Py::new(py, PyTracer::from_tracer(out))?.into_any());
+    }
+    if let Ok(tr_b) = b.extract::<PyRef<'_, PyTracer>>() {
+        let tr_a = tr_b.coerce_other(a)?;
+        let out = f(&tr_a, &tr_b.inner).map_err(trace_error_to_py_err)?;
+        return Ok(Py::new(py, PyTracer::from_tracer(out))?.into_any());
+    }
+    if let (Ok(val_a), Ok(val_b)) = (
+        a.extract::<PyRef<'_, PyValue>>(),
+        b.extract::<PyRef<'_, PyValue>>(),
+    ) {
+        val_a.ensure_not_deleted()?;
+        val_b.ensure_not_deleted()?;
+        let out = eval_traced_single(&[val_a.inner.clone(), val_b.inner.clone()], |inputs| {
+            f(&inputs[0], &inputs[1])
+        })?;
+        return Ok(Py::new(py, out)?.into_any());
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "expected Tracer or Array (PyValue) arguments",
+    ))
+}
+
+fn dispatch_ternary_op(
+    py: Python<'_>,
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+    c: &Bound<'_, PyAny>,
+    f: impl FnOnce(
+        &fj_trace::TracerRef,
+        &fj_trace::TracerRef,
+        &fj_trace::TracerRef,
+    ) -> Result<fj_trace::TracerRef, fj_trace::TraceError>,
+) -> PyResult<Py<PyAny>> {
+    if let Ok(tr_a) = a.extract::<PyRef<'_, PyTracer>>() {
+        let tr_b = tr_a.coerce_other(b)?;
+        let tr_c = tr_a.coerce_other(c)?;
+        let out = f(&tr_a.inner, &tr_b, &tr_c).map_err(trace_error_to_py_err)?;
+        return Ok(Py::new(py, PyTracer::from_tracer(out))?.into_any());
+    }
+    if let (Ok(val_a), Ok(val_b), Ok(val_c)) = (
+        a.extract::<PyRef<'_, PyValue>>(),
+        b.extract::<PyRef<'_, PyValue>>(),
+        c.extract::<PyRef<'_, PyValue>>(),
+    ) {
+        val_a.ensure_not_deleted()?;
+        val_b.ensure_not_deleted()?;
+        val_c.ensure_not_deleted()?;
+        let out = eval_traced_single(
+            &[
+                val_a.inner.clone(),
+                val_b.inner.clone(),
+                val_c.inner.clone(),
+            ],
+            |inputs| f(&inputs[0], &inputs[1], &inputs[2]),
+        )?;
+        return Ok(Py::new(py, out)?.into_any());
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "expected Tracer or Array (PyValue) arguments",
+    ))
+}
+
+fn dispatch_unary_pair(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    f: impl FnOnce(
+        &fj_trace::TracerRef,
+    ) -> Result<(fj_trace::TracerRef, fj_trace::TracerRef), fj_trace::TraceError>,
+) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    if let Ok(tr) = x.extract::<PyRef<'_, PyTracer>>() {
+        let (a, b) = f(&tr.inner).map_err(trace_error_to_py_err)?;
+        return Ok((
+            Py::new(py, PyTracer::from_tracer(a))?.into_any(),
+            Py::new(py, PyTracer::from_tracer(b))?.into_any(),
+        ));
+    }
+    if let Ok(val) = x.extract::<PyRef<'_, PyValue>>() {
+        val.ensure_not_deleted()?;
+        let mut outs = eval_traced_multi(std::slice::from_ref(&val.inner), |inputs| {
+            let (a, b) = f(&inputs[0])?;
+            Ok(vec![a, b])
+        })?;
+        let b = outs
+            .pop()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("expected 2 outputs"))?;
+        let a = outs
+            .pop()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("expected 2 outputs"))?;
+        return Ok((Py::new(py, a)?.into_any(), Py::new(py, b)?.into_any()));
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "expected a Tracer or Array (PyValue)",
+    ))
+}
+
+fn dispatch_unary_triple(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    f: impl FnOnce(
+        &fj_trace::TracerRef,
+    ) -> Result<
+        (
+            fj_trace::TracerRef,
+            fj_trace::TracerRef,
+            fj_trace::TracerRef,
+        ),
+        fj_trace::TraceError,
+    >,
+) -> PyResult<(Py<PyAny>, Py<PyAny>, Py<PyAny>)> {
+    if let Ok(tr) = x.extract::<PyRef<'_, PyTracer>>() {
+        let (a, b, c) = f(&tr.inner).map_err(trace_error_to_py_err)?;
+        return Ok((
+            Py::new(py, PyTracer::from_tracer(a))?.into_any(),
+            Py::new(py, PyTracer::from_tracer(b))?.into_any(),
+            Py::new(py, PyTracer::from_tracer(c))?.into_any(),
+        ));
+    }
+    if let Ok(val) = x.extract::<PyRef<'_, PyValue>>() {
+        val.ensure_not_deleted()?;
+        let mut outs = eval_traced_multi(std::slice::from_ref(&val.inner), |inputs| {
+            let (a, b, c) = f(&inputs[0])?;
+            Ok(vec![a, b, c])
+        })?;
+        let c = outs
+            .pop()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("expected 3 outputs"))?;
+        let b = outs
+            .pop()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("expected 3 outputs"))?;
+        let a = outs
+            .pop()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("expected 3 outputs"))?;
+        return Ok((
+            Py::new(py, a)?.into_any(),
+            Py::new(py, b)?.into_any(),
+            Py::new(py, c)?.into_any(),
+        ));
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "expected a Tracer or Array (PyValue)",
+    ))
+}
+
+// ── frankenjax.nn submodule functions ───────────────────────────────
+
+#[pyfunction(name = "relu")]
+fn py_nn_relu(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::relu)
+}
+
+#[pyfunction(name = "relu6")]
+fn py_nn_relu6(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::relu6)
+}
+
+#[pyfunction(name = "sigmoid")]
+fn py_nn_sigmoid(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::sigmoid)
+}
+
+#[pyfunction(name = "hard_sigmoid")]
+fn py_nn_hard_sigmoid(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::hard_sigmoid)
+}
+
+#[pyfunction(name = "soft_sign")]
+fn py_nn_soft_sign(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::soft_sign)
+}
+
+#[pyfunction(name = "softplus")]
+fn py_nn_softplus(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::softplus)
+}
+
+#[pyfunction(name = "log_sigmoid")]
+fn py_nn_log_sigmoid(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::log_sigmoid)
+}
+
+#[pyfunction(name = "silu")]
+fn py_nn_silu(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::silu)
+}
+
+#[pyfunction(name = "swish")]
+fn py_nn_swish(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::swish)
+}
+
+#[pyfunction(name = "gelu", signature = (x, approximate=true))]
+fn py_nn_gelu(py: Python<'_>, x: &Bound<'_, PyAny>, approximate: bool) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| fj_api::nn::gelu(t, approximate))
+}
+
+#[pyfunction(name = "celu", signature = (x, alpha=1.0))]
+fn py_nn_celu(py: Python<'_>, x: &Bound<'_, PyAny>, alpha: f64) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| fj_api::nn::celu(t, alpha))
+}
+
+#[pyfunction(name = "elu", signature = (x, alpha=1.0))]
+fn py_nn_elu(py: Python<'_>, x: &Bound<'_, PyAny>, alpha: f64) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| fj_api::nn::elu(t, alpha))
+}
+
+#[pyfunction(name = "leaky_relu", signature = (x, negative_slope=0.01))]
+fn py_nn_leaky_relu(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    negative_slope: f64,
+) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| fj_api::nn::leaky_relu(t, negative_slope))
+}
+
+#[pyfunction(name = "hard_tanh")]
+fn py_nn_hard_tanh(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::hard_tanh)
+}
+
+#[pyfunction(name = "hard_silu")]
+fn py_nn_hard_silu(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::hard_silu)
+}
+
+#[pyfunction(name = "hard_swish")]
+fn py_nn_hard_swish(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::hard_swish)
+}
+
+#[pyfunction(name = "mish")]
+fn py_nn_mish(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::mish)
+}
+
+#[pyfunction(name = "selu")]
+fn py_nn_selu(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::selu)
+}
+
+#[pyfunction(name = "softmax", signature = (x, axis=-1))]
+fn py_nn_softmax(py: Python<'_>, x: &Bound<'_, PyAny>, axis: isize) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| fj_api::nn::softmax(t, axis))
+}
+
+#[pyfunction(name = "log_softmax", signature = (x, axis=-1))]
+fn py_nn_log_softmax(py: Python<'_>, x: &Bound<'_, PyAny>, axis: isize) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| fj_api::nn::log_softmax(t, axis))
+}
+
+#[pyfunction(name = "logsumexp", signature = (x, axis=-1))]
+fn py_nn_logsumexp(py: Python<'_>, x: &Bound<'_, PyAny>, axis: isize) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| fj_api::nn::logsumexp(t, axis))
+}
+
+#[pyfunction(name = "standardize", signature = (x, axis=-1, eps=1e-5))]
+fn py_nn_standardize(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    axis: isize,
+    eps: f64,
+) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| fj_api::nn::standardize(t, axis, eps))
+}
+
+#[pyfunction(name = "layer_norm", signature = (x, axis=-1, eps=1e-5, weight=None, bias=None))]
+fn py_nn_layer_norm(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    axis: isize,
+    eps: f64,
+    weight: Option<&Bound<'_, PyAny>>,
+    bias: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    if let Ok(tr_x) = x.extract::<PyRef<'_, PyTracer>>() {
+        let tr_w = weight.map(|w| tr_x.coerce_other(w)).transpose()?;
+        let tr_b = bias.map(|b| tr_x.coerce_other(b)).transpose()?;
+        let out = fj_api::nn::layer_norm(&tr_x.inner, axis, eps, tr_w.as_ref(), tr_b.as_ref())
+            .map_err(trace_error_to_py_err)?;
+        return Ok(Py::new(py, PyTracer::from_tracer(out))?.into_any());
+    }
+    if let Ok(val_x) = x.extract::<PyRef<'_, PyValue>>() {
+        val_x.ensure_not_deleted()?;
+        let mut vals = vec![val_x.inner.clone()];
+        let has_w = if let Some(w) = weight {
+            let vw = w.extract::<PyRef<'_, PyValue>>()?;
+            vw.ensure_not_deleted()?;
+            vals.push(vw.inner.clone());
+            true
+        } else {
+            false
+        };
+        let has_b = if let Some(b) = bias {
+            let vb = b.extract::<PyRef<'_, PyValue>>()?;
+            vb.ensure_not_deleted()?;
+            vals.push(vb.inner.clone());
+            true
+        } else {
+            false
+        };
+        let out = eval_traced_single(&vals, |inputs| {
+            let w_ref = if has_w { Some(&inputs[1]) } else { None };
+            let b_ref = match (has_w, has_b) {
+                (true, true) => Some(&inputs[2]),
+                (false, true) => Some(&inputs[1]),
+                _ => None,
+            };
+            fj_api::nn::layer_norm(&inputs[0], axis, eps, w_ref, b_ref)
+        })?;
+        return Ok(Py::new(py, out)?.into_any());
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "expected a Tracer or Array (PyValue)",
+    ))
+}
+
+#[pyfunction(name = "rms_norm", signature = (x, axis=-1, eps=1e-5, weight=None))]
+fn py_nn_rms_norm(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    axis: isize,
+    eps: f64,
+    weight: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    if let Ok(tr_x) = x.extract::<PyRef<'_, PyTracer>>() {
+        let tr_w = weight.map(|w| tr_x.coerce_other(w)).transpose()?;
+        let out = fj_api::nn::rms_norm(&tr_x.inner, axis, eps, tr_w.as_ref())
+            .map_err(trace_error_to_py_err)?;
+        return Ok(Py::new(py, PyTracer::from_tracer(out))?.into_any());
+    }
+    if let Ok(val_x) = x.extract::<PyRef<'_, PyValue>>() {
+        val_x.ensure_not_deleted()?;
+        let mut vals = vec![val_x.inner.clone()];
+        let has_w = if let Some(w) = weight {
+            let vw = w.extract::<PyRef<'_, PyValue>>()?;
+            vw.ensure_not_deleted()?;
+            vals.push(vw.inner.clone());
+            true
+        } else {
+            false
+        };
+        let out = eval_traced_single(&vals, |inputs| {
+            let w_ref = if has_w { Some(&inputs[1]) } else { None };
+            fj_api::nn::rms_norm(&inputs[0], axis, eps, w_ref)
+        })?;
+        return Ok(Py::new(py, out)?.into_any());
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "expected a Tracer or Array (PyValue)",
+    ))
+}
+
+#[pyfunction(name = "l2_loss")]
+fn py_nn_l2_loss(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::l2_loss)
+}
+
+#[pyfunction(name = "identity")]
+fn py_nn_identity(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::identity)
+}
+
+#[pyfunction(name = "squareplus", signature = (x, b=4.0))]
+fn py_nn_squareplus(py: Python<'_>, x: &Bound<'_, PyAny>, b: f64) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| fj_api::nn::squareplus(t, b))
+}
+
+#[pyfunction(name = "sparse_plus")]
+fn py_nn_sparse_plus(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::sparse_plus)
+}
+
+#[pyfunction(name = "sparse_sigmoid")]
+fn py_nn_sparse_sigmoid(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::sparse_sigmoid)
+}
+
+#[pyfunction(name = "log1mexp")]
+fn py_nn_log1mexp(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_api::nn::log1mexp)
+}
+
+#[pyfunction(name = "glu", signature = (x, axis=-1))]
+fn py_nn_glu(py: Python<'_>, x: &Bound<'_, PyAny>, axis: isize) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| fj_api::nn::glu(t, axis))
+}
+
+#[pyfunction(name = "logmeanexp", signature = (x, axis=-1))]
+fn py_nn_logmeanexp(py: Python<'_>, x: &Bound<'_, PyAny>, axis: isize) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| fj_api::nn::logmeanexp(t, axis))
+}
+
+#[pyfunction(name = "one_hot", signature = (indices, num_classes, dtype=None))]
+fn py_nn_one_hot(
+    py: Python<'_>,
+    indices: &Bound<'_, PyAny>,
+    num_classes: u32,
+    dtype: Option<Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let dt = dtype_from_py_arg(py, dtype)?;
+    dispatch_unary_op(py, indices, |t| fj_api::nn::one_hot(t, num_classes, dt))
+}
+
+#[pyfunction(name = "softmax_cross_entropy", signature = (logits, labels, axis=-1))]
+fn py_nn_softmax_cross_entropy(
+    py: Python<'_>,
+    logits: &Bound<'_, PyAny>,
+    labels: &Bound<'_, PyAny>,
+    axis: isize,
+) -> PyResult<Py<PyAny>> {
+    dispatch_binary_op(py, logits, labels, |l, y| {
+        fj_api::nn::softmax_cross_entropy(l, y, axis)
+    })
+}
+
+#[pyfunction(name = "soft_target_cross_entropy", signature = (logits, targets, axis=-1))]
+fn py_nn_soft_target_cross_entropy(
+    py: Python<'_>,
+    logits: &Bound<'_, PyAny>,
+    targets: &Bound<'_, PyAny>,
+    axis: isize,
+) -> PyResult<Py<PyAny>> {
+    dispatch_binary_op(py, logits, targets, |l, t| {
+        fj_api::nn::soft_target_cross_entropy(l, t, axis)
+    })
+}
+
+#[pyfunction(name = "dot_product_attention")]
+fn py_nn_dot_product_attention(
+    py: Python<'_>,
+    query: &Bound<'_, PyAny>,
+    key: &Bound<'_, PyAny>,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    dispatch_ternary_op(py, query, key, value, |q, k, v| {
+        fj_api::nn::dot_product_attention(q, k, v, None)
+    })
+}
+
+// ── frankenjax.linalg submodule functions ───────────────────────────
+
+#[pyfunction(name = "cholesky")]
+fn py_linalg_cholesky(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_trace::TracerRef::cholesky)
+}
+
+#[pyfunction(name = "qr", signature = (x, full_matrices=true))]
+fn py_linalg_qr(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    full_matrices: bool,
+) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    dispatch_unary_pair(py, x, |t| t.qr(full_matrices))
+}
+
+#[pyfunction(name = "svd", signature = (x, full_matrices=true))]
+fn py_linalg_svd(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    full_matrices: bool,
+) -> PyResult<(Py<PyAny>, Py<PyAny>, Py<PyAny>)> {
+    dispatch_unary_triple(py, x, |t| t.svd(full_matrices))
+}
+
+#[pyfunction(name = "lu")]
+fn py_linalg_lu(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+) -> PyResult<(Py<PyAny>, Py<PyAny>, Py<PyAny>)> {
+    dispatch_unary_triple(py, x, fj_trace::TracerRef::lu)
+}
+
+#[pyfunction(name = "eigh")]
+fn py_linalg_eigh(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    dispatch_unary_pair(py, x, fj_trace::TracerRef::eigh)
+}
+
+#[pyfunction(name = "eig")]
+fn py_linalg_eig(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    dispatch_unary_pair(py, x, fj_trace::TracerRef::eig)
+}
+
+#[pyfunction(name = "triangular_solve", signature = (a, b, lower=true, transpose_a=false, unit_diagonal=false))]
+fn py_linalg_triangular_solve(
+    py: Python<'_>,
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+    lower: bool,
+    transpose_a: bool,
+    unit_diagonal: bool,
+) -> PyResult<Py<PyAny>> {
+    dispatch_binary_op(py, a, b, |ta, tb| {
+        ta.triangular_solve(tb, lower, transpose_a, unit_diagonal)
+    })
+}
+
+#[pyfunction(name = "solve")]
+fn py_linalg_solve(
+    py: Python<'_>,
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    dispatch_binary_op(py, a, b, fj_trace::TracerRef::solve)
+}
+
+#[pyfunction(name = "lstsq")]
+fn py_linalg_lstsq(
+    py: Python<'_>,
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    dispatch_binary_op(py, a, b, fj_trace::TracerRef::lstsq)
+}
+
+#[pyfunction(name = "det")]
+fn py_linalg_det(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_trace::TracerRef::det)
+}
+
+#[pyfunction(name = "slogdet")]
+fn py_linalg_slogdet(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    dispatch_unary_pair(py, x, fj_trace::TracerRef::slogdet)
+}
+
+#[pyfunction(name = "inv")]
+fn py_linalg_inv(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, fj_trace::TracerRef::inv)
+}
+
+#[pyfunction(name = "norm", signature = (x, axis=None))]
+fn py_linalg_norm(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    axis: Option<usize>,
+) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| t.norm(axis))
+}
+
+#[pyfunction(name = "matmul")]
+fn py_linalg_matmul(
+    py: Python<'_>,
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    dispatch_binary_op(py, a, b, fj_trace::TracerRef::dot)
+}
+
+#[pyfunction(name = "dot")]
+fn py_linalg_dot(
+    py: Python<'_>,
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    dispatch_binary_op(py, a, b, fj_trace::TracerRef::dot)
+}
+
+// ── frankenjax.fft submodule functions ──────────────────────────────
+
+#[pyfunction(name = "fft", signature = (x, n=None))]
+fn py_fft_fft(py: Python<'_>, x: &Bound<'_, PyAny>, n: Option<u32>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| t.fft(n))
+}
+
+#[pyfunction(name = "ifft", signature = (x, n=None))]
+fn py_fft_ifft(py: Python<'_>, x: &Bound<'_, PyAny>, n: Option<u32>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| t.ifft(n))
+}
+
+#[pyfunction(name = "rfft", signature = (x, n=None))]
+fn py_fft_rfft(py: Python<'_>, x: &Bound<'_, PyAny>, n: Option<u32>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| t.rfft(n))
+}
+
+#[pyfunction(name = "irfft", signature = (x, n=None))]
+fn py_fft_irfft(py: Python<'_>, x: &Bound<'_, PyAny>, n: Option<u32>) -> PyResult<Py<PyAny>> {
+    dispatch_unary_op(py, x, |t| t.irfft(n))
+}
+
+fn register_submodules(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    let py = m.py();
+
+    let nn_mod = PyModule::new(py, "nn")?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_relu, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_relu6, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_sigmoid, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_hard_sigmoid, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_soft_sign, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_softplus, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_log_sigmoid, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_silu, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_swish, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_gelu, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_celu, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_elu, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_leaky_relu, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_hard_tanh, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_hard_silu, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_hard_swish, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_mish, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_selu, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_softmax, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_log_softmax, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_logsumexp, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_standardize, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_layer_norm, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_rms_norm, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_l2_loss, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_identity, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_squareplus, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_sparse_plus, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_sparse_sigmoid, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_log1mexp, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_glu, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_logmeanexp, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_one_hot, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_softmax_cross_entropy, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_soft_target_cross_entropy, &nn_mod)?)?;
+    nn_mod.add_function(wrap_pyfunction!(py_nn_dot_product_attention, &nn_mod)?)?;
+    m.add_submodule(&nn_mod)?;
+
+    let linalg_mod = PyModule::new(py, "linalg")?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_cholesky, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_qr, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_svd, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_lu, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_eigh, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_eig, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_triangular_solve, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_solve, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_lstsq, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_det, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_slogdet, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_inv, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_norm, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_matmul, &linalg_mod)?)?;
+    linalg_mod.add_function(wrap_pyfunction!(py_linalg_dot, &linalg_mod)?)?;
+    m.add_submodule(&linalg_mod)?;
+
+    let fft_mod = PyModule::new(py, "fft")?;
+    fft_mod.add_function(wrap_pyfunction!(py_fft_fft, &fft_mod)?)?;
+    fft_mod.add_function(wrap_pyfunction!(py_fft_ifft, &fft_mod)?)?;
+    fft_mod.add_function(wrap_pyfunction!(py_fft_rfft, &fft_mod)?)?;
+    fft_mod.add_function(wrap_pyfunction!(py_fft_irfft, &fft_mod)?)?;
+    m.add_submodule(&fft_mod)?;
+
+    let random_mod = PyModule::new(py, "random")?;
+    random_mod.add("key", m.getattr("random_key")?)?;
+    random_mod.add("split", m.getattr("random_split")?)?;
+    random_mod.add("fold_in", m.getattr("random_fold_in")?)?;
+    random_mod.add("uniform", m.getattr("random_uniform")?)?;
+    random_mod.add("normal", m.getattr("random_normal")?)?;
+    random_mod.add("bernoulli", m.getattr("random_bernoulli")?)?;
+    random_mod.add("randint", m.getattr("random_randint")?)?;
+    random_mod.add("categorical", m.getattr("random_categorical")?)?;
+    random_mod.add("permutation", m.getattr("random_permutation")?)?;
+    random_mod.add("gumbel", m.getattr("random_gumbel")?)?;
+    random_mod.add("laplace", m.getattr("random_laplace")?)?;
+    random_mod.add("exponential", m.getattr("random_exponential")?)?;
+    random_mod.add("logistic", m.getattr("random_logistic")?)?;
+    random_mod.add("gamma", m.getattr("random_gamma")?)?;
+    m.add_submodule(&random_mod)?;
+
+    Ok(())
+}
+
 #[pymodule]
 fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -5921,6 +6811,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_jacrev, m)?)?;
     m.add_function(wrap_pyfunction!(py_jacfwd, m)?)?;
     m.add_function(wrap_pyfunction!(py_hessian, m)?)?;
+    m.add_function(wrap_pyfunction!(py_symbolic_hessian, m)?)?;
     m.add_function(wrap_pyfunction!(py_hvp, m)?)?;
     m.add_function(wrap_pyfunction!(py_jvp_to_jaxpr, m)?)?;
     m.add_function(wrap_pyfunction!(py_grad_to_jaxpr, m)?)?;
@@ -5945,6 +6836,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(random_exponential, m)?)?;
     m.add_function(wrap_pyfunction!(random_logistic, m)?)?;
     m.add_function(wrap_pyfunction!(random_gamma, m)?)?;
+    register_submodules(m)?;
     Ok(())
 }
 
@@ -7494,6 +8386,186 @@ mod tests {
             let mut perm_sorted = perm.as_i64_list().unwrap();
             perm_sorted.sort_unstable();
             assert_eq!(perm_sorted, vec![0, 1, 2, 3, 4]);
+        });
+    }
+
+    #[test]
+    fn wave29_submodules_dual_dispatch_and_symbolic_hessian_work() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let m = PyModule::new(py, "frankenjax").unwrap();
+            frankenjax(&m).unwrap();
+            let nn = m.getattr("nn").unwrap();
+            let linalg = m.getattr("linalg").unwrap();
+            let fft = m.getattr("fft").unwrap();
+            let random = m.getattr("random").unwrap();
+
+            // 1. Eager frankenjax.nn dual-dispatch on PyValue
+            let v = PyValue::vector_f64(vec![-1.0, 0.0, 2.0, 4.0]).unwrap();
+            let v_py = Py::new(py, v.clone()).unwrap();
+            let sp_val: PyValue = nn
+                .getattr("squareplus")
+                .unwrap()
+                .call1((v_py.bind(py), 4.0))
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(sp_val.shape_dims(), vec![4]);
+            assert!((sp_val.as_f64_list().unwrap()[1] - 1.0).abs() < 1e-12);
+
+            let glu_val: PyValue = nn
+                .getattr("glu")
+                .unwrap()
+                .call1((v_py.bind(py), -1))
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(glu_val.shape_dims(), vec![2]);
+
+            let logits = PyValue::vector_f64(vec![2.0, 1.0, 0.1]).unwrap();
+            let labels = PyValue::vector_f64(vec![1.0, 0.0, 0.0]).unwrap();
+            let ce_val: PyValue = nn
+                .getattr("softmax_cross_entropy")
+                .unwrap()
+                .call1((
+                    Py::new(py, logits).unwrap().bind(py),
+                    Py::new(py, labels).unwrap().bind(py),
+                ))
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert!(ce_val.as_f64().unwrap() > 0.0);
+
+            let q = PyValue::from_value(
+                fj_core::TensorValue::new(
+                    fj_core::DType::F64,
+                    fj_core::Shape { dims: vec![2, 2] },
+                    [1.0, 0.0, 0.0, 1.0]
+                        .into_iter()
+                        .map(fj_core::Literal::from_f64)
+                        .collect(),
+                )
+                .map(Value::Tensor)
+                .unwrap(),
+            );
+            let q_py = Py::new(py, q.clone()).unwrap();
+            let attn_val: PyValue = nn
+                .getattr("dot_product_attention")
+                .unwrap()
+                .call1((q_py.bind(py), q_py.bind(py), q_py.bind(py)))
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(attn_val.shape_dims(), vec![2, 2]);
+
+            // 2. Eager frankenjax.linalg dual-dispatch (inv, lstsq, norm, lu)
+            let a_mat = PyValue::from_value(
+                fj_core::TensorValue::new(
+                    fj_core::DType::F64,
+                    fj_core::Shape { dims: vec![2, 2] },
+                    [4.0, 1.0, 2.0, 3.0]
+                        .into_iter()
+                        .map(fj_core::Literal::from_f64)
+                        .collect(),
+                )
+                .map(Value::Tensor)
+                .unwrap(),
+            );
+            let a_py = Py::new(py, a_mat.clone()).unwrap();
+            let inv_val: PyValue = linalg
+                .getattr("inv")
+                .unwrap()
+                .call1((a_py.bind(py),))
+                .unwrap()
+                .extract()
+                .unwrap();
+            let inv_elems = inv_val.as_f64_list().unwrap();
+            // inv([[4, 1], [2, 3]]) = (1/10) * [[3, -1], [-2, 4]] = [0.3, -0.1, -0.2, 0.4]
+            assert!((inv_elems[0] - 0.3).abs() < 1e-10);
+            assert!((inv_elems[1] - (-0.1)).abs() < 1e-10);
+            assert!((inv_elems[2] - (-0.2)).abs() < 1e-10);
+            assert!((inv_elems[3] - 0.4).abs() < 1e-10);
+
+            let rhs = PyValue::vector_f64(vec![5.0, 5.0]).unwrap();
+            let lstsq_val: PyValue = linalg
+                .getattr("lstsq")
+                .unwrap()
+                .call1((a_py.bind(py), Py::new(py, rhs).unwrap().bind(py)))
+                .unwrap()
+                .extract()
+                .unwrap();
+            let lstsq_elems = lstsq_val.as_f64_list().unwrap();
+            assert!((lstsq_elems[0] - 1.0).abs() < 1e-9);
+            assert!((lstsq_elems[1] - 1.0).abs() < 1e-9);
+
+            let (lu_mat, lu_piv, lu_perm): (PyValue, PyValue, PyValue) = linalg
+                .getattr("lu")
+                .unwrap()
+                .call1((a_py.bind(py),))
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(lu_mat.shape_dims(), vec![2, 2]);
+            assert_eq!(lu_piv.shape_dims(), vec![2]);
+            assert_eq!(lu_perm.shape_dims(), vec![2]);
+
+            // 3. Eager frankenjax.fft & frankenjax.random submodules
+            let rfft_val: PyValue = fft
+                .getattr("rfft")
+                .unwrap()
+                .call1((v_py.bind(py),))
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(rfft_val.shape_dims(), vec![3]);
+
+            let rk: (u32, u32) = random
+                .getattr("key")
+                .unwrap()
+                .call1((7_u64,))
+                .unwrap()
+                .extract()
+                .unwrap();
+            let rn: PyValue = random
+                .getattr("normal")
+                .unwrap()
+                .call1((rk, vec![3_u32]))
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(rn.shape_dims(), vec![3]);
+
+            // 4. Traced frankenjax.nn / frankenjax.linalg + jacfwd, jacrev, symbolic_hessian
+            let locals = PyDict::new(py);
+            locals.set_item("fj", &m).unwrap();
+            py.run(
+                pyo3::ffi::c_str!(
+                    "def traced_nn_linalg(x):\n    y = fj.nn.squareplus(x, 4.0)\n    return fj.linalg.norm(y)\n\ndef poly2(v):\n    return (v * v * v).sum()\n"
+                ),
+                Some(&locals),
+                Some(&locals),
+            )
+            .unwrap();
+            let traced_fn = locals.get_item("traced_nn_linalg").unwrap().unwrap();
+            let poly2_fn = locals.get_item("poly2").unwrap().unwrap();
+
+            let g_traced = py_grad(py, &traced_fn, vec![v.clone()], None).unwrap();
+            assert_eq!(g_traced[0].shape_dims(), vec![4]);
+
+            let x2 = PyValue::vector_f64(vec![2.0, 3.0]).unwrap();
+            let jf = py_jacfwd(py, &poly2_fn, vec![x2.clone()]).unwrap();
+            let jr = py_jacrev(py, &poly2_fn, vec![x2.clone()]).unwrap();
+            assert_eq!(jf.as_f64_list().unwrap(), vec![12.0, 27.0]);
+            assert_eq!(jr.as_f64_list().unwrap(), vec![12.0, 27.0]);
+
+            let sh = py_symbolic_hessian(py, &poly2_fn, vec![x2]).unwrap();
+            assert_eq!(sh.shape_dims(), vec![2, 2]);
+            // d^2/dx^2 (x0^3 + x1^3) at [2, 3] = [[12, 0], [0, 18]]
+            let sh_vals = sh.as_f64_list().unwrap();
+            assert!((sh_vals[0] - 12.0).abs() < 1e-10);
+            assert!(sh_vals[1].abs() < 1e-10);
+            assert!(sh_vals[2].abs() < 1e-10);
+            assert!((sh_vals[3] - 18.0).abs() < 1e-10);
         });
     }
 }
