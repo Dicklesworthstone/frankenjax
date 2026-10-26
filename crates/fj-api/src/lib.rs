@@ -101,24 +101,49 @@ pub mod nn {
         Ok(normalized as usize)
     }
 
-    fn reduce_keepdims_sum(x: &TracerRef, axis: usize) -> Result<TracerRef, TraceError> {
+    /// Broadcast `reduced` (`x` reduced along `axis`) back onto `x`'s shape, repeating it
+    /// along `axis`. `x` must have rank at least 1.
+    fn broadcast_back(
+        reduced: &TracerRef,
+        x: &TracerRef,
+        axis: usize,
+    ) -> Result<TracerRef, TraceError> {
         let rank = x.aval().shape.rank();
+        let broadcast_dims: Vec<usize> = (0..rank).filter(|&d| d != axis).collect();
+        reduced.broadcast_in_dim(&x.aval().shape.dims, &broadcast_dims)
+    }
+
+    fn reduce_keepdims_sum(x: &TracerRef, axis: usize) -> Result<TracerRef, TraceError> {
         let sum = x.reduce_sum(Some(&[axis as i64]))?;
-        if rank == 0 {
+        if x.aval().shape.rank() == 0 {
             return Ok(sum);
         }
-        let broadcast_dims: Vec<usize> = (0..rank).filter(|&d| d != axis).collect();
-        sum.broadcast_in_dim(&x.aval().shape.dims, &broadcast_dims)
+        broadcast_back(&sum, x, axis)
     }
 
     fn reduce_keepdims_max(x: &TracerRef, axis: usize) -> Result<TracerRef, TraceError> {
-        let rank = x.aval().shape.rank();
-        let max_val = x.reduce_max(Some(&[axis as i64]))?;
-        if rank == 0 {
-            return Ok(max_val);
+        let max = x.reduce_max(Some(&[axis as i64]))?;
+        if x.aval().shape.rank() == 0 {
+            return Ok(max);
         }
-        let broadcast_dims: Vec<usize> = (0..rank).filter(|&d| d != axis).collect();
-        max_val.broadcast_in_dim(&x.aval().shape.dims, &broadcast_dims)
+        broadcast_back(&max, x, axis)
+    }
+
+    /// The scalar `value` in `x`'s floating dtype. (An `f64` literal would promote an
+    /// `f32`/`bf16`/`f16` computation to `f64`.)
+    fn scalar_like(x: &TracerRef, value: f64) -> Result<TracerRef, TraceError> {
+        let lit = match x.aval().dtype {
+            DType::F32 => Literal::from_f32(value as f32),
+            DType::BF16 => Literal::from_bf16_f64(value),
+            DType::F16 => Literal::from_f16_f64(value),
+            _ => Literal::from_f64(value),
+        };
+        x.bind_literal(lit)
+    }
+
+    /// Zeros with `x`'s shape and floating dtype.
+    fn zeros_like(x: &TracerRef) -> Result<TracerRef, TraceError> {
+        scalar_like(x, 0.0)?.broadcast_in_dim(&x.aval().shape.dims, &[])
     }
 
     /// Rectified Linear Unit: `max(x, 0)`.
@@ -262,20 +287,44 @@ pub mod nn {
     }
 
     /// Numerically stable log-sum-exp along `axis` (defaulting to the last axis via `-1`).
+    ///
+    /// Computed as `max + log1p(Σ_j exp(x_j - max) - [j = i])`, with `i` the first argmax: the
+    /// argmax's own `exp(0) = 1` is taken out of the sum exactly and added back by `log1p`. The
+    /// usual `max + log(Σ_j exp(x_j - max))` adds that 1 to the other terms first and rounds
+    /// their total away once it is below one ulp of 1, so `logsumexp([0, -40, -40])` came out as
+    /// exactly 0 in f64 ("softmax collapse", Barron, Gnanapragasam and Tschannen, *A Fix for
+    /// Softmax and Cross-Entropy*). As in `jax.nn.logsumexp` the max is under `stop_gradient`
+    /// (the value does not depend on it), so the gradient is `softmax(x)`.
     pub fn logsumexp(x: &TracerRef, axis: isize) -> Result<TracerRef, TraceError> {
         let rank = x.aval().shape.rank();
         if rank == 0 {
             return Ok(x.clone());
         }
         let ax = normalize_axis(rank, axis)?;
-        let max_unreduced = x.reduce_max(Some(&[ax as i64]))?;
-        let max_keep = reduce_keepdims_max(x, ax)?;
-        let shifted_exp = x.sub_op(&max_keep)?.exp()?;
-        let sum_exp = shifted_exp.reduce_sum(Some(&[ax as i64]))?;
-        max_unreduced.add_op(&sum_exp.log()?)
+        if x.aval().shape.dims[ax] == 0 {
+            // log(Σ exp(∅)) = -inf, without an argmax over an empty axis.
+            return x.exp()?.reduce_sum(Some(&[ax as i64]))?.log();
+        }
+        let max = x.reduce_max(Some(&[ax as i64]))?.stop_gradient()?;
+        let shifted = x.sub_op(&broadcast_back(&max, x, ax)?)?;
+        let first_max = x.argmax(Some(ax as i64))?.one_hot(
+            x.aval().shape.dims[ax],
+            x.aval().dtype,
+            Some(ax as i64),
+        )?;
+        let tail = shifted
+            .exp()?
+            .sub_op(&first_max)?
+            .reduce_sum(Some(&[ax as i64]))?;
+        max.add_op(&tail.log1p()?)
     }
 
     /// Numerically stable softmax along `axis` (use `-1` for the last axis).
+    ///
+    /// Unlike `jax.nn.softmax`, the max is not under `stop_gradient`, and that matters: when one
+    /// probability rounds to 1, the part of `p_i - p_i²` that flows through its own exponential
+    /// cancels to 0, and the max's gradient, which the `ReduceMax` rule routes to the argmax, is
+    /// what restores it from the other entries ("softmax collapse", see [`log_softmax`]).
     pub fn softmax(x: &TracerRef, axis: isize) -> Result<TracerRef, TraceError> {
         let rank = x.aval().shape.rank();
         if rank == 0 {
@@ -289,16 +338,133 @@ pub mod nn {
     }
 
     /// Numerically stable log-softmax along `axis` (use `-1` for the last axis).
+    ///
+    /// Follows Barron, Gnanapragasam and Tschannen, *A Fix for Softmax and Cross-Entropy*: with
+    /// `i` the first argmax, `log_softmax(x)_k = [k ≠ i](x_k - x_i) - log1p(Σ_{j≠i} exp(x_j -
+    /// x_i))`. The usual `(x - max) - log(Σ_j exp(x_j - max))` adds the argmax's `exp(0) = 1` to
+    /// the other terms, and once their total is below one ulp of 1 (a logit margin above ~16.6
+    /// in f32, ~36.7 in f64) the argmax entry, and with it a hard-target cross-entropy
+    /// `-Σ onehot · log_softmax`, becomes exactly 0 ("softmax collapse"). Here the argmax entry
+    /// keeps `-log1p(tail)`.
+    ///
+    /// Entry `i` of the shift is exactly 0 and carries no gradient of its own, so `x_i` enters
+    /// only through the differences `x_j - x_i`. Reverse and forward mode therefore build the
+    /// argmax entry's derivative from the other entries: `1 - p_i` becomes `Σ_{j≠i} p_j`, and for
+    /// a hard target on the argmax the gradient is minus the sum of the other softmax values
+    /// rather than `p_i - 1`, which rounds to 0 in the same regime. `x_i` is picked out with the
+    /// argmax mask rather than a `ReduceMax`, whose gradient would be shared between tied maxima
+    /// while only entry `i` is cut here. Rows with a `+inf`, NaN or only `-inf` entries give
+    /// NaN, as before.
     pub fn log_softmax(x: &TracerRef, axis: isize) -> Result<TracerRef, TraceError> {
         let rank = x.aval().shape.rank();
         if rank == 0 {
             return lit_f64(0.0);
         }
         let ax = normalize_axis(rank, axis)?;
-        let max_keep = reduce_keepdims_max(x, ax)?;
-        let shifted = x.sub_op(&max_keep)?;
-        let sum_exp_keep = reduce_keepdims_sum(&shifted.exp()?, ax)?;
-        shifted.sub_op(&sum_exp_keep.log()?)
+        let n = x.aval().shape.dims[ax];
+        if n == 0 {
+            // Nothing to normalise (and no argmax).
+            return Ok(x.clone());
+        }
+        let argmax = x.argmax(Some(ax as i64))?;
+        let first_max = argmax.one_hot(n, DType::Bool, Some(ax as i64))?;
+        let max = first_max
+            .select(x, &zeros_like(x)?)?
+            .reduce_sum(Some(&[ax as i64]))?;
+        let shift = x.sub_op(&broadcast_back(&max, x, ax)?)?;
+        let shifted = first_max.select(&shift.stop_gradient()?, &shift)?;
+        // exp(0) - 1 = 0 takes entry i out of the sum exactly; a NaN there (a non-finite row)
+        // stays in and keeps the row NaN.
+        let tail = shifted
+            .exp()?
+            .sub_op(&argmax.one_hot(n, x.aval().dtype, Some(ax as i64))?)?
+            .reduce_sum(Some(&[ax as i64]))?;
+        shifted.sub_op(&broadcast_back(&tail.log1p()?, x, ax)?)
+    }
+
+    /// Soft-target (distillation) cross-entropy along `axis` between a teacher and a student
+    /// given as logits: `-Σ_k p_k · log_softmax(student)_k` with `p = softmax(teacher)`, reduced
+    /// over `axis`. `student` and `teacher` must have the same shape.
+    ///
+    /// The value is that of the plain composition. The gradient for `student` is not: through
+    /// `log_softmax` it is `q - p` with `q = softmax(student)`, a difference of two separately
+    /// rounded vectors, which is not 0 when `student == teacher` and loses most of its digits
+    /// when they are close ("softmax cancellation", Barron, Gnanapragasam and Tschannen, *A Fix
+    /// for Softmax and Cross-Entropy*). Following that paper, the student gradient is computed
+    /// from the logit difference `δ = student - teacher` instead:
+    ///
+    /// ```text
+    /// d = δ - Σ_i p_i δ_i,   s = d - log1p(Σ_i p_i expm1(d_i))   (s = log(q / p))
+    /// u = p · expm1(s)   (= q - p),   g = u - q · Σ_i u_i
+    /// ```
+    ///
+    /// and swapped in with `stop_gradient`: the loss is `-Σ p · sg(log_softmax(student)) + Σ
+    /// sg(g) · (student - sg(student))`. So `g` is exactly 0 for equal logits and keeps its
+    /// relative precision near them. Two details beyond the paper keep it from losing digits
+    /// elsewhere: `δ` is first shifted by its value at the teacher's argmax (exact when the
+    /// logits differ by a common offset, which softmax ignores), and an entry whose
+    /// probabilities differ by more than a factor `e` (`|s| > 1`, where `q - p` does not
+    /// cancel) or whose `s` is not finite uses `q - p` directly.
+    ///
+    /// The teacher's gradient is the plain one, through `p`. Only first derivatives are
+    /// rewritten: derivatives of second or higher order with respect to `student` come out as 0,
+    /// so use the plain composition for Hessians.
+    pub fn soft_target_cross_entropy(
+        student: &TracerRef,
+        teacher: &TracerRef,
+        axis: isize,
+    ) -> Result<TracerRef, TraceError> {
+        if student.aval().shape != teacher.aval().shape {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive: fj_core::Primitive::Sub,
+                detail: format!(
+                    "soft_target_cross_entropy: student shape {:?} != teacher shape {:?}",
+                    student.aval().shape.dims,
+                    teacher.aval().shape.dims
+                ),
+            });
+        }
+        let ax = normalize_axis(student.aval().shape.rank(), axis)?;
+        let axes = [ax as i64];
+        let row_sum = |v: &TracerRef| -> Result<TracerRef, TraceError> {
+            broadcast_back(&v.reduce_sum(Some(&axes))?, student, ax)
+        };
+
+        let log_q = log_softmax(student, axis)?.stop_gradient()?;
+        let p = softmax(teacher, axis)?;
+        let loss = p.mul_op(&log_q)?.reduce_sum(Some(&axes))?.neg_op()?;
+        if student.aval().shape.dims[ax] == 0 {
+            return Ok(loss);
+        }
+
+        let q = softmax(student, axis)?.stop_gradient()?;
+        let p_c = p.stop_gradient()?;
+        let delta = student.stop_gradient()?.sub_op(&teacher.stop_gradient()?)?;
+        let at_teacher_max = teacher.argmax(Some(ax as i64))?.one_hot(
+            student.aval().shape.dims[ax],
+            DType::Bool,
+            Some(ax as i64),
+        )?;
+        let delta_ref = at_teacher_max
+            .select(&delta, &zeros_like(&delta)?)?
+            .reduce_sum(Some(&axes))?;
+        let delta = delta.sub_op(&broadcast_back(&delta_ref, student, ax)?)?;
+        let d = delta.sub_op(&row_sum(&p_c.mul_op(&delta)?)?)?;
+        let s = d.sub_op(&row_sum(&p_c.mul_op(&d.expm1()?)?)?.log1p()?)?;
+        let q_minus_p = q.sub_op(&p_c)?;
+        // A NaN `s` fails the comparison and takes `q - p`.
+        let u = s
+            .abs()?
+            .le(&scalar_like(&s, 1.0)?)?
+            .select(&p_c.mul_op(&s.expm1()?)?, &q_minus_p)?;
+        let g = u.sub_op(&q.mul_op(&row_sum(&u)?)?)?.stop_gradient()?;
+
+        // student - sg(student) is 0 with gradient 1; a non-finite logit would make it NaN.
+        let student_offset = student.is_finite()?.select(
+            &student.sub_op(&student.stop_gradient()?)?,
+            &zeros_like(student)?,
+        )?;
+        loss.add_op(&g.mul_op(&student_offset)?.reduce_sum(Some(&axes))?)
     }
 
     /// Standardizes `x` along `axis` to zero mean and unit variance: `(x - mean) / sqrt(var + eps)`.
@@ -3066,6 +3232,536 @@ mod tests {
                     0.6652409557748219,
                     0.24472847105479764,
                 ],
+            );
+        }
+    }
+
+    fn float_tensor(dtype: DType, dims: Vec<u32>, xs: &[f64]) -> Value {
+        let lits = xs
+            .iter()
+            .map(|&x| match dtype {
+                DType::F32 => Literal::from_f32(x as f32),
+                _ => Literal::from_f64(x),
+            })
+            .collect();
+        Value::Tensor(fj_core::TensorValue::new(dtype, Shape { dims }, lits).expect("tensor"))
+    }
+
+    fn float_values(what: &str, v: &Value, dtype: DType) -> Vec<f64> {
+        assert_eq!(v.dtype(), dtype, "{what}: dtype");
+        match v {
+            Value::Tensor(t) => t.to_f64_vec().expect("float tensor"),
+            Value::Scalar(lit) => vec![lit.as_f64().expect("float scalar")],
+        }
+    }
+
+    fn assert_rel_close(what: &str, got: &[f64], want: &[f64], rel: f64) {
+        assert_eq!(got.len(), want.len(), "{what}: length");
+        for (i, (&g, &w)) in got.iter().zip(want).enumerate() {
+            assert!(
+                (g - w).abs() <= rel * w.abs(),
+                "{what}[{i}] = {g:e}, expected {w:e} (rel tol {rel:e})"
+            );
+        }
+    }
+
+    /// The softmax-collapse cases from frankenjax#1: one logit ahead of the other two by a
+    /// margin `m` past the point where `1 + 2e^-m` rounds to 1 (~16.6 in f32, ~36.7 in f64).
+    /// `a = log1p(2e^-m) ≈ 2e^-m` is the exact loss of a hard target on the leading logit
+    /// (mpmath), and to the precision checked here also the softmax mass of the other two.
+    const COLLAPSE_CASES: [(DType, f64, f64, f64); 2] = [
+        (DType::F32, 18.0, 3.045_995_8e-8, 1e-5),
+        (DType::F64, 40.0, 8.496_708_510_583_178e-18, 1e-12),
+    ];
+
+    #[test]
+    fn log_softmax_and_logsumexp_avoid_softmax_collapse() {
+        // Regression for frankenjax#1 ("softmax collapse", Barron, Gnanapragasam and Tschannen,
+        // "A Fix for Softmax and Cross-Entropy"). log_softmax(z)[argmax] and the hard-target loss
+        // -Σ onehot·log_softmax(z) came out as exactly 0, and logsumexp([0, -m, -m]) as exactly
+        // 0. The target gradient was right only because it flowed back through the max shift.
+        for (dtype, m, a, rel) in COLLAPSE_CASES {
+            let z = [m / 2.0, -m / 2.0, -m / 2.0];
+            let aval = ShapedArray {
+                dtype,
+                shape: Shape::vector(3),
+            };
+            let lsm = make_jaxpr_fallible(
+                |inp| Ok(vec![nn::log_softmax(&inp[0], -1)?]),
+                vec![aval.clone()],
+            )
+            .expect("trace log_softmax");
+            let out = jit(lsm.jaxpr.clone())
+                .call(vec![float_tensor(dtype, vec![3], &z)])
+                .expect("log_softmax");
+            assert_rel_close(
+                &format!("{dtype:?} log_softmax"),
+                &float_values("log_softmax", &out[0], dtype),
+                &[-a, -m, -m],
+                rel,
+            );
+            // Forward mode: d log_softmax / d z_0 = onehot_0 - softmax, entry 0 = 1 - p_0.
+            let tangents = jvp_tangents(
+                &lsm.jaxpr,
+                &[float_tensor(dtype, vec![3], &z)],
+                &[float_tensor(dtype, vec![3], &[1.0, 0.0, 0.0])],
+            );
+            assert_rel_close(
+                &format!("{dtype:?} jvp(log_softmax)"),
+                &float_values("jvp", &tangents[0], dtype),
+                &[a, -1.0, -1.0],
+                rel,
+            );
+
+            let ce = make_jaxpr_fallible(
+                |inp| {
+                    let ls = nn::log_softmax(&inp[0], -1)?;
+                    Ok(vec![inp[1].mul_op(&ls)?.reduce_sum(None)?.neg_op()?])
+                },
+                vec![aval.clone(), aval.clone()],
+            )
+            .expect("trace cross-entropy");
+            let args = vec![
+                float_tensor(dtype, vec![3], &z),
+                float_tensor(dtype, vec![3], &[1.0, 0.0, 0.0]),
+            ];
+            // softmax - onehot: minus the other entries' mass at the target, summing to zero.
+            let want = [-a, a / 2.0, a / 2.0];
+            let (value, grads) = value_and_grad(ce.jaxpr.clone())
+                .call(args.clone())
+                .expect("value_and_grad");
+            assert_rel_close(
+                &format!("{dtype:?} loss"),
+                &float_values("loss", &value[0], dtype),
+                &[a],
+                rel,
+            );
+            let mut all_grads = vec![("value_and_grad".to_owned(), grads[0].clone())];
+            let grads = grad(ce.jaxpr.clone()).call(args.clone()).expect("grad");
+            all_grads.push(("grad".to_owned(), grads[0].clone()));
+            for transforms in [
+                vec![Transform::Jit, Transform::Grad],
+                vec![Transform::Grad, Transform::Jit],
+            ] {
+                let grads = compose(ce.jaxpr.clone(), transforms.clone())
+                    .call(args.clone())
+                    .expect("composed grad");
+                all_grads.push((format!("{transforms:?}"), grads[0].clone()));
+            }
+            for (what, g) in &all_grads {
+                let g = float_values(what, g, dtype);
+                assert_rel_close(&format!("{dtype:?} {what}"), &g, &want, rel);
+                assert_eq!(g.iter().sum::<f64>(), 0.0, "{dtype:?} {what}: {g:?}");
+            }
+
+            // vmap(grad) goes through the symbolic gradient builder. The label is fixed to
+            // class 0, the argmax of the first row but not of the second.
+            let ce0 = make_jaxpr_fallible(
+                |inp| {
+                    let label = TracerRef::literal(Literal::I64(0))?.one_hot(3, dtype, None)?;
+                    let ls = nn::log_softmax(&inp[0], -1)?;
+                    Ok(vec![label.mul_op(&ls)?.reduce_sum(None)?.neg_op()?])
+                },
+                vec![aval.clone()],
+            )
+            .expect("trace fixed-label cross-entropy");
+            let batch = float_tensor(dtype, vec![2, 3], &[z[0], z[1], z[2], z[1], z[0], z[2]]);
+            let grads = compose(ce0.jaxpr, vec![Transform::Vmap, Transform::Grad])
+                .call(vec![batch])
+                .expect("vmap(grad(cross-entropy))");
+            assert_rel_close(
+                &format!("{dtype:?} vmap(grad)"),
+                &float_values("vmap(grad)", &grads[0], dtype),
+                &[-a, a / 2.0, a / 2.0, -1.0, 1.0, a / 2.0],
+                rel,
+            );
+
+            // logsumexp([0, -m, -m]) = log1p(2e^-m), and its gradient is softmax.
+            let lse = make_jaxpr_fallible(|inp| Ok(vec![nn::logsumexp(&inp[0], -1)?]), vec![aval])
+                .expect("trace logsumexp");
+            let shifted = float_tensor(dtype, vec![3], &[0.0, -m, -m]);
+            let (value, grads) = value_and_grad(lse.jaxpr)
+                .call(vec![shifted])
+                .expect("value_and_grad(logsumexp)");
+            assert_rel_close(
+                &format!("{dtype:?} logsumexp"),
+                &float_values("logsumexp", &value[0], dtype),
+                &[a],
+                rel,
+            );
+            assert_rel_close(
+                &format!("{dtype:?} grad(logsumexp)"),
+                &float_values("grad(logsumexp)", &grads[0], dtype),
+                &[1.0, a / 2.0, a / 2.0],
+                rel,
+            );
+        }
+    }
+
+    /// The output tangents of `jvp(jaxpr)` at `primals` along `tangents`.
+    fn jvp_tangents(jaxpr: &Jaxpr, primals: &[Value], tangents: &[Value]) -> Vec<Value> {
+        jvp(jaxpr, primals, tangents).expect("jvp").tangents
+    }
+
+    #[test]
+    fn softmax_gradient_survives_softmax_collapse() {
+        // nn::softmax keeps its max outside stop_gradient: once p_0 rounds to 1, the part of
+        // dp_0/dz_0 = p_0(1 - p_0) that flows through exp(z_0 - max) cancels to 0, and the max's
+        // gradient is what restores it. This guards that path: the gradient of p_0 must be
+        // [p_0(1 - p_0), -p_0 p_1, -p_0 p_2] ≈ [a, -a/2, -a/2], summing to zero.
+        for (dtype, m, a, rel) in COLLAPSE_CASES {
+            let aval = ShapedArray {
+                dtype,
+                shape: Shape::vector(3),
+            };
+            let p0 = make_jaxpr_fallible(
+                |inp| {
+                    let label = TracerRef::literal(Literal::I64(0))?.one_hot(3, dtype, None)?;
+                    let p = nn::softmax(&inp[0], -1)?;
+                    Ok(vec![label.mul_op(&p)?.reduce_sum(None)?])
+                },
+                vec![aval],
+            )
+            .expect("trace softmax");
+            let z = vec![float_tensor(dtype, vec![3], &[m / 2.0, -m / 2.0, -m / 2.0])];
+            for transforms in [vec![Transform::Grad], vec![Transform::Jit, Transform::Grad]] {
+                let g = compose(p0.jaxpr.clone(), transforms.clone())
+                    .call(z.clone())
+                    .expect("grad(softmax[0])");
+                let g = float_values("grad(softmax[0])", &g[0], dtype);
+                let what = format!("{dtype:?} {transforms:?} grad(softmax[0])");
+                assert_rel_close(&what, &g, &[a, -a / 2.0, -a / 2.0], rel);
+                assert_eq!(g.iter().sum::<f64>(), 0.0, "{what}: {g:?}");
+            }
+        }
+    }
+
+    /// `x`'s last-axis reduction broadcast back onto `x`'s shape.
+    fn broadcast_last(
+        reduced: &TracerRef,
+        x: &TracerRef,
+    ) -> Result<TracerRef, fj_trace::TraceError> {
+        let dims = x.aval().shape.dims.clone();
+        let kept: Vec<usize> = (0..dims.len() - 1).collect();
+        reduced.broadcast_in_dim(&dims, &kept)
+    }
+
+    /// The previous `nn::log_softmax`, `(x - max) - log(Σ exp(x - max))`, along the last axis.
+    fn previous_log_softmax(x: &TracerRef) -> Result<TracerRef, fj_trace::TraceError> {
+        let last = [x.aval().shape.rank() as i64 - 1];
+        let shifted = x.sub_op(&broadcast_last(&x.reduce_max(Some(&last))?, x)?)?;
+        let sum = shifted.exp()?.reduce_sum(Some(&last))?;
+        shifted.sub_op(&broadcast_last(&sum.log()?, x)?)
+    }
+
+    /// The previous `nn::logsumexp`, `max + log(Σ exp(x - max))`, along the last axis.
+    fn previous_logsumexp(x: &TracerRef) -> Result<TracerRef, fj_trace::TraceError> {
+        let last = [x.aval().shape.rank() as i64 - 1];
+        let max = x.reduce_max(Some(&last))?;
+        let shifted = x.sub_op(&broadcast_last(&max, x)?)?;
+        max.add_op(&shifted.exp()?.reduce_sum(Some(&last))?.log()?)
+    }
+
+    #[test]
+    fn log_softmax_and_logsumexp_match_the_previous_formula_away_from_collapse() {
+        // Outside the collapse regime the rewrite only changes rounding: values, gradients and
+        // (f64) symbolic Hessians stay within a few ulp of the previous composition. The rows
+        // cover a clear winner, a three-way tie for the max, a near-uniform row, a heavily
+        // masked logit and large magnitudes.
+        type Op = fn(&TracerRef) -> Result<TracerRef, fj_trace::TraceError>;
+        let rows: [[f64; 5]; 5] = [
+            [2.0, 1.0, 0.0, -0.5, 0.25],
+            [1.5, 1.5, 0.0, -1.0, 1.5],
+            [0.01, -0.02, 0.0, 0.015, -0.005],
+            [3.0, -1e4, 0.5, 2.5, -2.0],
+            [1000.0, 999.0, 990.0, 1000.5, 995.0],
+        ];
+        let flat: Vec<f64> = rows.iter().flatten().copied().collect();
+        let new_lsm: Op = |x| nn::log_softmax(x, -1);
+        let new_lse: Op = |x| nn::logsumexp(x, -1);
+        let cases = [
+            ("log_softmax", new_lsm, previous_log_softmax as Op),
+            ("logsumexp", new_lse, previous_logsumexp as Op),
+        ];
+        for (dtype, tol) in [
+            (DType::F64, 64.0 * f64::EPSILON),
+            (DType::F32, 64.0 * f64::from(f32::EPSILON)),
+        ] {
+            let close = |what: &str, got: &[f64], want: &[f64]| {
+                assert_eq!(got.len(), want.len(), "{dtype:?} {what}: length");
+                for (i, (&g, &w)) in got.iter().zip(want).enumerate() {
+                    assert!(
+                        (g - w).abs() <= tol * w.abs().max(1.0),
+                        "{dtype:?} {what}[{i}] = {g:e}, previous formula {w:e}"
+                    );
+                }
+            };
+            let x_aval = ShapedArray {
+                dtype,
+                shape: Shape { dims: vec![5, 5] },
+            };
+            let x = float_tensor(dtype, vec![5, 5], &flat);
+            for (what, new, old) in cases {
+                // Weights w for Σ w · op(x), a second input with op(x)'s shape ([5, 5] or [5]),
+                // so that the gradient covers more than one cotangent direction.
+                let w_dims = if what == "log_softmax" {
+                    vec![5, 5]
+                } else {
+                    vec![5]
+                };
+                let w_len = w_dims.iter().product::<u32>() as usize;
+                let w_vals: Vec<f64> = (0..w_len)
+                    .map(|k| ((k * 7 % 11) as f64 - 5.0) / 4.0)
+                    .collect();
+                let w = float_tensor(dtype, w_dims.clone(), &w_vals);
+                let w_aval = ShapedArray {
+                    dtype,
+                    shape: Shape { dims: w_dims },
+                };
+                let forward = |op: Op| {
+                    let closed =
+                        make_jaxpr_fallible(|inp| Ok(vec![op(&inp[0])?]), vec![x_aval.clone()])
+                            .expect("trace");
+                    let out = jit(closed.jaxpr).call(vec![x.clone()]).expect("forward");
+                    float_values(what, &out[0], dtype)
+                };
+                close(what, &forward(new), &forward(old));
+
+                let weighted = |op: Op| {
+                    make_jaxpr_fallible(
+                        |inp| Ok(vec![op(&inp[0])?.mul_op(&inp[1])?.reduce_sum(None)?]),
+                        vec![x_aval.clone(), w_aval.clone()],
+                    )
+                    .expect("trace weighted sum")
+                    .jaxpr
+                };
+                let gradient = |op: Op| {
+                    let g = grad(weighted(op))
+                        .call(vec![x.clone(), w.clone()])
+                        .expect("grad");
+                    float_values(what, &g[0], dtype)
+                };
+                close(&format!("grad {what}"), &gradient(new), &gradient(old));
+
+                if dtype == DType::F64 {
+                    // Second order through the symbolic gradient, over both inputs.
+                    let hessian_of = |op: Op| {
+                        let h = hessian(weighted(op))
+                            .call_symbolic(vec![x.clone(), w.clone()])
+                            .expect("symbolic hessian");
+                        float_values(what, &h, dtype)
+                    };
+                    close(
+                        &format!("hessian {what}"),
+                        &hessian_of(new),
+                        &hessian_of(old),
+                    );
+                }
+            }
+        }
+    }
+
+    /// `(loss, student gradient, teacher gradient)` of `loss_fn(student, teacher)` summed over rows.
+    fn distillation_value_and_grads(
+        loss_fn: fn(&TracerRef, &TracerRef) -> Result<TracerRef, fj_trace::TraceError>,
+        dtype: DType,
+        dims: &[u32],
+        student: &[f64],
+        teacher: &[f64],
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let aval = ShapedArray {
+            dtype,
+            shape: Shape {
+                dims: dims.to_vec(),
+            },
+        };
+        let closed = make_jaxpr_fallible(
+            |inp| Ok(vec![loss_fn(&inp[0], &inp[1])?.reduce_sum(None)?]),
+            vec![aval.clone(), aval],
+        )
+        .expect("trace distillation loss");
+        let args = vec![
+            float_tensor(dtype, dims.to_vec(), student),
+            float_tensor(dtype, dims.to_vec(), teacher),
+        ];
+        let value = jit(closed.jaxpr.clone()).call(args.clone()).expect("loss");
+        let grads = grad(closed.jaxpr)
+            .with_argnums(&[0, 1])
+            .call(args)
+            .expect("grad");
+        (
+            float_values("loss", &value[0], dtype),
+            float_values("student grad", &grads[0], dtype),
+            float_values("teacher grad", &grads[1], dtype),
+        )
+    }
+
+    fn soft_target_ce(
+        student: &TracerRef,
+        teacher: &TracerRef,
+    ) -> Result<TracerRef, fj_trace::TraceError> {
+        nn::soft_target_cross_entropy(student, teacher, -1)
+    }
+
+    /// The plain composition `-Σ softmax(teacher) · log_softmax(student)`.
+    fn plain_soft_target_ce(
+        student: &TracerRef,
+        teacher: &TracerRef,
+    ) -> Result<TracerRef, fj_trace::TraceError> {
+        let last = [student.aval().shape.rank() as i64 - 1];
+        nn::softmax(teacher, -1)?
+            .mul_op(&nn::log_softmax(student, -1)?)?
+            .reduce_sum(Some(&last))?
+            .neg_op()
+    }
+
+    #[test]
+    fn soft_target_cross_entropy_avoids_softmax_cancellation() {
+        // Regression for frankenjax#1 ("softmax cancellation"). Through the plain composition the
+        // student gradient q - p was ~1e-9 (f32) / ~1e-17 (f64) for equal logits and lost most of
+        // its digits for nearly equal ones. References: q - p in 80-digit arithmetic from the
+        // (rounded) logits below.
+        let teacher = [2.0, 1.0, 0.0];
+        let f32_ulp = 2f64.powi(-23);
+        let cases: [(DType, [f64; 3], [f64; 3], f64); 7] = [
+            (DType::F32, teacher, [0.0; 3], 0.0),
+            (DType::F64, teacher, [0.0; 3], 0.0),
+            // A common offset changes nothing (softmax ignores it).
+            (DType::F32, [12.0, 11.0, 10.0], [0.0; 3], 0.0),
+            (DType::F64, [12.0, 11.0, 10.0], [0.0; 3], 0.0),
+            // The issue's f32 example: one ulp below 2 and above 1.
+            (
+                DType::F32,
+                [2.0 - f32_ulp, 1.0 + f32_ulp, 0.0],
+                [
+                    -4.595_504_334_917_698e-8,
+                    4.144_190_159_319_526_5e-8,
+                    4.513_141_755_981_719e-9,
+                ],
+                1e-5,
+            ),
+            // The same in f64, and with a common offset added.
+            (
+                DType::F64,
+                [2.0 - 2f64.powi(-51), 1.0 + 2f64.powi(-51), 0.0],
+                [
+                    -1.711_958_701_575_379_4e-16,
+                    1.543_831_056_326_642e-16,
+                    1.681_276_452_487_373_7e-17,
+                ],
+                1e-12,
+            ),
+            (
+                DType::F64,
+                [12.0 - 2f64.powi(-49), 11.0 + 2f64.powi(-49), 10.0],
+                [
+                    -6.847_834_806_301_521e-16,
+                    6.175_324_225_306_572e-16,
+                    6.725_105_809_949_488e-17,
+                ],
+                1e-12,
+            ),
+        ];
+        for (dtype, student, want, rel) in cases {
+            let (loss, g_student, g_teacher) =
+                distillation_value_and_grads(soft_target_ce, dtype, &[3], &student, &teacher);
+            let what = format!("{dtype:?} student {student:?}");
+            if rel == 0.0 {
+                assert_eq!(g_student, want, "{what}: gradient must be exactly 0");
+            } else {
+                assert_rel_close(&what, &g_student, &want, rel);
+            }
+            // Same loss and teacher gradient as the plain composition.
+            let (plain_loss, _, plain_g_teacher) =
+                distillation_value_and_grads(plain_soft_target_ce, dtype, &[3], &student, &teacher);
+            assert_eq!(loss, plain_loss, "{what}: loss");
+            assert_rel_close(
+                &format!("{what} teacher grad"),
+                &g_teacher,
+                &plain_g_teacher,
+                1e-12,
+            );
+        }
+
+        // Batched, through jit, vmap and grad: rows with equal logits have exactly zero gradient.
+        for dtype in [DType::F32, DType::F64] {
+            let aval = ShapedArray {
+                dtype,
+                shape: Shape::vector(3),
+            };
+            let row_loss = make_jaxpr_fallible(
+                |inp| Ok(vec![nn::soft_target_cross_entropy(&inp[0], &inp[1], 0)?]),
+                vec![aval.clone(), aval],
+            )
+            .expect("trace soft-target cross-entropy");
+            let students = float_tensor(dtype, vec![2, 3], &[0.5, -1.0, 3.0, 2.0, 1.0, 0.0]);
+            let teachers = float_tensor(dtype, vec![2, 3], &[0.5, -1.0, 3.0, 2.0, 1.0, 0.0]);
+            for transforms in [
+                vec![Transform::Vmap, Transform::Grad],
+                vec![Transform::Jit, Transform::Vmap, Transform::Grad],
+            ] {
+                let g = compose(row_loss.jaxpr.clone(), transforms.clone())
+                    .call(vec![students.clone(), teachers.clone()])
+                    .expect("batched gradient");
+                assert_eq!(
+                    float_values("batched gradient", &g[0], dtype),
+                    [0.0; 6],
+                    "{dtype:?} {transforms:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn soft_target_cross_entropy_matches_plain_gradient_away_from_cancellation() {
+        // Where q - p does not cancel, the rewritten gradient agrees with the plain composition.
+        // Rows: unrelated logits, a confident teacher, a student far from the teacher, a shared
+        // offset with a large difference, a tie, and (row 6) a teacher so confident that p
+        // underflows in f32, where the paper's p · expm1(s) alone would overflow or lose digits.
+        let teacher: [f64; 18] = [
+            0.3, -1.2, 2.0, //
+            8.0, 0.0, -3.0, //
+            0.0, 0.0, 0.0, //
+            1.0, 2.0, 3.0, //
+            1.5, 1.5, -0.5, //
+            0.0, -100.0, -100.0,
+        ];
+        let student: [f64; 18] = [
+            -0.7, 0.4, 1.1, //
+            1.0, 0.5, 0.0, //
+            5.0, -5.0, 0.0, //
+            41.0, 40.0, 42.5, //
+            1.5, 0.5, 1.5, //
+            0.0, 0.0, 0.0,
+        ];
+        for (dtype, tol) in [(DType::F64, 1e-13), (DType::F32, 1e-5)] {
+            let (loss, g, g_teacher) =
+                distillation_value_and_grads(soft_target_ce, dtype, &[6, 3], &student, &teacher);
+            let (plain_loss, plain_g, plain_g_teacher) = distillation_value_and_grads(
+                plain_soft_target_ce,
+                dtype,
+                &[6, 3],
+                &student,
+                &teacher,
+            );
+            assert_eq!(loss, plain_loss, "{dtype:?} loss");
+            for (what, got, want) in [
+                ("student", &g, &plain_g),
+                ("teacher", &g_teacher, &plain_g_teacher),
+            ] {
+                for (i, (&a, &b)) in got.iter().zip(want.iter()).enumerate() {
+                    assert!(
+                        (a - b).abs() <= tol * b.abs().max(1.0),
+                        "{dtype:?} {what} grad[{i}] = {a:e}, plain {b:e}"
+                    );
+                }
+            }
+            // Row 6: q - p = [-2/3, 1/3, 1/3].
+            assert_rel_close(
+                &format!("{dtype:?} confident-teacher row"),
+                &g[15..],
+                &[-2.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0],
+                tol,
             );
         }
     }
