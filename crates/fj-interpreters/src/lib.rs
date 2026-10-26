@@ -2244,9 +2244,10 @@ fn try_eval_top_level_rms_norm_2d_f64(
 /// ReduceSum → Log → Bcast → Sub`) followed by `Mul(labels, ls) → ReduceSum(axis=1) → Neg`.
 /// Two f64 [rows,cols] inputs, one [rows] output. Exact-graph / exact-shape / finite-only;
 /// anything else falls through to the generic interpreter. Fused via the row-parallel
-/// `softmax_cross_entropy_2d`, which reuses the log-softmax superinstruction's bit-exact op
-/// forms (fold-max, index-order exp-sum, `shifted - log` grouping) so it matches the generic
-/// decomposed path bit-for-bit.
+/// `softmax_cross_entropy_2d_decomposed`, which reuses the log-softmax superinstruction's
+/// bit-exact op forms (fold-max, index-order exp-sum, `shifted - log` grouping) so it matches
+/// the generic decomposed path bit-for-bit, softmax collapse included (the accurate
+/// `fj_lax::nn::softmax_cross_entropy_2d` would not match this graph).
 fn try_eval_top_level_softmax_cross_entropy_2d_f64(
     jaxpr: &Jaxpr,
     const_values: &[Value],
@@ -2366,7 +2367,7 @@ fn try_eval_top_level_softmax_cross_entropy_2d_f64(
         return None;
     }
 
-    let output = fj_lax::nn::softmax_cross_entropy_2d(logits_v, labels_v, rows, cols);
+    let output = fj_lax::nn::softmax_cross_entropy_2d_decomposed(logits_v, labels_v, rows, cols);
     Some(
         TensorValue::new_f64_values(
             Shape {
@@ -2386,9 +2387,9 @@ fn try_eval_top_level_softmax_cross_entropy_2d_f64(
 /// last axis): the 7-equation graph `ReduceMax(axis=1) → BroadcastInDim → Sub → Exp →
 /// ReduceSum(axis=1) → Log → Add`. One f64 [rows,cols] input, one [rows] output (rank-reducing).
 /// Exact-graph / exact-shape / finite-only; anything else falls through to the generic interpreter.
-/// Fused via the row-parallel `logsumexp_2d`, which reuses the same bit-exact op forms as the
-/// cross-entropy superinstruction (fold-max reduction, index-order exp-sum, `max + log(sum)`) so it
-/// matches the generic decomposed path bit-for-bit. The general fuser cannot fuse it (Exp/Log ∉
+/// Fused via the row-parallel `logsumexp_2d_decomposed`, which reuses the same bit-exact op forms as
+/// the cross-entropy superinstruction (fold-max reduction, index-order exp-sum, `max + log(sum)`) so
+/// it matches the generic decomposed path bit-for-bit. The general fuser cannot fuse it (Exp/Log ∉
 /// `cheap_op`, and reductions break the elementwise fuser), so the decomposed path materializes the
 /// full [rows,cols] shifted/exp intermediates plus per-reduction Vecs.
 fn try_eval_top_level_logsumexp_2d_f64(
@@ -2473,7 +2474,7 @@ fn try_eval_top_level_logsumexp_2d_f64(
         return None;
     }
 
-    let output = fj_lax::nn::logsumexp_2d(values, rows, cols);
+    let output = fj_lax::nn::logsumexp_2d_decomposed(values, rows, cols);
     Some(
         TensorValue::new_f64_values(
             Shape {
@@ -2592,7 +2593,7 @@ fn try_eval_top_level_logmeanexp_2d_f64(
         return None;
     }
 
-    let output = fj_lax::nn::logmeanexp_2d(values, rows, cols);
+    let output = fj_lax::nn::logmeanexp_2d_decomposed(values, rows, cols);
     Some(
         TensorValue::new_f64_values(
             Shape {

@@ -159,11 +159,13 @@ fn threaded_f64_map_bw(x: &[f64], f: impl Fn(f64) -> f64 + Sync) -> Vec<f64> {
     threaded_f64_map(x, f)
 }
 
-fn fill_log_softmax_sub_into(src: &[f64], dst: &mut [f64], lse: f64) {
+/// `dst[j] = (src[j] - max_val) - log_norm`, the log-softmax output grouping that keeps a
+/// `log_norm` far below `max_val`'s ulp (`src[j] - (max_val + log_norm)` would round it away).
+fn fill_log_softmax_sub_into(src: &[f64], dst: &mut [f64], max_val: f64, log_norm: f64) {
     debug_assert_eq!(src.len(), dst.len());
     if src.len() < (1 << 23) {
         for (d, &v) in dst.iter_mut().zip(src) {
-            *d = v - lse;
+            *d = (v - max_val) - log_norm;
         }
         return;
     }
@@ -171,7 +173,7 @@ fn fill_log_softmax_sub_into(src: &[f64], dst: &mut [f64], lse: f64) {
     let threads = crate::arithmetic::work_scaled_threads(src.len());
     if threads <= 1 {
         for (d, &v) in dst.iter_mut().zip(src) {
-            *d = v - lse;
+            *d = (v - max_val) - log_norm;
         }
         return;
     }
@@ -187,7 +189,7 @@ fn fill_log_softmax_sub_into(src: &[f64], dst: &mut [f64], lse: f64) {
             let src_blk = &src[start..start + len];
             scope.spawn(move || {
                 for (d, &v) in blk.iter_mut().zip(src_blk) {
-                    *d = v - lse;
+                    *d = (v - max_val) - log_norm;
                 }
             });
             start += len;
@@ -449,10 +451,58 @@ pub fn mish_direct(x: &[f64]) -> Vec<f64> {
     threaded_f64_map(x, |v| v * ((1.0 + v.exp()).ln()).tanh())
 }
 
+/// Index of the first maximum of `row`, whose maximum `max_val` is finite (so it occurs).
+#[inline]
+fn first_argmax(row: &[f64], max_val: f64) -> usize {
+    row.iter().position(|&v| v == max_val).unwrap_or(0)
+}
+
+/// `Σ_{j≠skip} exp(row_j − max_val)`, summed in index order: the log-softmax normaliser
+/// without the argmax's own `exp(0) = 1`.
+///
+/// Adding that 1 first rounds `1 + Σ_{j≠argmax} exp(row_j − max)` to exactly 1 once the logit
+/// margin passes ~36.7 (f64), which turns `log_softmax[argmax]`, the hard-target cross-entropy
+/// and a near-zero log-sum-exp into exact zeros ("softmax collapse", Barron, Gnanapragasam and
+/// Tschannen, *A Fix for Softmax and Cross-Entropy*, 2026). Callers add it back with `ln_1p`,
+/// which keeps the tail down to exponent underflow.
+#[inline]
+fn shifted_exp_sum_skipping(row: &[f64], max_val: f64, skip: usize) -> f64 {
+    let (before, rest) = row.split_at(skip);
+    let after = &rest[1..];
+    if crate::should_use_hardware_fma() {
+        crate::simd_exp::simd_poly_exp_shifted_fma_sum(before, max_val)
+            + crate::simd_exp::simd_poly_exp_shifted_fma_sum(after, max_val)
+    } else {
+        before
+            .iter()
+            .chain(after)
+            .map(|&v| (v - max_val).exp())
+            .sum()
+    }
+}
+
+/// Row max and collapse-free log-normaliser `ln Σ_j exp(row_j − max)`, so that
+/// `logsumexp(row) = max + log_norm` and `log_softmax(row)_j = (row_j − max) − log_norm`
+/// (see [`shifted_exp_sum_skipping`]). `None` for an empty row or a non-finite max (a +inf
+/// entry, or all -inf / NaN), where callers keep their plain formula and its inf/NaN results.
+fn row_max_and_log_norm(row: &[f64]) -> Option<(f64, f64)> {
+    let max_val = row.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if !max_val.is_finite() {
+        return None;
+    }
+    let skip = first_argmax(row, max_val);
+    Some((
+        max_val,
+        shifted_exp_sum_skipping(row, max_val, skip).ln_1p(),
+    ))
+}
+
 /// Compute log-sum-exp in a numerically stable way.
 ///
 /// Matches `jax.scipy.special.logsumexp(x)`.
-/// Uses the identity: log(sum(exp(x))) = max(x) + log(sum(exp(x - max(x))))
+/// Uses the identity `log(sum(exp(x))) = max(x) + log1p(sum_{j != argmax} exp(x_j - max(x)))`,
+/// which keeps a tail that `max(x) + log(sum(exp(x - max(x))))` would round away (see
+/// [`shifted_exp_sum_skipping`]).
 #[must_use]
 pub fn logsumexp(x: &[f64]) -> f64 {
     if x.is_empty() {
@@ -462,38 +512,59 @@ pub fn logsumexp(x: &[f64]) -> f64 {
     if max_val.is_infinite() {
         return max_val;
     }
-    if crate::should_use_hardware_fma() {
-        let sum_exp = crate::simd_exp::simd_poly_exp_shifted_fma_sum(x, max_val);
-        return max_val + sum_exp.ln();
-    }
+    let skip = first_argmax(x, max_val);
     // Large 1D logsumexp (e.g. a language-model softmax over a big vocab) is dominated by
     // the per-element `exp`. Thread it into a buffer, then sum SERIALLY in index order —
     // BIT-IDENTICAL to the fused `.map(exp).sum()` (same values, same left-fold order). For
     // small inputs keep the fused single pass (no buffer / no thread-spawn overhead). (Refines
     // a convergent unconditional-threading commit that paid a buffer+extra-pass cost on small
     // inputs — the common axis-reduction case.)
-    let sum_exp: f64 = if x.len() >= LOGSUMEXP_THREAD_MIN {
+    let tail: f64 = if x.len() >= LOGSUMEXP_THREAD_MIN && !crate::should_use_hardware_fma() {
         let exp_buf = threaded_f64_map(x, |v| (v - max_val).exp());
-        exp_buf.iter().sum()
+        exp_buf[..skip].iter().chain(&exp_buf[skip + 1..]).sum()
+    } else {
+        shifted_exp_sum_skipping(x, max_val, skip)
+    };
+    max_val + tail.ln_1p()
+}
+
+/// The pre-collapse-fix log-sum-exp, `max + ln(Σ exp(x − max))` with the argmax's `exp(0)`
+/// summed in index order: bit-identical to the decomposed `ReduceMax → Sub → Exp → ReduceSum →
+/// Log → Add` graph, which the interpreter superinstructions must reproduce exactly.
+fn logsumexp_decomposed_row(x: &[f64]) -> f64 {
+    if x.is_empty() {
+        return f64::NEG_INFINITY;
+    }
+    let max_val = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if max_val.is_infinite() {
+        return max_val;
+    }
+    let sum_exp: f64 = if crate::should_use_hardware_fma() {
+        crate::simd_exp::simd_poly_exp_shifted_fma_sum(x, max_val)
+    } else if x.len() >= LOGSUMEXP_THREAD_MIN {
+        // Threaded exp, serial index-order sum: bit-identical to the fused map below.
+        threaded_f64_map(x, |v| (v - max_val).exp()).iter().sum()
     } else {
         x.iter().map(|&v| (v - max_val).exp()).sum()
     };
     max_val + sum_exp.ln()
 }
 
-/// Compute log-sum-exp along the last axis of a 2D array.
-///
-/// Returns a vector of logsumexp values, one per row. ROW-PARALLEL: rows are independent, and
-/// each row still goes through the same [`logsumexp`] (fold-max, index-order exp-sum), so this is
+/// One scalar per row of a row-major `rows × cols` array. ROW-PARALLEL: rows are independent
+/// and each runs `row_fn` unchanged (under the caller's precision policy), so this is
 /// BIT-IDENTICAL to the serial per-row map — only the outer row loop is distributed across
-/// threads (above the `softmax_2d_thread_count` work gate). Empty rows (`cols == 0`) keep their
-/// `logsumexp(&[]) == -inf` semantics on the serial path. Used by the interpreter logsumexp
-/// superinstruction; serial fused measured only ~1.9x, row-parallel lifts it well past 2x.
-#[must_use]
-pub fn logsumexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
-    let _len = checked_2d_row_major_len("2D logsumexp", x, rows, cols);
+/// threads (above the `softmax_2d_thread_count` work gate). Empty rows (`cols == 0`) stay on
+/// the serial path.
+fn map_rows_to_scalars(
+    context: &str,
+    x: &[f64],
+    rows: usize,
+    cols: usize,
+    row_fn: impl Fn(&[f64]) -> f64 + Sync,
+) -> Vec<f64> {
+    let _len = checked_2d_row_major_len(context, x, rows, cols);
     let mut result = vec![0.0; rows];
-    // `cols == 0` → empty rows are trivial (-inf); never worth threading. Otherwise gate on total
+    // `cols == 0` → empty rows are trivial; never worth threading. Otherwise gate on total
     // work exactly like the softmax/cross-entropy row-parallel kernels.
     let threads = if cols == 0 {
         1
@@ -503,13 +574,14 @@ pub fn logsumexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     if threads <= 1 {
         for (i, slot) in result.iter_mut().enumerate() {
             let start = i * cols;
-            *slot = logsumexp(&x[start..start + cols]);
+            *slot = row_fn(&x[start..start + cols]);
         }
         return result;
     }
 
     let policy = crate::current_precision_policy();
     let rows_per = rows.div_ceil(threads);
+    let row_fn = &row_fn;
     std::thread::scope(|scope| {
         let mut out_rest: &mut [f64] = &mut result;
         let mut row0 = 0usize;
@@ -523,7 +595,7 @@ pub fn logsumexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
                 crate::with_precision_policy(policy, || {
                     for (k, out_slot) in out_block.iter_mut().enumerate() {
                         let start = k * cols;
-                        *out_slot = logsumexp(&x_block[start..start + cols]);
+                        *out_slot = row_fn(&x_block[start..start + cols]);
                     }
                 });
             });
@@ -532,53 +604,48 @@ pub fn logsumexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     result
 }
 
+/// Compute log-sum-exp along the last axis of a 2D array.
+///
+/// Returns a vector of logsumexp values, one per row, each computed by [`logsumexp`] (so a
+/// dominant logit keeps its tail). ROW-PARALLEL and bit-identical to the serial per-row map.
+/// Empty rows (`cols == 0`) keep their `logsumexp(&[]) == -inf` semantics.
+#[must_use]
+pub fn logsumexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    map_rows_to_scalars("2D logsumexp", x, rows, cols, logsumexp)
+}
+
+/// Row-wise log-sum-exp in the operation grouping of the decomposed `ReduceMax(axis=1) →
+/// BroadcastInDim → Sub → Exp → ReduceSum(axis=1) → Log → Add` graph (fold-max, index-order
+/// exp-sum including the argmax's `exp(0)`, `max + log(sum)`), so the interpreter logsumexp
+/// superinstruction matches the generic decomposed path bit-for-bit. Like that graph it rounds a
+/// tail below `max · ε` away; [`logsumexp_2d`] keeps it. Serial fused measured only ~1.9x over
+/// the decomposed path, row-parallel lifts it well past 2x.
+#[doc(hidden)]
+#[must_use]
+pub fn logsumexp_2d_decomposed(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    map_rows_to_scalars("2D logsumexp", x, rows, cols, logsumexp_decomposed_row)
+}
+
 /// Compute log-mean-exp along the last axis of a 2D array.
 ///
-/// Returns `logsumexp(row) - ln(cols)` for each row, one scalar per row. ROW-PARALLEL and
-/// BIT-IDENTICAL to the decomposed logsumexp graph followed by `Sub(logsumexp, ln(cols))`:
-/// each row reuses [`logsumexp`] with its fold-max and index-order exp-sum, then applies the
-/// trailing scalar subtraction with the same `ln(cols)` literal.
+/// Returns `logsumexp(row) - ln(cols)` for each row, one scalar per row, using [`logsumexp`].
+/// ROW-PARALLEL and bit-identical to the serial per-row map.
 #[must_use]
 pub fn logmeanexp_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
-    let _len = checked_2d_row_major_len("2D logmeanexp", x, rows, cols);
-    let mut result = vec![0.0; rows];
-    let threads = if cols == 0 {
-        1
-    } else {
-        softmax_2d_thread_count(rows, rows * cols)
-    };
-    if threads <= 1 {
-        let log_n = (cols as f64).ln();
-        for (i, slot) in result.iter_mut().enumerate() {
-            let start = i * cols;
-            *slot = logsumexp(&x[start..start + cols]) - log_n;
-        }
-        return result;
-    }
-
-    let policy = crate::current_precision_policy();
     let log_n = (cols as f64).ln();
-    let rows_per = rows.div_ceil(threads);
-    std::thread::scope(|scope| {
-        let mut out_rest: &mut [f64] = &mut result;
-        let mut row0 = 0usize;
-        while row0 < rows {
-            let row_count = rows_per.min(rows - row0);
-            let (out_block, out_tail) = out_rest.split_at_mut(row_count);
-            out_rest = out_tail;
-            let x_block = &x[row0 * cols..(row0 + row_count) * cols];
-            row0 += row_count;
-            scope.spawn(move || {
-                crate::with_precision_policy(policy, || {
-                    for (k, out_slot) in out_block.iter_mut().enumerate() {
-                        let start = k * cols;
-                        *out_slot = logsumexp(&x_block[start..start + cols]) - log_n;
-                    }
-                });
-            });
-        }
-    });
-    result
+    map_rows_to_scalars("2D logmeanexp", x, rows, cols, |row| logsumexp(row) - log_n)
+}
+
+/// Row-wise log-mean-exp bit-identical to the decomposed logsumexp graph followed by
+/// `Sub(logsumexp, ln(cols))` (see [`logsumexp_2d_decomposed`]); used by the interpreter
+/// logmeanexp superinstruction.
+#[doc(hidden)]
+#[must_use]
+pub fn logmeanexp_2d_decomposed(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let log_n = (cols as f64).ln();
+    map_rows_to_scalars("2D logmeanexp", x, rows, cols, |row| {
+        logsumexp_decomposed_row(row) - log_n
+    })
 }
 
 /// Population variance of a single row, `mean((x - mean(x))²)`, bit-identical to the decomposed
@@ -2481,10 +2548,12 @@ pub fn softmax_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     result
 }
 
-/// Log-softmax: log(softmax(x)) = x - logsumexp(x)
+/// Log-softmax: log(softmax(x)) = (x - max(x)) - log1p(sum_{j != argmax} exp(x_j - max(x)))
 ///
 /// Matches `jax.nn.log_softmax(x)` for a 1D array.
-/// More numerically stable than computing log(softmax(x)) directly.
+/// More numerically stable than computing log(softmax(x)) directly, and the argmax entry stays
+/// nonzero when the other entries' total weight is below one ulp of 1 (see
+/// [`shifted_exp_sum_skipping`]).
 #[must_use]
 pub fn log_softmax(x: &[f64]) -> Vec<f64> {
     if x.is_empty() {
@@ -2498,17 +2567,16 @@ pub fn log_softmax(x: &[f64]) -> Vec<f64> {
     if max_val.is_infinite() {
         return threaded_f64_map_bw(x, move |v| v - max_val);
     }
+    let skip = first_argmax(x, max_val);
     if crate::should_use_hardware_fma() {
-        let sum_exp = crate::simd_exp::simd_poly_exp_shifted_fma_sum(x, max_val);
-        let lse = max_val + sum_exp.ln();
+        let log_norm = shifted_exp_sum_skipping(x, max_val, skip).ln_1p();
         let mut out = vec![0.0; x.len()];
-        fill_log_softmax_sub_into(x, &mut out, lse);
+        fill_log_softmax_sub_into(x, &mut out, max_val, log_norm);
         return out;
     }
     let mut out = threaded_f64_map(x, |v| (v - max_val).exp());
-    let sum_exp: f64 = out.iter().sum();
-    let lse = max_val + sum_exp.ln();
-    fill_log_softmax_sub_into(x, &mut out, lse);
+    let tail: f64 = out[..skip].iter().chain(&out[skip + 1..]).sum();
+    fill_log_softmax_sub_into(x, &mut out, max_val, tail.ln_1p());
     out
 }
 
@@ -2518,24 +2586,27 @@ pub fn __fj_legacy_log_softmax_allocating(x: &[f64]) -> Vec<f64> {
     if x.is_empty() {
         return Vec::new();
     }
-    let lse = logsumexp(x);
-    threaded_f64_map_bw(x, move |v| v - lse)
+    match row_max_and_log_norm(x) {
+        Some((max_val, log_norm)) => threaded_f64_map_bw(x, move |v| (v - max_val) - log_norm),
+        None => {
+            let lse = logsumexp(x);
+            threaded_f64_map_bw(x, move |v| v - lse)
+        }
+    }
 }
 
 #[inline]
 fn log_softmax_row_into(src: &[f64], dst: &mut [f64]) {
+    if let Some((max_val, log_norm)) = row_max_and_log_norm(src) {
+        for (d, &v) in dst.iter_mut().zip(src.iter()) {
+            *d = (v - max_val) - log_norm;
+        }
+        return;
+    }
+    // Non-finite max: `x - max`, i.e. NaN for a +inf or all -inf row, as before.
     let max_val = src.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let lse = if max_val.is_infinite() {
-        max_val
-    } else if crate::should_use_hardware_fma() {
-        let sum_exp = crate::simd_exp::simd_poly_exp_shifted_fma_sum(src, max_val);
-        max_val + sum_exp.ln()
-    } else {
-        let sum_exp: f64 = src.iter().map(|&v| (v - max_val).exp()).sum();
-        max_val + sum_exp.ln()
-    };
     for (d, &v) in dst.iter_mut().zip(src.iter()) {
-        *d = v - lse;
+        *d = v - max_val;
     }
 }
 
@@ -2545,7 +2616,7 @@ fn log_softmax_row_into(src: &[f64], dst: &mut [f64]) {
 ///
 /// Each row is computed in place directly into the output buffer — no per-row
 /// `Vec` allocation or copy — using the SAME operations in the SAME order as the
-/// 1D [`log_softmax`] (`lse = max + ln(sum(exp(x-max)))`, then `x - lse`), so the
+/// 1D [`log_softmax`] (`(x - max) - log1p(sum_{j != argmax} exp(x_j - max))`), so the
 /// result is bit-for-bit identical to mapping [`log_softmax`] over the rows.
 #[must_use]
 pub fn log_softmax_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
@@ -2561,12 +2632,13 @@ pub fn log_softmax_2d(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
 #[inline]
 fn log_softmax_row_shifted_into(src: &[f64], dst: &mut [f64]) {
     // Log-softmax computed in the SAME operation grouping as the decomposed XLA/JAX
-    // graph: `shifted = x - rowmax`, then `shifted - log(sum(exp(shifted)))`. This
-    // differs from `log_softmax_row_into`'s `x - (rowmax + log(sum))` grouping by float
-    // (non-)associativity of the final subtract, so the two are NOT interchangeable for a
-    // bit-exact superinstruction. The row-max fold and index-order exp-sum are identical to
+    // graph: `shifted = x - rowmax`, then `shifted - log(sum(exp(shifted)))`, with the
+    // argmax's exp(0) = 1 inside the sum. This differs from `log_softmax_row_into`, which
+    // leaves that 1 out and adds it back with `ln_1p`, so the two are NOT interchangeable for
+    // a bit-exact superinstruction. The row-max fold and index-order exp-sum are identical to
     // `softmax_row_into`, so this equals the ReduceMax/Sub/Exp/ReduceSum/Log/Sub jaxpr
-    // bit-for-bit. Superinstruction callers guarantee finite input, so `rowmax` is finite.
+    // bit-for-bit (including its softmax collapse: a dominant logit's tail rounds away, as it
+    // does in the graph). Superinstruction callers guarantee finite input, so `rowmax` is finite.
     let max_val = src.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     if crate::should_use_hardware_fma() && max_val.is_finite() {
         let sum_exp = crate::simd_exp::simd_poly_exp_shifted_fma_sum(src, max_val);
@@ -2592,8 +2664,8 @@ fn log_softmax_row_shifted_into(src: &[f64], dst: &mut [f64]) {
 /// of the decomposed XLA/JAX graph `shifted - log(sum(exp(shifted)))` (`shifted = x -
 /// rowmax`). Used by the interpreter log-softmax superinstruction so the fused result is
 /// bit-for-bit identical to the generic `ReduceMax → Sub → Exp → ReduceSum → Log → Sub`
-/// path. (Contrast [`log_softmax_2d`], which uses the 1D `x - (rowmax + log(sum))`
-/// grouping and so can differ in the last bit.)
+/// path. (Contrast [`log_softmax_2d`], which adds the argmax term back with `ln_1p` and so
+/// keeps a dominant logit's tail that this graph-exact form rounds away.)
 #[must_use]
 pub fn log_softmax_2d_shifted(x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     let len = checked_2d_row_major_len("2D log_softmax", x, rows, cols);
@@ -2673,6 +2745,22 @@ pub fn rms_norm_2d(x: &[f64], rows: usize, cols: usize, epsilon: f64) -> Vec<f64
 
 #[inline]
 fn softmax_cross_entropy_row(logits: &[f64], labels: &[f64]) -> f64 {
+    // `-Σ_j labels[j] · log_softmax(logits)[j]` with the collapse-free log-softmax
+    // `(logits[j] - rowmax) - log1p(Σ_{k≠argmax} exp(logits[k] - rowmax))`: a one-hot label on
+    // a dominant logit gives the loss `log1p(tail)` instead of a rounded 0. A non-finite row max
+    // keeps the plain formula and its inf/NaN results.
+    let Some((max_val, log_norm)) = row_max_and_log_norm(logits) else {
+        return softmax_cross_entropy_row_decomposed(logits, labels);
+    };
+    let mut s = 0.0;
+    for (&value, &label) in logits.iter().zip(labels.iter()) {
+        s += label * ((value - max_val) - log_norm);
+    }
+    -s
+}
+
+#[inline]
+fn softmax_cross_entropy_row_decomposed(logits: &[f64], labels: &[f64]) -> f64 {
     // `-Σ_j labels[j] · log_softmax(logits)[j]`, bit-identical to the decomposed graph:
     // log_softmax[j] = `(logits[j] - rowmax) - log(Σ exp(shifted))` (the log-softmax
     // superinstruction's `shifted - log` grouping), then `Mul(labels, ls)` per element, an
@@ -2696,16 +2784,46 @@ fn softmax_cross_entropy_row(logits: &[f64], labels: &[f64]) -> f64 {
 }
 
 /// Softmax cross-entropy loss `-Σ labels · log_softmax(logits)` along the last axis of a 2D
-/// array, one scalar per row (`optax.softmax_cross_entropy`). Row-parallel; bit-for-bit
-/// identical to the decomposed log-softmax → Mul → ReduceSum → Neg jaxpr (same `shifted - log`
-/// grouping + index-order reductions as the log-softmax superinstruction). Used by the
-/// interpreter cross-entropy superinstruction.
+/// array, one scalar per row (`optax.softmax_cross_entropy`), using the collapse-free
+/// log-softmax of [`log_softmax_2d`], so a hard label on a dominant logit gives a small positive
+/// loss rather than 0. Row-parallel and bit-identical to the serial per-row loop.
 #[must_use]
 pub fn softmax_cross_entropy_2d(
     logits: &[f64],
     labels: &[f64],
     rows: usize,
     cols: usize,
+) -> Vec<f64> {
+    softmax_cross_entropy_2d_with(logits, labels, rows, cols, softmax_cross_entropy_row)
+}
+
+/// Softmax cross-entropy bit-for-bit identical to the decomposed log-softmax → Mul → ReduceSum →
+/// Neg jaxpr (same `shifted - log` grouping + index-order reductions as the log-softmax
+/// superinstruction, including the graph's softmax collapse). Used by the interpreter
+/// cross-entropy superinstruction; [`softmax_cross_entropy_2d`] is the accurate kernel.
+#[doc(hidden)]
+#[must_use]
+pub fn softmax_cross_entropy_2d_decomposed(
+    logits: &[f64],
+    labels: &[f64],
+    rows: usize,
+    cols: usize,
+) -> Vec<f64> {
+    softmax_cross_entropy_2d_with(
+        logits,
+        labels,
+        rows,
+        cols,
+        softmax_cross_entropy_row_decomposed,
+    )
+}
+
+fn softmax_cross_entropy_2d_with(
+    logits: &[f64],
+    labels: &[f64],
+    rows: usize,
+    cols: usize,
+    row_fn: fn(&[f64], &[f64]) -> f64,
 ) -> Vec<f64> {
     let _ = checked_2d_row_major_len("2D softmax_cross_entropy logits", logits, rows, cols);
     let _ = checked_2d_row_major_len("2D softmax_cross_entropy labels", labels, rows, cols);
@@ -2717,10 +2835,7 @@ pub fn softmax_cross_entropy_2d(
     if threads <= 1 {
         for (i, slot) in result.iter_mut().enumerate() {
             let start = i * cols;
-            *slot = softmax_cross_entropy_row(
-                &logits[start..start + cols],
-                &labels[start..start + cols],
-            );
+            *slot = row_fn(&logits[start..start + cols], &labels[start..start + cols]);
         }
         return result;
     }
@@ -2741,7 +2856,7 @@ pub fn softmax_cross_entropy_2d(
                 crate::with_precision_policy(policy, || {
                     for (k, out_slot) in out_block.iter_mut().enumerate() {
                         let start = k * cols;
-                        *out_slot = softmax_cross_entropy_row(
+                        *out_slot = row_fn(
                             &logits_block[start..start + cols],
                             &labels_block[start..start + cols],
                         );
@@ -3033,10 +3148,14 @@ mod tests {
             );
         }
 
+        // Digest of the collapse-free `(x - max) - ln_1p(tail)` output (frankenjax#1). It replaced
+        // the `x - (max + ln(sum))` digest 34e1e76b…. The two outputs differ by at most 5.7e-14
+        // on this fixture, and where they differ most the new values are the closer ones to a
+        // high-precision reference.
         let output_bits: Vec<u64> = parallel.iter().map(|v| v.to_bits()).collect();
         let digest = fj_test_utils::fixture_id_from_json(&output_bits)?;
         assert_eq!(
-            digest, "34e1e76bbcfde76e7bb49161efd7e6b7a8225967e35aa16a6c2ab41d96b8e2d2",
+            digest, "2918a0ba5c8f9bc2f9c1579ac42f48e8f3601481d73e5073d846e79169ad4298",
             "log_softmax_2d parallel golden output digest changed"
         );
         Ok(())
@@ -3708,10 +3827,14 @@ mod tests {
         for (a, b) in sigmoid(&x).iter().zip(&sigmoid_seq) {
             assert_eq!(a.to_bits(), b.to_bits());
         }
-        // logsumexp/log_softmax: exp map may thread, but the sum remains in index order.
-        let lse_seq = max_val + sum_seq.ln();
+        // logsumexp/log_softmax: exp map may thread, but the sum (without the first argmax's
+        // exp(0) = 1, which ln_1p adds back) remains in index order.
+        let imax = x.iter().position(|&v| v == max_val).unwrap();
+        let tail_seq: f64 = exp_seq[..imax].iter().chain(&exp_seq[imax + 1..]).sum();
+        let log_norm_seq = tail_seq.ln_1p();
+        let lse_seq = max_val + log_norm_seq;
         assert_eq!(logsumexp(&x).to_bits(), lse_seq.to_bits());
-        let lsm_seq: Vec<f64> = x.iter().map(|&v| v - lse_seq).collect();
+        let lsm_seq: Vec<f64> = x.iter().map(|&v| (v - max_val) - log_norm_seq).collect();
         for (a, b) in log_softmax(&x).iter().zip(&lsm_seq) {
             assert_eq!(a.to_bits(), b.to_bits());
         }
@@ -3852,10 +3975,16 @@ mod tests {
             .map(|i| ((i % 9973) as f64 - 5000.0) * 0.0009)
             .collect();
         let max_val = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let sum_ref: f64 = x.iter().map(|&v| (v - max_val).exp()).sum();
-        let lse_ref = max_val + sum_ref.ln();
+        let imax = x.iter().position(|&v| v == max_val).unwrap();
+        let tail_ref: f64 = x[..imax]
+            .iter()
+            .chain(&x[imax + 1..])
+            .map(|&v| (v - max_val).exp())
+            .sum();
+        let log_norm_ref = tail_ref.ln_1p();
+        let lse_ref = max_val + log_norm_ref;
         assert_eq!(logsumexp(&x).to_bits(), lse_ref.to_bits());
-        let ls_ref: Vec<f64> = x.iter().map(|&v| v - lse_ref).collect();
+        let ls_ref: Vec<f64> = x.iter().map(|&v| (v - max_val) - log_norm_ref).collect();
         for (a, b) in log_softmax(&x).iter().zip(&ls_ref) {
             assert_eq!(a.to_bits(), b.to_bits());
         }
@@ -4001,5 +4130,140 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn assert_rel_close(what: &str, got: &[f64], want: &[f64], rel: f64) {
+        assert_eq!(got.len(), want.len(), "{what}: length");
+        for (i, (&g, &w)) in got.iter().zip(want).enumerate() {
+            assert!(
+                (g - w).abs() <= rel * w.abs(),
+                "{what}[{i}] = {g:e}, expected {w:e} (rel tol {rel:e})"
+            );
+        }
+    }
+
+    #[test]
+    fn log_softmax_logsumexp_and_cross_entropy_avoid_softmax_collapse() {
+        // Regression for frankenjax#1 ("softmax collapse", Barron, Gnanapragasam and Tschannen,
+        // "A Fix for Softmax and Cross-Entropy"). Once the logit margin passes ~36.7, the
+        // normaliser 1 + Σ_{j≠argmax} exp(x_j − max) rounds to exactly 1 in f64, so these kernels
+        // returned log_softmax[argmax] = 0, a hard-label softmax cross-entropy of -0 and
+        // logsumexp([0, -40, -40]) = 0. Exact values: ln(1 + 2e^-40) = 8.496708510583178e-18.
+        let tail = 8.496708510583178e-18;
+        for policy in [
+            crate::PrecisionPolicy::BitExactPortable,
+            crate::PrecisionPolicy::HardwareFmaAccelerated,
+        ] {
+            crate::with_precision_policy(policy, || {
+                assert_rel_close(
+                    "log_softmax",
+                    &log_softmax(&[20.0, -20.0, -20.0]),
+                    &[-tail, -40.0, -40.0],
+                    1e-12,
+                );
+                // The dominant logit in different positions of each row.
+                let x2 = [20.0, -20.0, -20.0, -20.0, -20.0, 20.0];
+                assert_rel_close(
+                    "log_softmax_2d",
+                    &log_softmax_2d(&x2, 2, 3),
+                    &[-tail, -40.0, -40.0, -40.0, -40.0, -tail],
+                    1e-12,
+                );
+                let lse_rows = [0.0, -40.0, -40.0, -40.0, -40.0, 0.0];
+                assert_rel_close("logsumexp", &[logsumexp(&lse_rows[..3])], &[tail], 1e-12);
+                assert_rel_close(
+                    "logsumexp_2d",
+                    &logsumexp_2d(&lse_rows, 2, 3),
+                    &[tail, tail],
+                    1e-12,
+                );
+                let labels = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+                assert_rel_close(
+                    "softmax_cross_entropy_2d",
+                    &softmax_cross_entropy_2d(&x2, &labels, 2, 3),
+                    &[tail, tail],
+                    1e-12,
+                );
+
+                // The graph-exact kernels behind the interpreter superinstructions keep the
+                // decomposed graph's rounding, so they stay bit-identical to that graph.
+                assert_eq!(logsumexp_2d_decomposed(&lse_rows, 2, 3), [0.0, 0.0]);
+                assert_eq!(
+                    softmax_cross_entropy_2d_decomposed(&x2, &labels, 2, 3),
+                    [0.0, 0.0]
+                );
+                assert_eq!(log_softmax_2d_shifted(&x2, 2, 3)[0], 0.0);
+            });
+        }
+    }
+
+    #[test]
+    fn collapse_free_kernels_match_the_previous_formula_away_from_collapse() {
+        // Outside the collapse regime, leaving the argmax term out of the sum and adding it
+        // back with ln_1p only changes rounding. Compare with the previous formula (kept as the
+        // graph-exact kernels) on ordinary rows, including tied maxima and a masked logit.
+        let rows = 64usize;
+        let cols = 9usize;
+        let mut x: Vec<f64> = (0..rows * cols)
+            .map(|k| ((k as f64) * 0.37).sin() * 6.0 - ((k % cols) as f64) * 0.5)
+            .collect();
+        x[..cols].copy_from_slice(&[1.5, 1.5, 0.0, -1.0, 1.5, -3.0, 0.25, 1.0, -0.5]);
+        x[cols + 4] = f64::NEG_INFINITY;
+        let labels: Vec<f64> = (0..rows * cols)
+            .map(|k| {
+                if k % cols == (k / cols) % cols {
+                    0.75
+                } else {
+                    0.25 / 8.0
+                }
+            })
+            .collect();
+        let close = |what: &str, got: &[f64], want: &[f64]| {
+            assert_eq!(got.len(), want.len(), "{what}: length");
+            for (i, (&g, &w)) in got.iter().zip(want).enumerate() {
+                if w == f64::NEG_INFINITY {
+                    assert_eq!(g, w, "{what}[{i}]");
+                    continue;
+                }
+                assert!(
+                    (g - w).abs() <= 8.0 * f64::EPSILON * w.abs().max(1.0),
+                    "{what}[{i}] = {g:e}, previous formula {w:e}"
+                );
+            }
+        };
+        close(
+            "logsumexp_2d",
+            &logsumexp_2d(&x, rows, cols),
+            &logsumexp_2d_decomposed(&x, rows, cols),
+        );
+        close(
+            "logmeanexp_2d",
+            &logmeanexp_2d(&x, rows, cols),
+            &logmeanexp_2d_decomposed(&x, rows, cols),
+        );
+        close(
+            "log_softmax_2d",
+            &log_softmax_2d(&x, rows, cols),
+            &log_softmax_2d_shifted(&x, rows, cols),
+        );
+        let finite: Vec<f64> = x.iter().map(|&v| v.max(-50.0)).collect();
+        close(
+            "softmax_cross_entropy_2d",
+            &softmax_cross_entropy_2d(&finite, &labels, rows, cols),
+            &softmax_cross_entropy_2d_decomposed(&finite, &labels, rows, cols),
+        );
+
+        // Non-finite rows give the same results as before.
+        let nan = f64::NAN;
+        let inf = f64::INFINITY;
+        let lsm = log_softmax_2d(&[inf, 0.0, 0.0, -inf, -inf, -inf, nan, 0.0, 1.0], 3, 3);
+        assert!(lsm[0].is_nan() && lsm[1] == -inf && lsm[2] == -inf);
+        assert!(lsm[3..].iter().all(|v| v.is_nan()));
+        assert_eq!(logsumexp(&[inf, 1.0, 2.0]), inf);
+        assert_eq!(logsumexp(&[-inf, 5.0, -inf]), 5.0);
+        assert!(logsumexp(&[nan, 1.0]).is_nan());
+        let masked = log_softmax(&[0.0, -inf, 0.0]);
+        assert!((masked[0] + std::f64::consts::LN_2).abs() <= f64::EPSILON);
+        assert!(masked[1] == -inf && masked[2] == masked[0]);
     }
 }
