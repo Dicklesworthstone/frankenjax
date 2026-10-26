@@ -10875,10 +10875,15 @@ fn triangular_solve_vjp(
     .map_err(|e| AdError::EvalFailed(e.to_string()))?;
     let (_, _, z_data) = extract_matrix_f64(&z)?;
 
-    // dA = -Z @ X^T
+    // dA = -Z @ X^T (or -(Z @ X^T)^T when transpose_a is true)
     let xt = transpose_f64(n, nx, &x_data);
-    let neg_z_xt = matmul_f64(n, nx, n, &z_data, &xt);
-    let da: Vec<f64> = neg_z_xt.iter().map(|&v| -v).collect();
+    let z_xt = matmul_f64(n, nx, n, &z_data, &xt);
+    let raw_da = if was_transposed {
+        transpose_f64(n, n, &z_xt)
+    } else {
+        z_xt
+    };
+    let da: Vec<f64> = raw_da.iter().map(|&v| -v).collect();
 
     // Mask dA to match triangularity: if lower, keep lower triangle; if upper, keep upper
     let mut da_masked = vec![0.0_f64; n * n];
@@ -11010,10 +11015,28 @@ fn triangular_solve_jvp(
     let x = eval_primitive(Primitive::TriangularSolve, primals, params)
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
-    let (_, _, da_data) = extract_matrix_f64(&tangents[0])?;
+    let (_, _, da_raw) = extract_matrix_f64(&tangents[0])?;
     let (_, _, x_data) = extract_matrix_f64(&x)?;
     let (n, nx, _) = extract_matrix_f64(&primals[1])?;
     let (_, _, db_data) = extract_matrix_f64(&tangents[1])?;
+
+    let lower = params.get("lower").is_none_or(|v| v.trim() != "false");
+    let was_transposed = params
+        .get("transpose_a")
+        .is_some_and(|v| v.trim() == "true");
+    let mut da_masked = vec![0.0_f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            if (lower && j <= i) || (!lower && j >= i) {
+                da_masked[i * n + j] = da_raw[i * n + j];
+            }
+        }
+    }
+    let da_data = if was_transposed {
+        transpose_f64(n, n, &da_masked)
+    } else {
+        da_masked
+    };
 
     // dA @ X
     let da_x = matmul_f64(n, n, nx, &da_data, &x_data);
@@ -13457,6 +13480,77 @@ impl SymbolicJaxprBuilder {
         let target_zero = self.emit_zeros_like(target);
         self.emit_binary(Primitive::Add, current, Atom::Var(target_zero))
     }
+
+    fn emit_row_col_indices(&mut self, mat: Atom) -> (VarId, VarId) {
+        let ones = self.emit_ones_like(mat);
+        let mut r_params = BTreeMap::new();
+        r_params.insert("axis".to_owned(), "0".to_owned());
+        let rows = self.emit_unary_params(Primitive::Cumsum, Atom::Var(ones), r_params);
+        let mut c_params = BTreeMap::new();
+        c_params.insert("axis".to_owned(), "1".to_owned());
+        let cols = self.emit_unary_params(Primitive::Cumsum, Atom::Var(ones), c_params);
+        (rows, cols)
+    }
+
+    fn emit_triangular_mask(&mut self, mat: Atom, x: Atom, lower: bool) -> VarId {
+        let (rows, cols) = self.emit_row_col_indices(mat);
+        let pred = if lower { Primitive::Ge } else { Primitive::Le };
+        let mask = self.emit_binary(pred, Atom::Var(rows), Atom::Var(cols));
+        let zero = self.emit_zeros_like(x.clone());
+        self.emit_ternary(Primitive::Select, Atom::Var(mask), x, Atom::Var(zero))
+    }
+
+    fn emit_cholesky_phi(&mut self, mat: Atom, m: Atom) -> VarId {
+        let (rows, cols) = self.emit_row_col_indices(mat);
+        let strict_lower = self.emit_binary(Primitive::Gt, Atom::Var(rows), Atom::Var(cols));
+        let is_diag = self.emit_binary(Primitive::Eq, Atom::Var(rows), Atom::Var(cols));
+        let zero = self.emit_zeros_like(m.clone());
+        let half = self.const_atom(0.5);
+        let half_m = self.emit_binary(Primitive::Mul, m.clone(), half);
+        let diag_part = self.emit_ternary(
+            Primitive::Select,
+            Atom::Var(is_diag),
+            Atom::Var(half_m),
+            Atom::Var(zero),
+        );
+        self.emit_ternary(
+            Primitive::Select,
+            Atom::Var(strict_lower),
+            m,
+            Atom::Var(diag_part),
+        )
+    }
+
+    fn emit_solve_outer_product(&mut self, z: Atom, x: Atom, a_ref: Atom) -> VarId {
+        let zt = self.emit_unary(Primitive::Transpose, z);
+        let xt = self.emit_unary(Primitive::Transpose, x);
+        let mut neg1 = BTreeMap::new();
+        neg1.insert("axis".to_owned(), "-1".to_owned());
+        let mut neg2 = BTreeMap::new();
+        neg2.insert("axis".to_owned(), "-2".to_owned());
+        let z_col = self.emit_unary_params(Primitive::ExpandDims, Atom::Var(zt), neg1);
+        let x_row = self.emit_unary_params(Primitive::ExpandDims, Atom::Var(xt), neg2);
+        let prod = self.emit_binary(Primitive::Mul, Atom::Var(z_col), Atom::Var(x_row));
+        let zero_a = self.emit_zeros_like(a_ref);
+        let mut ax0 = BTreeMap::new();
+        ax0.insert("axis".to_owned(), "0".to_owned());
+        let zero_a3 = self.emit_unary_params(Primitive::ExpandDims, Atom::Var(zero_a), ax0);
+        let prod3 = self.emit_binary(Primitive::Add, Atom::Var(prod), Atom::Var(zero_a3));
+        let mut r0 = BTreeMap::new();
+        r0.insert("axes".to_owned(), "0".to_owned());
+        self.emit_unary_params(Primitive::ReduceSum, Atom::Var(prod3), r0)
+    }
+
+    fn emit_last_axis_len_expanded(&mut self, x: Atom) -> VarId {
+        let re = self.emit_unary(Primitive::Real, x);
+        let ones = self.emit_ones_like(Atom::Var(re));
+        let mut r_params = BTreeMap::new();
+        r_params.insert("axes".to_owned(), "-1".to_owned());
+        let sum_ones = self.emit_unary_params(Primitive::ReduceSum, Atom::Var(ones), r_params);
+        let mut exp_params = BTreeMap::new();
+        exp_params.insert("axis".to_owned(), "-1".to_owned());
+        self.emit_unary_params(Primitive::ExpandDims, Atom::Var(sum_ones), exp_params)
+    }
 }
 
 fn max_var_id_in_jaxpr(jaxpr: &Jaxpr) -> u32 {
@@ -13664,6 +13758,47 @@ fn emit_symbolic_jvp_equation(
             outputs: branch_outputs,
             params: params.clone(),
             sub_jaxprs: jvp_branches,
+            effects: eqn.effects.clone(),
+        });
+        return Ok(tangent_vars);
+    }
+
+    if eqn.primitive == Primitive::While && eqn.sub_jaxprs.len() == 2 {
+        let cond_jaxpr = &eqn.sub_jaxprs[0];
+        let body_jaxpr = &eqn.sub_jaxprs[1];
+        if !cond_jaxpr.constvars.is_empty() || !body_jaxpr.constvars.is_empty() {
+            return Err(AdError::UnsupportedPrimitive(Primitive::While));
+        }
+        let jvp_body = build_jvp_jaxpr(body_jaxpr)?;
+        let mut jvp_cond = cond_jaxpr.clone();
+        let mut cond_next_var = max_var_id_in_jaxpr(&jvp_cond) + 1;
+        for _ in 0..p_in.len() {
+            jvp_cond.invars.push(VarId(cond_next_var));
+            cond_next_var += 1;
+        }
+        let mut loop_inputs = SmallVec::<[Atom; 4]>::with_capacity(2 * p_in.len());
+        for a in p_in {
+            loop_inputs.push(a.clone());
+        }
+        for da in &t_in {
+            loop_inputs.push(da.clone());
+        }
+        let mut loop_outputs = SmallVec::<[VarId; 2]>::with_capacity(2 * p_out.len());
+        let mut tangent_vars = Vec::with_capacity(p_out.len());
+        for _ in 0..p_out.len() {
+            loop_outputs.push(builder.fresh_var());
+        }
+        for _ in 0..p_out.len() {
+            let tv = builder.fresh_var();
+            loop_outputs.push(tv);
+            tangent_vars.push(tv);
+        }
+        builder.equations.push(fj_core::Equation {
+            primitive: Primitive::While,
+            inputs: loop_inputs,
+            outputs: loop_outputs,
+            params: params.clone(),
+            sub_jaxprs: vec![jvp_cond, jvp_body],
             effects: eqn.effects.clone(),
         });
         return Ok(tangent_vars);
@@ -13922,7 +14057,9 @@ fn emit_symbolic_jvp_equation(
             );
             builder.emit_binary(Primitive::Mul, Atom::Var(d), t(0))
         }
-        Primitive::Select => builder.emit_ternary(Primitive::Select, p(0), t(1), t(2)),
+        Primitive::Select | Primitive::Cond => {
+            builder.emit_ternary(Primitive::Select, p(0), t(1), t(2))
+        }
         Primitive::Clamp => {
             let lt_min = builder.emit_binary(Primitive::Lt, p(1), p(0));
             let gt_max = builder.emit_binary(Primitive::Gt, p(1), p(2));
@@ -13945,11 +14082,122 @@ fn emit_symbolic_jvp_equation(
             let a_db = builder.emit_binary_params(eqn.primitive, p(0), t(1), params.clone());
             builder.emit_binary(Primitive::Add, Atom::Var(da_b), Atom::Var(a_db))
         }
+        Primitive::Solve => {
+            let da_x = builder.emit_binary(Primitive::Dot, t(0), Atom::Var(p_out[0]));
+            let rhs = builder.emit_binary(Primitive::Sub, t(1), Atom::Var(da_x));
+            builder.emit_binary_params(Primitive::Solve, p(0), Atom::Var(rhs), params.clone())
+        }
+        Primitive::TriangularSolve => {
+            let lower = params.get("lower").is_none_or(|v| v.trim() != "false");
+            let was_transposed = params
+                .get("transpose_a")
+                .is_some_and(|v| v.trim() == "true");
+            let da_masked = builder.emit_triangular_mask(p(0), t(0), lower);
+            let op_da = if was_transposed {
+                builder.emit_unary(Primitive::Transpose, Atom::Var(da_masked))
+            } else {
+                da_masked
+            };
+            let da_x = builder.emit_binary(Primitive::Dot, Atom::Var(op_da), Atom::Var(p_out[0]));
+            let rhs = builder.emit_binary(Primitive::Sub, t(1), Atom::Var(da_x));
+            builder.emit_binary_params(
+                Primitive::TriangularSolve,
+                p(0),
+                Atom::Var(rhs),
+                params.clone(),
+            )
+        }
+        Primitive::Cholesky => {
+            let l = Atom::Var(p_out[0]);
+            let da_t = builder.emit_unary(Primitive::Transpose, t(0));
+            let da_sum = builder.emit_binary(Primitive::Add, t(0), Atom::Var(da_t));
+            let da_sym =
+                builder.emit_binary(Primitive::Mul, Atom::Var(da_sum), builder.const_atom(0.5));
+            let mut ts_params = BTreeMap::new();
+            ts_params.insert("lower".to_owned(), "true".to_owned());
+            let linv_da = builder.emit_binary_params(
+                Primitive::TriangularSolve,
+                l.clone(),
+                Atom::Var(da_sym),
+                ts_params.clone(),
+            );
+            let linv_da_t = builder.emit_unary(Primitive::Transpose, Atom::Var(linv_da));
+            let middle_t = builder.emit_binary_params(
+                Primitive::TriangularSolve,
+                l.clone(),
+                Atom::Var(linv_da_t),
+                ts_params,
+            );
+            let middle = builder.emit_unary(Primitive::Transpose, Atom::Var(middle_t));
+            let phi = builder.emit_cholesky_phi(l.clone(), Atom::Var(middle));
+            builder.emit_binary(Primitive::Dot, l, Atom::Var(phi))
+        }
         Primitive::Reshape => {
             if p_in.len() == 2 && params.get("like").is_some_and(|s| s == "true") {
                 builder.emit_binary_params(Primitive::Reshape, t(0), p(1), params.clone())
             } else {
                 builder.emit_unary_params(Primitive::Reshape, t(0), params.clone())
+            }
+        }
+        Primitive::Split => {
+            if p_out.len() != 1 {
+                return Err(AdError::UnsupportedPrimitive(Primitive::Split));
+            }
+            builder.emit_unary_params(Primitive::Split, t(0), params.clone())
+        }
+        Primitive::ReduceWindow => {
+            let reduce_op = params.get("reduce_op").map(|s| s.as_str()).unwrap_or("sum");
+            if reduce_op != "sum" && reduce_op != "add" {
+                return Err(AdError::UnsupportedPrimitive(Primitive::ReduceWindow));
+            }
+            builder.emit_unary_params(Primitive::ReduceWindow, t(0), params.clone())
+        }
+        Primitive::AssociativeScan => {
+            let op = params
+                .get("body_op")
+                .or_else(|| params.get("mode"))
+                .or_else(|| params.get("fn"))
+                .map(|s| s.as_str())
+                .unwrap_or("add");
+            match op {
+                "add" | "sum" => {
+                    builder.emit_unary_params(Primitive::AssociativeScan, t(0), params.clone())
+                }
+                "mul" | "prod" => {
+                    let dx_over_x = builder.emit_binary(Primitive::Div, t(0), p(0));
+                    let cs = builder.emit_unary_params(
+                        Primitive::Cumsum,
+                        Atom::Var(dx_over_x),
+                        params.clone(),
+                    );
+                    builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(cs))
+                }
+                _ => return Err(AdError::UnsupportedPrimitive(Primitive::AssociativeScan)),
+            }
+        }
+        Primitive::Scan => {
+            if !eqn.sub_jaxprs.is_empty() || p_in.len() != 2 {
+                return Err(AdError::UnsupportedPrimitive(Primitive::Scan));
+            }
+            let body_op = params.get("body_op").map(|s| s.as_str()).unwrap_or("add");
+            match body_op {
+                "add" => {
+                    let sum_dxs = builder.emit_unary(Primitive::ReduceSum, t(1));
+                    builder.emit_binary(Primitive::Add, t(0), Atom::Var(sum_dxs))
+                }
+                "sub" => {
+                    let sum_dxs = builder.emit_unary(Primitive::ReduceSum, t(1));
+                    builder.emit_binary(Primitive::Sub, t(0), Atom::Var(sum_dxs))
+                }
+                "mul" => {
+                    let dx_over_x = builder.emit_binary(Primitive::Div, t(1), p(1));
+                    let sum_ratio = builder.emit_unary(Primitive::ReduceSum, Atom::Var(dx_over_x));
+                    let dc_over_c = builder.emit_binary(Primitive::Div, t(0), p(0));
+                    let tot_ratio =
+                        builder.emit_binary(Primitive::Add, Atom::Var(dc_over_c), Atom::Var(sum_ratio));
+                    builder.emit_binary(Primitive::Mul, Atom::Var(p_out[0]), Atom::Var(tot_ratio))
+                }
+                _ => return Err(AdError::UnsupportedPrimitive(Primitive::Scan)),
             }
         }
         Primitive::ReduceSum
@@ -14580,7 +14828,7 @@ fn emit_symbolic_vjp_equation(
             let d = builder.emit_binary(Primitive::Mul, builder.const_atom(coef), Atom::Var(ex));
             builder.emit_binary(Primitive::Mul, g(), Atom::Var(d))
         })]),
-        Primitive::Select => {
+        Primitive::Select | Primitive::Cond => {
             let zero = builder.emit_zeros_like(g());
             let g1 = need_input[1]
                 .then(|| builder.emit_ternary(Primitive::Select, p(0), g(), Atom::Var(zero)));
@@ -14623,6 +14871,93 @@ fn emit_symbolic_vjp_equation(
             });
             Ok(vec![g0, g1])
         }
+        Primitive::Solve => {
+            let at = builder.emit_unary(Primitive::Transpose, p(0));
+            let z = builder.emit_binary_params(Primitive::Solve, Atom::Var(at), g(), params.clone());
+            let g0 = need_input[0].then(|| {
+                let z_xt = builder.emit_solve_outer_product(
+                    Atom::Var(z),
+                    Atom::Var(p_out[0]),
+                    p(0),
+                );
+                builder.emit_unary(Primitive::Neg, Atom::Var(z_xt))
+            });
+            let g1 = need_input[1].then_some(z);
+            Ok(vec![g0, g1])
+        }
+        Primitive::TriangularSolve => {
+            let lower = params.get("lower").is_none_or(|v| v.trim() != "false");
+            let was_transposed = params
+                .get("transpose_a")
+                .is_some_and(|v| v.trim() == "true");
+            let mut transpose_params = params.clone();
+            transpose_params.insert(
+                "transpose_a".to_owned(),
+                if was_transposed {
+                    "false".to_owned()
+                } else {
+                    "true".to_owned()
+                },
+            );
+            if !was_transposed {
+                transpose_params.insert(
+                    "lower".to_owned(),
+                    if lower {
+                        "true".to_owned()
+                    } else {
+                        "false".to_owned()
+                    },
+                );
+            }
+            let z = builder.emit_binary_params(
+                Primitive::TriangularSolve,
+                p(0),
+                g(),
+                transpose_params,
+            );
+            let g0 = need_input[0].then(|| {
+                let xt = builder.emit_unary(Primitive::Transpose, Atom::Var(p_out[0]));
+                let z_xt = builder.emit_binary(Primitive::Dot, Atom::Var(z), Atom::Var(xt));
+                let raw_da = if was_transposed {
+                    builder.emit_unary(Primitive::Transpose, Atom::Var(z_xt))
+                } else {
+                    z_xt
+                };
+                let neg_da = builder.emit_unary(Primitive::Neg, Atom::Var(raw_da));
+                builder.emit_triangular_mask(p(0), Atom::Var(neg_da), lower)
+            });
+            let g1 = need_input[1].then_some(z);
+            Ok(vec![g0, g1])
+        }
+        Primitive::Cholesky => Ok(vec![need_input[0].then(|| {
+            let l = Atom::Var(p_out[0]);
+            let lt = builder.emit_unary(Primitive::Transpose, l.clone());
+            let lt_g = builder.emit_binary(Primitive::Dot, Atom::Var(lt), g());
+            let phi = builder.emit_cholesky_phi(l.clone(), Atom::Var(lt_g));
+            let mut ts_params = BTreeMap::new();
+            ts_params.insert("lower".to_owned(), "true".to_owned());
+            ts_params.insert("transpose_a".to_owned(), "true".to_owned());
+            let x = builder.emit_binary_params(
+                Primitive::TriangularSolve,
+                l.clone(),
+                Atom::Var(phi),
+                ts_params.clone(),
+            );
+            let xt = builder.emit_unary(Primitive::Transpose, Atom::Var(x));
+            let zt = builder.emit_binary_params(
+                Primitive::TriangularSolve,
+                l,
+                Atom::Var(xt),
+                ts_params,
+            );
+            let z = builder.emit_unary(Primitive::Transpose, Atom::Var(zt));
+            let z_plus_zt = builder.emit_binary(Primitive::Add, Atom::Var(z), Atom::Var(zt));
+            builder.emit_binary(
+                Primitive::Mul,
+                Atom::Var(z_plus_zt),
+                builder.const_atom(0.5),
+            )
+        })]),
         Primitive::ReduceSum => {
             Ok(vec![need_input[0].then(|| {
                 builder.emit_broadcast_reduced_to(g(), p(0), params)
@@ -14720,6 +15055,104 @@ fn emit_symbolic_vjp_equation(
                     Some(builder.emit_binary_params(Primitive::Reshape, g(), p(0), reshape_params));
             }
             Ok(result)
+        }
+        Primitive::Split => {
+            if p_out.len() != 1 {
+                return Err(AdError::UnsupportedPrimitive(Primitive::Split));
+            }
+            Ok(vec![need_input[0].then(|| {
+                let mut reshape_params = BTreeMap::new();
+                reshape_params.insert("like".to_owned(), "true".to_owned());
+                builder.emit_binary_params(Primitive::Reshape, g(), p(0), reshape_params)
+            })])
+        }
+        Primitive::Fft => Ok(vec![need_input[0].then(|| {
+            let ifft_g = builder.emit_unary_params(Primitive::Ifft, g(), params.clone());
+            let n_exp = builder.emit_last_axis_len_expanded(g());
+            builder.emit_binary(Primitive::Mul, Atom::Var(ifft_g), Atom::Var(n_exp))
+        })]),
+        Primitive::Ifft => Ok(vec![need_input[0].then(|| {
+            let fft_g = builder.emit_unary_params(Primitive::Fft, g(), params.clone());
+            let n_exp = builder.emit_last_axis_len_expanded(g());
+            builder.emit_binary(Primitive::Div, Atom::Var(fft_g), Atom::Var(n_exp))
+        })]),
+        Primitive::AssociativeScan => {
+            let op = params
+                .get("body_op")
+                .or_else(|| params.get("mode"))
+                .or_else(|| params.get("fn"))
+                .map(|s| s.as_str())
+                .unwrap_or("add");
+            let mut rev_params = params.clone();
+            let was_rev = params.get("reverse").is_some_and(|s| s == "true");
+            rev_params.insert(
+                "reverse".to_owned(),
+                if was_rev {
+                    "false".to_owned()
+                } else {
+                    "true".to_owned()
+                },
+            );
+            match op {
+                "add" | "sum" => Ok(vec![need_input[0].then(|| {
+                    builder.emit_unary_params(Primitive::AssociativeScan, g(), rev_params)
+                })]),
+                "mul" | "prod" => Ok(vec![need_input[0].then(|| {
+                    let gy = builder.emit_binary(Primitive::Mul, g(), Atom::Var(p_out[0]));
+                    let rev_cs =
+                        builder.emit_unary_params(Primitive::Cumsum, Atom::Var(gy), rev_params);
+                    builder.emit_binary(Primitive::Div, Atom::Var(rev_cs), p(0))
+                })]),
+                _ => Err(AdError::UnsupportedPrimitive(Primitive::AssociativeScan)),
+            }
+        }
+        Primitive::Scan => {
+            if !eqn.sub_jaxprs.is_empty() || p_in.len() != 2 {
+                return Err(AdError::UnsupportedPrimitive(Primitive::Scan));
+            }
+            let body_op = params.get("body_op").map(|s| s.as_str()).unwrap_or("add");
+            let mut ax0 = BTreeMap::new();
+            ax0.insert("axis".to_owned(), "0".to_owned());
+            match body_op {
+                "add" => {
+                    let g0 = need_input[0].then_some(g_var);
+                    let g1 = need_input[1].then(|| {
+                        let g_exp = builder.emit_unary_params(Primitive::ExpandDims, g(), ax0);
+                        let z_xs = builder.emit_zeros_like(p(1));
+                        builder.emit_binary(Primitive::Add, Atom::Var(g_exp), Atom::Var(z_xs))
+                    });
+                    Ok(vec![g0, g1])
+                }
+                "sub" => {
+                    let g0 = need_input[0].then_some(g_var);
+                    let g1 = need_input[1].then(|| {
+                        let g_exp = builder.emit_unary_params(Primitive::ExpandDims, g(), ax0);
+                        let z_xs = builder.emit_zeros_like(p(1));
+                        let bcast =
+                            builder.emit_binary(Primitive::Add, Atom::Var(g_exp), Atom::Var(z_xs));
+                        builder.emit_unary(Primitive::Neg, Atom::Var(bcast))
+                    });
+                    Ok(vec![g0, g1])
+                }
+                "mul" => {
+                    let gy = builder.emit_binary(Primitive::Mul, g(), Atom::Var(p_out[0]));
+                    let g0 =
+                        need_input[0].then(|| builder.emit_binary(Primitive::Div, Atom::Var(gy), p(0)));
+                    let g1 = need_input[1].then(|| {
+                        let gy_exp =
+                            builder.emit_unary_params(Primitive::ExpandDims, Atom::Var(gy), ax0);
+                        let z_xs = builder.emit_zeros_like(p(1));
+                        let bcast = builder.emit_binary(
+                            Primitive::Add,
+                            Atom::Var(gy_exp),
+                            Atom::Var(z_xs),
+                        );
+                        builder.emit_binary(Primitive::Div, Atom::Var(bcast), p(1))
+                    });
+                    Ok(vec![g0, g1])
+                }
+                _ => Err(AdError::UnsupportedPrimitive(Primitive::Scan)),
+            }
         }
         Primitive::Slice => {
             let non_unit_stride = params.get("strides").is_some_and(|s| {
@@ -33585,5 +34018,370 @@ mod tests {
             .unwrap();
         // index 1 gathered twice, index 3 gathered once => [0, 2, 0, 1]
         assert_eq!(gg_out, vec![0.0, 2.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn wave19_symbolic_ad_control_flow_scans_fft_and_linalg_work() {
+        use fj_core::{Equation, Shape, TensorValue};
+        use smallvec::smallvec;
+
+        // 1. Symbolic JVP of While with sub_jaxprs:
+        // carry = [x, i], while i < 3: x = x * x, i = i + 1
+        // After 3 iterations: x_out = x^8, dx_out/dx = 8 * x^7.
+        // At x = 2.0, i = 0.0, dx = 1.0: x_out = 256.0, dx_out = 8 * 128 = 1024.0.
+        let cond_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Lt,
+                inputs: smallvec![Atom::Var(VarId(2)), Atom::Lit(Literal::from_f64(3.0))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let body_jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3), VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Lit(Literal::from_f64(1.0))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let f_while = Jaxpr::new(
+            vec![VarId(10)],
+            vec![],
+            vec![VarId(11)],
+            vec![Equation {
+                primitive: Primitive::While,
+                inputs: smallvec![Atom::Var(VarId(10)), Atom::Lit(Literal::from_f64(0.0))],
+                outputs: smallvec![VarId(11), VarId(12)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![cond_jaxpr, body_jaxpr],
+                effects: vec![],
+            }],
+        );
+        let jvp_while = super::jvp_to_jaxpr(&f_while).expect("jvp_to_jaxpr While");
+        jvp_while
+            .validate_well_formed()
+            .expect("jvp_while well-formed");
+        let w_out = fj_interpreters::eval_jaxpr(
+            &jvp_while,
+            &[Value::scalar_f64(2.0), Value::scalar_f64(1.0)],
+        )
+        .expect("eval jvp_while");
+        assert!((w_out[0].as_f64_scalar().unwrap() - 256.0).abs() < 1e-12);
+        assert!((w_out[1].as_f64_scalar().unwrap() - 1024.0).abs() < 1e-12);
+
+        // 2. Scan (body_op="mul") -> symbolic grad_to_jaxpr and hvp_to_jaxpr
+        let mut scan_params = BTreeMap::new();
+        scan_params.insert("body_op".to_owned(), "mul".to_owned());
+        let f_scan = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Scan,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: scan_params,
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let g_scan = super::build_grad_jaxpr(&f_scan, &[0, 1]).expect("grad Scan");
+        g_scan.validate_well_formed().expect("g_scan well-formed");
+        let init_c = Value::scalar_f64(2.0);
+        let xs = Value::vector_f64(&[3.0, 4.0, 5.0]).unwrap();
+        let gs = fj_interpreters::eval_jaxpr(&g_scan, &[init_c, xs]).expect("eval g_scan");
+        // y = 2 * 3 * 4 * 5 = 120 => dy/dc = 60, dy/dxs = [40, 30, 24]
+        assert!((gs[0].as_f64_scalar().unwrap() - 60.0).abs() < 1e-12);
+        assert_eq!(
+            gs[1].as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![40.0, 30.0, 24.0]
+        );
+
+        // 3. AssociativeScan (mode="mul") -> ReduceSum symbolic grad_to_jaxpr
+        let mut ascan_params = BTreeMap::new();
+        ascan_params.insert("mode".to_owned(), "mul".to_owned());
+        ascan_params.insert("axis".to_owned(), "0".to_owned());
+        let f_ascan = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::AssociativeScan,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: ascan_params,
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let g_ascan = super::grad_to_jaxpr(&f_ascan).expect("grad AssociativeScan");
+        let x3 = Value::vector_f64(&[2.0, 3.0, 4.0]).unwrap();
+        let gas_out = fj_interpreters::eval_jaxpr(&g_ascan, std::slice::from_ref(&x3))
+            .expect("eval g_ascan")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        assert_eq!(gas_out, vec![16.0, 10.0, 6.0]);
+
+        // 4. Fft -> Real -> Square -> ReduceSum symbolic grad_to_jaxpr vs grad_jaxpr
+        let f_fft = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(5)],
+            vec![
+                Equation {
+                    primitive: Primitive::Fft,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Real,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Square,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(4))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let g_fft = super::grad_to_jaxpr(&f_fft).expect("grad_to_jaxpr Fft");
+        let x4 = Value::vector_f64(&[1.0, 2.0, -1.0, 0.5]).unwrap();
+        let sym_fft_grad = fj_interpreters::eval_jaxpr(&g_fft, std::slice::from_ref(&x4))
+            .expect("eval g_fft")[0]
+            .clone();
+        let tape_fft_grad =
+            super::grad_jaxpr(&f_fft, std::slice::from_ref(&x4)).expect("tape grad Fft")[0].clone();
+        // Compare real parts of gradient
+        let sym_re = fj_lax::eval_primitive(Primitive::Real, &[sym_fft_grad], &BTreeMap::new())
+            .unwrap()
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        let tape_re = fj_lax::eval_primitive(Primitive::Real, &[tape_fft_grad], &BTreeMap::new())
+            .unwrap()
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        for (a, b) in sym_re.iter().zip(tape_re.iter()) {
+            assert!((a - b).abs() < 1e-10, "Fft VJP mismatch: {a} vs {b}");
+        }
+
+        // 5. Solve (1D b and 2D B), TriangularSolve, and Cholesky symbolic JVP, VJP, and HVP
+        let f_solve = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(5)],
+            vec![
+                Equation {
+                    primitive: Primitive::Solve,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Square,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(4))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let g_solve = super::build_grad_jaxpr(&f_solve, &[0, 1]).expect("grad Solve");
+        let hvp_solve = super::hvp_to_jaxpr(&f_solve).expect("hvp Solve");
+        g_solve.validate_well_formed().expect("g_solve well-formed");
+        hvp_solve
+            .validate_well_formed()
+            .expect("hvp_solve well-formed");
+        let a_mat = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                [4.0_f64, 1.0, 1.0, 3.0]
+                    .into_iter()
+                    .map(Literal::from_f64)
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let b_vec = Value::vector_f64(&[1.0, 2.0]).unwrap();
+        let sym_solve_grads =
+            fj_interpreters::eval_jaxpr(&g_solve, &[a_mat.clone(), b_vec.clone()])
+                .expect("eval g_solve 1D");
+        let tape_solve_a =
+            super::grad_jaxpr(&f_solve, &[a_mat.clone(), b_vec.clone()]).expect("tape grad Solve");
+        let sym_da = sym_solve_grads[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        let tape_da = tape_solve_a[0].as_tensor().unwrap().to_f64_vec().unwrap();
+        for (a, b) in sym_da.iter().zip(tape_da.iter()) {
+            assert!((a - b).abs() < 1e-10, "Solve 1D dA mismatch: {a} vs {b}");
+        }
+
+        // Also test Solve with 2D B using the exact same symbolic g_solve Jaxpr!
+        let b_mat = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                [1.0_f64, 0.5, 2.0, -1.0]
+                    .into_iter()
+                    .map(Literal::from_f64)
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let sym_solve_2d = fj_interpreters::eval_jaxpr(&g_solve, &[a_mat.clone(), b_mat.clone()])
+            .expect("eval g_solve 2D");
+        let tape_solve_2d = super::grad_jaxpr(&f_solve, &[a_mat.clone(), b_mat.clone()])
+            .expect("tape grad Solve 2D");
+        for (a, b) in sym_solve_2d[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap()
+            .iter()
+            .zip(
+                tape_solve_2d[0]
+                    .as_tensor()
+                    .unwrap()
+                    .to_f64_vec()
+                    .unwrap()
+                    .iter(),
+            )
+        {
+            assert!((a - b).abs() < 1e-10, "Solve 2D dA mismatch: {a} vs {b}");
+        }
+
+        // 6. Cholesky -> Square -> ReduceSum symbolic JVP, VJP, and HVP
+        let f_chol = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Cholesky,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Square,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let g_chol = super::grad_to_jaxpr(&f_chol).expect("grad_to_jaxpr Cholesky");
+        let hvp_chol = super::hvp_to_jaxpr(&f_chol).expect("hvp_to_jaxpr Cholesky");
+        g_chol.validate_well_formed().expect("g_chol well-formed");
+        hvp_chol
+            .validate_well_formed()
+            .expect("hvp_chol well-formed");
+        let sym_chol_g = fj_interpreters::eval_jaxpr(&g_chol, std::slice::from_ref(&a_mat))
+            .expect("eval g_chol")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        let tape_chol_g = super::grad_jaxpr(&f_chol, std::slice::from_ref(&a_mat))
+            .expect("tape grad Cholesky")[0]
+            .as_tensor()
+            .unwrap()
+            .to_f64_vec()
+            .unwrap();
+        for (a, b) in sym_chol_g.iter().zip(tape_chol_g.iter()) {
+            assert!((a - b).abs() < 1e-10, "Cholesky grad mismatch: {a} vs {b}");
+        }
+        // Note: sum(L^2) = tr(L L^T) = tr(A), so gradient w.r.t. A has 1 on diagonal and 0 off-diagonal,
+        // and Hessian of tr(A) is 0! Verify hvp_chol gives 0!
+        let hvp_chol_out =
+            fj_interpreters::eval_jaxpr(&hvp_chol, &[a_mat.clone(), a_mat]).expect("eval hvp_chol")
+                [0]
+                .as_tensor()
+                .unwrap()
+                .to_f64_vec()
+                .unwrap();
+        for v in hvp_chol_out {
+            assert!(v.abs() < 1e-10, "expected 0 Hessian of tr(L L^T), got {v}");
+        }
     }
 }
